@@ -2894,7 +2894,7 @@ fn an_old_allocation_rate_cannot_end_a_command_that_just_paused() {
 }
 
 #[test]
-fn resset_healthy_host_never_holds_or_refuses_predicted_memory() {
+fn resset_healthy_host_never_refuses_predicted_memory_and_holds_only_what_does_not_fit() {
     let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
     let current = owner(
         "agent",
@@ -2937,10 +2937,18 @@ fn resset_healthy_host_never_holds_or_refuses_predicted_memory() {
     let mut healthy = room(GIB, false, &*volume);
     healthy.pressured = false;
     ledger.pass(std::slice::from_ref(&current), &current, &healthy);
+    // A prediction never stops work that runs, and never ends a command on a
+    // healthy machine; one that does not fit the room left waits before it
+    // starts (row 541).
     assert_eq!(
-        wait(&current, 2),
+        wait(&current, 1),
         None,
         "predictions must not stop healthy work"
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a peak above the room left waits before it starts"
     );
     assert!(
         ledger.take_refused(&current).is_empty(),
@@ -3097,4 +3105,347 @@ fn replay_recorded_write_rates_stops_nothing() {
         stops.is_empty(),
         "false stops (second, pid, rate, free): {stops:?}"
     );
+}
+
+
+/// A healthy machine: MemAvailable is above the margin, so no emergency.
+fn healthy<'a>(memory: u64, volume: &'a Volume) -> Room<'a> {
+    let mut room = room(memory, false, volume);
+    room.pressured = false;
+    room
+}
+
+/// A heavy command already running: it is the oldest and holds `resident`.
+fn running(arrived: u64, resident: u64) -> Entry {
+    let mut running = entry(arrived, Peak::default());
+    running.admitted = true;
+    running.resident = resident;
+    running
+}
+
+fn heavy(memory: u64) -> Peak {
+    Peak {
+        memory,
+        ..Peak::default()
+    }
+}
+
+fn pass_after_settle(ledger: &mut Ledger, current: &Arc<Mutex<Observation>>, room: &Room) {
+    unsettle(ledger);
+    ledger.pass(std::slice::from_ref(current), current, room);
+}
+
+#[test]
+fn a_known_peak_that_does_not_fit_waits_before_it_starts_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 1), None, "running work is never stopped");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a 45 GiB peak did not fit 20 GiB of room"
+    );
+    // The room does not come: it stays held, however many passes.
+    for _ in 0..5 {
+        pass_after_settle(&mut ledger, &current, &healthy(20 * GIB, &*volume));
+    }
+    assert_eq!(wait(&current, 2), Some(Wait::Held(WaitReason::Memory)));
+    // The room comes: it starts, and keeps running.
+    pass_after_settle(&mut ledger, &current, &healthy(60 * GIB, &*volume));
+    assert_eq!(wait(&current, 2), None);
+    pass_after_settle(&mut ledger, &current, &healthy(20 * GIB, &*volume));
+    assert_eq!(
+        wait(&current, 2),
+        None,
+        "a started command is not held again"
+    );
+}
+
+#[test]
+fn a_known_peak_that_fits_starts_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(60 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 2), None);
+}
+
+#[test]
+fn held_commands_start_in_turn_as_the_room_frees_and_a_light_one_never_waits() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![
+            command(1, 3 * GIB, 0),
+            command(2, 0, 0),
+            command(3, 0, 0),
+            command(4, 0, 0),
+            command(5, 0, 0),
+        ],
+        vec![
+            (1, running(1, 3 * GIB)),
+            (2, entry(2, heavy(8 * GIB))),
+            (3, entry(3, heavy(8 * GIB))),
+            (4, entry(4, heavy(8 * GIB))),
+            // The fifth ran light last time: it never waits.
+            (5, entry(5, heavy(100 * MIB))),
+        ],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(9 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 2), None, "the first of three fits");
+    assert_eq!(wait(&current, 3), Some(Wait::Held(WaitReason::Memory)));
+    assert_eq!(wait(&current, 4), Some(Wait::Held(WaitReason::Memory)));
+    assert_eq!(wait(&current, 5), None, "a light command never waits");
+    pass_after_settle(&mut ledger, &current, &healthy(17 * GIB, &*volume));
+    assert_eq!(wait(&current, 3), None, "the next in line starts first");
+    assert_eq!(wait(&current, 4), Some(Wait::Held(WaitReason::Memory)));
+    pass_after_settle(&mut ledger, &current, &healthy(25 * GIB, &*volume));
+    assert_eq!(wait(&current, 4), None);
+}
+
+#[test]
+fn memory_protection_off_starts_a_held_command_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    assert!(wait(&current, 2).is_some());
+    let mut off = healthy(20 * GIB, &*volume);
+    off.memory_protection = false;
+    ledger.pass(std::slice::from_ref(&current), &current, &off);
+    assert_eq!(wait(&current, 2), None);
+}
+
+#[test]
+fn every_hold_start_and_release_is_logged_with_its_reason() {
+    let capture = crate::logging::capture::start();
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let mut heldline = entry(2, heavy(45 * GIB));
+    heldline.seen.as_mut().unwrap().line = "frame-analysis-541 --all".into();
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, heldline)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    pass_after_settle(&mut ledger, &current, &healthy(60 * GIB, &*volume));
+    let lines = capture
+        .records()
+        .into_iter()
+        .filter(|line| line.contains("frame-analysis-541"))
+        .collect::<Vec<_>>();
+    assert!(
+        lines.iter().any(
+            |line| line.starts_with("process_resources.admission admission held")
+                && line.contains("its last run peaked above the room left")
+                && line.contains("\"need_bytes\"")
+                && line.contains("\"free_bytes\"")
+        ),
+        "no held line: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(
+            |line| line.starts_with("process_resources.admission admission started")
+                && line.contains("next in line")
+        ),
+        "no started line: {lines:?}"
+    );
+}
+
+/// Row 541, A6: a typed command's peak is kept when its run ends at the
+/// shell's prompt, and the next run of it is held when the pool cannot fit it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shells_command_that_ends_leaves_its_peak_and_its_next_run_waits() {
+    let capture = crate::logging::capture::start();
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    let shell = 4_100_500u32;
+    let at = |effective: u32, resident: u64| {
+        let mut command = command(shell, resident, 0);
+        command.effective = effective;
+        command
+    };
+    let show = |commands: Vec<pool::CommandUse>| terminal.lock().unwrap().commands = commands;
+    // The sampler registers every tick: a command line unreadable for a
+    // moment (a process mid-exec) is read on the next one.
+    let register = |ledger: &mut Ledger| {
+        for _ in 0..200 {
+            ledger.register(&terminal, 512 * MIB);
+            if terminal
+                .lock()
+                .unwrap()
+                .admission
+                .get(&shell)
+                .is_some_and(|entry| {
+                    entry
+                        .seen
+                        .as_ref()
+                        .is_some_and(|seen| seen.line.starts_with("sleep"))
+                })
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the command line was never read");
+    };
+    // The child has exec'd the program once its command line names it.
+    let started = |child: &std::process::Child| {
+        for _ in 0..500 {
+            let line = std::fs::read(format!("/proc/{}/cmdline", child.id())).unwrap_or_default();
+            if line.starts_with(b"sleep") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("sleep did not start");
+    };
+    let mut first = std::process::Command::new("sleep")
+        .arg("5410")
+        .spawn()
+        .unwrap();
+    started(&first);
+    show(vec![at(first.id(), 3 * GIB)]);
+    register(&mut ledger);
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    ledger.pass(
+        &[other.clone(), terminal.clone()],
+        &terminal,
+        &healthy(40 * GIB, &*volume),
+    );
+    assert_eq!(wait(&terminal, shell), None, "the first run fits");
+    first.kill().unwrap();
+    first.wait().unwrap();
+    // The shell is back at its prompt.
+    show(vec![at(shell, 10 * MIB)]);
+    ledger.register(&terminal, 512 * MIB);
+    let key = seen_argv(
+        0,
+        &["sleep".to_string(), "5410".to_string()],
+        std::env::current_dir().ok(),
+    )
+    .key;
+    assert_eq!(
+        ledger.peaks.get(&key).map(|peak| peak.memory),
+        Some(3 * GIB),
+        "the ended run's peak was not kept"
+    );
+    // The same command is typed again while the pool has 1 GiB of room.
+    let mut second = std::process::Command::new("sleep")
+        .arg("5410")
+        .spawn()
+        .unwrap();
+    started(&second);
+    show(vec![at(second.id(), 4 * MIB)]);
+    register(&mut ledger);
+    ledger.pass(
+        &[other.clone(), terminal.clone()],
+        &terminal,
+        &healthy(GIB, &*volume),
+    );
+    assert_eq!(
+        wait(&terminal, shell),
+        Some(Wait::Held(WaitReason::Memory)),
+        "the next run of a command that peaked at 3 GiB did not wait"
+    );
+    second.kill().unwrap();
+    second.wait().unwrap();
+    assert!(
+        capture
+            .records()
+            .iter()
+            .any(|line| line.contains("admission remembered") && line.contains("sleep 5410")),
+        "the kept peak is not logged"
+    );
+}
+
+/// Row 541, A6 (terminal): a job whose own peak is unknown holds the pool; a
+/// shell command that peaked heavy before waits for it, though the job has no
+/// admission entry of its own.
+#[test]
+fn a_command_that_peaked_heavy_waits_while_a_job_of_unknown_peak_holds_the_pool() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let job = owner(
+        "job-1",
+        true,
+        vec![{
+            let mut job = command(7, 9 * GIB, 0);
+            job.root = true;
+            job
+        }],
+        Vec::new(),
+    );
+    let shell = owner(
+        "terminal",
+        true,
+        vec![command(8, 4 * MIB, 0)],
+        vec![(8, entry(8, heavy(6 * GIB)))],
+    );
+    let launches = BTreeMap::from([(
+        "job-1".to_string(),
+        super::super::launch::Reservation {
+            memory: 16 * MIB,
+            writes: 0,
+            volume: 0,
+        },
+    )]);
+    let mut room = healthy(5 * GIB, &*volume);
+    room.launches = &launches;
+    let mut ledger = Ledger::new(None);
+    ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
+    assert_eq!(
+        wait(&shell, 8),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a 6 GiB peak did not wait for the job that holds the pool"
+    );
+    // The job ends: nothing heavy runs and the command starts.
+    job.lock().unwrap().commands.clear();
+    unsettle(&mut ledger);
+    let mut room = healthy(5 * GIB, &*volume);
+    room.launches = &launches;
+    ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
+    assert_eq!(wait(&shell, 8), None);
 }

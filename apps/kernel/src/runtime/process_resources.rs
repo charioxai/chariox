@@ -655,7 +655,7 @@ impl PreparedDomain {
                 self.pool.enforce(&watched, unit_charged);
                         {
                             let protection = self.pool.protection();
-                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, true, protection.disk));
                             admit(&tree, &watched);
                         }
                         ended
@@ -802,7 +802,7 @@ impl PreparedDomain {
                         });
                         {
                             let protection = self.pool.protection();
-                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, true, protection.disk));
                             admit(&tree, &watched);
                         }
                         let _ = reply.send(if started {
@@ -852,7 +852,7 @@ impl PreparedDomain {
                     }
                     Ok(WatchCommand::Apply) => {
                         let protection = self.pool.protection();
-                        drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                        drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, true, protection.disk));
                         admit(&tree, &watched);
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}

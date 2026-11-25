@@ -182,6 +182,39 @@ impl Entry {
         )
     }
 
+    /// One log line for a decision admission took on this command: what it
+    /// did, to which command, and why, with the numbers it judged by.
+    pub(super) fn decision(
+        &self,
+        pid: u32,
+        decision: &str,
+        reason: WaitReason,
+        why: &str,
+        numbers: serde_json::Value,
+    ) {
+        let line = self.seen.as_ref().map_or_else(
+            || format!("pid {pid}"),
+            |seen| seen.line.chars().take(200).collect(),
+        );
+        let mut fields = serde_json::json!({
+            "decision": decision,
+            "reason": reason,
+            "pid": pid,
+            "command": line,
+            "why": why,
+            "resident_bytes": self.resident,
+            "expected_peak_bytes": self.expected.as_ref().map(|peak| peak.memory),
+        });
+        if let (Some(fields), Some(numbers)) = (fields.as_object_mut(), numbers.as_object()) {
+            fields.extend(numbers.clone());
+        }
+        crate::logging::info_with_fields(
+            "process_resources.admission",
+            format!("admission {decision} ({reason:?}): {line}: {why}"),
+            fields,
+        );
+    }
+
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
@@ -272,6 +305,15 @@ impl Entry {
     pub(super) fn force(&mut self) -> bool {
         if self.wait.is_none() {
             return false;
+        }
+        if let Some(wait) = self.wait {
+            self.decision(
+                self.seen.as_ref().map_or(0, |seen| seen.pid),
+                "started",
+                wait.reason(),
+                "the person started it now, whatever the room",
+                serde_json::json!({}),
+            );
         }
         self.stop_waiting();
         self.forced = true;
@@ -453,17 +495,22 @@ impl Room<'_> {
 }
 
 /// Release every wait whose resource is disabled or whose memory emergency
-/// ended. Disabling a resource must not leave a stopped command stranded.
+/// ended. Disabling a resource must not leave a stopped command stranded. A
+/// command held before it started for room it does not fit keeps waiting
+/// while memory protection is on, emergency or not: only the line in turn
+/// (`resume`) starts it, when its room is there.
 pub(super) fn release_unprotected(
     members: &[Arc<Mutex<Observation>>],
-    memory: bool,
+    protection: bool,
+    emergency: bool,
     disk: bool,
 ) -> Vec<Arc<Mutex<Observation>>> {
+    let memory = protection && emergency;
     let mut changed = Vec::new();
     for member in members {
         let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let mut released = false;
-        for entry in observation.admission.values_mut() {
+        for (pid, entry) in observation.admission.iter_mut() {
             if !memory {
                 entry.refused = None;
             }
@@ -471,13 +518,30 @@ pub(super) fn release_unprotected(
                 entry.filling = None;
             }
             if !entry.exhausted()
-                && entry.wait.is_some_and(|wait| match wait.reason() {
-                    WaitReason::Memory => !memory,
-                    WaitReason::Disk => !disk,
+                && entry.wait.is_some_and(|wait| match wait {
+                    Wait::Held(WaitReason::Memory) => !protection,
+                    Wait::Paused(WaitReason::Memory) => !memory,
+                    Wait::Held(WaitReason::Disk) | Wait::Paused(WaitReason::Disk) => !disk,
                 })
             {
+                let wait = entry.wait;
                 entry.stop_waiting();
                 released = true;
+                if let Some(wait) = wait {
+                    entry.decision(
+                        *pid,
+                        "released",
+                        wait.reason(),
+                        match wait.reason() {
+                            WaitReason::Memory if !protection => {
+                                "memory protection is off for this machine"
+                            }
+                            WaitReason::Memory => "the memory emergency ended",
+                            WaitReason::Disk => "disk protection is off for this machine",
+                        },
+                        serde_json::json!({}),
+                    );
+                }
             }
         }
         if released {
@@ -499,6 +563,38 @@ impl Ledger {
             stall_window: STALL,
             peaks: Peaks::load(file),
         }
+    }
+
+    /// Whether a heavy command runs now whose end would free room: a launch
+    /// that holds a heavy reservation, or a command of an observed workload
+    /// holding at least `light` (a job's own process counts while its launch
+    /// is alive; a provider's or a shell's long-lived root never does).
+    pub(super) fn heavy_running(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        light: u64,
+        launches: &BTreeMap<String, super::launch::Reservation>,
+    ) -> bool {
+        launches.values().any(|launch| launch.memory >= light)
+            || members.iter().any(|member| {
+                let member = member.lock().unwrap_or_else(|e| e.into_inner());
+                let launched = launches.contains_key(&member.unit);
+                member
+                    .commands
+                    .iter()
+                    .any(|command| (launched || !command.root) && command.resident >= light)
+                    // Admitted with a heavy predicted peak, not grown yet: its
+                    // peak is already reserved, so it counts as running (the
+                    // rule `State::running` applies).
+                    || member.admission.values().any(|entry| {
+                        entry.admitted
+                            && entry.wait.is_none()
+                            && entry
+                                .expected
+                                .as_ref()
+                                .is_some_and(|peak| peak.memory >= light)
+                    })
+            })
     }
 
     /// Growth beyond each domain's already-reserved binary prediction.
@@ -596,19 +692,41 @@ impl Ledger {
             .copied()
             .collect::<Vec<_>>();
         for pid in ended {
-            if let Some(Entry {
-                seen: Some(seen),
-                peak,
-                ..
-            }) = observation.admission.remove(&pid)
-            {
-                self.peaks.record(
-                    &seen.key,
-                    Peak {
-                        exact: seen.exact,
-                        ..peak
+            let Some(entry) = observation.admission.remove(&pid) else {
+                continue;
+            };
+            let heavy = entry.peak.memory >= light;
+            let Some(seen) = entry.seen.as_ref() else {
+                if heavy {
+                    entry.decision(
+                        pid,
+                        "forgot",
+                        WaitReason::Memory,
+                        "it ended without a recognised command line, so its peak is not kept for its next run",
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                continue;
+            };
+            let kept = self.peaks.record(
+                &seen.key,
+                Peak {
+                    exact: seen.exact,
+                    ..entry.peak.clone()
+                },
+                light,
+            );
+            if heavy {
+                entry.decision(
+                    pid,
+                    if kept { "remembered" } else { "forgot" },
+                    WaitReason::Memory,
+                    if kept {
+                        "it ended; its peak is kept, so its next run waits when the pool cannot fit it"
+                    } else {
+                        "it ended; its peak was not kept"
                     },
-                    light,
+                    serde_json::json!({"peak_bytes": entry.peak.memory}),
                 );
             }
         }
@@ -666,6 +784,50 @@ impl Ledger {
                     }
                 }
             };
+            // A shell that ran one command at a time is the entry's command;
+            // when the command it followed has ended and the shell is back
+            // at its prompt, that run is over: its peak is kept for the next
+            // run, and the next one is judged afresh, not as the shell's
+            // growth. (The shell outlives its commands, so the entry would
+            // otherwise never end and nothing would be remembered.)
+            if entry.admitted
+                && entry.wait.is_none()
+                && entry.seen.as_ref().is_some_and(|seen| {
+                    seen.pid != command.pid
+                        && seen.pid != command.effective
+                        && inspect(seen.pid).is_err()
+                })
+            {
+                let kept = entry.seen.as_ref().is_some_and(|seen| {
+                    self.peaks.record(
+                        &seen.key,
+                        Peak {
+                            exact: seen.exact,
+                            ..entry.peak.clone()
+                        },
+                        light,
+                    )
+                });
+                if entry.peak.memory >= light {
+                    entry.decision(
+                        command.pid,
+                        if kept { "remembered" } else { "forgot" },
+                        WaitReason::Memory,
+                        if kept {
+                            "its run ended at the shell's prompt; its peak is kept, so the next run waits when the pool cannot fit it"
+                        } else {
+                            "its run ended at the shell's prompt; its peak was not kept"
+                        },
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                self.arrivals += 1;
+                *entry = Entry {
+                    arrived: self.arrivals,
+                    holdable: entry.holdable,
+                    ..Entry::default()
+                };
+            }
             entry.resident = command.resident;
             entry.writes = command.writes;
             entry.peak.memory = entry.peak.memory.max(command.resident);
@@ -678,6 +840,11 @@ impl Ledger {
             {
                 entry.peak.volume = ReceivingVolume::capture(output);
                 entry.peak.volume_writes = output.written;
+            }
+            // A command line that could not be read when it was admitted (a
+            // process mid-exec shows none) is read again, so its peak is kept.
+            if entry.admitted && entry.wait.is_none() && entry.seen.is_none() {
+                entry.seen = recognise(command.effective);
             }
             // Until it is decided, follow a shell to the command it runs.
             if !entry.admitted
@@ -706,7 +873,8 @@ impl Ledger {
     ) -> bool {
         let mut changed = release_unprotected(
             members,
-            room.memory_protection && room.pressured,
+            room.memory_protection,
+            room.pressured,
             room.disk_protection,
         );
         let mut state = State::read(members, room);
@@ -941,13 +1109,23 @@ impl Ledger {
     fn hold(&mut self, current: &Arc<Mutex<Observation>>, room: &Room, state: &mut State) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
         let unit = observation.unit.clone();
-        for entry in observation.admission.values_mut() {
+        for (pid, entry) in observation.admission.iter_mut() {
+            let pid = *pid;
             if entry.admitted || entry.forced || entry.wait.is_some() {
                 continue;
             }
             let Some(expected) = entry.expected.clone() else {
                 // Unknown: light until it grows.
                 entry.admitted = entry.resident >= room.light;
+                if entry.admitted {
+                    entry.decision(
+                        pid,
+                        "admitted",
+                        WaitReason::Memory,
+                        "no earlier run of it is known, so it can only be paused if it grows into a short pool",
+                        serde_json::json!({"room_bytes": room.memory}),
+                    );
+                }
                 continue;
             };
             if room.memory_protection
@@ -965,6 +1143,13 @@ impl Ledger {
                 {
                     entry.refused = Some(expected.memory);
                     entry.admitted = true;
+                    entry.decision(
+                        pid,
+                        "refused",
+                        WaitReason::Memory,
+                        "its last run needed more than the whole pool, so it can never fit here",
+                        serde_json::json!({"need_bytes": expected.memory, "pool_bytes": room.capacity}),
+                    );
                 } else {
                     entry.expected = None;
                 }
@@ -976,11 +1161,13 @@ impl Ledger {
             let held = if !entry.holdable {
                 None
             } else if room.memory_protection
-                && room.pressured
                 && expected.memory >= room.light
                 && need > state.memory_room(&unit, room)
-                && state.heavy_running
+                && (state.heavy_running || state.heavy_launched)
             {
+                // Before it grows: a command whose known peak does not fit the
+                // room left waits for it, healthy machine or not. Holding
+                // costs nothing; only running work is spared until pressure.
                 Some(Wait::Held(WaitReason::Memory))
             } else if room.disk_protection
                 && disk.is_some_and(|disk| ahead > state.spare(disk, &unit, room))
@@ -991,8 +1178,41 @@ impl Ledger {
             };
             if let Some(held) = held {
                 entry.wait_for(held);
+                let free = match held {
+                    Wait::Held(WaitReason::Memory) => state.memory_room(&unit, room),
+                    Wait::Held(WaitReason::Disk) | Wait::Paused(_) => {
+                        disk.map_or(0, |disk| state.spare(disk, &unit, room))
+                    }
+                };
+                entry.decision(
+                    pid,
+                    "held",
+                    held.reason(),
+                    match held.reason() {
+                        WaitReason::Memory => "its last run peaked above the room left in the pool, so it waits before it grows",
+                        WaitReason::Disk => "its last run wrote more than the space left above the volume's floor, so it waits before it writes",
+                    },
+                    serde_json::json!({
+                        "need_bytes": if held.reason() == WaitReason::Memory { need } else { ahead },
+                        "free_bytes": free,
+                        "peak_bytes": expected.memory,
+                    }),
+                );
             } else {
                 entry.admitted = true;
+                if expected.memory >= room.light || disk.is_some() {
+                    entry.decision(
+                        pid,
+                        "started",
+                        WaitReason::Memory,
+                        "its last peak fits the room left in the pool",
+                        serde_json::json!({
+                            "need_bytes": need,
+                            "free_bytes": state.memory_room(&unit, room),
+                            "peak_bytes": expected.memory,
+                        }),
+                    );
+                }
                 state.reserve_memory(&unit, need, room);
                 if let Some(disk) = disk {
                     state.reserve_disk(disk, ahead, &unit, room);
@@ -1047,12 +1267,14 @@ impl Ledger {
         {
             entry.wait_for(Wait::Paused(reason));
             entry.paused_rate = rate;
+            entry.decision(
+                pid,
+                "paused",
+                reason,
+                "it was growing into a pool short of memory; paused instead of stopping one",
+                serde_json::json!({"rate_bytes_per_second": rate}),
+            );
         }
-        crate::logging::info_with_fields(
-            "process_resources.admission_pause",
-            "paused a growing command instead of stopping one",
-            serde_json::json!({"pid": pid, "reason": reason, "rate_bytes_per_second": rate}),
-        );
         PauseDecision::Paused(member.clone())
     }
 
@@ -1084,8 +1306,26 @@ impl Ledger {
             if let Some(volume) = volume {
                 state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
             }
+            let was = entry.wait;
+            let free = state.memory_room(&unit, room);
+            let needs = need(entry, reason, room);
             entry.stop_waiting();
             entry.admitted = true;
+            entry.decision(
+                pid,
+                if matches!(was, Some(Wait::Paused(_))) {
+                    "resumed"
+                } else {
+                    "started"
+                },
+                reason,
+                if state.heavy_running || state.heavy_launched {
+                    "it is next in line and the room it needs is free"
+                } else {
+                    "nothing heavy runs any more, so the next in line goes on"
+                },
+                serde_json::json!({"need_bytes": needs, "free_bytes": free}),
+            );
             state.running(entry, room);
             let unit = observation.unit.clone();
             drop(observation);
@@ -1318,6 +1558,9 @@ struct State {
     oldest: Option<u64>,
     /// Something heavy runs, so waiting can make room.
     heavy_running: bool,
+    /// A job or Room command holding at least the light bar runs (its peak may
+    /// be unknown, so it has no entry): a command held for room waits for it too.
+    heavy_launched: bool,
     /// Writes admitted commands still have ahead, by volume.
     disk: BTreeMap<u64, u64>,
     memory_by_unit: BTreeMap<String, u64>,
@@ -1350,7 +1593,12 @@ impl State {
         let left = self.memory_room(unit, room);
         let paused_memory =
             reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
-        if room.memory_protection && room.pressured && self.heavy_running && memory > left {
+        // A held command is judged by the room, an emergency or not (the same
+        // test `hold` made); a paused one continues by the emergency's rules.
+        let judged = room.pressured || matches!(entry.wait, Some(Wait::Held(_)));
+        let waits_on_heavy = self.heavy_running
+            || (self.heavy_launched && matches!(entry.wait, Some(Wait::Held(_))));
+        if room.memory_protection && judged && waits_on_heavy && memory > left {
             return Some(Blocked::Memory { left, need: memory });
         }
         if room.memory_protection && room.pressured && self.heavy_running && paused_memory {
@@ -1447,6 +1695,7 @@ impl State {
             disk: BTreeMap::new(),
             memory_by_unit: BTreeMap::new(),
             writes_by_unit: BTreeMap::new(),
+            heavy_launched: false,
         };
         for launch in room.launches.values() {
             let total = state.disk.entry(launch.volume).or_default();
@@ -1454,6 +1703,17 @@ impl State {
         }
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            let launched = room.launches.contains_key(&observation.unit);
+            if observation.commands.iter().any(|command| {
+                (launched || !command.root)
+                    && command.resident >= room.light
+                    && observation
+                        .admission
+                        .get(&command.pid)
+                        .is_none_or(|entry| entry.wait.is_none())
+            }) {
+                state.heavy_launched = true;
+            }
             for entry in observation.admission.values() {
                 if entry.wait.is_some() {
                     continue;
@@ -1974,9 +2234,9 @@ impl Peaks {
         true
     }
 
-    pub(super) fn record(&mut self, key: &str, peak: Peak, light: u64) {
+    pub(super) fn record(&mut self, key: &str, peak: Peak, light: u64) -> bool {
         if !self.remember(key, peak, light) {
-            return;
+            return false;
         }
         if let Some(file) = &self.file {
             let written = serde_json::to_vec(&self.known)
@@ -1994,6 +2254,7 @@ impl Peaks {
                 );
             }
         }
+        true
     }
 }
 
