@@ -706,3 +706,29 @@ fn a_known_heavy_peak_waits_before_launch_while_something_heavy_runs_and_starts_
         "{lines:?}"
     );
 }
+
+/// Review of #1737 (P2): a terminal command admitted with a heavy predicted peak
+/// that has not grown yet already holds the pool: a known-heavy launch waits.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_known_heavy_launch_waits_for_an_admitted_predicted_heavy_command_before_it_grows() {
+    let total = healthy_total();
+    let pool = Arc::new(Pool::new(total, true).with_machine_pressure(Box::new(|| false)));
+    let admission = LaunchAdmission(pool.clone());
+    let cwd = Path::new("/");
+    let heavy: Vec<String> = vec!["frame-analysis-541-overlap".into()];
+    learn(&admission, &heavy, cwd, total.saturating_mul(2));
+    // The shell's command: admitted, 4 GiB predicted, 16 MiB resident so far.
+    let terminal = descendant("terminal", 42, true);
+    pool.join(&terminal);
+    let wait = admission
+        .reserve("heavy", &heavy, cwd, false)
+        .err()
+        .expect("a heavy launch must wait for the admitted command's reserved peak");
+    assert_eq!(wait.reason, admission::WaitReason::Memory);
+    // Nothing admitted and nothing heavy: the same launch starts.
+    pool.members()
+        .iter()
+        .for_each(|member| member.lock().unwrap().admission.clear());
+    assert!(admission.reserve("heavy", &heavy, cwd, false).is_ok());
+}

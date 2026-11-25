@@ -103,11 +103,14 @@ try{
  const execRow=async id=>(await terminal({operation:'exec_list'})).execs.find(r=>r.exec_id===id);
  const execState=row=>row?.state?.kind??JSON.stringify(row?.state);
  const execDone=async(id,ms=240000)=>{let row;await until(async()=>{row=await execRow(id);return execState(row)==='finished'},'exec '+id+' finished',ms);return row};
+ const execExit=async id=>{const page=(await terminal({operation:'exec_read',exec_id:id,after_cursor:0,wait_ms:0})).output;return page.outcome};
+ const exitedOk=o=>o?.kind==='exited'&&o.code===0;
+ const decisions=(mark,kinds)=>admissionLog(new RegExp(mark)).filter(r=>kinds.includes(r.decision)).length;
  const jobStart=async code=>(await tool('chariox.jobs.run',{command:['node','-e',code],wait_s:0,timeout_s:400})).job_id;
  const jobDone=async(id,ms=240000)=>{let st;await until(async()=>{st=await tool('chariox.jobs.status',{job_id:id});return !!st.result},'job '+id+' finished',ms);return st};
  const termOpen=async()=>{const r=await tool('chariox.terminal_open',{title:'admission'},true);out.term_open_raw=JSON.stringify(r).slice(0,400);save();return r.terminal_id??r.terminal?.terminal_id??r.terminal?.id??r.id};
  const termRun=async(tid,code,tag)=>{await tool('chariox.terminal_send',{terminal_id:tid,text:`node -e ${sh(code)}; echo ${tag.slice(0,2)}$((1+1))${tag.slice(2)}`,enter:true},true)};
- const termDone=async(tid,tag,ms=240000)=>{await tool('chariox.terminal_wait',{terminal_id:tid,until:[{text:`${tag.slice(0,2)}2${tag.slice(2)}`}],timeout_seconds:Math.floor(ms/1000)},true)};
+ const termDone=async(tid,tag,ms=240000)=>{await tool('chariox.terminal_wait',{terminal_id:tid,until:[{text:`${tag.slice(0,2)}2${tag.slice(2)}`}],after_offset:0,timeout_seconds:Math.min(80,Math.floor(ms/1000))},true)};
  const cells=new Set((process.env.CELLS??'A6,A1,A3,A2,A4,A5').split(','));
  const peaks0=peakOf();out.peaks_before=peaks0;save();
  // A6: an unknown command grows and ends: its peak is recorded; its next run waits while a hog holds the room.
@@ -142,10 +145,13 @@ try{
   out.cells.A6={learn:[],held:[]};
   for(const path of ['exec','job','term']){
    out.cells.A6.learn.push(await learn(path));save();
+   assert(out.cells.A6.learn.at(-1).recorded,`A6 ${path}: the ended run's peak was not recorded`);
   }
   for(const [i,path] of ['exec','job','term'].entries()){
-   if(!out.cells.A6.learn.find(l=>l.path===path)?.recorded)continue;
    out.cells.A6.held.push(await heldNext(path,i));save();
+   const h=out.cells.A6.held.at(-1);
+   assert(h.held_lines_while_hog_ran>=1,`A6 ${path}: the next run of a known heavy command was not held while the pool was full`);
+   assert(h.started_lines_after>=1,`A6 ${path}: the held run did not start when the room came back`);
   }
  }
 
@@ -173,12 +179,16 @@ try{
   const t0=performance.now();const p2=await ask(prompt);await delay(15000);
   const heldLines=admissionLog(/path_prov/).filter(r=>r.decision==='held').length;
   await execDone(hog,120000);const s2=await settled(p2,300000);
+  assert(s1==='done'&&s2==='done','A6p: a provider prompt did not finish: '+s1+' '+s2);
+  assert(recorded,'A6p: the real tool call peak was not kept');
+  assert(heldLines>=1,'A6p: the second tool call was not held');
+  assert(admissionLog(/path_prov/).some(r=>r.decision==='started'||r.decision==='resumed'),'A6p: the held tool call did not start when the room came back');
   out.cells.A6p={model,first_state:s1,peak_remembered_logged:recorded,second_state:s2,held_lines:heldLines,started_lines:admissionLog(/path_prov/).filter(r=>r.decision==='started'||r.decision==='resumed').length,waited_ms:Math.round(performance.now()-t0),peaks_gib:(peakOf()??[]).map(m=>+(m/GiB).toFixed(2)).slice(0,6)};save();
  }
  // A1/A3: four parallel runs of a command that peaked at heavyGiB: two fit, the others wait and start in turn; a light command never waits.
  const sig={done:false},pulse={};const pulsing=relayPulse(sig,pulse);
  if(cells.has('A1')){
-  const peaksSeen=[];const ids=[];
+  const peaksSeen=[];const ids=[];const heldBefore=decisions('path_exec',['held']),startedBefore=decisions('path_exec',['started','resumed']);
   const code=alloc('path_exec',heavyGiB,4000);
   for(let i=0;i<4;i++)ids.push(await execStart(code));
   let light,lightMs;
@@ -193,7 +203,14 @@ try{
    assert(performance.now()-t0<300000,'A1 deadline');await delay(200);
   }
   const rows=await Promise.all(ids.map(execRow));
-  out.cells.A1={runs:4,heavy_gib:heavyGiB,max_running:maxRunning,max_queued:maxQueued,light_ms:lightMs,light_state:execState(light),rows:rows.map(r=>({state:execState(r),outcome:r?.outcome??r?.state})),held_lines:admissionLog(/path_exec/).filter(r=>r.decision==='held').length,started_lines:admissionLog(/path_exec/).filter(r=>r.decision==='started').length};
+  const exits=await Promise.all(ids.map(execExit));
+  const heldA1=decisions('path_exec',['held'])-heldBefore, startedA1=decisions('path_exec',['started','resumed'])-startedBefore;
+  assert(exits.every(exitedOk),'A1: a parallel run was killed or failed: '+JSON.stringify(exits));
+  assert(maxQueued>=1&&heldA1>=1,'A1: no extra run was held');
+  assert(maxRunning<=2,'A1: more runs ran at once than the pool fits: '+maxRunning);
+  assert(startedA1>=heldA1,'A1: a held run did not start in turn');
+  assert(execState(light)==='finished'&&exitedOk(await execExit(lightId))&&lightMs<5000,'A1/A3: the light command waited or failed');
+  out.cells.A1={exits,runs:4,heavy_gib:heavyGiB,max_running:maxRunning,max_queued:maxQueued,light_ms:lightMs,light_state:execState(light),rows:rows.map(r=>({state:execState(r),outcome:r?.outcome??r?.state})),held_lines:admissionLog(/path_exec/).filter(r=>r.decision==='held').length,started_lines:admissionLog(/path_exec/).filter(r=>r.decision==='started').length};
   save();
  }
  // A2: a runaway started from an agent shell is acted on before the machine runs short; the kernel keeps answering.
@@ -205,6 +222,11 @@ try{
   const page=(await terminal({operation:'exec_read',exec_id:id,after_cursor:0,wait_ms:0})).output;
   const text=page.chunks.map(c=>Buffer.from(c.data_base64,'base64').toString()).join('');
   sig2.done=true;await pulsing2;
+  clearInterval(thrash);thrash=null;try{writeFileSync(join(join(kernelCgroup(),'..'),'memory.high'),'max')}catch{}await delay(8000);
+  assert(!exitedOk(await execExit(id)),'A2: the runaway ran to a normal exit');
+  assert(/stopped|paused|memory/i.test(text),'A2: the runaway was not told why');
+  assert(exhaustionLog().length>0,'A2: no exhaustion step was logged for the runaway');
+  assert(!p2.failed&&p2.max<8000,'A2: the kernel stopped answering: '+JSON.stringify(p2));
   out.cells.A2={row:row?.outcome??row?.state,told:/stopped|paused|memory/.test(text),excerpt:text.slice(-500),relay:p2,exhaustion_steps:exhaustionLog().map(r=>r.message)};
   save();
  }
@@ -213,11 +235,17 @@ try{
   const pid=child.pid;process.kill(pid,'SIGUSR2');
   await until(async()=>{try{return !!(await client.send({RelayStatus:null})).RelayStatus}catch{return false}},'kernel answers after the reload',120000);
   assert.equal(child.pid,pid);await delay(3000);
+  const heldBefore=decisions('path_exec',['held']),startedBefore=decisions('path_exec',['started','resumed']);
   const code=alloc('path_exec',heavyGiB,4000);const ids=[];for(let i=0;i<4;i++)ids.push(await execStart(code));
   const lt=performance.now();const lightId=await execStart('/*light*/process.exit(0)');const light=await execDone(lightId,30000);const lightMs=Math.round(performance.now()-lt);
   let maxRunning=0,maxQueued=0;const t0=performance.now();
   while(true){const states=(await Promise.all(ids.map(execRow))).map(execState);maxRunning=Math.max(maxRunning,states.filter(s=>s==='running'||s==='starting').length);maxQueued=Math.max(maxQueued,states.filter(s=>s!=='running'&&s!=='starting'&&s!=='finished').length);if(states.every(s=>s==='finished'))break;assert(performance.now()-t0<300000,'A4 deadline');await delay(200)}
-  out.cells.A4={same_pid:true,max_running:maxRunning,max_queued:maxQueued,light_ms:lightMs,light_state:execState(light),peaks_after_reload:(peakOf()??[]).slice(0,3).map(m=>+(m/GiB).toFixed(2))};save();
+  const exits4=await Promise.all(ids.map(execExit));
+  const held4=decisions('path_exec',['held'])-heldBefore,started4=decisions('path_exec',['started','resumed'])-startedBefore;
+  assert(exits4.every(exitedOk),'A4: a run was killed or failed after the reload: '+JSON.stringify(exits4));
+  assert(maxQueued>=1&&held4>=1&&started4>=held4&&maxRunning<=2,'A4: after the reload the extras were not held and started in turn');
+  assert(execState(light)==='finished'&&exitedOk(await execExit(lightId))&&lightMs<5000,'A4: the light command waited or failed after the reload');
+  out.cells.A4={exits:exits4,held_lines:held4,started_lines:started4,same_pid:true,max_running:maxRunning,max_queued:maxQueued,light_ms:lightMs,light_state:execState(light),peaks_after_reload:(peakOf()??[]).slice(0,3).map(m=>+(m/GiB).toFixed(2))};save();
  }
  // A5: with #1725's net present, each decision has one owner: no pid is both held/paused by admission and acted on by exhaustion.
  if(cells.has('A5')){

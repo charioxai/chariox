@@ -564,6 +564,17 @@ impl Ledger {
                     .commands
                     .iter()
                     .any(|command| (launched || !command.root) && command.resident >= light)
+                    // Admitted with a heavy predicted peak, not grown yet: its
+                    // peak is already reserved, so it counts as running (the
+                    // rule `State::running` applies).
+                    || member.admission.values().any(|entry| {
+                        entry.admitted
+                            && entry.wait.is_none()
+                            && entry
+                                .expected
+                                .as_ref()
+                                .is_some_and(|peak| peak.memory >= light)
+                    })
             })
     }
 
