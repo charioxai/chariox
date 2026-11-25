@@ -173,6 +173,14 @@ impl<'a> Layout<'a> {
         }
     }
 
+    fn parent(&self, reference: &str) -> Option<String> {
+        self.by_ref
+            .get(reference)
+            .and_then(|node| node["parent_ref"].as_str())
+            .filter(|parent| self.by_ref.contains_key(parent))
+            .map(str::to_owned)
+    }
+
     fn inside(&self, reference: &str, container: &str) -> bool {
         let mut current = self
             .by_ref
@@ -234,7 +242,31 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
             entry["attributes"][key] = text.into();
         }
     }
-    let mut controls = Vec::new();
+    let mut controls = controls_in(snapshot, layout, reference);
+    // A token page often puts the box and its buttons side by side in one group: look in the
+    // enclosing group (up to three levels) when the box itself holds none.
+    let mut group = reference.to_string();
+    for _ in 0..3 {
+        if !controls.is_empty() {
+            break;
+        }
+        let Some(parent) = layout.parent(&group) else {
+            break;
+        };
+        controls = controls_in(snapshot, layout, &parent);
+        if !controls.is_empty() {
+            entry["controls_in"] = parent.clone().into();
+        }
+        group = parent;
+    }
+    entry["controls"] = controls.into();
+    layout.point(reference, &mut entry);
+    Some(entry)
+}
+
+/// The buttons and links inside `group`, each with its ref, label, action word and bounds.
+fn controls_in(snapshot: &Value, layout: &Layout<'_>, group: &str) -> Vec<Value> {
+    let mut controls: Vec<Value> = Vec::new();
     for control in snapshot["accessibility_nodes"]
         .as_array()
         .into_iter()
@@ -247,10 +279,8 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
         };
         if control["ignored"] == true
             || !matches!(control_kind, "button" | "link")
-            || !layout.inside(control_ref, reference)
-            || controls
-                .iter()
-                .any(|seen: &Value| seen["node_ref"] == control_ref)
+            || !layout.inside(control_ref, group)
+            || controls.iter().any(|seen| seen["node_ref"] == control_ref)
         {
             continue;
         }
@@ -267,7 +297,7 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
             "hide"
         } else if ["reveal", "show", "unmask", "display"]
             .iter()
-            .any(|w| lowered.contains(w))
+            .any(|word| lowered.contains(word))
         {
             "reveal"
         } else {
@@ -284,9 +314,7 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
             break;
         }
     }
-    entry["controls"] = controls.into();
-    layout.point(reference, &mut entry);
-    Some(entry)
+    controls
 }
 
 pub(super) fn project(payload: Value, find: Value) -> Result<Value, DaemonError> {
@@ -573,5 +601,38 @@ mod tests {
         page["page_size"] = json!({"css_width":1600,"css_height":2600});
         assert_eq!(find(&page, "copy")["click"], json!({"x":640,"y":1516}));
         assert_eq!(find(&page, "reveal")["in_viewport"], true);
+    }
+
+    #[test]
+    fn find_lists_the_buttons_of_the_enclosing_group_when_the_box_holds_none() {
+        // A real token page puts the token in a span and Reveal/Copy next to it in the same section.
+        let page = json!({"tab_id":"tab","generation":3,"page_size":{"css_width":1280,"css_height":800},"snapshot":{"document_id":"document",
+            "dom_documents":[{"document_index":0,"scroll":{"x":0,"y":0}}],
+            "accessibility_nodes":[
+                {"node_ref":"backend:21","role":"button","name":"Reveal token"},
+                {"node_ref":"backend:31","role":"button","name":"Copy token"}],
+            "dom_nodes":[
+                {"node_ref":"backend:10","parent_ref":"backend:1","node_name":"SECTION","attributes":{"id":"block-reveal"},"bounds":{"x":0.0,"y":100.0,"width":800.0,"height":80.0}},
+                {"node_ref":"backend:11","parent_ref":"backend:10","node_name":"SPAN","attributes":{"id":"token-box","aria-label":"API token (hidden)"},"bounds":{"x":10.0,"y":110.0,"width":300.0,"height":30.0}},
+                {"node_ref":"backend:21","parent_ref":"backend:10","node_name":"BUTTON","text":"Reveal token","attributes":{"id":"reveal"},"bounds":{"x":320.0,"y":110.0,"width":100.0,"height":30.0}},
+                {"node_ref":"backend:30","parent_ref":"backend:1","node_name":"SECTION","attributes":{"id":"block-copy"},"bounds":{"x":0.0,"y":200.0,"width":800.0,"height":80.0}},
+                {"node_ref":"backend:31","parent_ref":"backend:30","node_name":"BUTTON","text":"Copy token","attributes":{"id":"copy"},"bounds":{"x":10.0,"y":210.0,"width":100.0,"height":30.0}}]}});
+        let found = project(
+            page,
+            json!({"query":"token-box","kind":"container","offset":0,"document_id":"document"}),
+        )
+        .unwrap();
+        let token_box = &found["matches"][0];
+        assert_eq!(token_box["node_ref"], "backend:11");
+        assert_eq!(token_box["controls_in"], "backend:10");
+        let controls = token_box["controls"].as_array().unwrap();
+        assert_eq!(
+            controls.len(),
+            1,
+            "{controls:?}: only its own group, not the Copy section"
+        );
+        assert_eq!(controls[0]["node_ref"], "backend:21");
+        assert_eq!(controls[0]["action"], "reveal");
+        assert_eq!(controls[0]["click"], json!({"x":370,"y":125}));
     }
 }
