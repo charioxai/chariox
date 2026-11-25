@@ -128,6 +128,30 @@ async fn cell_1_a_background_command_left_running_at_turn_end_is_adopted_as_a_pr
         "cell 1: the agent is told which command was adopted: {told}"
     );
 
+    // The command may never end: an idle agent's message must not wait for it.
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Occur(
+            crate::durable_state::agent_lifecycle::occurrence(
+                &team.room,
+                &team.child,
+                "peer",
+                "while-it-runs",
+                "message",
+                serde_json::json!({"message": "go ahead"}),
+            ),
+        ))
+        .unwrap();
+    assert!(
+        team.runtime
+            .owned
+            .release_queued_for_stranded(&team.room, &team.child)
+            .unwrap(),
+        "cell 1: an adopted command held the idle agent's message: {:?}",
+        team.runtime.owned.what_arms_agent(&team.room, &team.child)
+    );
+
     // The command ends: the wake ends with it and the agent has an event to wake on.
     let wake_id = adopted[0].id.clone();
     drop(background);

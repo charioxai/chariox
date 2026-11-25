@@ -155,6 +155,9 @@ impl KernelRuntimeOwnedState {
             .iter()
             .find(|wake| {
                 matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
+                    // An adopted command may never end (a server the agent left up): the agent is
+                    // idle all the same, and a message must not wait for that command.
+                    && wake.kind != adopted::KIND
                     && !(wake.label.starts_with(BACKSTOP_LABEL)
                         && Some(wake.task_id.as_str()) != latest)
             })
