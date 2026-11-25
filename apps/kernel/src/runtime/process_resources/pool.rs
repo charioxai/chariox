@@ -1237,6 +1237,7 @@ fn sysstat_headroom_gates_the_typed_runaway_stop() {
         steady_growth: growth,
         writes: 0,
         write_growth: 0,
+        write_rate: 0,
         effective: pid,
         root: true,
     };

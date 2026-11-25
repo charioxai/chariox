@@ -1986,7 +1986,10 @@ fn fillers_after_two_passes(
         current,
         &room(GIB, false, &*volume),
     );
-    assert!(ledger.take_fillers(current).is_empty(), "stopped on one sample");
+    assert!(
+        ledger.take_fillers(current).is_empty(),
+        "stopped on one sample"
+    );
     std::thread::sleep(Duration::from_millis(250));
     space.store(free - drop, Ordering::SeqCst);
     ledger.pass(
@@ -2022,7 +2025,11 @@ fn a_many_file_copy_filling_the_disk_in_seconds_is_stopped_while_room_is_left() 
         filling.rate
     );
     assert_eq!(filling.written, 3 * GIB);
-    assert!(matches!(filling.full_in, Some(1 | 2)), "{:?}", filling.full_in);
+    assert!(
+        matches!(filling.full_in, Some(1 | 2)),
+        "{:?}",
+        filling.full_in
+    );
     let line = super::super::waits::filling_line(filling);
     assert!(line.contains("free, full in about "), "{line}");
 }
@@ -2053,11 +2060,19 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
     let started = Instant::now();
     let volume: Box<Volume> = Box::new(move |path: &Path| {
         Some(if path.starts_with("/log") {
-            Space { id: 2, free: 50 * GIB, total: 100 * GIB }
+            Space {
+                id: 2,
+                free: 50 * GIB,
+                total: 100 * GIB,
+            }
         } else {
             // Losing 400 MiB/s to someone else's writes, 900 MiB free at the start.
             let lost = started.elapsed().as_millis() as u64 * 400 * MIB / 1000;
-            Space { id: 1, free: (900 * MIB).saturating_sub(lost), total: 100 * GIB }
+            Space {
+                id: 1,
+                free: (900 * MIB).saturating_sub(lost),
+                total: 100 * GIB,
+            }
         })
     });
     let (_, command, command_use) = writing(1, 3 * GIB, 200 * MIB);
@@ -2164,7 +2179,11 @@ fn a_runaway_overwriter_is_stopped_when_the_volume_is_within_five_seconds_of_ful
     }
     let volume = losing(1500 * MIB, 400 * MIB);
     let fillers = pass_twice(std::slice::from_ref(&current), &*volume);
-    assert_eq!(fillers.len(), 1, "a runaway writer on a volume seconds from full kept writing");
+    assert_eq!(
+        fillers.len(),
+        1,
+        "a runaway writer on a volume seconds from full kept writing"
+    );
     assert_eq!(fillers[0].0, 1);
 }
 
@@ -2200,7 +2219,10 @@ fn the_fastest_runaway_is_stopped_not_the_one_that_wrote_most() {
     ];
     let volume = losing(2500 * MIB, 550 * MIB);
     let fillers = pass_twice(&members, &*volume);
-    assert_eq!(fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(), vec![2]);
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![2]
+    );
 }
 
 #[test]
@@ -2229,7 +2251,11 @@ fn a_copy_is_judged_at_first_sight_from_the_free_space_seen_before_it_began() {
         &room(GIB, false, &*volume),
     );
     assert_eq!(
-        ledger.take_fillers(&current).iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        ledger
+            .take_fillers(&current)
+            .iter()
+            .map(|(pid, _)| *pid)
+            .collect::<Vec<_>>(),
         vec![1],
         "a copy first seen with the volume already losing room was not judged until a later pass"
     );
@@ -3106,7 +3132,6 @@ fn replay_recorded_write_rates_stops_nothing() {
         "false stops (second, pid, rate, free): {stops:?}"
     );
 }
-
 
 /// A healthy machine: MemAvailable is above the margin, so no emergency.
 fn healthy<'a>(memory: u64, volume: &'a Volume) -> Room<'a> {

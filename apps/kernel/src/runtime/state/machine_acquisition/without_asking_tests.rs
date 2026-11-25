@@ -1049,6 +1049,7 @@ async fn a_retry_that_fails_reauthorization_keeps_a_lost_answer_counted() {
         request_id: ledger_key(&state, &agent, "r1"),
         class_id: Some("small".into()),
         region: Some("north".into()),
+        timeout_s: None,
     };
     let without_asking::Admission::Within(hold) = state
         .admit_without_asking(&room, &agent, &retry, None)

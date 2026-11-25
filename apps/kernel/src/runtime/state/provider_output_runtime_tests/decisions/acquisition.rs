@@ -8,7 +8,9 @@ use crate::local::{
 use crate::runtime::command::KernelCommand;
 use std::time::Duration;
 
-type Gate = tokio::task::JoinHandle<Result<(), DaemonError>>;
+type Gate = tokio::task::JoinHandle<
+    Result<crate::runtime::state::machine_acquisition::Approval, DaemonError>,
+>;
 
 /// `requester` asks for a job machine; returns the waiting call and the decision's id.
 async fn acquire(t: &Tree, requester: &str) -> (Gate, String) {
@@ -209,6 +211,7 @@ async fn many_pending_decisions_do_not_block_an_acquisition() {
         pending.push(
             t.runtime
                 .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::OwnerControl,
                     &t.room,
                     &owner,
                     RuntimeInteraction::for_kernel_operation(

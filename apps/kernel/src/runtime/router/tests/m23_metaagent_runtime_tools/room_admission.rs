@@ -414,10 +414,7 @@ async fn room_boundaries() {
     // needs a direct child: the grandparent may not rename d, its parent may.
     // (Deleting the peer is the owner's delete, open to every agent of the Room: see
     // subtree/owner_delete.rs.)
-    for command in [
-        "agent focus peer",
-        "agent alias d by-grandparent",
-    ] {
+    for command in ["agent focus peer", "agent alias d by-grandparent"] {
         assert!(
             !room_command(&router, &auth_a, command).await.ok,
             "{command}"

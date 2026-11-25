@@ -548,7 +548,10 @@ impl CommandResultCache {
     /// same id dispatches afresh; one that waited on this reservation is told the result is unavailable and retries.
     pub(crate) async fn release_unstarted(&self, command_id: &str) {
         let mut results = self.results.lock().await;
-        if matches!(results.get(command_id), Some(CommandResultEntry::Pending { .. })) {
+        if matches!(
+            results.get(command_id),
+            Some(CommandResultEntry::Pending { .. })
+        ) {
             results.remove(command_id);
         }
     }

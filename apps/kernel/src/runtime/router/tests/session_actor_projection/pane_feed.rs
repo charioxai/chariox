@@ -104,7 +104,11 @@ async fn the_pane_feed_lists_a_card_a_text_terminal_can_answer_and_drops_it_once
     let _pending = pane
         .router
         .runtime_state
-        .create_runtime_interaction(&pane.session_id, question("ask", &pane.agent_id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &pane.session_id,
+            question("ask", &pane.agent_id),
+        )
         .await
         .expect("the card is raised");
 
@@ -199,7 +203,11 @@ async fn a_watched_pane_feed_shows_a_card_answered_elsewhere_within_two_seconds(
     let _pending = pane
         .router
         .runtime_state
-        .create_runtime_interaction(&pane.session_id, question("ask", &pane.agent_id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &pane.session_id,
+            question("ask", &pane.agent_id),
+        )
         .await
         .unwrap();
     assert_eq!(next_cards(&mut events).await, ["ask"]);

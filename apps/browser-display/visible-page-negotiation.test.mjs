@@ -39,3 +39,14 @@ for(const [capabilities,dpr,expected] of [[undefined,2,undefined],[[],2,undefine
   assert.equal(stream.binding.viewer_scale,expected?2:undefined);
  }finally{await stream.close();}
 });
+// Row 487: a default page crop asks to follow a resize in the same subscription only of a kernel that advertises it; a frame
+// that names a later window epoch rebinds it (same binding, new size), and input names that epoch.
+for(const [capabilities,expected] of [[undefined,undefined],[[],undefined],[['viewer_density_stills_v1'],undefined],[['display_resize_rebind_v1'],true]])test(`Row 487 resize_rebind is asked only of a kernel that advertises it (${JSON.stringify(capabilities)})`,async()=>{
+ const commands=[],document=Object.assign(new EventTarget(),{hidden:false});
+ const canvas={ownerDocument:document,width:1,height:1,getContext:()=>({})};
+ const transport={kernelProtocolVersion:1015,...(capabilities?{kernelCapabilities:capabilities}:{}),displayEventEncoding:'CXD1',onEvent:()=>()=>{},
+  request:async({KernelBrowser:{command}})=>{commands.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{...result,...(command.resize_rebind?{resize_rebind:true}:{})}:{}}}}};
+ const stream=await attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:2},{codec:'avc1.420033'});
+ try{assert.equal(commands.find(c=>c.op==='display_subscribe').resize_rebind,expected);assert.equal(stream.binding.resize_rebind,expected);}
+ finally{await stream.close();}
+});

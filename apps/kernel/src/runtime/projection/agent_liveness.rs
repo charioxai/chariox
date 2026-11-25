@@ -833,11 +833,17 @@ mod tests {
         annotate_waits(&mut activity, &[], &sources, &SourceLabels::default());
         let liveness = &activity["a"].liveness;
         let on = liveness.waiting_on.as_ref().unwrap();
-        assert_eq!((on.kind, on.since_ms), (AgentWaitKind::BackgroundCommand, 4_000));
+        assert_eq!(
+            (on.kind, on.since_ms),
+            (AgentWaitKind::BackgroundCommand, 4_000)
+        );
         assert_eq!(on.detail, "cargo build");
         assert_eq!(liveness.waiting_events.len(), 1);
         assert_eq!(liveness.waiting_events[0].label, "command build");
-        assert_eq!(liveness.waiting_events[0].cancel_wake_id.as_deref(), Some("wake-4000"));
+        assert_eq!(
+            liveness.waiting_events[0].cancel_wake_id.as_deref(),
+            Some("wake-4000")
+        );
         // not a wait of an agent with no live wake
         let mut other = BTreeMap::from([("c".to_string(), idle_activity())]);
         annotate_waits(&mut other, &[], &sources, &SourceLabels::default());

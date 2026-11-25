@@ -78,21 +78,6 @@ impl WakeDriver for JobDriver {
         });
         let live = self.live.clone();
         tokio::spawn(async move {
-            // Left by an earlier run with remote jobs on: end the job with its reason and leave
-            // its worker, files and allocation exactly as saved.
-            // A job on a held machine never depended on the switch: the agent named a machine it holds.
-            if !state.remote_jobs_enabled()
-                && record.has_remote_trace()
-                && record.request.machine.is_none()
-            {
-                if let Some((handover, _active)) = inherited {
-                    handover.discard();
-                }
-                let result = remote_jobs_off_result(&record);
-                state.finish_job(&wake, &mut record, result).await;
-                live.lock().expect("job live").remove(&wake.id);
-                return;
-            }
             if let Some((handover, active)) = inherited {
                 match handover.restore(&state, &record) {
                     Ok((output, progress)) => {

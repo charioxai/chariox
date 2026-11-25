@@ -123,7 +123,11 @@ fn deliver_reply(receiver: &RelaySender, reply: &RoutedPeerReply<'_>) -> Deliver
         }
         if receiver.binary_peer() {
             if let Some(reply) = binary_reply(reply, payload) {
-                return finish_delivery(receiver, receiver.try_send_binary_peer_reply(reply), retry);
+                return finish_delivery(
+                    receiver,
+                    receiver.try_send_binary_peer_reply(reply),
+                    retry,
+                );
             }
         }
         let mut scratch = [0; CHUNK_BYTES];
@@ -230,7 +234,11 @@ mod tests {
                 crate::binary_response::ResponseHeader::DaemonPeerResponse { .. }
             ));
             assert_eq!(ciphertext, bytes.as_slice(), "{size} bytes");
-            assert!(wire.len() < size + 4096, "{size}: {} on the wire", wire.len());
+            assert!(
+                wire.len() < size + 4096,
+                "{size}: {} on the wire",
+                wire.len()
+            );
             assert_eq!(
                 crate::binary_response::into_envelope(&wire).unwrap(),
                 RelayEnvelope::DaemonPeerResponse {

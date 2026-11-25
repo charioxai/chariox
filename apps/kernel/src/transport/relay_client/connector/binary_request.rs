@@ -77,7 +77,12 @@ mod tests {
     fn a_peer_reply_frame_is_read_only_when_binary_peer_messages_were_negotiated() {
         let (chunk, envelope) = peer_reply_frame();
         let mut frames = FrameReceiver::default();
-        let (text, receipt) = payload(&mut frames, Message::Binary(chunk.clone().into()), true, true);
+        let (text, receipt) = payload(
+            &mut frames,
+            Message::Binary(chunk.clone().into()),
+            true,
+            true,
+        );
         assert!(receipt.is_some());
         assert_eq!(
             serde_json::from_str::<RelayEnvelope>(&text.unwrap()).unwrap(),

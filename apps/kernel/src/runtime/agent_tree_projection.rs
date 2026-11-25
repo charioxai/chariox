@@ -137,7 +137,9 @@ pub(crate) fn tree_for_viewer(
 /// What a node says of its wait: the reasons, and the last provider output only when the turn is
 /// stalled. A plain provider wait is "running" and carries nothing, so a streaming node does not
 /// change its tree every few seconds.
-fn node_liveness(mut liveness: crate::runtime::projection::AgentLiveness) -> Option<crate::runtime::projection::AgentLiveness> {
+fn node_liveness(
+    mut liveness: crate::runtime::projection::AgentLiveness,
+) -> Option<crate::runtime::projection::AgentLiveness> {
     use crate::runtime::projection::AgentWaitKind;
     if liveness
         .waiting_on
@@ -588,8 +590,8 @@ mod tests {
             )
             .with_agent_id(agent_id)
         };
-        session.add_active_interaction(card("i-user", "c1", "Value for the Vault"));
-        session.add_active_interaction(card("i-agent", "root", "Run the build?"));
+        session.add_interaction_fixture(card("i-user", "c1", "Value for the Vault"));
+        session.add_interaction_fixture(card("i-agent", "root", "Run the build?"));
         let quiet: crate::runtime::projection::AgentRuntimeActivity = serde_json::from_value(
             serde_json::json!({"status":"idle","prompt_status":"none","busy":false,
                 "active_prompt_count":0,"queued_prompt_count":0}),
@@ -606,7 +608,10 @@ mod tests {
         );
         let c1 = &activity["c1"].liveness;
         assert_eq!(c1.waiting_on.as_ref().unwrap().kind, AgentWaitKind::Card);
-        assert_eq!(c1.waiting_events[0].label, "your answer on 'Value for the Vault'");
+        assert_eq!(
+            c1.waiting_events[0].label,
+            "your answer on 'Value for the Vault'"
+        );
         assert!(!format!("{c1:?}").contains("secret field content"));
         let root = &activity["root"].liveness;
         assert_eq!(

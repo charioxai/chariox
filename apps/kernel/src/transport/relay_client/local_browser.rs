@@ -86,7 +86,12 @@ pub(crate) struct LocalBrowserDirect {
     start_gates: std::sync::Mutex<StartGateRegistry>,
     next_gate_session: std::sync::atomic::AtomicU64,
     #[cfg(test)]
-    frame_pause: tokio::sync::Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>>,
+    frame_pause: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     rtc: rtc::RtcEndpoint,
 }
 
@@ -388,11 +393,17 @@ impl LocalBrowserDirect {
 
     /// A session's request is waiting for its command lane; revocation can cancel it until the lane takes it.
     fn next_gate_session(&self) -> u64 {
-        self.next_gate_session.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        self.next_gate_session
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]
-    async fn pause_next_frame_for_test(&self) -> (tokio::sync::oneshot::Receiver<()>, tokio::sync::oneshot::Sender<()>) {
+    async fn pause_next_frame_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
         let (entered, reached) = tokio::sync::oneshot::channel();
         let (release, resume) = tokio::sync::oneshot::channel();
         *self.frame_pause.lock().await = Some((entered, resume));

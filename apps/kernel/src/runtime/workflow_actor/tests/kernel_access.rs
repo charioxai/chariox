@@ -170,11 +170,18 @@ async fn a_remote_client_workflow_mutation_cancelled_while_queued_does_not_run()
         crate::runtime::start_gate::is_cancelled_error(&error),
         "the queued workflow mutation ran after its client lost authority: {error}"
     );
-    assert_eq!(workflows(&state).await, before, "a cancelled workflow mutation ran");
+    assert_eq!(
+        workflows(&state).await,
+        before,
+        "a cancelled workflow mutation ran"
+    );
 
     // A later request (a retry) is not held back by the cancelled one.
     let retry = KernelCommand::from_local_request("remote-retry-workflow", None, None, &request);
-    runtime.dispatch_workflow_command(retry, request).await.unwrap();
+    runtime
+        .dispatch_workflow_command(retry, request)
+        .await
+        .unwrap();
     assert_eq!(workflows(&state).await, before + 1);
     consumer.abort();
     let _ = consumer.await;

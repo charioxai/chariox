@@ -159,6 +159,11 @@ pub enum KernelBrowserCommand {
         /// `device_scale_factor` when that is above the page's; the whole-page video at rest is then sharp at DPR2.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         viewer_density_stills: bool,
+        /// Row 487 (local 1015): a default visible-page crop keeps this subscription across a resize of the
+        /// Browser window; the kernel re-admits the same Tab on the new window and its frames name the new window epoch
+        /// (`binding_sequence`) that input must use. The reply echoes it when accepted.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resize_rebind: bool,
     },
     DisplayNext {
         subscription_id: String,

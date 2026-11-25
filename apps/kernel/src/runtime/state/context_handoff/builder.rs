@@ -511,9 +511,7 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize, include_details: boo
     };
     let users = turns
         .iter()
-        .map(|turn| {
-            format!("- User: {}", prompt_text(turn, MAX_PRIOR_USER_BYTES))
-        })
+        .map(|turn| format!("- User: {}", prompt_text(turn, MAX_PRIOR_USER_BYTES)))
         .collect::<Vec<_>>();
     let recent_from = turns.len().saturating_sub(RECENT_TAIL_TURNS);
     let answers = turns

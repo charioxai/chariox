@@ -56,6 +56,8 @@ export class DisplaySessions {
       device_scale_factor:stream.device_scale_factor,resumed:true,
       // P1 (protocol 720): the resumed producer is still the Tab display; the viewer's new binding must say so.
       ...(stream.tabDisplay?{tab_display:true}:{}),
+      // Row 487 (#1723 review): the resumed viewer's binding keeps following the kernel's resize rebinds.
+      ...(stream.resizeRebind===true?{resize_rebind:true}:{}),
       ...(stream.source_kind==='desktop'?{source:{kind:'desktop',surface_id:source.surface_id,
         generation:source.generation,width:source.width,height:source.height}}:{}),
       ...(stream.source_kind==='region'?{source_kind:'region',binding_id:stream.binding_id,

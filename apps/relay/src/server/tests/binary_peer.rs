@@ -53,7 +53,9 @@ async fn kernel(url: &str, id: &str, offers_peer: bool) -> Socket {
     }
     let (mut socket, handshake) = connect_async(request).await.unwrap();
     assert_eq!(
-        handshake.headers().contains_key(binary_request::PEER_HEADER),
+        handshake
+            .headers()
+            .contains_key(binary_request::PEER_HEADER),
         offers_peer,
         "the relay answers the peer offer it was given"
     );
@@ -63,7 +65,9 @@ async fn kernel(url: &str, id: &str, offers_peer: bool) -> Socket {
         test_registration(id, &format!("machine-{id}"), "Linux", 10),
     );
     socket
-        .send(Message::Text(serde_json::to_string(&register).unwrap().into()))
+        .send(Message::Text(
+            serde_json::to_string(&register).unwrap().into(),
+        ))
         .await
         .unwrap();
     socket
@@ -113,17 +117,26 @@ async fn peer_messages_are_binary_exactly_between_kernels_that_offered_them() {
             encrypted_request: payload(&request_bytes),
         };
         let frame = if home_offers {
-            Message::Binary(binary_request::from_envelope(&request).unwrap().unwrap().into())
+            Message::Binary(
+                binary_request::from_envelope(&request)
+                    .unwrap()
+                    .unwrap()
+                    .into(),
+            )
         } else {
             Message::Text(serde_json::to_string(&request).unwrap().into())
         };
         home.send(frame).await.unwrap();
 
-        let (mut target_frames, mut home_frames) = (FrameReceiver::default(), FrameReceiver::default());
+        let (mut target_frames, mut home_frames) =
+            (FrameReceiver::default(), FrameReceiver::default());
         let mut wire = 0;
         let incoming = match next_message(&mut target, &mut target_frames, &mut wire).await {
             Got::Binary(bytes) => {
-                assert!(target_offers, "binary toward a kernel that did not offer it");
+                assert!(
+                    target_offers,
+                    "binary toward a kernel that did not offer it"
+                );
                 binary_request::into_envelope(&bytes).unwrap()
             }
             Got::Text(text) => {
@@ -153,7 +166,12 @@ async fn peer_messages_are_binary_exactly_between_kernels_that_offered_them() {
             error: None,
         };
         let frame = if target_offers {
-            Message::Binary(binary_response::from_envelope(&reply).unwrap().unwrap().into())
+            Message::Binary(
+                binary_response::from_envelope(&reply)
+                    .unwrap()
+                    .unwrap()
+                    .into(),
+            )
         } else {
             Message::Text(serde_json::to_string(&reply).unwrap().into())
         };

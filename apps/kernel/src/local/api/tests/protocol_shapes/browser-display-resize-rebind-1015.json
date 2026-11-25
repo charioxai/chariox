@@ -1,0 +1,55 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10",
+    "MP-11"
+  ],
+  "local_protocol": 1015,
+  "peer_protocol": 452,
+  "allocation": "Local 1015 (relay peer unchanged; the Landing 14 union bumps once): a default visible-page display_subscribe may ask resize_rebind of a kernel that advertises display_resize_rebind_v1; the kernel keeps that subscription across a Browser window resize and its frames carry binding_sequence (the new window epoch input must name)",
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "display_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "codecs": [
+          "png",
+          "avc1.420033"
+        ],
+        "bitrate": 8000000,
+        "device_scale_factor": 1,
+        "resize_rebind": true
+      }
+    }
+  },
+  "subscribed": {
+    "source_kind": "region",
+    "binding_id": "host-page-region-1",
+    "document_id": "d",
+    "sequence": 2,
+    "generation": 1,
+    "subscription_id": "host-display-1",
+    "codec": "avc1.420033",
+    "bitrate": 8000000,
+    "device_scale_factor": 1,
+    "css_width": 1032,
+    "css_height": 526,
+    "resize_rebind": true
+  },
+  "rebound_frame": {
+    "subscription_id": "host-display-1",
+    "tab_id": "t",
+    "generation": 1,
+    "document_id": "d",
+    "sequence": 41,
+    "kind": "video",
+    "width": 1672,
+    "height": 846,
+    "css_width": 1672,
+    "css_height": 846,
+    "device_scale_factor": 1,
+    "colour": "srgb",
+    "binding_sequence": 3
+  }
+}

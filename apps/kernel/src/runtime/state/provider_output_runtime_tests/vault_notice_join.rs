@@ -42,7 +42,11 @@ async fn an_agent_joining_another_agents_open_vault_card_adds_no_notice() {
     );
     let _pending = team
         .runtime
-        .create_runtime_interaction(&team.room, card)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::VaultCredentialPayment,
+            &team.room,
+            card,
+        )
         .await
         .expect("the card opens");
 

@@ -47,6 +47,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
         initial_push: bool,
         tab_display: bool,
         viewer_density_stills: bool,
+        resize_rebind: bool,
     },
     EncodedCapture {
         subscription_id: String,
@@ -305,6 +306,7 @@ impl KernelRuntimeState {
                 initial_push,
                 tab_display,
                 viewer_density_stills,
+                resize_rebind,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
@@ -315,6 +317,7 @@ impl KernelRuntimeState {
                 initial_push,
                 tab_display,
                 viewer_density_stills,
+                resize_rebind,
             },
             KernelBrowserCommand::DisplayNext {
                 subscription_id,
@@ -406,7 +409,9 @@ impl KernelRuntimeState {
                     }
                     KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
                         self.revoke_leased_computer(&user, agent_id).await?;
-                        return Ok(serde_json::json!({"agent_id": agent_id, "leased_computer": false}));
+                        return Ok(
+                            serde_json::json!({"agent_id": agent_id, "leased_computer": false}),
+                        );
                     }
                     _ => {}
                 }
@@ -643,6 +648,7 @@ impl KernelRuntimeState {
                 initial_push,
                 tab_display,
                 viewer_density_stills,
+                resize_rebind,
             } => {
                 let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
                 if tab_display {
@@ -650,6 +656,9 @@ impl KernelRuntimeState {
                 }
                 if viewer_density_stills {
                     params["viewer_density_stills"] = true.into();
+                }
+                if resize_rebind {
+                    params["resize_rebind"] = true.into();
                 }
                 if let Some(target) = target {
                     params["target"] = serde_json::to_value(target)

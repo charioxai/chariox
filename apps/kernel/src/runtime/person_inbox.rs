@@ -9,18 +9,8 @@ use crate::durable_state::workflow_notifications::naming::workflow_name;
 use crate::durable_state::{PersonInboxState, StoredNotice, WORKFLOW_RELINK_ORIGIN};
 use crate::error::DaemonError;
 use crate::local::{
-    InboxCardChange,
-    LocalDaemonResponse,
-    NotificationSubscriptionHealth,
-    NotificationSubscriptionRow,
-    PersonInboxCard,
-    PersonInboxCardBody,
-    PersonInboxFlag,
-    PersonInboxNotice,
-    PersonInboxNoticeOrigin,
-    PersonInboxPriority,
-    PersonInboxWorkflowRun,
-    SetInboxCardStateRequest,
+    InboxCardChange, LocalDaemonResponse, PersonInboxCard, PersonInboxCardBody, PersonInboxNotice,
+    PersonInboxNoticeOrigin, PersonInboxPriority, PersonInboxWorkflowRun, SetInboxCardStateRequest,
     SetInboxMuteRequest,
 };
 use crate::runtime::command::{caller_user_id, KernelCaller};

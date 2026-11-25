@@ -157,7 +157,6 @@ mod background_hold;
 mod background_tool_settlement;
 mod browser_import_execution_gate;
 mod child_finished;
-mod vault_notice_join;
 mod child_receipts;
 mod claude_plan;
 mod cleanup_liveness;
@@ -198,6 +197,7 @@ mod steered_prompt;
 mod structured_exit_diagnostic;
 mod structured_output;
 mod subtree_cascade;
+mod vault_notice_join;
 #[cfg(unix)]
 mod visual_tools;
 
