@@ -332,6 +332,7 @@ impl KernelRuntimeState {
             });
         }
         let (tx, rx) = oneshot::channel();
+        let id = interaction.id().to_owned();
         self.owned.register_runtime_interaction(
             session_id,
             interaction,
@@ -340,8 +341,9 @@ impl KernelRuntimeState {
             None,
             None,
         )?;
-        // Human-only decisions are projected to terminals, never dispatched to
-        // an agent's prompt or Meta delegation tools.
+        // A person-only decision is projected to terminals, never dispatched to an agent's prompt
+        // or Meta delegation tools. One an agent may hold, such as a machine acquisition, tells its holder.
+        self.announce_child_decision(session_id, &id).await?;
         Ok(rx)
     }
 
