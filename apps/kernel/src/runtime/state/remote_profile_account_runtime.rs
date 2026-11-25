@@ -123,20 +123,24 @@ impl KernelRuntimeState {
             // Row 577: the worker lost its copy. Forget the tracked copy and make it again.
             let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
             if let Some(binding) = agent.remote_execution() {
-                self.owned.provider_account_profiles.update_materialization_status(
-                    &owner,
-                    "claude",
-                    agent.provider_account_profile(),
-                    ProviderAccountMaterializationStatus {
-                        target_kind: ProviderAccountMaterializationTargetKind::Copy,
-                        target_ref: binding.worker_kernel_id.clone(),
-                        state: ProviderAccountMaterializationState::Error,
-                        observed_at_ms: crate::session::unix_epoch_ms(),
-                        last_error: Some("the worker no longer holds the account copy".into()),
-                    },
-                )?;
+                self.owned
+                    .provider_account_profiles
+                    .update_materialization_status(
+                        &owner,
+                        "claude",
+                        agent.provider_account_profile(),
+                        ProviderAccountMaterializationStatus {
+                            target_kind: ProviderAccountMaterializationTargetKind::Copy,
+                            target_ref: binding.worker_kernel_id.clone(),
+                            state: ProviderAccountMaterializationState::Error,
+                            observed_at_ms: crate::session::unix_epoch_ms(),
+                            last_error: Some("the worker no longer holds the account copy".into()),
+                        },
+                    )?;
             }
-            return self.ensure_agent_account_on_worker(&dispatch.agent_id).await;
+            return self
+                .ensure_agent_account_on_worker(&dispatch.agent_id)
+                .await;
         }
         let binding =
             agent
