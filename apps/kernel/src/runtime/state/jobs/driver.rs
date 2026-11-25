@@ -49,20 +49,26 @@ impl WakeDriver for JobDriver {
             return Recovery::Lost("job service unavailable".into());
         };
         let wake = wake.clone();
+        // A command already running on its worker, or handed over with its reader, is stopped at
+        // once when its wake was cancelling; a job still uploading is not (recovery replaces the
+        // old supervisor's channel without requesting cancellation).
         let (cancel, cancelled) = watch::channel(
-            (record.placement == JobPlacement::Local || record.request.machine.is_some())
+            (record.placement == JobPlacement::Local
+                || record.request.machine.is_some()
+                || matches!(record.remote, RemoteStage::Running { .. }))
                 && wake.state == "cancelling",
         );
         {
             let mut live = self.live.lock().expect("job live");
-            if record.placement == JobPlacement::Local && live.contains_key(&wake.id) {
+            if live.contains_key(&wake.id) {
                 return Recovery::Reattached;
             }
             live.insert(wake.id.clone(), cancel);
         }
-        let local = crate::hot_reload::take_local_job(&record.job_id).and_then(|handover| {
-            let active = (record.placement == JobPlacement::Local && record.result.is_none())
-                .then(|| self.local.enter())
+        let inherited = crate::hot_reload::take_job(&record.job_id).and_then(|handover| {
+            let active = handover
+                .matches(&record)
+                .then(|| self.supervisors.enter())
                 .flatten();
             if let Some(active) = active {
                 return Some((handover, active));
@@ -72,8 +78,23 @@ impl WakeDriver for JobDriver {
         });
         let live = self.live.clone();
         tokio::spawn(async move {
-            if let Some((local, active)) = local {
-                match local.restore(&state, &record) {
+            // Left by an earlier run with remote jobs on: end the job with its reason and leave
+            // its worker, files and allocation exactly as saved.
+            // A job on a held machine never depended on the switch: the agent named a machine it holds.
+            if !state.remote_jobs_enabled()
+                && record.has_remote_trace()
+                && record.request.machine.is_none()
+            {
+                if let Some((handover, _active)) = inherited {
+                    handover.discard();
+                }
+                let result = remote_jobs_off_result(&record);
+                state.finish_job(&wake, &mut record, result).await;
+                live.lock().expect("job live").remove(&wake.id);
+                return;
+            }
+            if let Some((handover, active)) = inherited {
+                match handover.restore(&state, &record) {
                     Ok((output, progress)) => {
                         state
                             .execute_job(
@@ -87,7 +108,7 @@ impl WakeDriver for JobDriver {
                         return;
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "local job could not resume across the kernel reload")
+                        tracing::warn!(%error, "job could not resume across the kernel reload");
                     }
                 }
             }
@@ -275,7 +296,7 @@ impl KernelRuntimeState {
             router: Default::default(),
             pending: Default::default(),
             live: Default::default(),
-            local: Default::default(),
+            supervisors: Default::default(),
             remote_moves: Default::default(),
             owner_stops: Default::default(),
             remote_samples: Default::default(),
@@ -291,9 +312,9 @@ impl KernelRuntimeState {
     pub(crate) fn bind_job_recovery(&self, router: &Arc<crate::runtime::router::CommandRouter>) {
         if let Some(driver) = &self.job_wake_driver {
             let _ = driver.router.set(Arc::downgrade(router));
-            // Claim the inherited children before the transport can start a new reload.
+            // Claim the inherited jobs before the transport can start a new reload.
             // The wake scheduler may still be starting when the kernel accepts that reload.
-            for id in crate::hot_reload::local_job_wakes() {
+            for id in crate::hot_reload::job_wakes() {
                 match self.job_wake_for_recovery(&id) {
                     Ok(Some(wake))
                         if wake.kind == KIND
@@ -303,14 +324,14 @@ impl KernelRuntimeState {
                             ) =>
                     {
                         if let Recovery::Lost(reason) = driver.recover(&wake) {
-                            tracing::warn!(%reason, "could not recover the inherited local job");
+                            tracing::warn!(%reason, "could not recover the inherited job");
                         }
                     }
-                    Ok(_) => tracing::warn!("the inherited local job has no active wake"),
+                    Ok(_) => tracing::warn!("the inherited job has no active wake"),
                     Err(error) => tracing::warn!(%error, "could not load the inherited job's wake"),
                 }
             }
-            crate::hot_reload::discard_unclaimed_local_jobs();
+            crate::hot_reload::discard_unclaimed_jobs();
             self.recover_placed_jobs(driver);
         }
     }
