@@ -90,3 +90,39 @@ fn per_prompt_inbox_lookups_do_not_walk_the_closed_history() {
         "the lookups took {few} steps with 10 closed rows and {many} with 2000"
     );
 }
+
+#[test]
+fn inbox_arrival_survives_idempotent_admission_and_reopen() {
+    let root = crate::test_temp_dir::TestTempDir::new("inbox-arrival");
+    let path = root.path().join("state.sqlite");
+    let accepted = {
+        let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
+        let occurrence = occurrence(
+            "room",
+            "agent",
+            "peer",
+            "one",
+            "peer_event",
+            serde_json::json!({}),
+        );
+        let Outcome::Event(first) = store
+            .agent_lifecycle(Operation::Occur(occurrence.clone()))
+            .unwrap()
+        else {
+            panic!("first occurrence must have an inbox row");
+        };
+        let Outcome::Event(replay) = store.agent_lifecycle(Operation::Occur(occurrence)).unwrap()
+        else {
+            panic!("retried occurrence must return its inbox row");
+        };
+        assert!(first.arrived_at_ms.is_some());
+        assert_eq!(replay.sequence, first.sequence);
+        assert_eq!(replay.arrived_at_ms, first.arrived_at_ms);
+        replay
+    };
+    let reopened = DurableKernelStateStore::open(path).unwrap();
+    assert_eq!(
+        reopened.agent_inbox("room", "agent", 0).unwrap(),
+        vec![accepted]
+    );
+}

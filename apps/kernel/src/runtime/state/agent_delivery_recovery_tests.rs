@@ -733,13 +733,10 @@ async fn a_steer_skipped_at_the_native_write_is_delivered_again() {
         let (room, child) = (f.room.clone(), f.child.clone());
         async move { runtime.deliver_agent_inbox(&room, &child).await }
     });
-    for _ in 0..50 {
-        if f.state_of(steer.sequence) == "submitting" {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(f.state_of(steer.sequence), "submitting");
+    // The delivery takes the provider lane before it claims the row: the steer is not taken until
+    // the input boundary, so it stays pending while the running turn holds the lane.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(f.state_of(steer.sequence), "pending");
     // The running turn ends while the steer waits for the lane.
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
     f.runtime

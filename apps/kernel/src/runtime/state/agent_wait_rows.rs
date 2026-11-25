@@ -68,6 +68,42 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    /// The parked tasks a promotion that took pending wakes into `started`'s notification can
+    /// wake. Read before the durable prompt commit admits those wakes, which moves the tasks.
+    pub(super) fn waiting_before_batch_promotion(
+        &self,
+        room: &str,
+        agent: &str,
+        started: &crate::session::PromptQueueItem,
+    ) -> Vec<AgentTaskExecution> {
+        if started.inbox_wakes().is_empty() {
+            Vec::new()
+        } else {
+            self.waiting_tasks(room, agent)
+        }
+    }
+
+    /// After that commit, closes the wait rows of the tasks the promoted prompt woke. Every path
+    /// that promotes a queued prompt does this, so a client never shows a wait that already ended.
+    pub(super) fn record_batch_promotion_waits(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt_id: &str,
+        waiting: &[AgentTaskExecution],
+    ) -> Result<(), DaemonError> {
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        if let Some(lead) = self
+            .durable_state_store
+            .agent_event_for_prompt(room, agent, prompt_id)?
+        {
+            self.record_woken_waits(waiting, &lead);
+        }
+        Ok(())
+    }
+
     /// The delivery attempt of `event` (and the rows that share its prompt) ends the waits it ends:
     /// those whose task left Waiting, and those whose source reports its end through an event that
     /// names no task (a child finishing). A message, or an urgent event steering another turn,
@@ -182,6 +218,16 @@ impl KernelRuntimeOwnedState {
         row["finished_at_ms"] = serde_json::Value::Null;
         row.as_object_mut().map(|row| row.remove("woken_by"));
         self.write_wait_row(task, &run, &key, row);
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_row_status_for_test(
+        &self,
+        task: &AgentTaskExecution,
+        started_at_ms: u64,
+    ) -> Option<String> {
+        self.latest_wait_row(task, &wait_merge_key(&task.task_id, started_at_ms))
+            .map(|(_, _, row)| row["status"].as_str().unwrap_or_default().to_owned())
     }
 
     /// The newest row whose key starts with `prefix`: its key, run and content.
