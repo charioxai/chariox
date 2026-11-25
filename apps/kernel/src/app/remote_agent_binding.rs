@@ -252,6 +252,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 };
             account_materialization.profile.owner_user_id = plan.agent.owner_user_id().to_string();
             let expected_account = account_materialization.profile.clone();
+            let credentialless = account_materialization.is_credentialless_opencode();
             match send_remote_binding_request_off_lock(
                 &relay_config,
                 &plan.relay_state,
@@ -276,9 +277,10 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 {
                     let confirmed = remote_provider_account_confirmed(&response, &expected_account);
                     // The home's own record says "installed" only for the copy it made; a login the worker already held is asked about again.
-                    if confirmed
-                        .as_ref()
-                        .is_some_and(|account| account.profile_id == expected_account.profile_id)
+                    if !credentialless
+                        && confirmed.as_ref().is_some_and(|account| {
+                            account.profile_id == expected_account.profile_id
+                        })
                     {
                         if let Err(error) = update_remote_binding_materialization_status(
                         &plan.provider_account_profiles,
@@ -897,6 +899,7 @@ impl DaemonApp {
                 // stamp that identity on the encrypted replica envelope.
                 account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
                 let expected_account = account_materialization.profile.clone();
+                let credentialless = account_materialization.is_credentialless_opencode();
                 match self.send_remote_binding_request_authorized(
                     &relay_config,
                     target.clone(),
@@ -918,9 +921,11 @@ impl DaemonApp {
                     {
                         let confirmed =
                             remote_provider_account_confirmed(&response, &expected_account);
-                        if confirmed.as_ref().is_some_and(|account| {
-                            account.profile_id == expected_account.profile_id
-                        }) {
+                        if !credentialless
+                            && confirmed.as_ref().is_some_and(|account| {
+                                account.profile_id == expected_account.profile_id
+                            })
+                        {
                             if let Err(error) = self
                             .provider_account_profiles
                             .update_materialization_status(

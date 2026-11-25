@@ -102,14 +102,12 @@ impl CommandRouter {
         let owner = self
             .runtime_state
             .provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
-        let read = super::super::provider_catalog_control::read_catalog(
+        let read = super::super::provider_catalog_control::warm_catalog(
             &self.provider_catalog_projection,
             &self.config_projection,
             self.runtime_state.provider_account_profile_registry(),
             &owner,
             crate::local::GetProviderCatalogRequest::default(),
-            true,
-            false,
         )
         .await;
         if let Err(error) = read {
