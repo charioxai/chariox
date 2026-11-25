@@ -7698,8 +7698,9 @@ only passes them on and never adds, ranks or rates an option. `Acquire` takes an
 exactly that option is acquired, or the call fails with a plain reason (not offered, region needed,
 not available right now) and nothing is acquired in its place. The capability revision covers the
 list, so a change of stock or rate needs a fresh decision. Agents use the same list through
-`chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
-card names the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
+`chariox.machines.options` and `chariox.machines.acquire {class_id, region, purpose}`; the owner's approval
+card names the chosen option, and its title names the requesting agent and the one-line purpose it gave
+(a kernel-local tool argument: no wire shape changes). The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
 ### Machines without asking — local 1015 (relay peer 452)
 

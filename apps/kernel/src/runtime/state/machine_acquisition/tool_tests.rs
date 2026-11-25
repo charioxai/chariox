@@ -1350,3 +1350,50 @@ async fn a_success_whose_row_is_swept_while_the_try_waits_is_still_recorded() {
         );
     }
 }
+
+/// Row 257: in a Room of many agents, the owner's card (in the Room and in `chariox interaction list`) names the agent
+/// that asks for a machine and the purpose it gave.
+async fn owner_card_title(args: serde_json::Value) -> (String, String, String) {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let mut config = state.owned.config_projection.snapshot();
+    config.user_config.agents.offload_without_asking = None;
+    state.owned.config_projection.update(config);
+    let session = state.owned.session_store.list_sessions().into_iter().next().unwrap();
+    let owner = session.owner_user_id().to_owned();
+    let agent = state.owned.agent_store.list_agents().into_iter().find(|agent| agent.session_id() == session.id()).unwrap();
+    let name = agent.alias().unwrap_or(agent.agent_ref()).to_owned();
+    let asking = {
+        let state = state.clone();
+        tokio::spawn(async move { state.machine_tool(&token, "chariox.machines.acquire", args).await })
+    };
+    let mut card = None;
+    for _ in 0..500 {
+        card = state.list_owner_interactions(&owner).into_iter().find(|card| card.interaction_id.starts_with("machine-acquisition-"));
+        if card.is_some() || asking.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let Some(card) = card else {
+        let answer = if asking.is_finished() { format!("{:?}", asking.await.unwrap().map(|result| result.payload)) } else { "still waiting".into() };
+        panic!("no owner card; the acquire answered {answer}");
+    };
+    asking.abort();
+    assert!(service.acquires.lock().unwrap().is_empty(), "nothing is sent before the owner answers");
+    (name, card.title.unwrap_or_default(), card.message)
+}
+
+#[tokio::test]
+async fn the_owner_card_for_an_agents_machine_request_names_the_agent_and_its_purpose() {
+    let (name, title, message) =
+        owner_card_title(serde_json::json!({"request_id":"r1","purpose":"Build the kernel\nfor the drill"})).await;
+    assert_eq!(title, format!("{name} asks for a machine. Purpose: Build the kernel for the drill."));
+    assert!(message.starts_with("Acquire small in north"), "{message}");
+}
+
+#[tokio::test]
+async fn the_owner_card_names_the_agent_that_gave_no_purpose() {
+    let (name, title, _) = owner_card_title(serde_json::json!({"request_id":"r1"})).await;
+    assert_eq!(title, format!("{name} asks for a machine and gave no purpose."));
+}

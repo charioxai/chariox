@@ -352,6 +352,8 @@ struct KernelRuntimeOwnedState {
     agent_auth_registrations: agent_auth::RegistrationClaims,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
+    /// The purpose an agent gave with its machine request, by the service request id, while the owner's card is open.
+    acquire_purposes: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
     sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
     /// What agents are told in their inbox about their commands that wait for room.
@@ -1312,6 +1314,7 @@ impl KernelRuntimeState {
                 sudo_turns: sudo_windows.store(),
                 agent_auth_registrations: Default::default(),
                 sudo_timers: Default::default(),
+                acquire_purposes: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
                 sudo_end_wakes: Default::default(),
