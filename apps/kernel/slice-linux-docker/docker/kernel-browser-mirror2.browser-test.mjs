@@ -232,6 +232,21 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
   }));
 
+// Row 486 review P1 (#1717): a cross-origin child frame's drains carry media_playing too. They must keep the child attached:
+// its changes arrive as ordinary ops on the same ids, never as a re-mounted document on every credit.
+test("Row 486: a cross-origin child frame stays attached across drains (no re-mount per credit)", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/ticker" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const first = await next();
+    assert.equal(first.reset, true);
+    let texts = 0, remounts = 0;
+    for (let i = 0; i < 6; i++) { const p = await next(400); for (const op of p.ops) { if (op.op === "text") texts++; if (op.op === "children") remounts++; } }
+    assert(texts >= 3, `the child's text changes arrive as text ops (${texts})`);
+    assert.equal(remounts, 0, "no child document is re-mounted");
+  }, {
+    "/ticker": { type: "text/html", body: '<!doctype html><p id="t">0</p><script>let i=0;setInterval(()=>{document.getElementById("t").textContent=String(++i)},200)</script>' },
+  }));
+
 // A cross-site navigation moves the page to a new renderer, where execution context ids start over: the new document's
 // mirror world can carry the old one's number. A call the old document's credit made late (its long poll, issued as the
 // page moved) must not reach the new document's observer, or it takes a change (here the main sheet loading) that no
@@ -2450,6 +2465,24 @@ test('Row 489: a PDF document shows Chromium\'s viewer as a region with pixels',
   assert(size?.[0]>=600&&size?.[1]>=400,`the viewer lays the tile out at what the viewer paints, not the body's 0-high box: ${JSON.stringify(size)}`);
   assert(typeof lease==='object'&&lease.width>=600&&lease.height>=400,`its region covers the viewer: ${JSON.stringify(lease)}`);
  },{'/':{type:'application/pdf',binary:minimalPdf()}}));
+
+// Row 486: the viewer never evicts a Tab that plays video or audio (muted too); the page's mirror header says so.
+test('Row 486: media_playing follows a muted video and an audio-only element as they play and pause',()=>mirrored(
+ '<canvas id=c width=64 height=36></canvas><video id=v muted playsinline style="width:64px;height:36px"></video><audio id=a muted></audio><script>const c=document.getElementById("c"),x=c.getContext("2d");let i=0;setInterval(()=>{x.fillStyle=`hsl(${(i+=7)%360} 80% 50%)`;x.fillRect(0,0,64,36)},30);window.stream=()=>c.captureStream(30)</script>',
+ async({next,evaluate,host,tab_id})=>{
+  // A person's click allows sound: play() runs as a user gesture.
+  const gesture=async expression=>{const {connection,sessionId}=await host.browser.resolvePageTarget(host.tabs.get(tab_id).target_id);const r=await connection.send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true,userGesture:true},sessionId);assert(!r.exceptionDetails,r.exceptionDetails?.exception?.description);return r.result.value};
+  const playing=async(want,label)=>{let last;for(let i=0;i<12;i++){const p=await next(400);if(p.media_playing!==undefined)last=p.media_playing;if(last===want)return;}assert.equal(last,want,label)};
+  await playing(false,'nothing plays at first');
+  await gesture('(async()=>{const v=document.getElementById("v");v.srcObject=stream();await v.play();return true})()');
+  await playing(true,'a muted video that plays');
+  await evaluate('document.getElementById("v").pause();true');
+  await playing(false,'paused');
+  await gesture('(async()=>{const a=document.getElementById("a");a.srcObject=stream();await a.play();return true})()');
+  await playing(true,'an audio-only element that plays');
+  await evaluate('document.getElementById("a").pause();true');
+  await playing(false,'paused again');
+ }));
 
 // MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
 for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(

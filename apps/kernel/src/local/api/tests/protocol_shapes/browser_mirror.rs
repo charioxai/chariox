@@ -541,3 +541,31 @@ fn browser_mirror2_page_wheel_1014_shape_is_pinned() {
         assert_eq!(serde_json::to_value(typed).unwrap(), wire);
     }
 }
+
+#[test]
+fn browser_mirror2_media_playing_1015_shape_is_pinned() {
+    // Row 486: provisional local 1015: the mirror v2 header says whether a mirrored video or audio element plays (muted or
+    // not), so the viewer never evicts that Tab; a delta carries it when it changes.
+    let bytes = include_bytes!("browser-mirror2-media-playing-1015.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "ee70cc0c9ab352f083e523c06d2634842865c993582df7bd97cf5cd3bddf5397"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["starts_playing", "stops_playing"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}

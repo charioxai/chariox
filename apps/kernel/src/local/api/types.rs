@@ -679,4 +679,6 @@ pub use workspace::*;
 /// `user_domain_grants_changed` snapshot; `grant_leased_computer` and `revoke_leased_computer` answer
 /// `{agent_id, leased_computer}`. A person-card restart recovery starts the browser with `card_recovery`, which an
 /// explicit stop refuses.
+/// Local 1015: the mirror v2 header carries `media_playing`, whether a mirrored video or audio element plays (muted or
+/// not), so the viewer never evicts that Tab (row 486); absent means nothing plays.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

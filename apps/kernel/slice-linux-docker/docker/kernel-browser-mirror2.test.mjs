@@ -521,7 +521,7 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
   const connection = { isOpen: () => true, send: async () => ({}) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false' };
+  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' };
   const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
   const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
@@ -532,6 +532,32 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 1000 }, 'scope', undefined, Date.now() + 1000);
   assert.deepEqual(packet.ops, [{ op: 'text', id: 'n5', text: 'menu' }]);
   assert.deepEqual(calls, ['m.drain', 'm.waitDrain'], 'MP-08: no loadedCount() between the drain and the long poll');
+});
+
+// Row 486: the viewer keeps a Tab that plays video or audio warm; the page says so in the header (playing, muted or not).
+// A change of it alone is a packet (no long poll on it); the same value again is an empty credit.
+test('Row 486: a page that starts or stops playing media sends media_playing at once', async () => {
+  const run = async (sent, playing) => {
+    const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+    const connection = { isOpen: () => true, send: async () => ({}) };
+    const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+    const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: JSON.stringify(sent) };
+    const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
+    const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+      browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
+    const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+    mirror.evaluate = async (_world, expression) => { calls.push(expression.replace(/\(.*$/, '')); return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, loaded: 4, media_playing: playing }; };
+    mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+    const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 50 }, 'scope', undefined, Date.now() + 50);
+    return { packet, calls };
+  };
+  const started = await run(false, true);
+  assert.equal(started.packet.media_playing, true, 'a page that starts playing says so');
+  assert.deepEqual(started.calls, ['m.drain'], 'at once, without a long poll');
+  assert.equal((await run(true, false)).packet.media_playing, false, 'and when it stops');
+  const same = await run(true, true);
+  assert.equal(same.packet.media_playing, undefined, 'an unchanged value is implied (compact delta)');
+  assert.ok(same.calls.includes('m.waitDrain'), 'nothing new: the credit long-polls');
 });
 
 // MP-08/MP-10 (owner A/B 2026-10-14, finding 4/6): a navigated document's first snapshot waits for its first
@@ -571,7 +597,7 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   const documents = new Map([['T', 'D1']]);
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: documents.get('T') } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false' } };
+  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
   const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
@@ -1500,6 +1526,31 @@ test('MP-10: a child frame whose delta keeps failing is re-mounted once per cred
   assert.deepEqual(out.ops.map(op => op.op), ['children']);
   await frames.drain(stream, null, null);
   assert.equal(mounts, 2, 'the next credit tries the re-mounted child again');
+});
+
+// Row 486 review P1 (#1717): every observer drain carries media_playing, a child frame's too. The strict child delta
+// schema must never see it (a refused delta re-mounts the frame with fresh ids on every credit); the frame's playing joins the page.
+test('Row 486: a child frame\'s media_playing is taken before the rebase: no re-mount, and its playing counts for the page', async () => {
+  const { MirrorFrames } = await import('./kernel-browser-mirror2-frames.mjs');
+  const stream = { frames: new Map(), frameSlots: new Map() };
+  let playing = true;
+  const drained = () => ({ ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, loaded: 0, media_playing: playing });
+  const frames = new MirrorFrames({ parentWorld: () => ({ ref: 'top' }), evaluate: async () => drained(), sheetOps: async () => [] });
+  frames.sheetOps = async () => [];
+  const entry = { owner: 'n5', slot: 1, hostSlot: 0, depth: 1, child: { ref: 'child' }, loaderId: 'L', scroll: '[0,0]', fragment: null };
+  stream.frames.set('n5', entry); stream.frameSlots.set(1, entry);
+  let mounts = 0;
+  frames.loaderId = async () => 'L';
+  frames.owners = async () => new Map([['n5', { id: 'f' }]]);
+  frames.mount = async () => { mounts++; return { records: [], ops: [], resources: [] }; };
+  await frames.drain(stream, null, null); await frames.drain(stream, null, null);
+  assert.equal(mounts, 0, 'consecutive drains keep the child (its ids, focus and inputs)');
+  assert.equal(stream.frames.get('n5'), entry);
+  assert.equal(entry.playing, true);
+  const mirror = new Mirror2({ host: {} });
+  assert.equal(mirror.mediaPlaying(stream, { media_playing: false }), true, 'a playing child frame plays for its page');
+  playing = false; await frames.drain(stream, null, null);
+  assert.equal(mirror.mediaPlaying(stream, { media_playing: false }), false);
 });
 
 // A native region measures live geometry repeatedly during admission. Its known

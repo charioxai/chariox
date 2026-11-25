@@ -410,6 +410,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (root.nodeType === 9) for (const type of ['loading', 'loadingdone', 'loadingerror']) root.fonts.addEventListener(type, wake, { signal: listening.signal });
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         if (root.nodeType === 9) listen('readystatechange', wake);
+        // Row 486: media events do not bubble; the capture listener sees play, pause and end of every mirrored element.
+        for (const type of ['playing', 'pause', 'ended', 'emptied']) listen(type, wake);
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // A fragment navigation moves `:target` (the header, or a frame document's fragment op).
         if (root.nodeType === 9) root.defaultView?.addEventListener('hashchange', wake, { passive: true, signal: listening.signal });
@@ -997,6 +999,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
     };
     let reportedFonts = '[]';
+    // Row 486: whether a mirrored video or audio element is playing (not paused or ended, with data to play, muted or not).
+    // The viewer keeps such a Tab warm. A video or audio is an opaque tile, so only those are looked at.
+    let reportedPlaying = false;
+    const mediaPlaying = () => { for (const id of opaque) { const node = nodes.get(id); if (node?.isConnected && node.namespaceURI === HTML && (node.localName === 'video' || node.localName === 'audio') && !node.paused && !node.ended && node.readyState > 2) return true; } return false; };
     const reportedRequirements = new Map(), absentKeys = new Map(), absentOf = new Map(), installedFamilies = new Map();
     const fontOps = (ops, force = false) => {
       const due = stacksDue();
@@ -1016,8 +1022,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
       const { focused, focus_visible, selection, range } = focusState(); reported = JSON.stringify([focused, focus_visible, selection, range]);
-      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { title: document.title, snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, focus_visible, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures); reportedPlaying = mediaPlaying();
+      return { title: document.title, snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, focus_visible, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size, media_playing: reportedPlaying };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
@@ -1754,7 +1760,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || valueStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || stacksDue() || mediaPlaying() !== reportedPlaying || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || valueStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
