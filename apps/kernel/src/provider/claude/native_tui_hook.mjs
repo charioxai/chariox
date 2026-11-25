@@ -313,7 +313,9 @@ if (eventName === "UserPromptSubmit") {
     process.exit(2)
   }
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
-  if (input.permission_mode === "bypassPermissions") {
+  // A question always needs a person, in every permission mode: allowing it
+  // unanswered would leave Claude's own question menu waiting on no one.
+  if (input.permission_mode === "bypassPermissions" && input.tool_name !== "AskUserQuestion") {
     if (eventName === "PermissionRequest") {
       // PermissionRequestHookSpecificOutput nests the PermissionResult under
       // `decision`. PreToolUse uses a separate event-specific output shape.
@@ -340,7 +342,9 @@ if (eventName === "UserPromptSubmit") {
     : null
   if (responseFile) {
     // CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
-    const deadline = Date.now() + 330000
+    // A question has no deadline: nobody may see the agent that asked, so only
+    // the answer or Claude's own hook timeout ends the wait.
+    const deadline = input.tool_name === "AskUserQuestion" ? Infinity : Date.now() + 330000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
         try {
@@ -352,7 +356,11 @@ if (eventName === "UserPromptSubmit") {
                 hookEventName: eventName,
                 decision: {
                   behavior: decision.behavior,
-                  ...(decision.behavior === "deny" ? { message: decision.message ?? "Denied through Chariox." } : {})
+                  ...(decision.behavior === "deny" ? { message: decision.message ?? "Denied through Chariox." } : {}),
+                  // A stopped turn ends here: without it Claude reads the denial as
+                  // feedback and asks for the same tool again.
+                  ...(decision.behavior === "deny" && decision.interrupt === true ? { interrupt: true } : {}),
+                  ...(decision.behavior === "allow" && decision.updatedInput ? { updatedInput: decision.updatedInput } : {})
                 }
               }
             }))

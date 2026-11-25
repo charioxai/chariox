@@ -6,7 +6,7 @@ use crate::history::{OperationalHistoryStore, SessionHistoryEntry};
 use crate::provider::ProviderProcessServiceStore;
 use crate::provider_output_policy::output_bounds::{
     bounded_terminal_output_bytes, should_log_provider_output_truncation,
-    terminal_output_delta_bytes,
+    terminal_output_delta_bytes, MAX_PROVIDER_OUTPUT_RECORD_BYTES,
 };
 use crate::provider_output_policy::tool_history::{
     bounded_history_entry, is_unread_output_history_entry,
@@ -31,8 +31,19 @@ pub(crate) struct ProviderOutputFanout {
 }
 
 /// Where `ProviderOutputFanout::append_history_entry` stored a row.
+/// How an output is kept in history.
+#[derive(Clone, Copy)]
+enum HistoryRow<'a> {
+    /// A row of its own.
+    Append,
+    /// One row per merge key, which holds this text and keeps its place.
+    ReplaceWith(&'a str),
+}
+
 enum StoredHistoryRow {
     Appended(u64),
+    /// It replaced the row stored before under its merge key, which keeps its sequence.
+    Replaced,
     /// It took the place of a background call's row in this earlier prompt's
     /// turn (see `OperationalHistoryStore::keep_background_tool_row_in_its_turn`).
     KeptInTurnOf(ActivePromptTranscriptMetadata),
@@ -123,6 +134,112 @@ impl ProviderOutputFanout {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        self.fan_out_stored(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            merge_key,
+            recipient_attachment_ids,
+            bytes,
+            HistoryRow::Append,
+            false,
+        )
+    }
+
+    /// A reply streamed as it is written: clients get `delta`, while one
+    /// stored row under `merge_key` holds `text`, everything so far, and is
+    /// replaced in place as it grows. A reload therefore shows the reply once.
+    pub(crate) fn fan_out_live_reply(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        merge_key: String,
+        recipient_attachment_ids: Vec<String>,
+        delta: &str,
+        text: &str,
+    ) {
+        self.fan_out_live_row(
+            session_id,
+            provider_run_id,
+            merge_key,
+            recipient_attachment_ids,
+            delta,
+            text,
+            false,
+        );
+    }
+
+    /// The finished text of a reply streamed live: it replaces the row under
+    /// `merge_key` on every client and in history, so the row ends as exactly
+    /// this text whatever the stream showed.
+    pub(crate) fn fan_out_live_reply_replacement(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        merge_key: String,
+        recipient_attachment_ids: Vec<String>,
+        text: &str,
+    ) {
+        self.fan_out_live_row(
+            session_id,
+            provider_run_id,
+            merge_key,
+            recipient_attachment_ids,
+            text,
+            text,
+            true,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The fan-out context arguments plus the live row's text"
+    )]
+    fn fan_out_live_row(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        merge_key: String,
+        recipient_attachment_ids: Vec<String>,
+        sent: &str,
+        stored: &str,
+        replaces: bool,
+    ) {
+        let agent_id = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        self.fan_out_stored(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            TerminalOutputKind::ProviderOutput,
+            Some(merge_key),
+            recipient_attachment_ids,
+            sent.as_bytes(),
+            HistoryRow::ReplaceWith(stored),
+            replaces,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The fan-out context arguments plus how the output is stored"
+    )]
+    fn fan_out_stored(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+        history: HistoryRow<'_>,
+        replaces: bool,
+    ) -> TerminalOutputRecord {
         let delta_bytes = terminal_output_delta_bytes(
             session_id,
             provider_run_id,
@@ -131,7 +248,13 @@ impl ProviderOutputFanout {
             &merge_key,
             bytes,
         );
-        let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
+        // A replacement is a row's whole text: it goes out whole, in records
+        // of the bounded size (see `live_record_pieces`).
+        let bounded_bytes = if replaces {
+            delta_bytes.clone()
+        } else {
+            bounded_terminal_output_bytes(&kind, &delta_bytes)
+        };
         if bounded_bytes.len() < delta_bytes.len() {
             let kind_label = format!("{kind:?}");
             if let Some(suppressed_logs) = should_log_provider_output_truncation(
@@ -176,6 +299,8 @@ impl ProviderOutputFanout {
                 pending_recipient_attachment_ids: Vec::new(),
                 bytes: Vec::new(),
                 external_observation_metadata: None,
+                replaces: false,
+                continues_replacement: false,
             };
         }
         let recipient_attachment_ids = if kind == TerminalOutputKind::ProviderTerminal {
@@ -204,43 +329,63 @@ impl ProviderOutputFanout {
                     );
                 }
             }
-            match self.append_history_entry(
+            let text = match history {
+                HistoryRow::Append => text,
+                HistoryRow::ReplaceWith(text) => text.to_string(),
+            };
+            let entry = SessionHistoryEntry::provider_output(
                 session_id,
-                SessionHistoryEntry::provider_output(
-                    session_id,
-                    provider_run_id,
-                    agent_id,
-                    kind.clone(),
-                    merge_key.clone(),
-                    text,
-                )
-                .with_prompt_origin(prompt_metadata.prompt_origin)
-                .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-            ) {
+                provider_run_id,
+                agent_id,
+                kind.clone(),
+                merge_key.clone(),
+                text,
+            )
+            .with_prompt_origin(prompt_metadata.prompt_origin)
+            .with_source_attachment_id(prompt_metadata.source_attachment_id.clone());
+            let stored = match history {
+                HistoryRow::Append => self.append_history_entry(session_id, entry),
+                HistoryRow::ReplaceWith(_) => self.replace_history_row(session_id, entry),
+            };
+            match stored {
                 StoredHistoryRow::Appended(appended) => sequence = Some(appended),
                 // The row stays in its launching prompt's turn, and so does the live record.
                 StoredHistoryRow::KeptInTurnOf(launch) => prompt_metadata = launch,
-                StoredHistoryRow::NotStored => {}
+                StoredHistoryRow::Replaced | StoredHistoryRow::NotStored => {}
             }
         }
         let notify_trace = kind != TerminalOutputKind::ProviderTerminal;
-        let record = self
-            .terminal
-            .fan_out_outputs(vec![crate::terminal::TerminalOutputAppend {
+        let recipient_attachment_ids: std::sync::Arc<[String]> = recipient_attachment_ids.into();
+        let pieces = if replaces {
+            live_record_pieces(&bounded_bytes)
+        } else {
+            vec![bounded_bytes]
+        };
+        let outputs = pieces
+            .into_iter()
+            .enumerate()
+            .map(|(index, bytes)| crate::terminal::TerminalOutputAppend {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: agent_id.map(str::to_string),
-                prompt_id: prompt_metadata.prompt_id,
+                prompt_id: prompt_metadata.prompt_id.clone(),
                 prompt_origin: prompt_metadata.prompt_origin,
-                source_attachment_id: prompt_metadata.source_attachment_id,
-                kind,
-                merge_key,
-                sequence,
-                recipient_attachment_ids: recipient_attachment_ids.into(),
-                bytes: bounded_bytes,
-            }])
-            .pop()
-            .expect("one output yields one record");
+                source_attachment_id: prompt_metadata.source_attachment_id.clone(),
+                kind: kind.clone(),
+                merge_key: merge_key.clone(),
+                sequence: if index == 0 { sequence } else { None },
+                recipient_attachment_ids: recipient_attachment_ids.clone(),
+                bytes,
+                replaces: replaces && index == 0,
+                continues_replacement: replaces && index > 0,
+            })
+            .collect();
+        let record = self
+            .terminal
+            .fan_out_outputs(outputs)
+            .into_iter()
+            .next()
+            .expect("an output yields a record");
         if notify_trace {
             self.notify_metaagent_trace_activity(session_id, agent_id);
         }
@@ -483,6 +628,69 @@ impl ProviderOutputFanout {
     }
 
     /// Returns the history sequence of the stored row.
+    fn replace_history_row(
+        &self,
+        session_id: &str,
+        entry: SessionHistoryEntry,
+    ) -> StoredHistoryRow {
+        let Some(entry) = bounded_history_entry(entry) else {
+            return StoredHistoryRow::NotStored;
+        };
+        let Some(merge_key) = entry.merge_key.clone() else {
+            return self.append_history_entry(session_id, entry);
+        };
+        let context = crate::app::HistoryEventContextResolver::new(
+            self.provider_store.clone(),
+            self.session_store.clone(),
+            self.prompt_state_owner.clone(),
+            self.active_turns.clone(),
+            self.agent_store.clone(),
+            self.provider_run_projection.clone(),
+        )
+        .resolve(&entry);
+        match self
+            .operational_history_store
+            .replace_latest_transcript_by_merge_key(
+                session_id,
+                entry.agent_id.as_deref(),
+                &merge_key,
+                &entry,
+                context,
+            ) {
+            Ok(Some(event)) => {
+                if self.archive_enabled {
+                    if let Err(error) = self
+                        .operational_history_store
+                        .enqueue_archive_events(std::slice::from_ref(&event))
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.history",
+                            "failed to enqueue history archive event",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                StoredHistoryRow::Replaced
+            }
+            Ok(None) => self.append_history_entry(session_id, entry),
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to replace operational history",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "merge_key": merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+                StoredHistoryRow::NotStored
+            }
+        }
+    }
+
     fn append_history_entry(
         &self,
         session_id: &str,
@@ -578,4 +786,22 @@ impl ProviderOutputFanout {
             }
         }
     }
+}
+
+/// A replacement's text in records of at most the bounded record size, cut
+/// between characters: the first record replaces the row, the others add to it
+/// in order, all in one batch, so a client ends with the whole text.
+fn live_record_pieces(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut pieces = Vec::new();
+    let mut rest = bytes;
+    while rest.len() > MAX_PROVIDER_OUTPUT_RECORD_BYTES {
+        let mut cut = MAX_PROVIDER_OUTPUT_RECORD_BYTES;
+        while cut > 0 && (rest[cut] & 0b1100_0000) == 0b1000_0000 {
+            cut -= 1;
+        }
+        pieces.push(rest[..cut].to_vec());
+        rest = &rest[cut..];
+    }
+    pieces.push(rest.to_vec());
+    pieces
 }

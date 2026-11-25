@@ -56,6 +56,16 @@ pub struct TerminalOutputRecord {
     pub bytes: Vec<u8>,
     #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
     pub external_observation_metadata: Option<TerminalOutputExternalObservationMetadata>,
+    /// The bytes take the place of what clients show under `merge_key`
+    /// instead of being added to it: a reply streamed live gets its
+    /// finished text this way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replaces: bool,
+    /// The bytes are more of the text a `replaces` record of the same `merge_key` set, in the same batch: a
+    /// replacement longer than one record goes out in pieces, and a piece after the first joins that row
+    /// wherever it now is, not after a tool row that came later.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continues_replacement: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +110,10 @@ pub struct TerminalOutputAppend {
     pub sequence: Option<u64>,
     pub recipient_attachment_ids: Arc<[String]>,
     pub bytes: Vec<u8>,
+    /// See `TerminalOutputRecord::replaces`.
+    pub replaces: bool,
+    /// See `TerminalOutputRecord::continues_replacement`.
+    pub continues_replacement: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

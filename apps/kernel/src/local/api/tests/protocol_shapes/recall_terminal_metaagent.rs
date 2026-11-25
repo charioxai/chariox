@@ -342,6 +342,8 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
                         ),
                     },
                 ),
+                replaces: false,
+                continues_replacement: false,
             },
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(8),
@@ -361,6 +363,29 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
                 pending_recipient_attachment_ids: vec!["attachment-2".to_string()],
                 bytes: b"\x1b[2Jfullscreen".to_vec(),
                 external_observation_metadata: None,
+                replaces: true,
+                continues_replacement: false,
+            },
+            crate::terminal::TerminalOutputRecord {
+                record_id: Some(9),
+                sequence: None,
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
+                timestamp_ms: 1_700_000_000_002,
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                prompt_id: Some("prompt-42".to_string()),
+                prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                source_attachment_id: Some("attachment-1".to_string()),
+                kind: crate::terminal::TerminalOutputKind::ProviderTerminal,
+                merge_key: None,
+                recipient_attachment_ids: vec!["attachment-2".to_string()],
+                pending_recipient_attachment_ids: vec!["attachment-2".to_string()],
+                bytes: b"more of it".to_vec(),
+                external_observation_metadata: None,
+                replaces: false,
+                continues_replacement: true,
             },
         ],
     };
@@ -368,6 +393,27 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/TerminalOutput/records/0/record_id"),
         Some(&serde_json::json!(7))
+    );
+    // Protocol 1016: a record that replaces its merge key's row says so; one
+    // that is added to it leaves the field out.
+    assert_eq!(snapshot.pointer("/TerminalOutput/records/0/replaces"), None);
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/1/replaces"),
+        Some(&serde_json::json!(true))
+    );
+    // A piece after the first of a long replacement continues it; the field is left out otherwise.
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/0/continues_replacement"),
+        None
+    );
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/1/continues_replacement"),
+        None
+    );
+    assert_eq!(snapshot.pointer("/TerminalOutput/records/2/replaces"), None);
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/2/continues_replacement"),
+        Some(&serde_json::json!(true))
     );
     // MP-08 / MP-10 (panes R5): live records carry their history sequence
     // since local protocol 508; records without a history row omit it.
@@ -433,7 +479,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "a89f6930effd0f870e6a3afc57bfded2d2138bd9d973d5b7e194022e89b87a1b"
+        "00100ed1be989a936f1939e73ac4b4168a0b82ef9b6ad926000d7ceb0b6f554e"
     );
 }
 

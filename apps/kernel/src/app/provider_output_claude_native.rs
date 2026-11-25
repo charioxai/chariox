@@ -18,10 +18,15 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 mod attachments;
+mod awaiting_rows;
+mod cancel_fence;
 mod context_delivery;
 mod hidden_context;
+mod live_reply;
 mod local_denial;
 mod permission;
+mod question;
+mod reader_state;
 mod readiness;
 mod session_start;
 mod start_screen;
@@ -33,6 +38,7 @@ mod trust_dialog;
 mod typed_prompt;
 mod workspace_trust;
 
+pub(crate) use cancel_fence::fence_cancelled_claude_turn;
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(crate) use start_screen::{
@@ -49,6 +55,10 @@ use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
     format_claude_native_attachment_prompt_suffix, join_claude_context,
 };
+use cancel_fence::{
+    claude_stopped_turn, claude_turn_fenced, release_claude_cancelled_turn, StoppedTurn,
+};
+use live_reply::Adoption;
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
@@ -70,8 +80,12 @@ use permission::{
     write_claude_headless_workspace_trust_denied_marker,
     write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
-    write_claude_permission_input, write_claude_permission_passthrough,
-    write_claude_permission_response, write_claude_workspace_trust_selection_marker,
+    write_claude_permission_input, write_claude_permission_interrupt,
+    write_claude_permission_passthrough, write_claude_permission_response,
+    write_claude_question_answers, write_claude_workspace_trust_selection_marker,
+};
+use question::{
+    ask_claude_question, claude_question_updated_input, claude_questions, QuestionOutcome,
 };
 use readiness::{
     CLAUDE_HEADLESS_RETRY_MS, CLAUDE_INITIAL_COMPOSER_WAIT_MS, CLAUDE_STARTUP_SETTLE_MS,
@@ -80,7 +94,7 @@ use readiness::{
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
 use transcript::{
     drain_claude_transcript_raw_since, known_claude_transcript_paths,
-    load_claude_transcript_cursor, save_claude_transcript_cursor,
+    load_claude_transcript_cursor, remember_claude_transcript_path, save_claude_transcript_cursor,
 };
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
@@ -96,6 +110,18 @@ const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX: &str =
 /// The failure of a trust question that was denied or never answered: the person chose nothing wrong, so it ends the turn like a Stop.
 pub(crate) fn claude_workspace_trust_declined(failure: &str) -> bool {
     failure == CLAUDE_WORKSPACE_TRUST_DENIED
+}
+
+/// A card that closed unanswered well before its own deadline was withdrawn,
+/// because its turn was stopped; one that ran out of time was ignored.
+fn claude_card_withdrawn(
+    resolution: &crate::provider::ProviderNativeInteractionResolution,
+    closes_at: std::time::Instant,
+) -> bool {
+    const DEADLINE_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+    resolution.choice_id.is_none()
+        && resolution.status == "timed_out"
+        && std::time::Instant::now() + DEADLINE_SLACK < closes_at
 }
 
 fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
@@ -895,6 +921,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         },
                     )?;
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
+                    // Typed in Claude's own terminal: no injection hands it over, so
+                    // the hook is where a stopped turn's fence ends.
+                    release_claude_cancelled_turn(context_file, prompt.id());
                 }
                 if let (Some(request_id), Some(context)) =
                     (hook_request_id, hook_context.as_deref())
@@ -1207,12 +1236,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         transcript_path: &str,
     ) -> Result<Option<String>, DaemonError> {
         let provider_run = self.app.providers.get_run(provider_run_id)?;
-        let Some(transcript_path) =
-            crate::provider::provider_reported_transcript_on_kernel(&provider_run, transcript_path)
+        append_claude_headless_debug(context_file, "transcript_drain", transcript_path);
+        let Some(location) =
+            crate::provider::provider_reported_transcript_location(&provider_run, transcript_path)
         else {
             crate::logging::warn_with_fields(
                 "daemon.claude_headless",
-                "provider transcript unavailable or outside managed bindings",
+                "provider transcript outside managed bindings",
                 serde_json::json!({
                     "session_id": session_id,
                     "provider_run_id": provider_run_id,
@@ -1220,11 +1250,30 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             );
             return Ok(None);
         };
+        remember_claude_transcript_path(context_file, &location.to_string_lossy());
+        // Claude writes the file with its first message: until then there is nothing to read.
+        let Some(transcript_path) =
+            crate::provider::provider_reported_transcript_on_kernel(&provider_run, transcript_path)
+        else {
+            return Ok(None);
+        };
         let path = transcript_path.path.to_string_lossy().into_owned();
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        if transcript_path
+            .len()
+            .is_some_and(|length| cursor.unchanged_since_last_read(&path, length))
+        {
+            return Ok(None);
+        }
         let Ok(raw) = transcript_path.read() else {
             return Ok(None);
         };
-        let minimum_timestamp_ms = self
+        append_claude_headless_debug(
+            context_file,
+            "transcript_read",
+            &format!("{path} {} bytes", raw.len()),
+        );
+        let active_prompt = self
             .app
             .providers
             .get_run(provider_run_id)
@@ -1235,7 +1284,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
                     .ok()
                     .flatten()
-            })
+            });
+        // The tail of a stopped turn is read and dropped, until another
+        // prompt is handed to Claude.
+        let turn_cutoff_ms = active_prompt
+            .as_ref()
             .map(|prompt| prompt.created_at_ms())
             .or_else(|| {
                 self.app
@@ -1244,7 +1297,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .ok()
                     .map(|run| run.started_at_ms())
             });
-        let mut cursor = load_claude_transcript_cursor(context_file);
+        let minimum_timestamp_ms = match claude_stopped_turn(
+            context_file,
+            active_prompt.as_ref().map(|prompt| prompt.id()),
+        ) {
+            StoppedTurn::None => turn_cutoff_ms,
+            StoppedTurn::Dropping => Some(u64::MAX),
+            StoppedTurn::ReleasedAt(released_at_ms) => {
+                Some(turn_cutoff_ms.unwrap_or_default().max(released_at_ms))
+            }
+        };
         let drain = drain_claude_transcript_raw_since(
             &path,
             &raw,
@@ -1252,21 +1314,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             minimum_timestamp_ms,
             unix_epoch_ms(),
         );
+        cursor.note_read_length(&path, raw.len() as u64);
         save_claude_transcript_cursor(context_file, &cursor);
         let terminal_failure = drain.terminal_failure.clone();
-        let active_prompt_id = self
-            .app
-            .providers
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string))
-            .and_then(|agent_id| {
-                self.app
-                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
-                    .ok()
-                    .flatten()
-            })
-            .map(|prompt| prompt.id().to_string());
+        let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
         record_claude_headless_enqueue(context_file, &drain.enqueued_prompts);
         acknowledge_claude_headless_steering_enqueue(
             context_file,
@@ -1359,6 +1410,44 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     | TerminalOutputKind::ProviderStatus
             ) {
                 saw_runtime_activity = true;
+            }
+            // A text block streamed from the terminal replaces its live row.
+            if chunk.kind == TerminalOutputKind::ProviderOutput
+                && chunk.merge_key_suffix.starts_with("assistant:")
+            {
+                let live_row = match live_reply::adopt(provider_run_id, &chunk.text) {
+                    Adoption::Streamed { merge_key_suffix } => Some(format!(
+                        "claude-transcript:{provider_run_id}:{merge_key_suffix}"
+                    )),
+                    Adoption::NotStreamed => self.live_row_streamed_before_a_restart(
+                        session_id,
+                        &provider_run,
+                        active_prompt_id.as_deref(),
+                        &chunk.text,
+                    ),
+                };
+                if let Some(merge_key) = live_row {
+                    if let Some(context_file) =
+                        provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+                    {
+                        awaiting_rows::note_replaced(context_file, &merge_key);
+                        // Whoever completed it, a redraw of this block must not stream it again.
+                        if let Some(key) =
+                            merge_key.strip_prefix(&format!("claude-transcript:{provider_run_id}:"))
+                        {
+                            reader_state::mark_done(context_file, key, Some(&chunk.text));
+                        }
+                    }
+                    live_reply::refresh_taken(provider_run_id);
+                    fanout.fan_out_live_reply_replacement(
+                        session_id,
+                        provider_run_id,
+                        merge_key,
+                        recipient_attachment_ids.clone(),
+                        &chunk.text,
+                    );
+                    continue;
+                }
             }
             fanout.fan_out(
                 session_id,
@@ -1607,6 +1696,23 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(());
         };
+        if let Some(questions) = claude_questions(event) {
+            let Some(bridge) = native_interaction_bridge else {
+                write_claude_permission_passthrough(context_file, request_id);
+                return Ok(());
+            };
+            self.ask_claude_questions(
+                session_id,
+                provider_run_id,
+                agent_id,
+                context_file,
+                request_id,
+                event,
+                questions,
+                bridge,
+            );
+            return Ok(());
+        }
         if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
             write_claude_hook_permission_tombstone(context_file, event);
             clear_claude_permission_recent(context_file);
@@ -1667,11 +1773,23 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         let request_id = request_id.to_string();
+        let closes_at = std::time::Instant::now()
+            + std::time::Duration::from_secs(
+                crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+            );
         std::thread::spawn(
             move || match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution) => {
                     let allowed = resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once");
+                    if !allowed && claude_card_withdrawn(&resolution, closes_at) {
+                        write_claude_permission_interrupt(
+                            &context_file,
+                            &request_id,
+                            "The turn was stopped in Chariox.",
+                        );
+                        return;
+                    }
                     write_claude_permission_response(
                         &context_file,
                         &request_id,
@@ -1704,6 +1822,222 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
             },
         );
+        Ok(())
+    }
+
+    /// Shows each of Claude's questions as a card, one after the other, and
+    /// answers the waiting hook with what the person chose. A question nobody
+    /// answers denies the call, so the turn never waits on a menu no one sees.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_claude_questions(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        context_file: &str,
+        request_id: &str,
+        event: &Value,
+        questions: Vec<question::ClaudeQuestion>,
+        bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+    ) {
+        let origin = event
+            .get("native_prompt_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(
+                |prompt_id| crate::session::NativeInteractionOrigin::Prompt {
+                    provider_run_id: provider_run_id.into(),
+                    prompt_id: prompt_id.into(),
+                },
+            );
+        let session_id = session_id.to_string();
+        let provider_run_id = provider_run_id.to_string();
+        let agent_id = agent_id.to_string();
+        let context_file = context_file.to_string();
+        let request_id = request_id.to_string();
+        let event = event.clone();
+        std::thread::spawn(move || {
+            let mut answers = Vec::with_capacity(questions.len());
+            for (index, question) in questions.iter().enumerate() {
+                let outcome = ask_claude_question(
+                    bridge.as_ref(),
+                    &session_id,
+                    &format!("claude-native-question-{provider_run_id}-{request_id}-{index}"),
+                    &agent_id,
+                    origin.clone(),
+                    question,
+                );
+                match outcome {
+                    Ok(QuestionOutcome::Answered(answer)) => {
+                        answers.push((question.question.clone(), answer));
+                    }
+                    Ok(QuestionOutcome::Withdrawn) => {
+                        write_claude_permission_interrupt(
+                            &context_file,
+                            &request_id,
+                            "The turn was stopped in Chariox.",
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.provider_output",
+                            "Claude question bridge failed",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "request_id": request_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        write_claude_permission_response(
+                            &context_file,
+                            &request_id,
+                            false,
+                            "Chariox could not ask the question.",
+                        );
+                        return;
+                    }
+                }
+            }
+            write_claude_question_answers(
+                &context_file,
+                &request_id,
+                claude_question_updated_input(&event, &answers),
+            );
+        });
+    }
+
+    /// The live row a transcript block replaces when the reader no longer
+    /// knows it: a kernel restart empties the reader, while history keeps the
+    /// row streamed for the prompt, still the terminal's plain text. Only a row
+    /// still waiting for its block is taken (a replaced one keeps its key but
+    /// is finished), the prompt's newest, and only when the block continues it.
+    fn live_row_streamed_before_a_restart(
+        &self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+        prompt_id: Option<&str>,
+        text: &str,
+    ) -> Option<String> {
+        let context_file = provider_run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
+        let merge_key = awaiting_rows::newest_waiting(
+            context_file,
+            &format!(
+                "claude-transcript:{}:assistant:live-{}-",
+                provider_run.id(),
+                prompt_id?
+            ),
+        )?;
+        let row = self
+            .app
+            .operational_history_store()
+            .latest_transcript_by_merge_key_prefix(
+                session_id,
+                provider_run.agent_instance_id()?,
+                &merge_key,
+            )
+            .ok()??
+            .to_session_history_entry()?;
+        (row.merge_key.as_deref() == Some(merge_key.as_str())
+            && live_reply::drawn_from(&row.text, text))
+        .then_some(merge_key)
+    }
+
+    /// The prompt's newest live row that still waits for its transcript block, with the text history holds for it.
+    fn unfinished_live_row(
+        &self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+        prompt_id: &str,
+    ) -> Option<live_reply::Unfinished> {
+        let context_file = provider_run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
+        let run_prefix = format!("claude-transcript:{}:", provider_run.id());
+        let merge_key = awaiting_rows::newest_waiting(
+            context_file,
+            &format!("{run_prefix}assistant:live-{prompt_id}-"),
+        )?;
+        let row = self
+            .app
+            .operational_history_store()
+            .latest_transcript_by_merge_key_prefix(
+                session_id,
+                provider_run.agent_instance_id()?,
+                &merge_key,
+            )
+            .ok()??
+            .to_session_history_entry()?;
+        (row.merge_key.as_deref() == Some(merge_key.as_str())).then(|| live_reply::Unfinished {
+            merge_key_suffix: merge_key[run_prefix.len()..].to_string(),
+            text: row.text,
+        })
+    }
+
+    /// Reads the terminal output of a headless run for the reply Claude is
+    /// writing, and sends what is new as it appears (see `live_reply`).
+    pub(crate) fn stream_reply(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+        terminal_bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(());
+        };
+        let prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .filter(|prompt| prompt.status() != crate::session::PromptStatus::Cancelling);
+        // What a stopped turn writes next belongs to no turn.
+        let reading = prompt.as_ref().filter(|prompt| {
+            provider_run
+                .pty_env()
+                .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+                .is_none_or(|context_file| !claude_turn_fenced(context_file, prompt.id()))
+        });
+        // A reader that starts afresh may be the one that replaced a reader lost in the middle of a block: the row
+        // that block began stays in history, still waiting for its transcript text, and the block drawn again
+        // goes on in it.
+        let unfinished = reading
+            .filter(|_| live_reply::is_fresh(provider_run_id))
+            .and_then(|prompt| self.unfinished_live_row(session_id, provider_run, prompt.id()));
+        let deltas = live_reply::read_terminal(
+            provider_run_id,
+            reading.map(|prompt| prompt.id()),
+            terminal_bytes,
+            unfinished,
+            provider_run
+                .pty_env()
+                .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+                .map(String::as_str),
+        );
+        if deltas.is_empty() {
+            return Ok(());
+        }
+        let recipients = self.app.attachments.list_session_attachment_ids(session_id);
+        let fanout = ProviderOutputFanout::new(self.app);
+        for delta in deltas {
+            let merge_key = format!(
+                "claude-transcript:{provider_run_id}:{}",
+                delta.merge_key_suffix
+            );
+            if let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+            {
+                awaiting_rows::note_streaming(context_file, &merge_key);
+            }
+            fanout.fan_out_live_reply(
+                session_id,
+                provider_run_id,
+                merge_key,
+                recipients.clone(),
+                &delta.text,
+                &delta.text_so_far,
+            );
+        }
         Ok(())
     }
 
@@ -1977,6 +2311,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }) {
             return Ok(());
         }
+        release_claude_cancelled_turn(context_file, prompt.id);
         fs::write(
             format!("{context_file}.approval-origin"),
             prompt.origin_prompt_id,

@@ -702,6 +702,8 @@ async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
         pending_recipient_attachment_ids: vec![attachment.id().to_string()],
         bytes: b"completed output".to_vec(),
         external_observation_metadata: None,
+        replaces: false,
+        continues_replacement: false,
     };
     let output_store = app.structured_output_record_store();
     output_store.append(run.id().to_string(), vec![expected.clone()]);
