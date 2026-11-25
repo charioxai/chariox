@@ -480,6 +480,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     continue;
                 }
                 let mut clock_quarantined = false;
+                let mut start_failure = None;
                 let deadline_start = if e.state == "pending" {
                     // Busy refusals are normal queueing, not missing receipts.
                     // The next idle refusal starts a new bounded window.
@@ -497,7 +498,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             [sql_integer(e.sequence)?],
                         )
                         .map_err(sql)?;
+                        super::start_failures::clear(tx, e.sequence)?;
                         continue;
+                    }
+                    // A start that keeps failing has its own budget: attempts with growing
+                    // pauses, not the refusal window of an agent that merely did not answer.
+                    start_failure = super::start_failures::get(tx, e.sequence)?;
+                    if let Some(failure) = &start_failure {
+                        if failure.attempts < super::start_failures::START_ATTEMPTS {
+                            continue;
+                        }
                     }
                     let at = tx.query_row(
                         "SELECT first_refused_at_ms, typeof(first_refused_at_ms) || ':' || hex(CAST(first_refused_at_ms AS BLOB)) FROM agent_inbox_refusals WHERE sequence=?1",
@@ -520,6 +530,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 if e.state == "pending"
                     && (clock_quarantined
+                        || start_failure.is_some()
                         || deadline_start.is_some_and(|at| {
                             // Receipt time can advance during Sweep's awaited pre-work.
                             // Tolerate that race (and small clock rollbacks), but
@@ -531,6 +542,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // A delivery with a provider attempt but no receipt is settled by the
                     // kernel before this sweep (`settle_interrupted_deliveries`). What is
                     // left refused before any provider I/O, so nothing is unconfirmed.
+                    // The reason names the start error once the attempts are spent.
+                    let refusal_reason = match &start_failure {
+                        Some(failure) => format!(
+                            "Wake delivery failed: the agent could not start after {} attempts: {}.",
+                            failure.attempts, failure.error
+                        ),
+                        None => "Wake delivery failed: the agent could not start.".to_owned(),
+                    };
                     if !clock_quarantined {
                         if matches!(e.kind.as_str(), "deadline_reached" | "wait_recheck") {
                             // The wait can only produce this occurrence once. Keep a refused
@@ -548,7 +567,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             DelegateGoneReason::FailedStart,
                             now,
                         )?;
-                        settle_refused_wake(tx, &e, &mut changed, now)?;
+                        settle_refused_wake(tx, &e, &mut changed, now, &refusal_reason)?;
                         continue;
                     }
                     let reason = format!(
@@ -1058,6 +1077,7 @@ fn settle_refused_wake(
     event: &InboxEvent,
     changed: &mut Vec<AgentTaskExecution>,
     now: u64,
+    reason: &str,
 ) -> Result<(), DaemonError> {
     if !event.is_source_outcome() {
         return Ok(());
@@ -1080,7 +1100,7 @@ fn settle_refused_wake(
         let finished = super::settled_waits::finish(tx, &mut task, now)?;
         if finished {
             task.state = ExecutionState::Cancelled;
-            task.reason = "Wake delivery failed: the agent could not start.".into();
+            task.reason = reason.to_owned();
         }
         if released || finished {
             task.revision += 1;
