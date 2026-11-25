@@ -253,6 +253,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 452 carries the non-secret provider account ID in native account transfer metadata.
 /// Peer 452 carries the local 1015 task card choice descriptions.
 /// Peer 452 (provisional, local 1015) pairs with the local turn-end profile shapes.
+/// Peer 452 accompanies local 1015: the Environment Secret request carries its `source`.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

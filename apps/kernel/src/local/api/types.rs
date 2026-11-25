@@ -666,4 +666,6 @@ pub use workspace::*;
 /// `target_id`, `kernel_id`, `name`, `status` and `last_seen_at`.
 /// 1015 (provisional, relay peer 452): explicit turn-end profile updates and the current/pending
 /// settings read.
+/// Local 1015 (relay peer 452, provisional): `SetProjectEnvironmentSecret` takes a `source` (a typed value, a Vault entry id, or
+/// `unlink`).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
