@@ -203,8 +203,17 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
-        let args: WriteFileArgs = serde_json::from_value(arguments)
+        let mut args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
+        if context.home.is_none() {
+            let names: Vec<String> = args.values.keys().cloned().collect();
+            let mut ids = self
+                .resolve_entry_refs(args.values.values().map(String::as_str))?
+                .into_iter();
+            for name in names {
+                args.values.insert(name, ids.next().unwrap_or_default());
+            }
+        }
         if args.values.is_empty() || args.values.len() > MAX_PLACEHOLDERS {
             return Err(error(format!(
                 "values names 1-{MAX_PLACEHOLDERS} placeholders"

@@ -1212,3 +1212,86 @@ async fn a_captured_private_key_is_restored_byte_for_byte_and_loads() {
     );
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn entries_are_named_by_description_in_use_env_write_file_and_copy_for_use() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let _turn = elevated(&f);
+    unlock(&f);
+    let captured = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "named", "argv": printing(SECRET), "host": "api.example.com",
+            "label": "Webhook signing secret", "extract": {"kind":"stdout"},
+            "use_binding":{"target":{"kind":"command_environment","name":"KEY","origin":"https://api.example.com"}}}),
+    )
+    .await
+    .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap().to_string();
+    // use_env: a description names the entry; the result still masks it by id.
+    let used = call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com","argv":["/usr/bin/env"],"env":{"KEY":" webhook SIGNING secret "}}),
+    )
+    .await
+    .unwrap();
+    assert!(!used.to_string().contains(SECRET), "{used}");
+    assert!(used["stdout"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("KEY=[vault:{handle}]")));
+    // copy_for_use: the copy records the resolved id as its source.
+    let copied = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"by-name","from":"Webhook signing secret",
+            "use_binding":{"target":{"kind":"site","origin":"https://api.example.com"}}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(copied["from"], handle.as_str(), "{copied}");
+    assert!(!copied.to_string().contains(SECRET), "{copied}");
+    // write_file needs a file-bound entry; a name that matches nothing keeps the tool's own refusal.
+    assert!(call(
+        &f,
+        WRITE_FILE,
+        json!({"path":"out.env","template":"KEY={{KEY}}","values":{"KEY":"no such entry"}})
+    )
+    .await
+    .is_err());
+    // Two entries with one description: refused with both ids, nothing runs; the exact id still works.
+    let twin = capture(&f, "twin-a", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let twin_b = capture(&f, "twin-b", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let (a, b) = (
+        twin["credential_id"].as_str().unwrap(),
+        twin_b["credential_id"].as_str().unwrap(),
+    );
+    let marker = workspace(&f).join("must-not-run");
+    let refused = call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com","argv":["/usr/bin/touch",marker],"env":{"KEY":"example key"}}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("more than one") && refused.contains(a) && refused.contains(b),
+        "{refused}"
+    );
+    assert!(!marker.exists());
+    assert!(call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com","argv":["/usr/bin/env"],"env":{"KEY":a}})
+    )
+    .await
+    .is_ok());
+    f.state.shutdown_cleanup().await.unwrap();
+}

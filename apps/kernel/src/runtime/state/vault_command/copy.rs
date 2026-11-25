@@ -103,8 +103,12 @@ impl KernelRuntimeState {
         actor: &VaultActor,
         recheck: VaultRecheck<'_>,
         check_binding: BindingCheck<'_>,
-        args: CopyArgs,
+        mut args: CopyArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        args.from = self
+            .resolve_entry_refs([args.from.as_str()])?
+            .pop()
+            .unwrap_or_default();
         args.use_binding.target.validate()?;
         if let VaultUseTarget::Site { origin } = &args.use_binding.target {
             if !origin.starts_with("https://") {

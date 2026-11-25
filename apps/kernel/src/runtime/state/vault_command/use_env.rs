@@ -51,8 +51,25 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
-        let args: UseArgs = serde_json::from_value(arguments)
+        let mut args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
+        if context.home.is_none() {
+            let names: Vec<String> = args.env.keys().cloned().collect();
+            let mut ids = self
+                .resolve_entry_refs(
+                    args.env
+                        .values()
+                        .map(String::as_str)
+                        .chain(args.stdin.as_deref()),
+                )?
+                .into_iter();
+            for name in names {
+                args.env.insert(name, ids.next().unwrap_or_default());
+            }
+            if args.stdin.is_some() {
+                args.stdin = ids.next();
+            }
+        }
         if args.env.is_empty() && args.stdin.is_none() {
             return Err(error("name at least one credential in env or stdin"));
         }

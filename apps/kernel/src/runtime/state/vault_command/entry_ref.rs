@@ -10,8 +10,32 @@ pub(super) fn resolve_entry_ref(
     entries: &[UserCredentialConfig],
     reference: &str,
 ) -> Result<String, DaemonError> {
-    let _ = entries;
-    Ok(reference.to_string())
+    if entries.iter().any(|entry| entry.id == reference) {
+        return Ok(reference.to_string());
+    }
+    let needle = reference.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(reference.to_string());
+    }
+    let named: Vec<&str> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .description
+                .as_deref()
+                .is_some_and(|d| d.trim().to_lowercase() == needle)
+        })
+        .map(|entry| entry.id.as_str())
+        .collect();
+    match named.as_slice() {
+        [] => Ok(reference.to_string()),
+        [id] => Ok((*id).to_string()),
+        ids => Err(error(format!(
+            "more than one Vault entry is described as `{}`: {}; name one by credential_id",
+            reference.trim(),
+            ids.join(", ")
+        ))),
+    }
 }
 
 impl KernelRuntimeState {
@@ -31,9 +55,7 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        UserCredentialInjectionConfig, UserCredentialSourceConfig,
-    };
+    use crate::config::{UserCredentialInjectionConfig, UserCredentialSourceConfig};
 
     fn entry(id: &str, description: Option<&str>) -> UserCredentialConfig {
         UserCredentialConfig {
@@ -49,13 +71,19 @@ mod tests {
 
     #[test]
     fn the_exact_id_wins_even_when_another_entry_is_described_with_it() {
-        let entries = [entry("gen-1", Some("gen-2")), entry("gen-2", Some("webhook"))];
+        let entries = [
+            entry("gen-1", Some("gen-2")),
+            entry("gen-2", Some("webhook")),
+        ];
         assert_eq!(resolve_entry_ref(&entries, "gen-2").unwrap(), "gen-2");
     }
 
     #[test]
     fn a_unique_description_names_its_entry_ignoring_case_and_edges() {
-        let entries = [entry("a1", Some("Webhook signing secret")), entry("b2", Some("deploy key"))];
+        let entries = [
+            entry("a1", Some("Webhook signing secret")),
+            entry("b2", Some("deploy key")),
+        ];
         assert_eq!(
             resolve_entry_ref(&entries, "  webhook SIGNING secret ").unwrap(),
             "a1"
@@ -64,9 +92,17 @@ mod tests {
 
     #[test]
     fn an_ambiguous_description_is_refused_and_lists_the_ids() {
-        let entries = [entry("a1", Some("deploy key")), entry("b2", Some("Deploy key"))];
-        let refused = resolve_entry_ref(&entries, "deploy key").unwrap_err().to_string();
-        assert!(refused.contains("a1") && refused.contains("b2"), "{refused}");
+        let entries = [
+            entry("a1", Some("deploy key")),
+            entry("b2", Some("Deploy key")),
+        ];
+        let refused = resolve_entry_ref(&entries, "deploy key")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("a1") && refused.contains("b2"),
+            "{refused}"
+        );
         assert!(refused.contains("more than one"), "{refused}");
     }
 
