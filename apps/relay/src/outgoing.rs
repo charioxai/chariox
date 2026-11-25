@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::frame_transport::{peer_reply_block_size, peer_reply_chunk, CHUNK_BYTES};
-use crate::packed_peer_reply::{PackedPeerReply, PackedReplyPlan};
+use crate::packed_peer_reply::{BinaryPeerReply, PackedPeerReply, PackedReplyPlan};
 
 /// Bulk bytes one receiver may have queued: about one second at 64 Mbit/s, enough to keep a
 /// fast client's pipe full. A single message larger than this still passes an empty bulk queue.
@@ -44,6 +44,7 @@ impl Outgoing {
     pub(crate) fn admitted_len(&self) -> usize {
         match self {
             Self::PeerReply(PeerReply::Packed(reply)) => reply.charge(),
+            Self::PeerReply(PeerReply::Binary(reply)) => reply.charge(),
             _ => self.len(),
         }
     }
@@ -58,6 +59,9 @@ impl Outgoing {
             Self::PeerReply(PeerReply::Packed(reply)) => {
                 Message::Text(reply.into_test_text().into())
             }
+            Self::PeerReply(PeerReply::Binary(reply)) => {
+                Message::Binary(reply.into_test_bytes().into())
+            }
         }
     }
 }
@@ -65,6 +69,8 @@ impl Outgoing {
 pub(crate) enum PeerReply {
     Text(PeerReplyText),
     Packed(PackedPeerReply),
+    /// One binary message (`CXR2`) toward a receiver that negotiated binary peer replies.
+    Binary(BinaryPeerReply),
 }
 
 impl PeerReply {
@@ -72,27 +78,35 @@ impl PeerReply {
         match self {
             Self::Text(reply) => reply.len,
             Self::Packed(reply) => reply.len(),
+            Self::Binary(reply) => reply.len(),
         }
     }
 
+    /// The next frame from `offset`: a text chunk, or a binary one for a binary reply
+    /// (`adaptive`: the receiver takes chunks shorter than a full one).
     pub(crate) fn next_chunk(
         &self,
         id: u32,
         offset: usize,
         limit: usize,
-    ) -> Option<(String, usize)> {
+        adaptive: bool,
+    ) -> Option<(Message, usize)> {
+        let text = |chunk: Option<(String, usize)>| {
+            chunk.map(|(frame, end)| (Message::Text(frame.into()), end))
+        };
         match self {
             Self::Text(reply) => {
                 let block = reply.blocks.front()?;
-                peer_reply_chunk(
+                text(peer_reply_chunk(
                     id,
                     &block[offset - reply.written..],
                     offset,
                     reply.len,
                     limit,
-                )
+                ))
             }
-            Self::Packed(reply) => reply.next_chunk(id, offset, limit),
+            Self::Packed(reply) => text(reply.next_chunk(id, offset, limit)),
+            Self::Binary(reply) => reply.next_chunk(id, offset, limit, adaptive),
         }
     }
 
@@ -100,6 +114,7 @@ impl PeerReply {
         match self {
             Self::Text(reply) => reply.written(end),
             Self::Packed(reply) => reply.written(end),
+            Self::Binary(reply) => reply.written(end),
         }
     }
 }
@@ -203,6 +218,8 @@ pub(crate) struct OutgoingQueue {
     high_water: AtomicUsize,
     dropped_replies: AtomicU64,
     backlog_closed: AtomicBool,
+    /// The receiver negotiated binary peer messages: its large peer replies go out as bytes.
+    binary_peer: AtomicBool,
     /// Wakes the writer when the receiver is to be closed; the permit is kept, so a request
     /// made while the writer is busy with the socket is not lost.
     close_requested: Notify,
@@ -218,8 +235,13 @@ impl OutgoingQueue {
             high_water: AtomicUsize::new(0),
             dropped_replies: AtomicU64::new(0),
             backlog_closed: AtomicBool::new(false),
+            binary_peer: AtomicBool::new(false),
             close_requested: Notify::new(),
         }
+    }
+
+    pub(crate) fn binary_peer(&self) -> bool {
+        self.binary_peer.load(Ordering::Relaxed)
     }
 
     fn admit(&self, len: usize) -> Result<(), SendRefused> {
@@ -405,6 +427,16 @@ impl RelaySender {
         })
     }
 
+    /// A peer reply as one binary message; refused like any other reply when the budget is full.
+    pub(crate) fn try_send_binary_peer_reply(
+        &self,
+        reply: BinaryPeerReply,
+    ) -> Result<(), SendRefused> {
+        self.try_send_sized(reply.charge(), || {
+            Outgoing::PeerReply(PeerReply::Binary(reply))
+        })
+    }
+
     fn try_send_sized(
         &self,
         len: usize,
@@ -425,6 +457,15 @@ impl RelaySender {
         debug_assert_eq!(message.admitted_len(), len);
         permit.send(message);
         Ok(())
+    }
+
+    /// Mark the receiver as one that reads binary peer messages (set once after the handshake).
+    pub(crate) fn allow_binary_peer(&self) {
+        self.queue.binary_peer.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn binary_peer(&self) -> bool {
+        self.queue.binary_peer()
     }
 
     pub(crate) fn same_channel(&self, other: &Self) -> bool {

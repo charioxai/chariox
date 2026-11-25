@@ -672,4 +672,6 @@ pub use workspace::*;
 /// `unlink`).
 /// Provisional 1015 (relay peer 452): a machine acquire request may carry `timeout_s`, the rental's hard stop in seconds;
 /// the connected service stops the machine then. Absent keeps the machine until it is released.
+/// Local 1015 (relay peer 452): file slices between kernels travel as bytes (`data_base64` lifted out of the
+/// peer plaintext), and peer requests and replies are binary relay frames between kernels that offer them.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

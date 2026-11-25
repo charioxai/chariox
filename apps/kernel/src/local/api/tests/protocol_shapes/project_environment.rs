@@ -457,7 +457,7 @@ fn project_environment_peer_wire_and_redaction() {
     );
     assert_eq!(
         serde_json::to_value(&file).unwrap(),
-        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "sha256": "0f", "content": "c3ludGhldGljLWZpbGU="})
+        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "sha256": "0f", "data_base64": "c3ludGhldGljLWZpbGU="})
     );
     let registration = RelayPeerResponse::ProjectEnvironmentRegistrationPulled {
         registration: Some(crate::transport::relay_peer::RemoteProjectRegistration(

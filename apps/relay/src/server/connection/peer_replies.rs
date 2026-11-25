@@ -6,6 +6,7 @@ use std::io::Cursor;
 
 use serde::{Deserialize, Serialize};
 
+use crate::binary_response::{self, ResponseHeader};
 use crate::frame_transport::CHUNK_BYTES;
 use crate::outgoing::RelaySender;
 use crate::packed_peer_reply::{decoded_len_lower_bound, PackedReplyPlan};
@@ -87,6 +88,23 @@ fn packing_plan<'a>(
     PackedReplyPlan::new(envelope, &payload.ciphertext)
 }
 
+/// The reply as one binary message, when its ciphertext is canonical Base64 and its routing
+/// names fit the header. Anything else goes the ordinary text way.
+fn binary_reply(
+    reply: &RoutedPeerReply<'_>,
+    payload: &OpaquePayload<'_>,
+) -> Option<crate::packed_peer_reply::BinaryPeerReply> {
+    let header = ResponseHeader::DaemonPeerResponse {
+        request_id: reply.request_id.to_owned(),
+        from_daemon_id: reply.from_daemon_id.to_owned(),
+        sender_public_key: payload.sender_public_key.to_string(),
+        nonce: payload.nonce.to_string(),
+    };
+    let decoded = decoded_len_lower_bound(payload.ciphertext.len());
+    let head = binary_response::head(&header, decoded).ok()?;
+    crate::packed_peer_reply::BinaryPeerReply::new(head, &payload.ciphertext)
+}
+
 fn deliver_reply(receiver: &RelaySender, reply: &RoutedPeerReply<'_>) -> Delivery {
     let retry = reply.encrypted_response.map(|payload| EncryptedPeerReply {
         request_id: reply.request_id,
@@ -102,6 +120,11 @@ fn deliver_reply(receiver: &RelaySender, reply: &RoutedPeerReply<'_>) -> Deliver
             receiver.check_peer_reply_size(decoded_len_lower_bound(payload.ciphertext.len()))
         {
             return finish_delivery(receiver, Err(error), retry);
+        }
+        if receiver.binary_peer() {
+            if let Some(reply) = binary_reply(reply, payload) {
+                return finish_delivery(receiver, receiver.try_send_binary_peer_reply(reply), retry);
+            }
         }
         let mut scratch = [0; CHUNK_BYTES];
         if let Some(plan) =
@@ -182,6 +205,74 @@ mod tests {
         }
     }
 
+    // Row 207: a receiver that negotiated binary peer messages gets the reply as bytes, not as
+    // Base64 inside JSON, and nothing about the ciphertext changes.
+    #[test]
+    fn a_binary_receiver_gets_a_large_peer_reply_as_one_binary_message() {
+        let mib = 1024 * 1024;
+        for size in [13_000, 100_000, mib, 4 * mib + 1] {
+            let bytes: Vec<u8> = (0..size).map(|index| (index * 7) as u8).collect();
+            let payload = OpaquePayload {
+                sender_public_key: Cow::Borrowed("public-key"),
+                nonce: Cow::Borrowed("abcdefghijklmnop"),
+                ciphertext: Cow::Owned(STANDARD.encode(&bytes)),
+            };
+            let reply = routed(&payload);
+            let (sender, mut outgoing) = RelaySender::detached_channel(1);
+            sender.allow_binary_peer();
+            assert!(matches!(deliver_reply(&sender, &reply), Delivery::Sent));
+            let Message::Binary(wire) = outgoing.try_recv().unwrap() else {
+                panic!("a binary reply for {size} bytes");
+            };
+            let (header, ciphertext) = crate::binary_response::decode(&wire).unwrap();
+            assert!(matches!(
+                header,
+                crate::binary_response::ResponseHeader::DaemonPeerResponse { .. }
+            ));
+            assert_eq!(ciphertext, bytes.as_slice(), "{size} bytes");
+            assert!(wire.len() < size + 4096, "{size}: {} on the wire", wire.len());
+            assert_eq!(
+                crate::binary_response::into_envelope(&wire).unwrap(),
+                RelayEnvelope::DaemonPeerResponse {
+                    request_id: reply.request_id.into(),
+                    from_daemon_id: "peer".into(),
+                    encrypted_response: Some(EncryptedRelayPayload {
+                        sender_public_key: "public-key".into(),
+                        nonce: "abcdefghijklmnop".into(),
+                        ciphertext: STANDARD.encode(&bytes),
+                    }),
+                    error: None,
+                }
+            );
+        }
+    }
+
+    // Row 207 C3: the 3,584,000-byte part that became a 6,372,158-byte reply (so two of them
+    // exceeded the 8 MiB receiver budget) is charged at its own size as bytes: two fit, a third
+    // is refused as ever, and the refusal is the retryable one.
+    #[test]
+    fn two_large_peer_parts_fit_the_receiver_budget_as_bytes() {
+        let part = vec![0x5a; 3_584_000];
+        let payload = OpaquePayload {
+            sender_public_key: Cow::Borrowed("public-key"),
+            nonce: Cow::Borrowed("abcdefghijklmnop"),
+            ciphertext: Cow::Owned(STANDARD.encode(&part)),
+        };
+        let reply = routed(&payload);
+        let (sender, mut outgoing) = RelaySender::detached_channel(8);
+        sender.allow_binary_peer();
+        assert!(matches!(deliver_reply(&sender, &reply), Delivery::Sent));
+        assert!(matches!(deliver_reply(&sender, &reply), Delivery::Sent));
+        assert!(matches!(
+            deliver_reply(&sender, &reply),
+            Delivery::ReceiverBacklogged
+        ));
+        let Message::Binary(first) = outgoing.try_recv().unwrap() else {
+            panic!("a binary reply");
+        };
+        assert!(first.len() < part.len() + 4096);
+    }
+
     #[test]
     fn noncanonical_ciphertext_is_forwarded_unchanged_as_text() {
         let prefix = "Zm9v".repeat(CHUNK_BYTES / 4 + 1);
@@ -205,7 +296,10 @@ mod tests {
             let mut text = PeerReply::Text(text);
             let mut delivered = String::new();
             let mut offset = 0;
-            while let Some((frame, end)) = text.next_chunk(1, offset, CHUNK_BYTES) {
+            while let Some((frame, end)) = text.next_chunk(1, offset, CHUNK_BYTES, false) {
+                let tokio_tungstenite::tungstenite::Message::Text(frame) = frame else {
+                    panic!("expected a text frame");
+                };
                 let crate::frame_transport::TransportFrame::TransportChunk { payload, .. } =
                     serde_json::from_str(&frame).unwrap()
                 else {
