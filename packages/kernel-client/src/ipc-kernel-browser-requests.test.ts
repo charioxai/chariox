@@ -63,3 +63,9 @@ test("viewport-first and visited-link subscriptions retain their opt-in fields",
     KernelBrowser: { command: { op: "mirror_subscribe", tab_id: "t", generation: 1, device_scale_factor: 1, wire: 2, viewport_first: true, visited_links: true } },
   })
 })
+
+// Row 548 (protocol 1015): a typed client restarts the user's browser without bypassing the contract.
+test("row 548: the shared browser command union carries restart", () => {
+  assert.deepEqual(kernelBrowserRequest({ op: "restart" }), { KernelBrowser: { command: { op: "restart" } } })
+  assert(LOCAL_DAEMON_PROTOCOL_VERSION >= 1015)
+})

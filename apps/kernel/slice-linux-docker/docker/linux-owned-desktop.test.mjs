@@ -191,3 +191,33 @@ test('MP-08 / MP-11 owned Xvfb enters the installed browser namespace before bub
     'bwrap', '--dev-bind', '/', '/', '--', 'Xvfb',
   ]);
 });
+
+// Row 548 (2026-11-24): the browser's reset stopped the desktop while the restart it triggered created the next one. The late stop
+// emptied the new desktop's child list and removed the new desktop's directory (its X socket and Xauthority), so Chromium
+// found a running X server it could not open, and nothing owned that server any more.
+test('row 548: a desktop stop that overlaps a start leaves the new desktop its children and its directory', {skip:process.platform!=='linux'}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'row548-desktop-'));
+  const desktop = new LinuxOwnedDesktop(root);
+  const { spawn } = await import('node:child_process');
+  const old = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+  const created = [];
+  try {
+    desktop.runtime = path.join(root, 'desktop-old'); await mkdir(desktop.runtime);
+    desktop.current = Object.freeze({ environment: { DISPLAY: ':0' } });
+    desktop.children.push({ name: 'sleep', core: false, child: old, identity: await processIdentity(old.pid) });
+    desktop.create = async function () {
+      this.runtime = await (await import('node:fs/promises')).mkdtemp(path.join(root, 'desktop-'));
+      const child = { pid: undefined, exitCode: null, signalCode: null, stdio: [] };
+      this.children.push({ name: 'Xvfb', core: true, child, identity: null }); created.push(this.runtime);
+      return (this.current = Object.freeze({ environment: { DISPLAY: ':1' } }));
+    };
+    const stopping = desktop.stop();               // kills the old desktop; waits for its process to leave
+    const starting = (async () => { desktop.current = null; return desktop.start(); })(); // the restart a reset triggers
+    await Promise.all([stopping, starting]);
+    assert.equal(created.length, 1, 'the new desktop was created');
+    assert.equal((await stat(created[0]).catch(() => null))?.isDirectory(), true, 'the new desktop directory is still there');
+    assert.equal(desktop.runtime, created[0], 'the desktop still knows its own directory');
+    assert.deepEqual(desktop.children.map(item => item.name), ['Xvfb'], 'the new desktop keeps its own child record');
+    assert.equal(await stat(path.join(root, 'desktop-old')).catch(() => null), null, 'the old desktop directory is gone');
+  } finally { try { old.kill('SIGKILL'); } catch {} await rm(root, { recursive: true, force: true }); }
+});

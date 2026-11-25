@@ -91,6 +91,7 @@ function targetGone(error) {
   return /Session with given id not found|No target with given id|Target closed/.test(String(error?.message ?? error));
 }
 
+const WEDGED_POPUP_READS = 5;
 export class BrowserCdpClient {
   constructor({
     debuggerEndpoint = DEFAULT_DEBUGGER_ENDPOINT,
@@ -111,6 +112,7 @@ export class BrowserCdpClient {
   } = {}) {
     this.memory = memory;
     this.rendererRecovery = new BrowserRendererRecovery(this);
+    this.wedgedTargets = new Map();
     this.applyCanonicalDisplay = applyCanonicalDisplay;
     this.focusWorldSource = focusWorldSource;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
@@ -241,10 +243,17 @@ export class BrowserCdpClient {
       }
       const inspected = (await Promise.all(projectedPages.map(async (target) => {
         try {
-          return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
+          const page = await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
+          this.wedgedTargets.delete(target.targetId);
+          return page;
         } catch (error) {
           if (this.rendererRecovery.crashed.has(target.targetId)) {
             return this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
+          }
+          // Row 548: one Tab whose page answers a CDP command with an error (a popup mid-redirect, a page Chrome gave up on)
+          // costs that Tab its fresh metadata, never the state of every other Tab: 376 reads in a row failed on one popup.
+          if (error?.code === "browser_cdp_command_failed" && !targetGone(error) && connection.isOpen()) {
+            return this.wedgedPage(connection, target);
           }
           if (!targetGone(error)) throw error;
           await this.forgetTarget(target.targetId);
@@ -833,6 +842,26 @@ export class BrowserCdpClient {
       }, sessionId);
     }
     return metrics;
+  }
+
+  // A Tab that keeps failing keeps its last known document binding; a popup (opened by a page) that fails WEDGED_POPUP_READS
+  // reads in a row is closed, which leaves its opener and every other Tab as they were. A Tab nobody opened is never closed here.
+  async wedgedPage(connection, target) {
+    const failures = (this.wedgedTargets.get(target.targetId) ?? 0) + 1;
+    this.wedgedTargets.set(target.targetId, failures);
+    if (failures >= WEDGED_POPUP_READS && typeof target.openerId === "string") {
+      await connection.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
+      await this.forgetTarget(target.targetId);
+      this.wedgedTargets.delete(target.targetId);
+      return null;
+    }
+    const documentId = this.documentIdsByTarget.get(target.targetId);
+    if (typeof documentId !== "string" || !documentId) return null;
+    return { target_id: target.targetId,
+      ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
+      document_id: documentId,
+      url: typeof target.url === "string" ? target.url : "",
+      title: typeof target.title === "string" ? target.title : "", focused: false };
   }
 
   async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {

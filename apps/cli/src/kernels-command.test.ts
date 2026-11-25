@@ -381,3 +381,23 @@ test("an owner's settings command on the ordinary endpoint sends its command id,
     await kernel.close()
   }
 })
+
+test("kernels restart --browser asks the named kernel to restart its browser, and --browser is required", async () => {
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    replyWith(socket, frame, { response: { KernelBrowser: { result: { state: "ready", tabs: [{ tab_id: "host-tab-1", opener_tab_id: "host-tab-0" }] } } } })
+  })
+  const printed: string[] = [], log = console.log, written = process.stderr.write.bind(process.stderr), errors: string[] = []
+  console.log = (line: string) => { printed.push(line) }
+  process.stderr.write = ((chunk: string | Uint8Array) => { errors.push(String(chunk)); return true }) as typeof process.stderr.write
+  const exitCode = process.exitCode
+  try {
+    await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--browser", "--socket", kernel.path])
+    assert.equal(JSON.parse(printed.at(-1)!).tabs[0].opener_tab_id, "host-tab-0")
+    await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--socket", kernel.path])
+    assert.match(errors.join(""), /usage/, "a restart without --browser is refused before anything is sent")
+  } finally { console.log = log; process.stderr.write = written; process.exitCode = exitCode; await kernel.close() }
+  const sent = kernel.frames.map(frame => frame.request).filter(request => "KernelBrowser" in request)
+  assert.equal(sent.length, 1)
+  assert.deepEqual(sent[0], { KernelBrowser: { command: { op: "restart" } } })
+})
