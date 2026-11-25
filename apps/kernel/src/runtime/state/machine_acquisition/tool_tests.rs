@@ -103,11 +103,13 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
             let (status, response) = match request["action"].as_str().unwrap() {
                 "capabilities" => {
                     let answer = next_capability_failure.lock().unwrap().pop_front();
+                    // One guard for both fields: a second lock in the same statement would wait on the first.
+                    let listed_now = listed.lock().unwrap().clone();
                     let capability = MachineAllocationCapability {
                         revision: "v1".into(),
                         actions: vec!["acquire".into()],
                         // A service that lists no options still has its one default machine.
-                        offer: listed.lock().unwrap().is_empty().then(|| {
+                        offer: listed_now.is_empty().then(|| {
                             crate::local::MachineAcquisitionOffer {
                                 machine_type: "small".into(),
                                 vcpu: 2,
@@ -125,7 +127,7 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                                 }),
                             }
                         }),
-                        offers: listed.lock().unwrap().clone(),
+                        offers: listed_now,
                         job_offers: vec![],
                         job_default_class_id: None,
                     };
