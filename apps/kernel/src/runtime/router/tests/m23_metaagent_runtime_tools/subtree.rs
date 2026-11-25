@@ -5,6 +5,7 @@ use crate::transport::runtime_tools::RuntimeToolResult;
 
 mod destructive_children;
 mod reply_size;
+mod owner_delete;
 mod waiting_children;
 
 pub(super) struct World {
