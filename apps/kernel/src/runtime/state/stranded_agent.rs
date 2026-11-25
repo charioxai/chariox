@@ -13,6 +13,8 @@ use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, AgentWake, ExecutionState, Operation, DEFAULT_WAIT_TIMEOUT_MS,
 };
 
+/// What a backstop timer's label starts with; the delivery of its firing reads it.
+pub(super) const BACKSTOP_LABEL: &str = "backstop for a stated wait";
 /// How much of the end of a turn's answer is read for a stated wait.
 const ANSWER_TAIL_CHARS: usize = 1200;
 /// The longest stated wait quoted back to the agent.
@@ -258,12 +260,8 @@ impl KernelRuntimeOwnedState {
         if nothing_armed {
             if let Some(phrase) = stated_wait(answer) {
                 let due = now + DEFAULT_WAIT_TIMEOUT_MS;
-                let mut wake = kernel_wake(
-                    &task,
-                    "timer",
-                    format!("backstop for a stated wait: {phrase}"),
-                    now,
-                );
+                let mut wake =
+                    kernel_wake(&task, "timer", format!("{BACKSTOP_LABEL}: {phrase}"), now);
                 wake.state = "scheduled".into();
                 wake.next_due_ms = Some(due);
                 match self.arm_wake_source(&task, &wake) {

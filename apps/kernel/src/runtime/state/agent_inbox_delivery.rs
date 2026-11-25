@@ -26,6 +26,22 @@ fn wake_disposition(
     event: &ledger::InboxEvent,
     tasks: &[ledger::AgentTaskExecution],
 ) -> WakeDisposition {
+    // Row 554: a kernel backstop covers the idle interval after a stated wait. A turn that came
+    // after the one that armed it ended that interval, and the wait was met or given up.
+    // The firing of a one-shot timer reports its label inside `public_answer`.
+    if [&event.payload["public_answer"]["label"], &event.payload["label"]]
+        .into_iter()
+        .filter_map(|label| label.as_str())
+        .any(|label| label.starts_with(super::stranded_agent::BACKSTOP_LABEL))
+        && event.payload["task_id"].as_str().is_some_and(|armed_by| {
+            tasks
+                .iter()
+                .position(|task| task.task_id == armed_by)
+                .is_some_and(|at| at + 1 < tasks.len())
+        })
+    {
+        return WakeDisposition::Retire;
+    }
     // A peer event names the turn that created its persistent follow,
     // not unfinished work whose wake expires when that turn ends. Work the ended turn left
     // running reports its end to the agent, not to the turn.
