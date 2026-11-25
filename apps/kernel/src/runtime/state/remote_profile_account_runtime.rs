@@ -245,7 +245,7 @@ impl KernelRuntimeState {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         // The existing Vault unlock card, held until the owner answers it; the guard closes the
         // Vault again after the copy when the unlock policy is "ask every time".
-        let _unlock = self
+        let mut _unlock = self
             .ensure_vault_unlocked_for_agent(
                 agent.session_id(),
                 agent_id,
@@ -277,6 +277,15 @@ impl KernelRuntimeState {
                 return Err(failure(TRANSFER_SIGN_IN_REQUIRED));
             }
             signed_in = true;
+            // Storing the new token can close the Vault again (the "ask every time" policy), so
+            // the unlock is taken again, with its own card, before the token is read.
+            _unlock = self
+                .ensure_vault_unlocked_for_agent(
+                    agent.session_id(),
+                    agent_id,
+                    "copy the Claude account to the worker",
+                )
+                .await?;
         }
         let discovery = crate::transport::relay_discovery::metadata_discovery_config(&config)
             .await
