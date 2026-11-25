@@ -7589,6 +7589,18 @@ list, so a change of stock or rate needs a fresh decision. Agents use the same l
 `chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
 card names the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
+### Machine events — local 1016 (peer 453)
+
+A `ControlPlane` machine row may carry `reason`, a closed code the connected service gives when it
+stopped or failed the machine without the owner asking: `copy_failed` (the managed copy of the
+owner's context failed), `hard_stop` (the service's own time-limit stop) or `rental_failed` (the
+machine failed). A machine the owner stopped carries none. The service sends a code, never text.
+While one of the owner's machines can still report an event, the kernel reads the list (every 30 s)
+and raises each reason in the person Inbox as one High notice written by the kernel: the card id
+holds the machine, the reason and the moment it entered that state, so a restart raises nothing
+twice, and the card leaves when the machine leaves that state. Every client and agent reads it with
+`GetPersonInbox`. The shape is pinned by the `machine_event_reason_1016_shapes_and_hash` protocol test.
+
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 
 Local 994 / peer 433 also identifies kernel notification sources with

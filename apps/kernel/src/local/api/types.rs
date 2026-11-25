@@ -643,4 +643,7 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Provisional 1016 (relay peer 453): a control-plane machine row carries `reason`, the closed code
+/// (`copy_failed`, `hard_stop`, `rental_failed`) the connected service gave when it stopped or failed
+/// the machine without the owner asking; the kernel raises it in the person Inbox.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
