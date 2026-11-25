@@ -21,3 +21,11 @@ test("kernels restart --kernel X sends the kernel restart request to that kernel
   assert.deepEqual(sent, [{ RestartKernel: {} }], `the restart request is sent as is (stderr: ${errors.join("")})`)
   assert.deepEqual(JSON.parse(printed.at(-1)!), { KernelRestarting: { hot_reload: true } })
 })
+
+// A kernel-launched agent's process has no access of its own: the command table says what it needs and what to use instead.
+test("the kernels restart help names the access a process needs and the tool an agent without it uses", async () => {
+  const { guideText, usageOf } = await import("./agent-command-table.js")
+  const help = `${usageOf("kernels restart")}\n${guideText()}`
+  assert.match(help, /grant or a \/sudo window/)
+  assert.match(help, /chariox\.kernels\.restart/)
+})
