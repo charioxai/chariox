@@ -759,6 +759,42 @@ fn a_reply_streamed_before_a_kernel_restart_is_replaced_not_shown_twice() {
     turn.pass();
     assert_eq!(turn.live_rows(), [reply], "one row, the transcript's");
     assert_eq!(turn.stored_replies(), [reply]);
+    // Claude draws the completed block again, with no reader that knows it was completed.
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    assert_eq!(turn.live_rows(), [reply], "a redraw adds no row");
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
+// The same, when a reader had already taken over (it streamed nothing yet) before the transcript text arrived.
+#[test]
+fn a_block_completed_without_its_reader_is_not_streamed_again_even_by_a_reader_that_took_over_before(
+) {
+    let mut turn = running_turn("streamed-restart-fresh-reader");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● Here is the plan:",
+        "",
+        "  First we read the file.",
+        "",
+        "  Then we write it.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    super::live_reply::forget(turn.run.id());
+    // A reader takes over while the screen shows only that the turn is working.
+    turn.terminal_shows(&screen(&["✻ Working (4s)"]));
+    let reply = "Here is the plan:\n\n1. First we **read** the file.\n\nThen we write it.";
+    turn.append_transcript(assistant_text("reply", reply));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [reply]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    assert_eq!(turn.live_rows(), [reply], "a redraw adds no row");
+    assert_eq!(turn.stored_replies(), [reply]);
 }
 
 // The reader is lost while a block is still being written, and Claude draws that same block again before its transcript
