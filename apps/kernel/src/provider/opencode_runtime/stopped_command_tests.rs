@@ -73,10 +73,24 @@ fn running_bash() -> crate::provider::opencode_client::OpenCodePart {
 }
 
 fn bash_part(id: &str, command: &str) -> crate::provider::opencode_client::OpenCodePart {
+    tool_part(
+        id,
+        "bash",
+        "running",
+        serde_json::json!({"command": command}),
+    )
+}
+
+fn tool_part(
+    id: &str,
+    tool: &str,
+    status: &str,
+    input: serde_json::Value,
+) -> crate::provider::opencode_client::OpenCodePart {
     serde_json::from_value(serde_json::json!({
         "id": id, "sessionID": "session-1", "messageID": "assistant-1",
-        "type": "tool", "tool": "bash",
-        "state": {"status": "running", "input": {"command": command}, "time": {"start": 1}},
+        "type": "tool", "tool": tool,
+        "state": {"status": status, "input": input, "time": {"start": 1}},
     }))
     .unwrap()
 }
@@ -223,6 +237,73 @@ fn aborting_for_one_stopped_command_closes_the_rows_of_its_siblings() {
         assert_eq!(row["error"], "The command was stopped.", "{key}");
     }
     assert_eq!(rows[1].1["input"]["command"], "sleep 300");
+    drop(state);
+    stop.store(true, Ordering::Relaxed);
+    let _ = server.join();
+}
+
+/// Review of #1745, round 2: every open tool row of the session closes with the
+/// abort, not only the commands. A tool of another kind keeps its own name.
+#[test]
+fn aborting_for_a_stopped_command_closes_the_rows_of_other_tools_too() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (endpoint, server) = opencode(requests.clone(), stop.clone());
+    let (mut state, _events) = state(endpoint, Arc::new(Mutex::new(Vec::new())));
+    let now = Instant::now() - Duration::from_secs(30);
+    state.running_tools.note(
+        &tool_part(
+            "part-fetch",
+            "webfetch",
+            "running",
+            serde_json::json!({"url": "https://example.com/slow"}),
+        ),
+        now,
+        1,
+    );
+    state.running_tools.note(
+        &tool_part("part-wait", "task", "pending", serde_json::json!({})),
+        now,
+        1,
+    );
+    state.running_tools.note(
+        &tool_part(
+            "part-done",
+            "read",
+            "completed",
+            serde_json::json!({"filePath": "/tmp/x"}),
+        ),
+        now,
+        1,
+    );
+    state.running_tools.backdate_gone(Duration::from_secs(10));
+
+    let drained = drain_opencode_events(&tests::test_run(), &mut state, None).unwrap();
+
+    assert!(drained.prompt_completed);
+    let rows: std::collections::BTreeMap<String, serde_json::Value> = drained
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+        .map(|chunk| {
+            (
+                chunk.merge_key.clone().unwrap_or_default(),
+                serde_json::from_slice(&chunk.bytes).unwrap(),
+            )
+        })
+        .collect();
+    let keys: Vec<&str> = rows.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["part-bash", "part-fetch", "part-wait"]);
+    assert_eq!(rows["part-bash"]["error"], "The command was stopped.");
+    assert_eq!(rows["part-fetch"]["tool"], "webfetch");
+    assert_eq!(rows["part-fetch"]["status"], "error");
+    assert_eq!(rows["part-fetch"]["error"], "The tool was stopped.");
+    assert_eq!(
+        rows["part-fetch"]["input"]["url"],
+        "https://example.com/slow"
+    );
+    assert_eq!(rows["part-wait"]["tool"], "task");
+    assert_eq!(rows["part-wait"]["status"], "error");
     drop(state);
     stop.store(true, Ordering::Relaxed);
     let _ = server.join();
