@@ -10,7 +10,7 @@ import test from "node:test"
 import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
-import { runMachine } from "./machine/remote.mjs"
+import { command, runMachine, requireUserManager } from "./machine/remote.mjs"
 const extractorSource = await readFile(new URL("../../deploy/runtime-release/extract-release.py", import.meta.url), "utf8")
 const state = await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir())
 async function harness(t, overrides = {}) {
@@ -341,4 +341,39 @@ test("PC1 Setup refuses to select a managed Codex missing its bundled helpers", 
   await assert.rejects(installLocal(h.options), /Codex CLI has an incomplete install/)
   await assert.rejects(lstat(h.unit), { code: "ENOENT" })
   assert.ok(!h.requests.includes("/codex.tgz"))
+})
+
+test("MP-07 a user without a systemd user session is refused in plain words before anything is created", async t => {
+  for (const action of ["install", "repair", "upgrade", "remove"]) {
+    const h = await harness(t)
+    const asked = []
+    const { serviceManager, ...options } = h.options
+    const refusal = () => requireUserManager(async (program, args) => { asked.push([program, args]); throw new Error("no bus") }, 1234, "rented", async () => false)
+    await assert.rejects(installLocal({ ...options, action, userManager: refusal }), error => {
+      assert.match(error.message, /rented has no systemd user session \(\/run\/user\/1234 does not exist\) and lingering is off/)
+      assert.match(error.message, /Nothing was changed\. Log in through a session that has a user manager/)
+      assert.match(error.message, /loginctl enable-linger rented/)
+      assert.doesNotMatch(error.message, /target install command failed/)
+      return true
+    })
+    assert.deepEqual(await readdir(h.home), [], `${action} left files behind`)
+    assert.deepEqual(h.requests, [], `${action} downloaded before checking`)
+    assert.equal(h.calls.length, 0)
+    assert.deepEqual(asked.map(([program, args]) => `${program} ${args[0]}`), ["systemctl --user"], "only looks; never enables lingering itself")
+  }
+})
+test("MP-07 a healthy user manager with a large environment passes the preflight", async () => {
+  // `systemctl --user show-environment` prints the whole manager environment. Only its exit status
+  // matters, so output beyond the capture limit must not read as an unreachable manager.
+  const manager = (program, args, capture) => command("sh", ["-c", "head -c 20000 /dev/zero | tr '\\0' x"], capture)
+  await requireUserManager(manager, 1000, "u", async () => true)
+  const bytes = []
+  await requireUserManager(async (program, args, capture) => { bytes.push(capture); return "" }, 1000, "u", async () => true)
+  assert.deepEqual(bytes, [false], "the probe does not capture the manager's output")
+})
+test("MP-07 requireUserManager proceeds with a live manager and names a manager it cannot reach", async () => {
+  const live = []
+  await requireUserManager(async program => { live.push(program); return "" }, 1000, "u", async () => true)
+  assert.deepEqual(live, ["systemctl"])
+  await assert.rejects(requireUserManager(async () => { throw new Error("down") }, 1000, "u", async () => true), /exists, but this shell cannot reach the user manager there.*Nothing was changed/)
 })
