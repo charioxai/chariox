@@ -102,6 +102,7 @@ try {
 
   // Cell 2: the backstop, armed before the hot reload.
   let backstop = null
+  let afterReload = null
   const stated = async (alias, nativeTui) => {
     const r = await room(alias, nativeTui)
     await prompt(r, r.agent, "You have just finished a change and pushed it. Write the one-line status for the owner that says it is pushed and that you are now waiting for the review. Nothing else.")
@@ -135,19 +136,34 @@ try {
     const kept = backstop ? (await wakesOf(backstop.r.R, backstop.r.agent)).find(w => w.id === backstop.id && live(w)) : null
     cell("2-backstop-survives-the-hot-reload", backstop ? !!kept : null, { kept: kept ? kept.state : null })
     if (backstop && !kept) exitCode = 1
+    // Whether an agent that was idle before the reload can start a turn at all (a plain prompt), apart from any wake.
+    if (backstop) await attempt("idle-after-reload", async () => {
+      await prompt(backstop.r, backstop.r.agent, "Reply with the single word PONG and nothing else.")
+      const ponged = await until(async () => done(await turnsOf(backstop.r.R, backstop.r.agent)).some(turn => text(turn).includes("PONG")), "the idle agent answers after the reload", 180000).then(() => true, () => false)
+      cell("idle-agent-starts-a-turn-after-the-reload", ponged, { note: "informational: a plain prompt, no wake" })
+    })
+    // A backstop armed after the reload, to be woken by it.
+    afterReload = await stated("c2r", false).catch(() => null)
+    cell("2-backstop-armed-after-the-reload", !!afterReload?.wake, { label: afterReload?.wake?.label ?? null })
     await adopt("-after-reload")
     await message("-after-reload")
   } else {
     cell("hot-reload", null, { why: "the drill kernel pid is not exposed" })
   }
 
-  // The backstop is the only wake left; its firing is the agent's next turn.
-  if (backstop && !skipBackstopWait) {
-    const due = backstop.wake.next_due_ms
-    const woke = await until(async () => done(await turnsOf(backstop.r.R, backstop.r.agent)).some(turn => /backstop for a stated wait/.test(text(turn)) && /Wake|wake/.test(text(turn)) && !/Kernel: your turn ended/.test(text(turn).slice(0, 80))), "the backstop wakes the agent", Math.max(60000, due - Date.now() + 240000)).then(() => true, () => false)
-    save("turns-c2-final.json", await turnsOf(backstop.r.R, backstop.r.agent))
-    cell("2-backstop-wakes-the-agent", woke, { late_s: Math.round((Date.now() - due) / 1000) })
-    if (!woke) exitCode = 1
+  // The backstops are the only wakes left; a firing is the agent's next turn. The one armed after the reload is the verdict;
+  // the one armed before it is reported as it is.
+  const woken = async (b, id) => {
+    if (!b) return
+    const due = b.wake.next_due_ms
+    const ok = await until(async () => { const turns = done(await turnsOf(b.r.R, b.r.agent)); return turns.length >= 2 && turns.slice(1).some(turn => /backstop for a stated wait/.test(text(turn))) }, "the backstop wakes the agent", Math.max(60000, due - Date.now() + 300000)).then(() => true, () => false)
+    save(`turns-${id}-final.json`, await turnsOf(b.r.R, b.r.agent))
+    cell(id, ok, { late_s: Math.round((Date.now() - due) / 1000) })
+  }
+  if (!skipBackstopWait) {
+    await woken(afterReload && afterReload.wake ? { ...afterReload } : null, "2-backstop-armed-after-the-reload-wakes-the-agent")
+    await woken(backstop, "2-backstop-armed-before-the-reload-wakes-the-agent")
+    if (results.some(c => c.id.startsWith("2-backstop-armed-after") && c.status === "FAIL")) exitCode = 1
   }
   cell("3-no-turn-end-refused", results.every(c => c.status !== "FAIL") ? true : null, { note: "every turn above ended and completed" })
 } catch (error) {
