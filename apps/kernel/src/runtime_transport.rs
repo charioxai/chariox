@@ -710,10 +710,12 @@ where
         loop {
             progress.progress();
             // MP-08 / MP-10: capture readiness before draining, so an arrival
-            // during the pump cannot be hidden by the post-pump sleep.
+            // during the pump cannot be hidden by the post-pump sleep. A provider
+            // actor's completion is not a wake of this pass: the output scheduler
+            // below settles it at once, and a run's idle output poll completes
+            // twice a second per run, which would run every sweep of this pass
+            // for each of them.
             let output_ready_sequence = pump_state.provider_output_ready_sequence();
-            let provider_actor_completion_sequence =
-                pump_router.provider_run_actor_completion_sequence();
             pump_router.runtime_state().pump_kernel_access();
             pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
@@ -727,7 +729,6 @@ where
                 _ = sleep(Duration::from_millis(delay_ms)) => {}
                 _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => {}
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
-                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
                 _ = pump_router.wait_for_started_app_refreshes() => {}
                 _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => {}
                 _ = pump_state.wait_for_kernel_access_holder_exit() => {}

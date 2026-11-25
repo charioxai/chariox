@@ -368,6 +368,35 @@ pub(super) fn unreclaimable(path: &Path) -> Option<u64> {
     Some(current.saturating_sub(value("file ").saturating_sub(value("shmem "))))
 }
 
+/// How long a unit's counters stay good for every watcher of the pool. Each
+/// watch ticks every 250 ms and asks about every unit, so without this N
+/// watchers read N units' files N times per tick.
+const COUNTERS_TTL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `unreclaimable` of each unit, read at most once per `COUNTERS_TTL` however
+/// many watchers ask.
+#[derive(Default)]
+pub(super) struct CounterCache {
+    entries: Mutex<BTreeMap<PathBuf, (std::time::Instant, Option<u64>)>>,
+}
+
+impl CounterCache {
+    pub(super) fn unreclaimable(&self, path: &Path) -> Option<u64> {
+        let now = std::time::Instant::now();
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, value)) = entries.get(path) {
+            if now.saturating_duration_since(*at) < COUNTERS_TTL {
+                return *value;
+            }
+        }
+        // Units that ended stop being asked about; their entries go.
+        entries.retain(|_, (at, _)| now.saturating_duration_since(*at) < COUNTERS_TTL * 8);
+        let value = unreclaimable(path);
+        entries.insert(path.to_path_buf(), (now, value));
+        value
+    }
+}
+
 /// Budgets of kernels that ended without removing them (a crash, a kill):
 /// only those whose process is gone, and only directories already empty.
 fn remove_leftovers(parent: &Path) {
