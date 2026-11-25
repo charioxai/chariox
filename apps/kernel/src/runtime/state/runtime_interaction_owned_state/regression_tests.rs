@@ -1954,3 +1954,47 @@ async fn answered_task_question_does_not_reopen_before_its_waiter_runs() {
         "recovery reopened an acknowledged question"
     );
 }
+
+// Only the App offers reserve Accept, Choose files and Save file; an agent's own question may use
+// those choice ids and its answer goes through.
+#[tokio::test]
+async fn an_agents_question_may_use_the_app_offer_choice_ids() {
+    let f = Fixture::new();
+    for choice in ["save_file", "choose_files", "accept_host_action"] {
+        let id = f.id(&format!("question-{choice}"));
+        let (send, mut receive) = oneshot::channel();
+        let interaction = RuntimeInteraction::for_kernel_operation(
+            &id,
+            &id,
+            "Question",
+            "Which one?",
+            vec![RuntimeInteractionChoice::new(
+                choice, "This one", choice, None,
+            )],
+        );
+        f.state
+            .owned
+            .register_runtime_interaction(
+                &f.session,
+                interaction,
+                send,
+                Some(DEFAULT_LOCAL_USER_ID),
+                None,
+                None,
+            )
+            .unwrap();
+        f.state
+            .owned
+            .resolve_runtime_interaction(
+                &f.session,
+                &id,
+                choice,
+                None,
+                Some(DEFAULT_LOCAL_USER_ID),
+                false,
+            )
+            .unwrap_or_else(|error| panic!("{choice} must answer an ordinary question: {error}"));
+        let answer = receive.try_recv().expect("the question is answered");
+        assert_eq!(answer.choice_id.as_deref(), Some(choice));
+    }
+}

@@ -120,6 +120,13 @@ impl VaultUnlockGuard {
     }
 }
 
+impl VaultUnlockGuard {
+    /// The person asked for the Vault to stay open (an extension): dropping the guard no longer locks it.
+    fn keep_unlocked(&mut self) {
+        self.lock_on_drop = false;
+    }
+}
+
 impl Drop for VaultUnlockGuard {
     fn drop(&mut self) {
         if !self.lock_on_drop {
@@ -899,10 +906,23 @@ impl KernelRuntimeState {
         }
     }
 
+    /// An unlocked Vault raises no card: the answer is its status ("Vault unlocked until <time>"),
+    /// and extending or locking it is the agent's own action. Only a passphrase change asks the
+    /// person, through the passphrase cards. A locked Vault asks for the passphrase as before.
     pub(crate) async fn manage_credential_vault_unlock(
         &self,
         session_id: &str,
         agent_id: &str,
+    ) -> Result<VaultManaged, DaemonError> {
+        self.manage_credential_vault(session_id, agent_id, None)
+            .await
+    }
+
+    pub(crate) async fn manage_credential_vault(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        action: Option<&str>,
     ) -> Result<VaultManaged, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         let vault_config = user_config.credential_vault;
@@ -914,35 +934,54 @@ impl KernelRuntimeState {
         }
         let vault_path = expand_vault_path(&vault_config.path);
         let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
+        let mut status = status;
+        // A single-use unlock locks the Vault again when this guard drops: it lives to the end of the action.
+        let mut unlock_guard = None;
         if !status.unlocked {
             let guard = self
                 .ensure_vault_unlocked_for_agent(session_id, agent_id, "credential_vault_manage")
                 .await?;
-            let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
-            return Ok(VaultManaged {
-                status,
-                action: "unlocked".to_string(),
-                unlocked_via: guard.unlocked_via(),
-            });
+            status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
+            // Unlocking is all a plain management call asked for; any other action goes on now the
+            // Vault is open (a passphrase change asks for its passphrases, an extension applies).
+            if matches!(action.unwrap_or("popup"), "popup" | "status") {
+                return Ok(VaultManaged {
+                    status,
+                    action: "unlocked".to_string(),
+                    unlocked_via: guard.unlocked_via(),
+                });
+            }
+            unlock_guard = Some(guard);
         }
 
-        let resolution = self
-            .await_vault_interaction(
-                session_id,
-                vault_manage_interaction(&self.vault_requester(session_id, agent_id), agent_id),
-                "credential_vault_manage",
-                "vault management",
-            )
-            .await?;
-        let choice_id = resolution.choice_id.as_deref().unwrap_or("dismiss");
-        if choice_id == "change_passphrase" {
-            let (status, action) = self
-                .change_credential_vault_passphrase(session_id, agent_id, &vault_path)
-                .await?;
-            return Ok(VaultManaged::done(status, action));
+        match action.unwrap_or("popup") {
+            "popup" | "status" => Ok(VaultManaged::done(status, "status".to_string())),
+            "change_passphrase" => {
+                let (status, action) = self
+                    .change_credential_vault_passphrase(session_id, agent_id, &vault_path)
+                    .await?;
+                Ok(VaultManaged::done(status, action))
+            }
+            choice @ ("extend" | "extend_30m" | "extend_60m") => {
+                let choice = if choice == "extend_60m" {
+                    "extend_60m"
+                } else {
+                    "extend_30m"
+                };
+                let (status, action) = apply_vault_manage_choice(&vault_path, choice, &vault_config)?;
+                // The extension is the new lease: the unlock that opened the Vault must not undo it.
+                if let Some(guard) = unlock_guard.as_mut() {
+                    guard.keep_unlocked();
+                }
+                Ok(VaultManaged::done(status, action))
+            }
+            other => Err(DaemonError::LocalTransport {
+                operation: "credential_vault_manage",
+                message: format!(
+                    "unsupported vault action `{other}`; expected status, extend, extend_60m, lock, or change_passphrase"
+                ),
+            }),
         }
-        let (status, action) = apply_vault_manage_choice(&vault_path, choice_id, &vault_config)?;
-        Ok(VaultManaged::done(status, action))
     }
 
     /// Asks for the current passphrase and the new one twice, each in its own
@@ -1367,62 +1406,6 @@ fn vault_secret_from_resolution(
     }
 }
 
-fn vault_manage_interaction(
-    requester: &VaultRequester,
-    agent_id: &str,
-) -> crate::session::RuntimeInteraction {
-    crate::session::RuntimeInteraction::new(
-        format!(
-            "vault-manage-{}-{}",
-            agent_id,
-            crate::session::unix_epoch_ms()
-        ),
-        agent_id,
-        crate::session::RuntimeInteractionKind::Choice,
-        crate::session::RuntimeInteractionLevel::Info,
-        Some("Chariox Vault Unlocked".to_string()),
-        format!(
-            "{}The Vault is unlocked. Extend the unlock window, change the passphrase, or lock it now.",
-            requester.room_prefix()
-        ),
-        vec![
-            crate::session::RuntimeInteractionChoice::new(
-                "extend_30m",
-                "Extend 30 minutes",
-                "extend_30m",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "extend_60m",
-                "Extend 1 hour",
-                "extend_60m",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "change_passphrase",
-                "Change passphrase",
-                "change_passphrase",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "lock_now",
-                "Lock now",
-                "lock_now",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "dismiss",
-                "Dismiss",
-                "dismiss",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            ),
-        ],
-        None,
-        Some(120),
-        Some("dismiss".to_string()),
-    )
-}
-
 fn apply_vault_manage_choice(
     vault_path: &std::path::Path,
     choice_id: &str,
@@ -1491,11 +1474,12 @@ mod tests {
         }
     }
 
-    // MP-11 F1: exercise the actual wait and shared management reply path.
+    // An unlocked Vault raises no card: managing it returns its state, and extending it is the
+    // agent's own action that returns the new state.
     #[tokio::test]
-    async fn vault_management_reply_after_expiry_requires_unlock() {
-        let workspace = crate::test_support::TestWorktree::new("vault-expired-reply");
-        let private_state = crate::test_support::TestWorktree::new("vault-expired-reply-state");
+    async fn managing_an_unlocked_vault_raises_no_card_and_returns_its_state() {
+        let workspace = crate::test_support::TestWorktree::new("vault-manage-no-card");
+        let private_state = crate::test_support::TestWorktree::new("vault-manage-no-card-state");
         let path = private_state.path().join("vault.json");
         crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
         let mut config = crate::config::DaemonConfig::for_tests();
@@ -1508,51 +1492,45 @@ mod tests {
             .unwrap();
         let state =
             super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
-        for choice in ["extend_30m", "extend_60m"] {
+        for (action, expected) in [
+            (None, "status"),
+            (Some("status"), "status"),
+            (Some("extend"), "extended_30m"),
+            (Some("extend_60m"), "extended_60m"),
+        ] {
             crate::secret::unlock_chariox_encrypted_vault(
                 &path,
                 "test passphrase",
                 crate::secret::VaultUnlockLease::KernelShutdown,
             )
             .unwrap();
-            let call = state.manage_credential_vault_unlock(session.id(), agent.id());
-            tokio::pin!(call);
-            let interaction = tokio::select! {
-                result = &mut call => panic!("management must await reply: {result:?}"),
-                result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                    loop {
-                        let snapshot = state.owned.session_store.get_session(session.id()).unwrap();
-                        if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
-                            break interaction.clone();
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                    }
-                }) => result.expect("management interaction"),
-            };
-            crate::secret::expire_chariox_encrypted_vault_for_test(&path);
-            state
-                .owned
-                .resolve_runtime_interaction(
-                    session.id(),
-                    interaction.id(),
-                    choice,
-                    None,
-                    Some(session.owner_user_id()),
-                    false,
-                )
-                .unwrap();
-            let result = call.await;
-            crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
-            std::fs::remove_file(&path).unwrap();
-            assert!(result.is_err(), "reply must not revive an expired key");
-            assert!(crate::secret::is_chariox_vault_locked_error(
-                &result.unwrap_err()
-            ));
-            if choice == "extend_30m" {
-                crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase")
-                    .unwrap();
-            }
+            let managed = state
+                .manage_credential_vault(session.id(), agent.id(), action)
+                .await
+                .unwrap_or_else(|error| panic!("{action:?}: {error}"));
+            assert_eq!(managed.action, expected);
+            assert!(managed.status.unlocked, "{action:?}");
+            assert!(
+                state
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap()
+                    .active_interaction_for_agent(agent.id())
+                    .is_none(),
+                "{action:?} raised a card"
+            );
         }
+        let refused = state
+            .manage_credential_vault(session.id(), agent.id(), Some("dance"))
+            .await
+            .expect_err("an unknown action is refused");
+        assert!(
+            refused.to_string().contains("unsupported vault action"),
+            "{refused}"
+        );
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     // A session created before this kernel was enrolled is owned by `local`;
@@ -2617,13 +2595,7 @@ mod tests {
     }
 
     #[test]
-    fn vault_manage_offers_a_passphrase_change_through_secret_prompts() {
-        let manage = vault_manage_interaction(&requester(None, None), "agent-1");
-        assert!(manage
-            .choices()
-            .iter()
-            .any(|choice| choice.id() == "change_passphrase"));
-
+    fn a_passphrase_change_asks_the_person_through_secret_prompts() {
         for step in [
             VaultPassphraseChangeStep::Current,
             VaultPassphraseChangeStep::New,
@@ -2675,15 +2647,12 @@ mod tests {
             (Some("Reviewer"), Some("Launch room")),
         ] {
             let requester = requester(agent, room);
-            let mut interactions = vec![
-                vault_passphrase_interaction(
-                    &requester,
-                    agent_id,
-                    "vault-unlock-test",
-                    &crate::config::UserCredentialVaultConfig::default(),
-                ),
-                vault_manage_interaction(&requester, agent_id),
-            ];
+            let mut interactions = vec![vault_passphrase_interaction(
+                &requester,
+                agent_id,
+                "vault-unlock-test",
+                &crate::config::UserCredentialVaultConfig::default(),
+            )];
             for step in [
                 VaultPassphraseChangeStep::Current,
                 VaultPassphraseChangeStep::New,

@@ -42,7 +42,7 @@ async fn wait_file(kernel: &Kernel, name: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey() {
+async fn kernel_access_external_holder_cannot_change_the_vault_passphrase_or_choose_new_passkey() {
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
     grant(&mut kernel, &mut holder).await;
@@ -50,23 +50,7 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
     kernel.control("vault-manage").await;
     kernel.control("vault-check").await;
     let status = std::fs::read(kernel.root.join("vault-status")).unwrap();
-    let id = vault_prompt(&mut kernel, "vault-manage-").await;
-    for choice in [
-        "lock_now",
-        "extend_30m",
-        "extend_60m",
-        "change_passphrase",
-        "dismiss",
-    ] {
-        let response = holder.request(answer(&id, choice, None));
-        assert!(
-            response["error"].is_object(),
-            "external vault answer accepted: {response}"
-        );
-    }
-    kernel.control("vault-check").await;
-    assert!(status == std::fs::read(kernel.root.join("vault-status")).unwrap());
-    assert!(kernel.request(answer(&id, "change_passphrase", None)).await["error"].is_null());
+    // An unlocked Vault raises no management card; the passphrase change asks in secret prompts.
     for (step, reply) in [
         ("current", PASSKEY),
         ("new", "Owner New Test Passkey"),

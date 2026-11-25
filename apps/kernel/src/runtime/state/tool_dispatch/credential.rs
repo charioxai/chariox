@@ -450,7 +450,10 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let action = args.action.as_deref().unwrap_or("popup");
-                if matches!(action, "lock" | "popup") {
+                if matches!(
+                    action,
+                    "lock" | "popup" | "extend" | "extend_60m" | "change_passphrase"
+                ) {
                     self.ensure_agent_can_manage_user_vault(provider_run)?;
                 }
                 let user_config = self.owned.config_projection.snapshot().user_config;
@@ -478,7 +481,7 @@ impl KernelRuntimeState {
                             }),
                         })
                     }
-                    "popup" => {
+                    "popup" | "extend" | "extend_60m" | "change_passphrase" => {
                         let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
                             DaemonError::LocalTransport {
                                 operation: "runtime_tool_manage_credential_vault",
@@ -486,7 +489,7 @@ impl KernelRuntimeState {
                             }
                         })?;
                         let managed = self
-                            .manage_credential_vault_unlock(provider_run.session_id(), agent_id)
+                            .manage_credential_vault(provider_run.session_id(), agent_id, Some(action))
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
@@ -496,7 +499,7 @@ impl KernelRuntimeState {
                     other => Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_manage_credential_vault",
                         message: format!(
-                            "unsupported vault action `{other}`; expected status, lock, or popup"
+                            "unsupported vault action `{other}`; expected status, extend, extend_60m, lock, or change_passphrase"
                         ),
                     }),
                 }
@@ -646,7 +649,10 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let action = args.action.as_deref().unwrap_or("popup");
-                if matches!(action, "lock" | "popup") {
+                if matches!(
+                    action,
+                    "lock" | "popup" | "extend" | "extend_60m" | "change_passphrase"
+                ) {
                     self.ensure_agent_can_manage_user_vault_for_agent(
                         &context.home_session_id,
                         &agent,
@@ -677,9 +683,9 @@ impl KernelRuntimeState {
                             }),
                         })
                     }
-                    "popup" => {
+                    "popup" | "extend" | "extend_60m" | "change_passphrase" => {
                         let managed = self
-                            .manage_credential_vault_unlock(&context.home_session_id, agent.id())
+                            .manage_credential_vault(&context.home_session_id, agent.id(), Some(action))
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
@@ -689,7 +695,7 @@ impl KernelRuntimeState {
                     other => Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_manage_credential_vault",
                         message: format!(
-                            "unsupported vault action `{other}`; expected status, lock, or popup"
+                            "unsupported vault action `{other}`; expected status, extend, extend_60m, lock, or change_passphrase"
                         ),
                     }),
                 }
