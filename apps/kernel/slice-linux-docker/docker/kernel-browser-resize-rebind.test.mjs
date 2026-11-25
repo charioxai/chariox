@@ -1,4 +1,4 @@
-// Row 487 (provisional local 1016): a visible page that asked for resize_rebind keeps its subscription across a resize of
+// Row 487 (local 1015): a visible page that asked for resize_rebind keeps its subscription across a resize of
 // the Browser window; the kernel admits the same Tab on the new window and input must name the new window epoch.
 import test from 'node:test';
 import assert from 'node:assert/strict';
