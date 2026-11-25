@@ -754,6 +754,50 @@ impl Ledger {
                     }
                 }
             };
+            // A shell that ran one command at a time is the entry's command;
+            // when the command it followed has ended and the shell is back
+            // at its prompt, that run is over: its peak is kept for the next
+            // run, and the next one is judged afresh, not as the shell's
+            // growth. (The shell outlives its commands, so the entry would
+            // otherwise never end and nothing would be remembered.)
+            if entry.admitted
+                && entry.wait.is_none()
+                && entry.seen.as_ref().is_some_and(|seen| {
+                    seen.pid != command.pid
+                        && seen.pid != command.effective
+                        && inspect(seen.pid).is_err()
+                })
+            {
+                let kept = entry.seen.as_ref().is_some_and(|seen| {
+                    self.peaks.record(
+                        &seen.key,
+                        Peak {
+                            exact: seen.exact,
+                            ..entry.peak.clone()
+                        },
+                        light,
+                    )
+                });
+                if entry.peak.memory >= light {
+                    entry.decision(
+                        command.pid,
+                        if kept { "remembered" } else { "forgot" },
+                        WaitReason::Memory,
+                        if kept {
+                            "its run ended at the shell's prompt; its peak is kept, so the next run waits when the pool cannot fit it"
+                        } else {
+                            "its run ended at the shell's prompt; its peak was not kept"
+                        },
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                self.arrivals += 1;
+                *entry = Entry {
+                    arrived: self.arrivals,
+                    holdable: entry.holdable,
+                    ..Entry::default()
+                };
+            }
             entry.resident = command.resident;
             entry.writes = command.writes;
             entry.peak.memory = entry.peak.memory.max(command.resident);
@@ -766,6 +810,11 @@ impl Ledger {
             {
                 entry.peak.volume = ReceivingVolume::capture(output);
                 entry.peak.volume_writes = output.written;
+            }
+            // A command line that could not be read when it was admitted (a
+            // process mid-exec shows none) is read again, so its peak is kept.
+            if entry.admitted && entry.wait.is_none() && entry.seen.is_none() {
+                entry.seen = recognise(command.effective);
             }
             // Until it is decided, follow a shell to the command it runs.
             if !entry.admitted

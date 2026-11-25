@@ -2847,3 +2847,112 @@ fn every_hold_start_and_release_is_logged_with_its_reason() {
         "no started line: {lines:?}"
     );
 }
+
+/// Row 541, A6: a typed command's peak is kept when its run ends at the
+/// shell's prompt, and the next run of it is held when the pool cannot fit it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shells_command_that_ends_leaves_its_peak_and_its_next_run_waits() {
+    let capture = crate::logging::capture::start();
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    let shell = 4_100_500u32;
+    let at = |effective: u32, resident: u64| {
+        let mut command = command(shell, resident, 0);
+        command.effective = effective;
+        command
+    };
+    let show = |commands: Vec<pool::CommandUse>| terminal.lock().unwrap().commands = commands;
+    // The sampler registers every tick: a command line unreadable for a
+    // moment (a process mid-exec) is read on the next one.
+    let register = |ledger: &mut Ledger| {
+        for _ in 0..200 {
+            ledger.register(&terminal, 512 * MIB);
+            if terminal
+                .lock()
+                .unwrap()
+                .admission
+                .get(&shell)
+                .is_some_and(|entry| {
+                    entry
+                        .seen
+                        .as_ref()
+                        .is_some_and(|seen| seen.line.starts_with("sleep"))
+                })
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the command line was never read");
+    };
+    // The child has exec'd the program once its command line names it.
+    let started = |child: &std::process::Child| {
+        for _ in 0..500 {
+            let line = std::fs::read(format!("/proc/{}/cmdline", child.id())).unwrap_or_default();
+            if line.starts_with(b"sleep") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("sleep did not start");
+    };
+    let mut first = std::process::Command::new("sleep")
+        .arg("5410")
+        .spawn()
+        .unwrap();
+    started(&first);
+    show(vec![at(first.id(), 3 * GIB)]);
+    register(&mut ledger);
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    ledger.pass(
+        &[other.clone(), terminal.clone()],
+        &terminal,
+        &healthy(40 * GIB, &*volume),
+    );
+    assert_eq!(wait(&terminal, shell), None, "the first run fits");
+    first.kill().unwrap();
+    first.wait().unwrap();
+    // The shell is back at its prompt.
+    show(vec![at(shell, 10 * MIB)]);
+    ledger.register(&terminal, 512 * MIB);
+    let key = seen_argv(
+        0,
+        &["sleep".to_string(), "5410".to_string()],
+        std::env::current_dir().ok(),
+    )
+    .key;
+    assert_eq!(
+        ledger.peaks.get(&key).map(|peak| peak.memory),
+        Some(3 * GIB),
+        "the ended run's peak was not kept"
+    );
+    // The same command is typed again while the pool has 1 GiB of room.
+    let mut second = std::process::Command::new("sleep")
+        .arg("5410")
+        .spawn()
+        .unwrap();
+    started(&second);
+    show(vec![at(second.id(), 4 * MIB)]);
+    register(&mut ledger);
+    ledger.pass(
+        &[other.clone(), terminal.clone()],
+        &terminal,
+        &healthy(GIB, &*volume),
+    );
+    assert_eq!(
+        wait(&terminal, shell),
+        Some(Wait::Held(WaitReason::Memory)),
+        "the next run of a command that peaked at 3 GiB did not wait"
+    );
+    second.kill().unwrap();
+    second.wait().unwrap();
+    assert!(
+        capture
+            .records()
+            .iter()
+            .any(|line| line.contains("admission remembered") && line.contains("sleep 5410")),
+        "the kept peak is not logged"
+    );
+}
