@@ -1,5 +1,6 @@
 use super::*;
 
+mod all_providers;
 mod vault_login;
 
 use crate::managed_context::kernel::{
