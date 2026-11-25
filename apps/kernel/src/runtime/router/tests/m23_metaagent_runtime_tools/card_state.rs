@@ -179,3 +179,61 @@ async fn plain() {
         "{missing:?}"
     );
 }
+
+/// The person's web input (`MirrorInput`, used by the card and the full Tab) goes through the
+/// same log as the display input: the agent reads why it was refused.
+async fn mirror_input(world: &World, document_id: &str, action: serde_json::Value) {
+    let identity = world
+        .router
+        .local_terminal_caller(KernelCommandSource::LocalCli, "cardstate-mirror")
+        .await;
+    let command = crate::local::KernelBrowserCommand::MirrorInput {
+        tab_id: "host-tab-1".into(),
+        generation: 9,
+        document_id: document_id.into(),
+        subscription_id: "host-mirror-1".into(),
+        sequence: 1,
+        action: serde_json::from_value(action).unwrap(),
+    };
+    let person = KernelCommand::from_local_request_with_caller(
+        "cardstate-mirror",
+        KernelCommandSource::LocalCli,
+        identity,
+        None,
+        None,
+        &crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: command.clone(),
+        }),
+    );
+    let refused = world
+        .router
+        .runtime_state
+        .kernel_browser_terminal_request(&person, command)
+        .await;
+    assert!(refused.is_err(), "no browser is running here: {refused:?}");
+}
+
+#[test]
+fn cardstate_04_a_refused_web_input_is_readable_like_a_display_input() {
+    run_large_stack_async_test("cardstate-04", web_refusal);
+}
+async fn web_refusal() {
+    let world = raised("cardstate-04", "card-web").await;
+    mirror_input(
+        &world,
+        "",
+        serde_json::json!({"kind": "text", "text": "never-kept-web-text"}),
+    )
+    .await;
+    mirror_input(&world, "DOC-A", serde_json::json!({"kind": "key", "key": "a"})).await;
+    let result = room_command(&world, "a", "room card card-web").await;
+    assert!(result.ok, "{result:?}");
+    let card = &result.payload["response"];
+    let last = &card["browser"]["input"]["last_refused"];
+    assert_eq!(last["kind"], "key", "the latest refusal is the one read: {last:?}");
+    assert_eq!(last["generation"], 9);
+    assert_eq!(last["document_id"], "DOC-A");
+    assert!(last["reason"].as_str().is_some_and(|reason| !reason.is_empty()), "{last:?}");
+    assert!(codes(card).contains(&"last_input_refused".to_owned()));
+    assert!(!card.to_string().contains("never-kept-web-text"));
+}
