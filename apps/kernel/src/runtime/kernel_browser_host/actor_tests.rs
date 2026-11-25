@@ -1105,12 +1105,12 @@ done
     let policy = || json!({"values":[],"targets":[],"unknown":false});
     let request = |params: Value| host.protected_request("owner", None, "host.browser", params, policy());
     // A restarted kernel remembers no stop: the recovery start brings the browser back.
-    let after_restart = request(json!({"op":"start","card_recovery":true}));
+    let after_restart = request(json!({"op":"start","unless_stopped":true}));
     let restarted = root.join("started").exists();
     // The person stops the browser on purpose.
     let stopped = request(json!({"op":"stop"}));
     std::fs::remove_file(root.join("started")).ok();
-    let refused = request(json!({"op":"start","card_recovery":true}));
+    let refused = request(json!({"op":"start","unless_stopped":true}));
     let revived = root.join("started").exists();
     // Only an explicit start of the person's own brings it back.
     let explicit = request(json!({"op":"start"}));

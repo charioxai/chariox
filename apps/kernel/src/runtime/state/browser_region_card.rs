@@ -45,6 +45,33 @@ impl ObservationFailures {
     }
 }
 
+/// What the watcher does after one attempt to start the browser it found unavailable.
+#[derive(Debug, PartialEq, Eq)]
+enum StartRecovery {
+    /// The browser is back: observe again.
+    Restarted,
+    /// It could not start (or was stopped on request) yet: try again within the budget.
+    Retry,
+    /// The 15 second budget ran out: settle the card unavailable.
+    GiveUp,
+}
+
+/// A failed start counts toward the same budget as a failed observation, so a controller that never
+/// comes back, or a browser that stays stopped, ends the card instead of keeping it pending.
+fn after_start_attempt(
+    failures: &mut ObservationFailures,
+    started: &Result<(), DaemonError>,
+) -> StartRecovery {
+    match started {
+        Ok(()) => {
+            failures.observed();
+            StartRecovery::Restarted
+        }
+        Err(_) if failures.exhausted() => StartRecovery::GiveUp,
+        Err(_) => StartRecovery::Retry,
+    }
+}
+
 impl Drop for RegionWatch {
     fn drop(&mut self) {
         self.watching
@@ -123,14 +150,16 @@ impl KernelRuntimeState {
 
     /// The kernel restarted and ended its browser: the card's page comes back when the browser
     /// starts again, the same way an agent's own read would start it.
-    async fn start_card_browser(&self, agent_id: &str) -> Result<(), DaemonError> {
+    pub(crate) async fn start_card_browser(&self, agent_id: &str) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         self.kernel_browser_operation(
             &user,
             Some(agent_id),
             "host.browser",
-            serde_json::json!({"op":"start","card_recovery":true}),
+            // `unless_stopped`: the host answers `browser_unavailable` both for a controller a kernel
+            // restart ended and for one a `stop` ended. Only the first is the card's to bring back.
+            serde_json::json!({"op":"start","unless_stopped":true}),
         )
         .await?;
         Ok(())
@@ -319,6 +348,21 @@ impl KernelRuntimeState {
                                     tokio::time::sleep(Duration::from_secs(1)).await;
                                     continue;
                                 }
+                                // The restart is not the person finishing, and the page was never
+                                // shown again: the agent is told the card is unavailable, never
+                                // that its step is done.
+                                if self
+                                    .close_unavailable_browser_region_card(
+                                        room,
+                                        id,
+                                        "Browser restarted and the page could not be shown again; take a fresh snapshot and ask again".into(),
+                                    )
+                                    .is_ok()
+                                {
+                                    return;
+                                }
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                continue;
                             }
                         }
                     }
@@ -354,13 +398,19 @@ impl KernelRuntimeState {
                 Err(error) => {
                     tracing::debug!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card observation will retry");
                     // The controller is stopped after a restart: start it, then observe again.
-                    // A browser the person stopped on purpose stays stopped: the start is refused,
-                    // and the card ends with the failure budget like any other unreachable page.
-                    if !app_confirmation
-                        && error.to_string().contains("browser_unavailable")
-                        && self.start_card_browser(agent).await.is_ok()
-                    {
-                        failures.observed();
+                    if !app_confirmation && error.to_string().contains("browser_unavailable") {
+                        let started = self.start_card_browser(agent).await;
+                        if after_start_attempt(&mut failures, &started) == StartRecovery::GiveUp
+                            && self
+                                .close_unavailable_browser_region_card(
+                                    room,
+                                    id,
+                                    "Browser is stopped or could not be started for 15 seconds; take a fresh snapshot and ask again".into(),
+                                )
+                                .is_ok()
+                        {
+                            return;
+                        }
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         continue;
                     }
@@ -481,7 +531,9 @@ impl KernelRuntimeOwnedState {
             || expected.verification.is_some()
             || region.done_text != expected.done_text
         {
-            return Err(region_error("browser card rebind changed its Tab or its proof"));
+            return Err(region_error(
+                "browser card rebind changed its Tab or its proof",
+            ));
         }
         session.update_active_interaction_view(
             id,
@@ -559,5 +611,36 @@ mod tests {
         assert!(!failures.exhausted());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(failures.exhausted());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_browser_starts_count_toward_the_card_failure_budget() {
+        let refused: Result<(), DaemonError> = Err(region_error("browser_unavailable: stopped"));
+        let mut failures = ObservationFailures::default();
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::Retry
+        );
+        tokio::time::advance(Duration::from_secs(14)).await;
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::Retry
+        );
+        // A start that works resets the budget.
+        assert_eq!(
+            after_start_attempt(&mut failures, &Ok(())),
+            StartRecovery::Restarted
+        );
+        tokio::time::advance(Duration::from_secs(14)).await;
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::Retry
+        );
+        // Persistent failure ends the card with the unavailable settlement.
+        tokio::time::advance(Duration::from_secs(15)).await;
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::GiveUp
+        );
     }
 }

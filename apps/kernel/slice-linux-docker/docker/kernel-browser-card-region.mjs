@@ -200,7 +200,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
   // A card that waits for a response or for page text ends only when that happens: losing its element first is not completion.
   const gone = async reason => {
     if (anchor?.verification?.receipt?.result === 'accepted') return completion();
-    // The command names the proof even when the controller lost the anchor (a restart): no receipt, no completion.
+    // After a restart the anchor is gone but the command still names the verification: its proof is lost, which is unavailable, never completion.
     if (anchor?.verification || command.verification !== undefined || command.done_text !== undefined) return {state:'unavailable',reason};
     return {state:'condition_met',reason};
   };
