@@ -5,6 +5,10 @@ use crate::durable_state::agent_lifecycle::{
     self as ledger, AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
 
+/// What a parent is told when the kernel's program was replaced (a restart or a hot reload)
+/// while a task waited for a background call, and nothing was left to carry the wait over.
+const UNHELD_TASK_RESTART_REASON: &str = "The kernel restarted while this task waited for a background call to end, and the call's end can no longer reach it. Send the request again to continue the conversation.";
+
 impl KernelRuntimeOwnedState {
     /// True when the task is at a revision this kernel has not yet announced.
     /// Retried settlements of an unchanged task are not news.
@@ -2009,6 +2013,19 @@ impl KernelRuntimeState {
                         "prompt_id": ended.prompt_id, "provider_run_id": ended.provider_run_id,
                         "state": ended.state, "last_progress_at_ms": task.last_progress_at_ms}),
                 );
+                // A task whose last progress predates this program's start lost its executor to a
+                // restart or a hot reload (the in-memory hold for its background calls went with
+                // it, and no active prompt was left for recovery to end). Its parent hears that,
+                // typed and retryable, not a cancellation nobody asked for.
+                if task.last_progress_at_ms < self.owned.agent_wakes.started_at_ms {
+                    self.announce_child_interrupted(
+                        &ended.room_id,
+                        &ended.agent_id,
+                        &ended.prompt_id,
+                        UNHELD_TASK_RESTART_REASON,
+                    )
+                    .await?;
+                }
                 return Ok(Some(ended));
             }
         }
