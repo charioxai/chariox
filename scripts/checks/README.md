@@ -36,7 +36,7 @@ Each core rule of `AGENTS.md` has one check that fails the build with the file, 
 |---|---|---|
 | Rule 8: no runtime credential or config fetch from another kernel | `no-kernel-credential-fetch` | `pnpm lint:rules` |
 | Rule 3: the relay never inspects payloads | `relay-isolation` | `pnpm lint:rules` |
-| Rule 4: Cloud never proxies runtime traffic | `scripts/check-no-runtime-proxy.mjs` | `pnpm lint` in `chariox-cloud` |
+| Rule 4: Cloud never proxies runtime traffic | `no-runtime-proxy` (same runner, `chariox-cloud`) | `pnpm lint:rules` in `chariox-cloud` |
 | Rule 2: no provider SDKs | `no-provider-sdk` | `pnpm lint:rules` |
 | Rule 7: no Cloud-only features in OSS | `scripts/oss-boundary-guard.mjs` | `pnpm lint` (before `lint:rules`) |
 
