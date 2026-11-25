@@ -2,9 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
+import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
+import { Mirror2, ParsedSheets, sheetDigest, cssRules, prunedCss, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -572,11 +573,22 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   assert.ok(Date.now() - started < 1000, `the wait ended after the navigation (${Date.now() - started} ms)`);
 });
 
+// Row 342 F2: the page parses a part it has not seen, gives the url() occurrences their keys (sheetKeys) and prunes a
+// first-paint sheet; the kernel sanitizes. This stub answers those three calls; `keyOf` plays the page's registry.
+const pageSheets=(seen=[],keyOf=(value,n)=>`r${n+1}`,parse=text=>text,used=()=>true)=>async(world,expression)=>{
+ if(expression.includes('compatMode'))return world.mode==='BackCompat';
+ seen.push(expression);
+ if(expression.includes('.sheetKeys('))return JSON.parse(expression.slice(expression.indexOf('.sheetKeys(')+11,-1)).map(part=>part.urls.map(([value,base,kind],n)=>keyOf(value,n,base,kind)));
+ if(expression.includes('.usedCss('))return null;
+ if(expression.includes('.usedSelectors(')){const at=expression.indexOf('.usedSelectors(')+15,args=JSON.parse(`[${expression.slice(at,-1)}]`);return args[1].map(selector=>used(selector)?'1':'0').join('')}
+ return JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1)).map(sheet=>parse(sheet.text));
+};
+
 test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-content loading',async()=>{
  const body=Buffer.from('body{color:green}'),calls=[];
  const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address,limit){assert.equal(actual,world);assert.equal(address,'https://public.example/style.css');assert.equal(limit,16*1024*1024);return body}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
@@ -587,7 +599,7 @@ test('a cross-origin stylesheet missing from the network buffer and the resource
  const body='body{color:green}',asked=[];
  const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Network.loadNetworkResource')return {resource:{success:false}};if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body));return {css:body,parsed:[body],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/big.css'),body);
  assert.deepEqual(asked,[['Network.loadNetworkResource','F'],['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
 });
@@ -605,7 +617,7 @@ test('a cross-origin stylesheet that left the network buffer is read as its exac
   if(method==='Page.getResourceContent')return {content:latin1,base64Encoded:false};
   throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));return {css:sheets[0].text,parsed:[sheets[0].text],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css'),exact);
  assert(!asked.includes('Page.getResourceContent'),'the frame text is only the last resort');
 });
@@ -615,7 +627,7 @@ test('a cross-origin stylesheet whose href has a fragment is read by its request
  const body=Buffer.from('body{color:green}'),asked=[];
  const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){asked.push(address);return address==='https://public.example/s.css?AUIClients/X'?body:null}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css?AUIClients/X#1353983-T1'),body.toString());
  assert.deepEqual(asked,['https://public.example/s.css?AUIClients/X']);
 });
@@ -625,20 +637,123 @@ test('MP-08/MP-10: a same-site navigation reuses the normalized text of a cross-
  const source='.a{border:var(--w) solid;border-color:red}',parsed='.a { border: var(--w) solid; border-color: red; }';
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return Buffer.from(source)}}}}});
  const expressions=[];
- mirror.evaluate=async(world,expression)=>{
-  if(expression.includes('compatMode'))return world.mode==='BackCompat';
-  expressions.push(expression);const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));
-  return {css:`sanitized:${sheets[0].body??parsed}`,parsed:sheets.map(sheet=>sheet.body===undefined?parsed:null),used:null};
- };
+ mirror.evaluate=pageSheets(expressions,undefined,()=>parsed);
  const world=(url,mode='CSS1Compat')=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},mode,ref:'observer'});
+ const parses=()=>expressions.filter(e=>!e.includes('.sheetKeys(')&&!e.includes('.usedCss('));
  const first=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Linux'),'https://en.wikipedia.org/w/load.php?skin');
  const next=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Web_browser'),'https://en.wikipedia.org/w/load.php?skin');
- assert(expressions[0].includes(JSON.stringify(source)),'the first document parses the source');
- assert(!expressions[1].includes(JSON.stringify(source))&&expressions[1].includes(JSON.stringify(parsed)),'the next document of the site takes the normalized text');
- assert.equal(first,`sanitized:${parsed}`);assert.equal(next,`sanitized:${parsed}`);
+ assert.equal(parses().length,1,'only the first document parses the source');assert(parses()[0].includes(JSON.stringify(source)));
+ assert(!expressions.some(e=>e.includes(JSON.stringify(parsed))),'the normalized text never travels into the page');
+ assert.equal(first,parsed);assert.equal(next,parsed);
  await mirror.crossOriginSheet(world('https://other.example/'),'https://en.wikipedia.org/w/load.php?skin');
  await mirror.crossOriginSheet(world('https://en.wikipedia.org/quirks','BackCompat'),'https://en.wikipedia.org/w/load.php?skin');
- assert(expressions[2].includes(JSON.stringify(source))&&expressions[3].includes(JSON.stringify(source)),'another origin or compatibility mode parses the source itself');
+ assert.equal(parses().length,3,'another origin or compatibility mode parses the source itself');
+});
+
+// Row 342 F2 (GitHub: 2 MB of sheets crossed CDP into and out of a page busy with its own load on every navigation).
+test('Row 342 F2: a cross-origin sheet sanitized in the kernel equals the in-page sanitize, keys taken in the same order',async()=>{
+ const css=[
+  '@font-face { font-family: "F"; src: url("/f.woff2") format("woff2"), url(data:font/woff2;base64,AAAA) format("woff2"); }\n',
+  '.a { background: url(a.png), url("a.png"), url(\'#frag x\'), url(javascript:alert(1)), url(); }\n',
+  '.b { background-image: image-set("b1.png" 1x, url(b2.png) 2x type("image/webp")); }\n',
+  '.c { background: -webkit-image-set(url(c.png) 1x); --v: u\\72l(esc.png); }\n',
+  'a[href*="cookie" i]:target, :defined > img[src$=".svg"] { color: red; }\n',
+  '@namespace svg url(http://www.w3.org/2000/svg);\n@namespace bad url(https://evil.example/ns);\n',
+  '.d::after { content: "url(\\"inside.png\\")"; }\n'].join('');
+ const base='https://cdn.example/assets/site.css';
+ // The page's registry: a fixed key per URL and kind, refusing one, so 'none' and repeated keys both occur.
+ const registry=new Map(),calls=[];
+ const resource=(value,at,kind)=>{calls.push([value,at,kind]);let url;try{url=new URL(value,at).href}catch{return null}if(url.startsWith('javascript:'))return null;const slot=`${kind}:${url}`;if(!registry.has(slot))registry.set(slot,`r${registry.size+7}`);return registry.get(slot)};
+ const inPage=sanitizeMirrorCss(css,base,resource),pageCalls=calls.splice(0);registry.clear();
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return Buffer.from(css)}}}}});
+ const seen=[];
+ mirror.evaluate=pageSheets(seen,(value,n,at,kind)=>resource(value,at,kind));
+ const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url:'https://site.example/'},ref:'observer'};
+ assert.equal(await mirror.crossOriginSheet(world,base),inPage,'byte-identical output');
+ assert.deepEqual(calls,pageCalls,'the page registry sees the same occurrences in the same order');
+ const keysCall=seen.find(e=>e.includes('.sheetKeys('));
+ assert(!keysCall.includes('font-family'),'the sheet text does not travel with the keys request');
+ const [part]=JSON.parse(keysCall.slice(keysCall.indexOf('.sheetKeys(')+11,-1));
+ assert.match(part.imageSets,/^image-set\(/);assert.match(part.imageSets,/url\("mr:r6"\) 1x/,'image-set options travel with their occurrence numbers');
+ assert.deepEqual(part.values,['href','src']);
+});
+
+test('Row 342 F2: a first-paint sheet the viewer retains is not sent to the page for pruning; another one is',async()=>{
+ const big=`.r{color:red}\n`.repeat(4000),other=`.o{color:blue}\n`.repeat(4000);
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,url){return Buffer.from(url.endsWith('big.css')?big:other)}}}}});
+ const seen=[];mirror.evaluate=pageSheets(seen);
+ const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url:'https://site.example/'},ref:'observer',retainedSheets:new Set([sheetDigest(big)])};
+ assert.equal(await mirror.crossOriginSheet(world,'https://cdn.example/big.css','n1'),big);
+ assert(!seen.some(e=>e.includes('.usedSelectors(')),'a retained sheet is not pruned');
+ await mirror.crossOriginSheet(world,'https://cdn.example/other.css','n1');
+ assert(seen.some(e=>e.includes('.usedSelectors(')),'a sheet the viewer lacks is still pruned, from its selectors');
+ assert(!seen.some(e=>e.includes('.usedCss(')),'no whole-sheet prune call');
+ assert(!seen.find(e=>e.includes('.usedSelectors(')).includes('color:blue'),'the prune call carries selectors, not declarations');
+});
+
+test('Row 342 (b): a sheet prunes from its selector list exactly as usedCss walks its rules',()=>{
+ const css=['@charset "utf-8";','@layer base, theme;','.keep { content: "a { b; } c"; }','.drop { color: red; }',
+  '@media (max-width: 600px) {\n  .keep { color: blue; }\n  .drop { color: green; }\n}',
+  '@media print {\n  .drop { color: black; }\n}',
+  '@supports (display: grid) {\n  @media screen {\n    .keep, .x { display: grid; }\n  }\n}',
+  '@layer theme {\n  .drop { color: pink; }\n}',
+  '@font-face { font-family: "F"; src: url("mr:r1"); }',
+  '.esc\\{x { color: red; }','/* note { */ .keep::after { content: "\\"}" }',
+  '@keyframes spin {\n  from { transform: none; }\n  to { transform: rotate(1turn); }\n}'].join('\n')+'\n';
+ const rules=cssRules(css);
+ const used=new Set(['.keep','.keep, .x','.keep::after']);
+ assert.equal(prunedCss(rules,selector=>used.has(selector)),['@charset "utf-8";','@layer base, theme;','.keep { content: "a { b; } c"; }',
+  '@media (max-width: 600px) {.keep { color: blue; }\n}','@supports (display: grid) {@media screen {.keep, .x { display: grid; }\n}\n}',
+  '@layer theme {}','@font-face { font-family: "F"; src: url("mr:r1"); }','.keep::after { content: "\\"}" }',
+  '@keyframes spin {\n  from { transform: none; }\n  to { transform: rotate(1turn); }\n}'].join('\n')+'\n');
+});
+
+// Row 342: GitHub's first-visit sheets waited ~1.1 s behind the page's own main thread to parse (~0.2 s of actual work).
+test('Row 342 a first-visit sheet parses in the keepalive blank page; quirks pages and a lost reserve parse in the page',async()=>{
+ const source='.a{color:red}',asideCalls=[];let asideReply='ok';
+ const browser={responseBodies:{async read(){return Buffer.from(source)}},async resolvePageTarget(target){asideCalls.push(target);return {sessionId:'KS',connection:{async send(method,params){
+  assert.equal(method,'Runtime.evaluate');assert.match(params.expression,/location\.href!=='about:blank'/);
+  if(asideReply==='throw')throw Error('target gone');if(asideReply==='user tab')return {result:{value:null}};
+  const sheets=JSON.parse(params.expression.slice(params.expression.lastIndexOf('})(')+3,-1));return {result:{value:sheets.map(()=>'.a { color: red; }')}}}}}}};
+ const seen=[];
+ const make=()=>{const mirror=new Mirror2({host:{browser,keepaliveTarget:'K'}});mirror.evaluate=pageSheets(seen);return mirror};
+ const parsesInPage=()=>seen.filter(e=>!e.includes('.sheetKeys(')&&!e.includes('.usedSelectors(')).length;
+ const world=(url,mode='CSS1Compat')=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},mode,ref:'observer'});
+ assert.equal(await make().crossOriginSheet(world('https://site.example/a'),'https://cdn.example/a.css'),'.a { color: red; }');
+ assert.deepEqual(asideCalls,['K']);assert.equal(parsesInPage(),0,'a standards-mode page never parses its sheet itself');
+ await make().crossOriginSheet(world('https://site.example/q','BackCompat'),'https://cdn.example/a.css');
+ assert.equal(asideCalls.length,1,'a quirks page does not use the standards-mode reserve');assert.equal(parsesInPage(),1);
+ asideReply='user tab';await make().crossOriginSheet(world('https://site.example/b'),'https://cdn.example/a.css');
+ assert.equal(parsesInPage(),2,'a reserve that became a user tab: the page parses as before');
+ asideReply='throw';await make().crossOriginSheet(world('https://site.example/c'),'https://cdn.example/a.css');
+ assert.equal(parsesInPage(),3,'no reserve: the page parses as before');
+});
+
+// Row 342 F3: the document's loaded stylesheets read alongside the snapshot, never across documents.
+test('Row 342 F3: prefetched stylesheet reads serve only their own document, and a missed one reads as before',async()=>{
+ const bodies=new BrowserResponseBodies(),ev=(method,params)=>bodies.observe({sessionId:'S',method,params});
+ for(const [id,loader,url,type] of [['1','D1','https://cdn.example/a.css','Stylesheet'],['2','D1','https://cdn.example/a.png','Image'],['3','D2','https://cdn.example/b.css','Stylesheet']]){
+  ev('Network.requestWillBeSent',{requestId:id,frameId:'F',loaderId:loader,type,request:{url}});ev('Network.responseReceived',{requestId:id,frameId:'F',loaderId:loader,type,response:{url}});ev('Network.loadingFinished',{requestId:id});
+ }
+ const worldOf=loader=>({sessionId:'S',frame:{id:'F',loaderId:loader,url:'https://site.example/'},ref:'observer',connection:{async send(method,params){if(method==='Network.getResponseBody')return {body:`/*${params.requestId}*/.x{color:red}`,base64Encoded:false};if(method==='Network.loadNetworkResource')return {resource:{success:false}};if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[]}};if(method==='Page.getResourceContent')throw Error('no such resource');throw Error(`unexpected ${method}`)}}});
+ const d1=worldOf('D1'),d2=worldOf('D2');
+ assert.deepEqual(bodies.stylesheets(d1),['https://cdn.example/a.css'],'only this document\'s loaded stylesheets');
+ assert.deepEqual(bodies.stylesheets(d2),['https://cdn.example/b.css']);
+ const reads=[];
+ const mirror=new Mirror2({host:{browser:{responseBodies:{stylesheets:world=>bodies.stylesheets(world),async read(world,url,limit){reads.push([world.frame.loaderId,url]);return bodies.read(world,url,limit)}}}}});
+ mirror.evaluate=pageSheets();
+ mirror.prefetchSheets(d1);assert.deepEqual(reads,[['D1','https://cdn.example/a.css']],'the read starts before any sheet is asked for');
+ assert.equal(await mirror.crossOriginSheet(d1,'https://cdn.example/a.css'),'/*1*/.x{color:red}');
+ assert.equal(reads.length,1,'the prefetched read served it');
+ // The navigation's new document has its own world: the old document's reads never serve it.
+ mirror.prefetchSheets(d2);
+ await assert.rejects(mirror.crossOriginSheet(d2,'https://cdn.example/a.css'),/no such resource/,'a sheet of the old document is not this document\'s (unreadable here, as before)');
+ assert.equal(await mirror.crossOriginSheet(d2,'https://cdn.example/b.css'),'/*3*/.x{color:red}');
+ assert(!reads.slice(1).some(([loader])=>loader==='D1'),'no read of the old document after the navigation');
+ // A sheet that finished loading after the prefetch (null then) reads as before.
+ const late=worldOf('D3');late.sheetReads=new Map([['https://cdn.example/c.css',Promise.resolve(null)]]);
+ mirror.resourceBody=async()=>Buffer.from('.late{color:blue}');
+ assert.equal(await mirror.crossOriginSheet(late,'https://cdn.example/c.css'),'.late{color:blue}');
 });
 
 test('MP-08/MP-10: the normalized sheet cache stays within its entry and size bounds',()=>{

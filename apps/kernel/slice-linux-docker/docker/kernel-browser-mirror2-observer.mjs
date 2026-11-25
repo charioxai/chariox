@@ -236,15 +236,27 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // as changes of that value at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
     const valueNames = new Set();
     let valueStale = [];
-    const sheetCss = (text, base, doc) => {
-      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
-      for (const name of ['href', 'src']) if (!valueNames.has(name) && new RegExp(`\\[\\s*chariox-${name}\\s*[~|^$*]?=`, 'i').test(out)) {
+    const valuesSelected = names => {
+      for (const name of names) if (!valueNames.has(name)) {
         valueNames.add(name);
         for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute(name)) valueStale.push([node, name === 'href' ? 'href' : 'chariox-src']);
         if (valueStale.length) wake();
       }
+    };
+    const sheetCss = (text, base, doc) => {
+      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
+      valuesSelected(['href', 'src'].filter(name => new RegExp(`\\[\\s*chariox-${name}\\s*[~|^$*]?=`, 'i').test(out)));
       return out;
     };
+    // A cross-origin sheet the kernel sanitized itself (the same sanitizeMirrorCss, on its cached copy): each part's url()
+    // occurrences register here in the sanitizer's own order, so the keys, this registry and its side effects are those of
+    // sheetCss. Only the occurrences, the part's image-set() text (occurrence numbers `mr:r<n>`) and its href/src selectors come in.
+    const sheetKeys = parts => parts.map(({ urls, imageSets, values }) => {
+      const keys = urls.map(([value, base, kind]) => resource(String(value), String(base), String(kind)));
+      if (imageSets) loadViewerOptions(String(imageSets).replace(/url\("mr:r(\d+)"\)/g, (_, n) => keys[n - 1] ? `url("mr:${keys[n - 1]}")` : 'none'), document);
+      valuesSelected(values.filter(name => name === 'href' || name === 'src'));
+      return keys;
+    });
     const markValuesStale = () => {
       for (const [node, name] of valueStale) if (mirrored(node)) { if (!dirty.attrs.has(node)) dirty.attrs.set(node, new Set()); dirty.attrs.get(node).add(name); }
       valueStale = [];
@@ -1755,6 +1767,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
       return out;
     };
+    // The same check from a cross-origin sheet's selector list (the kernel holds the sheet and keeps the rules): '1' where
+    // a selector is in use, '0' where not, as usedCss would keep or drop its rule. Null where usedCss answers null.
+    const usedSelectors = (id, selectors) => {
+      const root = nodes.get(id)?.getRootNode?.();
+      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return null;
+      const keep = usedBy(root); let out = ''; for (const selector of selectors) out += keep(String(selector)) ? '1' : '0';
+      return out;
+    };
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
     const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
@@ -1821,6 +1841,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, coveredBy, point, hitCheck, menuOff, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, sheetKeys, usedCss, usedSelectors, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, coveredBy, point, hitCheck, menuOff, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }
