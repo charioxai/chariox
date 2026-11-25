@@ -130,6 +130,8 @@ struct LiveReply {
     /// is the previous turn's, so it is not streamed under the new prompt
     /// until the screen shows something other than it.
     left_over: Option<Vec<String>>,
+    /// Rows the screen may show beyond `left_over`: one when it was recalled from the blocks a lost reader had taken.
+    left_over_slack: usize,
     /// The unfinished block of an earlier reader, which the first block this reader streams may go on in.
     unfinished: Option<Unfinished>,
     /// The run's context file: what the reader must not forget when it is lost is kept next to it.
@@ -202,6 +204,8 @@ impl LiveReply {
                 .rev()
                 .find(|block| block.prompt_id != prompt_id && !block.rows.is_empty())
                 .map(|block| block.rows.clone());
+            // A block's rows are the ones before the last, which was still being written: the screen shows one more.
+            self.left_over_slack = usize::from(self.left_over.is_some());
         }
     }
 
@@ -218,6 +222,7 @@ impl LiveReply {
             blocks_started: 0,
             previous_rows: HashMap::new(),
             left_over: None,
+            left_over_slack: 0,
             unfinished: None,
             context_file: None,
             recalled: false,
@@ -231,6 +236,7 @@ impl LiveReply {
             let showing = reply_rows(&screen_rows(self.screen.screen()), false).1;
             self.left_over =
                 (!showing.is_empty()).then(|| showing.into_iter().map(|row| row.text).collect());
+            self.left_over_slack = 0;
             self.block = None;
             self.streamed.clear();
             self.finished.clear();
@@ -257,10 +263,11 @@ impl LiveReply {
         }
         let confirmed = std::mem::replace(&mut self.previous_rows, shown);
         if let Some(left_over) = &self.left_over {
-            if repeats(&rows, left_over, 0) {
+            if repeats(&rows, left_over, self.left_over_slack) {
                 return None;
             }
             self.left_over = None;
+            self.left_over_slack = 0;
         }
         if rows.is_empty() {
             return None;
