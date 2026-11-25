@@ -59,6 +59,41 @@ pub(crate) fn secret_import_refused() -> DaemonError {
     }
 }
 
+/// Whether the receiving kernel's Vault file exists at all (open or closed).
+pub(crate) fn target_vault_exists(config: &DaemonConfig) -> Result<bool, DaemonError> {
+    let vault = &config.user_config.credential_vault;
+    match vault.backend {
+        CredentialVaultBackend::CharioxEncrypted => {
+            Ok(crate::secret::normalize_vault_path(std::path::PathBuf::from(&vault.path)).exists())
+        }
+        CredentialVaultBackend::ProcessMemory => Ok(true),
+    }
+}
+
+/// Row 582: creates the receiving kernel's own Vault from the key the source sealed for it, as a
+/// client-created Vault would be (`CreateCredentialVault` with a seed), and leaves it open the way
+/// the owner's unlock policy leaves a client-created one; after a restart it opens with the
+/// owner's passphrase. A Vault that already exists is never replaced: it only has to be open.
+pub(crate) fn create_target_vault_from_seed(
+    config: &DaemonConfig,
+    seed: &crate::secret::VaultKeySeed,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    if target_vault_exists(config)? {
+        return require_open_target_vault(config);
+    }
+    let vault = &config.user_config.credential_vault;
+    crate::secret::create_vault_from_key_seed(
+        std::path::Path::new(&vault.path),
+        seed,
+        target_kernel_id,
+        target_private_key,
+        crate::runtime::state::vault_unlock_request::owner_client_lease(vault),
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

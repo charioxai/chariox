@@ -50,6 +50,7 @@ fn an_all_plan_installs_the_login_the_source_resolved() {
         ManagedContextPackageProviderAccounts::Selected {
             materializations: vec![materialization],
             vault_logins: Vec::new(),
+            vault_seed: None,
         },
     ))
     .expect("export an all-providers package");
@@ -126,6 +127,7 @@ fn an_all_plan_refuses_an_empty_or_repeating_payload() {
         ManagedContextPackageProviderAccounts::Selected {
             materializations: Vec::new(),
             vault_logins: Vec::new(),
+            vault_seed: None,
         },
     ))
     .is_err());
@@ -136,6 +138,7 @@ fn an_all_plan_refuses_an_empty_or_repeating_payload() {
     repeated.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization.clone(), materialization],
         vault_logins: Vec::new(),
+        vault_seed: None,
     };
     assert!(export_managed_context_package(repeated).is_err());
     fixture.cleanup();

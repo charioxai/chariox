@@ -779,7 +779,7 @@ mod vault_secret_request;
 pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
 mod vault_carry_hold;
 mod vault_creation;
-mod vault_unlock_request;
+pub(crate) mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;

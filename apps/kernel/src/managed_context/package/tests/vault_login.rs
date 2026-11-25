@@ -211,6 +211,30 @@ impl Transfer {
         profile_ids: &[&str],
         kernel_context: ManagedContextPackageKernel,
     ) -> ManagedContextPackageExportResult {
+        self.export_with_kernel_and_seed(context_id, profile_ids, kernel_context, None)
+    }
+
+    /// The key of the source Vault, sealed for the target kernel as the outbound service does for a
+    /// machine with no Vault of its own.
+    fn vault_seed_for(&self, target: &Kernel) -> crate::secret::VaultKeySeed {
+        self.source.enter();
+        crate::secret::export_vault_key_seed(
+            &self.source.config.user_config.credential_vault.path,
+            &self.fixture.binding.source_kernel_id,
+            &self.source.config.relay_private_key,
+            &self.fixture.binding.target_kernel_id,
+            &target.config.relay_public_key,
+        )
+        .expect("seal the Vault key")
+    }
+
+    fn export_with_kernel_and_seed(
+        &self,
+        context_id: &str,
+        profile_ids: &[&str],
+        kernel_context: ManagedContextPackageKernel,
+        vault_seed: Option<Box<crate::secret::VaultKeySeed>>,
+    ) -> ManagedContextPackageExportResult {
         self.source.enter();
         let mut ids = profile_ids.to_vec();
         ids.sort_unstable();
@@ -245,6 +269,7 @@ impl Transfer {
         request.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
             materializations: Vec::new(),
             vault_logins,
+            vault_seed,
         };
         request.package_path = self.fixture.root.join(format!("{context_id}.chariox"));
         export_managed_context_package(request).expect("export package")
@@ -914,6 +939,7 @@ fn a_failure_after_the_login_import_leaves_neither_the_login_nor_the_transferred
     request.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: Vec::new(),
         vault_logins,
+        vault_seed: None,
     };
     request.package_path = transfer.fixture.root.join(format!("{context_id}.chariox"));
     let exported = export_managed_context_package(request).expect("export package");
@@ -1002,5 +1028,150 @@ fn a_rollback_on_a_locked_vault_keeps_the_profile_so_a_later_rollback_clears_the
             .get(OWNER, "claude", &profile_id)
             .is_err(),
         "and the profile"
+    );
+}
+
+// Row 582: a machine with no Vault of its own gets one from the key the source sealed for it.
+#[test]
+fn a_vault_seed_in_the_package_creates_the_receiving_vault_before_the_login_is_written() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::with_unopened_target("vault-seed-creates");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let seed = transfer.vault_seed_for(&transfer.target);
+    let exported = transfer.export_with_kernel_and_seed(
+        "context-seed-creates",
+        &[&profile_id],
+        ManagedContextPackageKernel::Empty,
+        Some(Box::new(seed)),
+    );
+    let vault_path = PathBuf::from(&transfer.target.config.user_config.credential_vault.path);
+    assert!(!vault_path.exists(), "the new machine starts with no Vault");
+
+    let receipt = transfer
+        .apply(&exported)
+        .expect("the package creates the Vault and installs the login");
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } =
+        &receipt.provider_accounts
+    else {
+        panic!("the selection stays recorded");
+    };
+    assert_eq!(accounts.len(), 1);
+    assert!(
+        vault_path.exists(),
+        "the receiving kernel made its own Vault"
+    );
+    assert_eq!(
+        transfer.target.vault_token(&profile_id).as_deref(),
+        Some(FIRST_TOKEN),
+        "the login is in the new Vault"
+    );
+    assert!(
+        plain_files_containing(&transfer.fixture.root, FIRST_TOKEN).is_empty(),
+        "no secret value sits in a plain file"
+    );
+}
+
+#[test]
+fn a_vault_seed_never_replaces_a_vault_the_receiver_already_has() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::with_unopened_target("vault-seed-existing");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let seed = transfer.vault_seed_for(&transfer.target);
+    // The receiver made a Vault of its own and then closed it.
+    transfer.target.enter();
+    crate::secret::create_vault_from_key_seed(
+        Path::new(&transfer.target.config.user_config.credential_vault.path),
+        &transfer.vault_seed_for(&transfer.target),
+        &transfer.fixture.binding.target_kernel_id,
+        &transfer.target.config.relay_private_key,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .expect("an existing Vault");
+    crate::secret::lock_chariox_encrypted_vault(Path::new(
+        &transfer.target.config.user_config.credential_vault.path,
+    ))
+    .expect("close it");
+    let exported = transfer.export_with_kernel_and_seed(
+        "context-seed-existing",
+        &[&profile_id],
+        ManagedContextPackageKernel::Empty,
+        Some(Box::new(seed)),
+    );
+    let error = transfer
+        .apply(&exported)
+        .expect_err("a closed Vault of the receiver stays the owner's to open");
+    assert_target_vault_locked(&error);
+    assert!(transfer
+        .target
+        .registry
+        .get(OWNER, "claude", &profile_id)
+        .is_err());
+}
+
+#[test]
+fn a_vault_seed_sealed_for_another_kernel_creates_nothing() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::with_unopened_target("vault-seed-wrong-target");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let stranger = Kernel::with_unopened_vault(&transfer.fixture.root, "stranger-kernel");
+    let seed = transfer.vault_seed_for(&stranger);
+    let exported = transfer.export_with_kernel_and_seed(
+        "context-seed-wrong-target",
+        &[&profile_id],
+        ManagedContextPackageKernel::Empty,
+        Some(Box::new(seed)),
+    );
+    let vault_path = PathBuf::from(&transfer.target.config.user_config.credential_vault.path);
+    transfer
+        .apply(&exported)
+        .expect_err("a seed sealed for another kernel is refused");
+    assert!(!vault_path.exists(), "no Vault was created from it");
+    assert!(transfer
+        .target
+        .registry
+        .get(OWNER, "claude", &profile_id)
+        .is_err());
+}
+
+#[test]
+fn a_vault_seed_finds_an_existing_vault_addressed_with_a_home_relative_path() {
+    crate::test_support::isolated_env_test!();
+    let mut transfer = Transfer::with_unopened_target("vault-seed-home-relative");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    // The receiver's configured Vault path is `~/...`, as the default is when CHARIOX_HOME is unset.
+    let home = transfer.fixture.root.join("target-user-home");
+    fs::create_dir_all(&home).expect("create the user home");
+    std::env::set_var("HOME", &home);
+    transfer.target.config.user_config.credential_vault.path = "~/vault.json".to_string();
+    transfer.target.enter();
+    crate::secret::create_vault_from_key_seed(
+        home.join("vault.json"),
+        &transfer.vault_seed_for(&transfer.target),
+        &transfer.fixture.binding.target_kernel_id,
+        &transfer.target.config.relay_private_key,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .expect("the receiver's own open Vault");
+    let seed = transfer.vault_seed_for(&transfer.target);
+    let exported = transfer.export_with_kernel_and_seed(
+        "context-seed-home-relative",
+        &[&profile_id],
+        ManagedContextPackageKernel::Empty,
+        Some(Box::new(seed)),
+    );
+    transfer
+        .apply(&exported)
+        .expect("an open Vault that exists is used, not created again");
+    assert_eq!(
+        transfer.target.vault_token(&profile_id).as_deref(),
+        Some(FIRST_TOKEN)
     );
 }

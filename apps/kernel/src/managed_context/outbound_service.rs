@@ -1012,9 +1012,29 @@ fn prepare_managed_context_package_for_ticket(
                         materialization,
                     )?;
                 }
+                // Row 582: logins that live in the Vault need a Vault to land in. A kernel context
+                // carries the source Vault itself; without one, the target creates its own from
+                // this kernel's key, sealed for it, the way a client-created Vault is made.
+                let vault_seed = if !vault_logins.is_empty()
+                    && plan.kernel_context == ManagedContextKernelSelection::Empty
+                {
+                    Some(Box::new(
+                        crate::secret::export_vault_key_seed(
+                            &config.user_config.credential_vault.path,
+                            &config.daemon_id,
+                            &config.relay_private_key,
+                            &ticket.target.kernel_id,
+                            &ticket.target.relay_public_key,
+                        )
+                        .map_err(vault_login_export_error)?,
+                    ))
+                } else {
+                    None
+                };
                 ManagedContextPackageProviderAccounts::Selected {
                     materializations,
                     vault_logins,
+                    vault_seed,
                 }
             }
         };

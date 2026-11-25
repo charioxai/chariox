@@ -654,6 +654,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
         vault_logins: Vec::new(),
+        vault_seed: None,
     };
     assert!(!format!("{export:?}").contains("provider-package-secret"));
     let exported = export_managed_context_package(export).expect("export provider account package");
@@ -775,6 +776,7 @@ fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
         vault_logins: Vec::new(),
+        vault_seed: None,
     };
     let package_path = export.package_path.clone();
     let error = export_managed_context_package(export)

@@ -53,7 +53,7 @@ pub(crate) fn vault_locked_error() -> DaemonError {
 
 /// Where the owner's own client leaves the Vault open afterwards: the policy's
 /// lease, and under "ask every time" just the next operation.
-pub(super) fn owner_client_lease(
+pub(crate) fn owner_client_lease(
     config: &crate::config::UserCredentialVaultConfig,
 ) -> crate::secret::VaultUnlockLease {
     match config.unlock_policy {
