@@ -1,4 +1,5 @@
 use crate::config::{DaemonConfig, EventGeneratorManagementTarget};
+use crate::error::DaemonError;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
@@ -77,19 +78,58 @@ impl DaemonConfigProjectionStore {
                     .is_some_and(|profile| profile.user_id == user_id))
     }
 
-    pub(crate) fn update(&self, config: DaemonConfig) {
-        *self
-            .config
-            .lock()
-            .expect("daemon config projection lock should not be poisoned") = config.clone();
+    /// Installs a renewed Cloud relay token where the connector and every other relay sender read
+    /// it, without the app lock: a durable write stalled on a slow disk must not hold back
+    /// reauthentication. The durable write follows; `previous` is the snapshot the renewal was
+    /// requested for, so a renewal for a replaced enrollment is refused.
+    pub(crate) fn install_cloud_relay_renewal(
+        &self,
+        previous: &DaemonConfig,
+        profile: crate::config::PersistedCloudRelayProfile,
+        token: String,
+    ) -> Result<(), DaemonError> {
+        let installed = {
+            let mut config = self
+                .config
+                .lock()
+                .expect("daemon config projection lock should not be poisoned");
+            let unchanged = config.relay_url == previous.relay_url
+                && config.relay_token == previous.relay_token
+                && config.relay_public_key == previous.relay_public_key
+                && config.host_machine_id == previous.host_machine_id
+                && config.cloud_relay == previous.cloud_relay;
+            if !unchanged {
+                return Err(DaemonError::LocalTransport {
+                    operation: "install renewed relay token",
+                    message: "relay configuration changed during renewal; retry with the current configuration".into(),
+                });
+            }
+            config.relay_url = Some(profile.relay_url.clone());
+            config.relay_token = Some(token);
+            config.cloud_relay = Some(profile);
+            config.clone()
+        };
+        self.notify_observers(&installed);
+        Ok(())
+    }
+
+    fn notify_observers(&self, config: &DaemonConfig) {
         let observers = self
             .observers
             .lock()
             .expect("daemon config observers lock should not be poisoned")
             .clone();
         for observer in observers {
-            observer(&config);
+            observer(config);
         }
+    }
+
+    pub(crate) fn update(&self, config: DaemonConfig) {
+        *self
+            .config
+            .lock()
+            .expect("daemon config projection lock should not be poisoned") = config.clone();
+        self.notify_observers(&config);
     }
 
     /// Runs `observer` inside every later `update`, before the caller of `update` goes on. A revocation that must take

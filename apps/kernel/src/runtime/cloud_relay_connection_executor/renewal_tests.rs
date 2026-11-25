@@ -190,10 +190,21 @@ async fn renewal_reaches_the_projection_while_the_app_lock_is_held() {
         outcome.is_ok_and(|result| result.is_ok()),
         "renewal must not wait for the app lock behind a stalled disk write"
     );
-    assert!(
-        installed.is_some(),
+    assert_eq!(
+        installed.as_deref(),
+        Some(token.as_str()),
         "the connector reads the projection: the renewed token must be there before the stall ends"
     );
+    // The durable write follows once the disk answers.
+    let mut durable = None;
+    for _ in 0..100 {
+        durable = app.lock().await.config().relay_token.clone();
+        if durable.as_deref() == Some(token.as_str()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(durable.as_deref(), Some(token.as_str()));
 }
 
 #[tokio::test]

@@ -136,10 +136,27 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     updated_profile.kernel_removal_pending = false;
     // MP-08 / MP-09 / MP-10 / MP-11: the issuer may shorten the requested TTL.
     updated_profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
-    progress.stage("persist renewed token", Duration::from_secs(2));
-    runtime_state
-        .finish_cloud_relay_renewal(profile, Some((updated_profile, issued.token)))
-        .await?;
+    progress.stage("install renewed token", Duration::from_secs(2));
+    // The connector reads the projection: install there first, off the app lock. The durable
+    // write follows on its own task, so a slow disk under the app lock cannot stall presence.
+    config_projection.install_cloud_relay_renewal(
+        &config,
+        updated_profile.clone(),
+        issued.token.clone(),
+    )?;
+    let runtime_state = runtime_state.clone();
+    tokio::spawn(async move {
+        if let Err(error) = runtime_state
+            .finish_cloud_relay_renewal(profile, Some((updated_profile, issued.token)))
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "renewed relay token was not saved",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+    });
     Ok(())
 }
 
