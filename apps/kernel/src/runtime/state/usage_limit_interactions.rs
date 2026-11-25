@@ -49,7 +49,7 @@ impl KernelRuntimeOwnedState {
                     .iter()
                     .any(|interaction| interaction.id() == id)
                 {
-                    self.settle_card_condition_met(room.id(), &id, reason)?;
+                    self.settle_card_condition_met(room.id(), &id, reason.clone())?;
                 }
             }
         }
