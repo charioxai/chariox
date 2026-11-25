@@ -117,11 +117,11 @@ async fn terminals_said(state: &crate::runtime::state::KernelRuntimeState) -> St
 async fn open_shell(
     state: &crate::runtime::state::KernelRuntimeState,
     class: crate::local::KernelConnectionClass,
-) {
+) -> String {
     use crate::runtime::command::{KernelCaller, KernelCommandSource};
     let caller =
         KernelCaller::for_source(&KernelCommandSource::LocalCli).with_connection_class(class);
-    state
+    let opened = state
         .kernel_terminal_for_client(
             &caller,
             crate::local::KernelTerminalRequest {
@@ -137,19 +137,27 @@ async fn open_shell(
         )
         .await
         .expect("the client opens a kernel terminal");
+    let crate::local::LocalDaemonResponse::RoomTerminal {
+        result: crate::local::RoomTerminalResult::Opened { terminal },
+    } = opened
+    else {
+        panic!("unexpected {opened:?}");
+    };
+    terminal.terminal_id
 }
 
-/// The grants the kernel made for owners' shells, read from its table: a sweep would also look at
-/// processes, and other tests in this binary inject process faults.
+/// The grants the kernel lists for owners' shells after its sweep: a grant bound to a wrapper that
+/// then exec'd the shell would be gone by now.
 fn shell_grants(state: &crate::runtime::state::KernelRuntimeState) -> usize {
+    let owner = state.owned.config_projection.local_owner_user_id();
     state
-        .owned
-        .kernel_access
-        .lock()
-        .unwrap()
-        .grants
-        .keys()
-        .filter(|id| id.starts_with(crate::runtime::kernel_access::OWNER_SHELL_GRANT_PREFIX))
+        .list_kernel_access(&owner)
+        .iter()
+        .filter(|grant| {
+            grant
+                .grant_id
+                .starts_with(crate::runtime::kernel_access::OWNER_SHELL_GRANT_PREFIX)
+        })
         .count()
 }
 
@@ -169,4 +177,29 @@ async fn a_shell_opened_through_an_agents_grant_is_not_the_owners() {
         0,
         "an agent's processes keep needing their own grant"
     );
+}
+
+#[tokio::test]
+async fn the_owners_shell_grant_ends_with_its_shell() {
+    let state = state_for_terminals().await;
+    let terminal_id = open_shell(&state, crate::local::KernelConnectionClass::Terminal).await;
+    assert_eq!(shell_grants(&state), 1);
+    use crate::runtime::command::{KernelCaller, KernelCommandSource};
+    state
+        .kernel_terminal_for_client(
+            &KernelCaller::for_source(&KernelCommandSource::LocalCli),
+            crate::local::KernelTerminalRequest {
+                directory: None,
+                operation: crate::local::RoomTerminalOperation::Close { terminal_id },
+            },
+        )
+        .await
+        .expect("the owner closes the terminal");
+    for _ in 0..100 {
+        if shell_grants(&state) == 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the grant of a shell that exited is still listed");
 }

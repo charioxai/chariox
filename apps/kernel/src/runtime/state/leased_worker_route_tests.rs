@@ -68,7 +68,10 @@ async fn room_terminal_request_goes_over_the_connected_relay_that_reaches_the_wo
         crate::local::RoomTerminalOperation::List,
     );
     let reply = home.rig.answer(|_| RelayPeerResponse::RoomTerminal {
-        result: crate::local::RoomTerminalResult::Listed { terminals: vec![] },
+        result: crate::local::RoomTerminalResult::Listed {
+            terminals: vec![],
+            unavailable: vec![],
+        },
     });
     let (result, request) = tokio::join!(call, reply);
     result.expect("the worker answers the terminal request");

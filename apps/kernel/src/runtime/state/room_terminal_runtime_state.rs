@@ -48,7 +48,8 @@ impl KernelRuntimeState {
             )
             .await?;
         if owner_shell {
-            self.cover_owner_shell(caller, &TerminalScope::room(&session_id), &result);
+            self.cover_owner_shell(caller, &TerminalScope::room(&session_id), &result)
+                .await;
         }
         Ok(LocalDaemonResponse::RoomTerminal { result })
     }
@@ -106,7 +107,11 @@ impl KernelRuntimeState {
         actor: TerminalActor,
         listed: &mut RoomTerminalResult,
     ) -> Result<(), DaemonError> {
-        let RoomTerminalResult::Listed { terminals } = listed else {
+        let RoomTerminalResult::Listed {
+            terminals,
+            unavailable,
+        } = listed
+        else {
             return Ok(());
         };
         let mut seen = std::collections::BTreeSet::new();
@@ -114,9 +119,17 @@ impl KernelRuntimeState {
             let Some(binding) = agent.remote_execution().cloned() else {
                 continue;
             };
-            // A worker too old for Room terminals holds none, so no tab is hidden by leaving it out;
-            // asking it would fail every Room's list for as long as that agent is leased there.
+            // This kernel cannot ask a worker on an older peer protocol, so its terminals cannot be
+            // listed; failing the list would hide every other tab for as long as that agent is leased
+            // there. The list says which machine was not asked and what to do about it.
             if !binding.relay_peer_protocol_compatible() {
+                unavailable.push(crate::local::UnavailableTerminals {
+                    host_agent: agent.id().to_string(),
+                    message: format!(
+                        "worker kernel `{}` is too old to list its terminals, which may still be running there; update it",
+                        binding.worker_kernel_id
+                    ),
+                });
                 continue;
             }
             let worker = binding.worker_kernel_id.clone();
@@ -212,6 +225,7 @@ impl KernelRuntimeState {
             }
             RoomTerminalOperation::List => RoomTerminalResult::Listed {
                 terminals: service.list(scope),
+                unavailable: Vec::new(),
             },
             RoomTerminalOperation::Snapshot { terminal_id } => RoomTerminalResult::Snapshot {
                 snapshot: service.snapshot(scope, &terminal_id)?,
@@ -410,7 +424,8 @@ impl KernelRuntimeState {
             )
             .await?;
         if owner_shell {
-            self.cover_owner_shell(caller, &TerminalScope::Kernel, &result);
+            self.cover_owner_shell(caller, &TerminalScope::Kernel, &result)
+                .await;
         }
         Ok(LocalDaemonResponse::RoomTerminal { result })
     }
@@ -419,7 +434,7 @@ impl KernelRuntimeState {
     /// class) is the owner at their keyboard: what runs in it runs with the owner's access until the
     /// shell exits, with no request to approve. A shell an agent opened, or one opened through an
     /// agent's grant, gets nothing: its processes need their own grant.
-    fn cover_owner_shell(
+    async fn cover_owner_shell(
         &self,
         caller: &KernelCaller,
         scope: &TerminalScope,
@@ -431,13 +446,23 @@ impl KernelRuntimeState {
         if caller.connection_class != Some(KernelConnectionClass::Terminal) {
             return;
         }
-        let Some(pid) = self
+        let Some((pid, program)) = self
             .owned
             .room_terminals
-            .shell_process_id(scope, &terminal.terminal_id)
+            .shell_process(scope, &terminal.terminal_id)
         else {
             return;
         };
+        // The launch starts through wrappers that exec the shell: the grant is bound to the shell's
+        // identity, which includes its executable, so it is taken once the shell itself runs.
+        if !shell_has_started(pid, &program).await {
+            tracing::warn!(
+                pid,
+                program,
+                "an owner's terminal shell did not settle into its program, so it gets no access"
+            );
+            return;
+        }
         if let Err(error) = self.admit_owner_shell_access(pid) {
             tracing::warn!(%error, pid, "an owner's terminal shell could not be given the owner's access");
         }
@@ -533,6 +558,22 @@ impl KernelRuntimeState {
         let session = self.owned.session_store.get_session(session_id)?;
         Ok(PathBuf::from(session.worktree_id()))
     }
+}
+
+/// Whether process `pid` runs `program` now (the launch wrappers have exec'd), waiting a little for it.
+async fn shell_has_started(pid: u32, program: &str) -> bool {
+    let same = |left: &str, right: &str| {
+        left == right
+            || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)), (Ok(left), Ok(right)) if left == right)
+    };
+    for _ in 0..300 {
+        match crate::runtime::kernel_access::process::inspect(pid) {
+            Ok((identity, _)) if same(&identity.executable, program) => return true,
+            Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 /// An open with no program named runs the account's login shell.

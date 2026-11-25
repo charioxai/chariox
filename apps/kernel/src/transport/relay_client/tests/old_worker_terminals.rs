@@ -71,7 +71,27 @@ fn a_room_list_leaves_out_a_worker_too_old_for_terminals_and_the_home_kernel_ope
         let listed = call(&router, &session, None, RoomTerminalOperation::List)
             .await
             .expect("the Room-wide list answers although one worker is too old");
-        assert!(matches!(listed, RoomTerminalResult::Listed { terminals } if terminals.is_empty()));
+        let RoomTerminalResult::Listed {
+            terminals,
+            unavailable,
+        } = listed
+        else {
+            panic!("a list answers with terminals");
+        };
+        assert!(terminals.is_empty());
+        assert_eq!(
+            unavailable.len(),
+            1,
+            "the worker that was not asked is named, so its terminals are not taken for closed"
+        );
+        assert_eq!(unavailable[0].host_agent, agent);
+        assert!(
+            unavailable[0]
+                .message
+                .contains("too old to list its terminals"),
+            "{}",
+            unavailable[0].message
+        );
         let opened = call(
             &router,
             &session,

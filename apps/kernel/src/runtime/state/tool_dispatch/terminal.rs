@@ -501,7 +501,10 @@ pub(in crate::runtime::state) fn watches(
 fn terminal_result_payload(result: RoomTerminalResult) -> RuntimeToolResult {
     let payload = match result {
         RoomTerminalResult::Opened { terminal } => serde_json::json!({ "terminal": terminal }),
-        RoomTerminalResult::Listed { terminals } => serde_json::json!({ "terminals": terminals }),
+        RoomTerminalResult::Listed {
+            terminals,
+            unavailable,
+        } => serde_json::json!({ "terminals": terminals, "unavailable": unavailable }),
         RoomTerminalResult::Snapshot { snapshot } => {
             let scrollback = tail_of(&snapshot.scrollback_text, READ_SCROLLBACK_BYTES);
             serde_json::json!({
