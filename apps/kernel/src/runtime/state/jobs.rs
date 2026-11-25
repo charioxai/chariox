@@ -56,7 +56,7 @@ mod tests;
 #[cfg(test)]
 use driver::completion_payload;
 use projection::effective_needs;
-use record::{public_record, save_record, Record};
+use record::{public_record, save_record, CancelCause, Record};
 use requests::validate;
 use stage::{RemoteStage, StageEvent};
 
@@ -82,6 +82,8 @@ pub(super) struct JobDriver {
     supervisors: Arc<handover::JobSupervisors>,
     remote_moves: std::sync::Mutex<BTreeMap<String, RemoteMove>>,
     owner_stops: std::sync::Mutex<BTreeSet<String>>,
+    /// What asked for each running job to be cancelled, until the job ends and saves it.
+    cancel_causes: std::sync::Mutex<BTreeMap<String, CancelCause>>,
     remote_samples:
         std::sync::Mutex<BTreeMap<String, Vec<crate::runtime::process_resources::SessionProcess>>>,
     /// Grants to workers that still hold files not yet returned; rebuilt from the saved plan after a restart.

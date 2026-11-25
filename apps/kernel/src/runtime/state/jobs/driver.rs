@@ -299,6 +299,7 @@ impl KernelRuntimeState {
             supervisors: Default::default(),
             remote_moves: Default::default(),
             owner_stops: Default::default(),
+            cancel_causes: Default::default(),
             remote_samples: Default::default(),
             return_grants: Default::default(),
         });

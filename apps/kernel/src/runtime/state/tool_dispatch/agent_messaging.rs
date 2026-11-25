@@ -146,7 +146,13 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         match result {
             Err(error) if crate::error::is_agent_deadline_refusal(&error) => {
-                let message = error.to_string();
+                let mut message = error.to_string();
+                // A sub-agent whose parent ended is told who hears it now.
+                if let Ok(sender) = self.owned.agent_store.get_agent(sender) {
+                    if self.parent_limit_ended(&sender) {
+                        message = format!("{message} {}", self.receiver_line(&sender));
+                    }
+                }
                 let mut notice =
                     crate::history::SessionHistoryEntry::notice(room, None, Some(sender), &message);
                 notice.notice_reason =

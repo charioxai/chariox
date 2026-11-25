@@ -16,7 +16,15 @@ impl KernelRuntimeState {
             let id = args["job_id"]
                 .as_str()
                 .ok_or_else(|| ledger::error("job_id required"))?;
-            let mut record = driver.own(id, task)?;
+            let mut record = match driver.own(id, task) {
+                Ok(record) => record,
+                // TL6: a parent reads the status and output of its descendants' jobs, such as one
+                // the limit of a sub-agent cancelled. Cancel and collection stay with the owner.
+                Err(error) if name == "chariox.jobs.status" => {
+                    return self.ancestor_job_status(driver, id, task)?.ok_or(error);
+                }
+                Err(error) => return Err(error),
+            };
             let mut collection_error = None;
             let mut release_notice = None;
             if record.state == "finished" && !record.deleted {
@@ -90,6 +98,12 @@ impl KernelRuntimeState {
                 }
             }
             if name == "chariox.jobs.cancel" && record.result.is_none() {
+                driver
+                    .cancel_causes
+                    .lock()
+                    .expect("job cancel causes")
+                    .entry(record.job_id.clone())
+                    .or_insert(CancelCause::Agent);
                 let wake = self
                     .owned
                     .durable_state_store
