@@ -3,7 +3,7 @@ use super::*;
 use crate::local::CopyProviderAccountFromKernelRequest;
 use crate::provider_account_copy::{
     failure, ProviderAccountCopyBinding, ProviderAccountCopyOffer, ProviderAccountCopyReceipt,
-    PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY, PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY,
+    PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
@@ -35,12 +35,11 @@ fn enrolled_owner(
         || enrollment.user_id.is_empty()
         || enrollment.realm_id.is_empty()
         || enrollment.machine_id.as_deref() != Some(config.host_machine_id.as_str())
-        || enrollment.kernel_id.as_deref() != Some(config.daemon_id.as_str())
-        || enrollment.kernel_public_key_thumbprint.as_deref()
-            != Some(
-                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
-                    .as_str(),
-            )
+        || !super::provider_account_copy::receiver_enrolled(
+            enrollment,
+            &config.daemon_id,
+            &crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+        )
     {
         return Err(failure("provider_account_copy_unauthorized"));
     }
@@ -163,12 +162,10 @@ impl KernelRuntimeState {
                     if !["claude", "codex", "opencode"].contains(&profile.provider.as_str())
                         || profile.state != "authenticated"
                         || !profile.copyable
-                        // A kernel that cannot install an OpenCode login is not offered one.
-                        || (profile.provider == "opencode"
-                            && !kernel
-                                .capabilities
-                                .iter()
-                                .any(|c| c == PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY))
+                        || !crate::provider_account_copy::kernel_handles_copy_of(
+                            &profile.provider,
+                            &kernel.capabilities,
+                        )
                     {
                         continue;
                     }
@@ -422,6 +419,10 @@ fn copy_peer_failure(code: &str) -> DaemonError {
         }
         "provider_account_copy_cli_missing" => failure("provider_account_copy_cli_missing"),
         "provider_account_copy_replace_differs" => failure("provider_account_copy_replace_differs"),
+        "provider_account_copy_credential_too_large" => {
+            failure("provider_account_copy_credential_too_large")
+        }
+        "provider_account_copy_unsupported" => failure("provider_account_copy_unsupported"),
         "provider_account_copy_conflict" => failure("provider_account_copy_conflict"),
         "provider_account_copy_rejected" => failure("provider_account_copy_rejected"),
         "provider_account_copy_verification_failed" => {
@@ -429,5 +430,54 @@ fn copy_peer_failure(code: &str) -> DaemonError {
         }
         "provider_account_copy_unavailable" => failure("provider_account_copy_unavailable"),
         _ => failure("provider_account_copy_install_failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The recipient side admits the same enrollments the install side does: a kernel
+    /// enrolled by its owner and a machine enrolled with its machine credential alone.
+    #[test]
+    fn the_recipient_admits_a_machine_enrolled_with_its_machine_credential_alone() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+        let machine_only = crate::config::PersistedCloudRelayProfile {
+            user_id: "owner".into(),
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            machine_credential: Some("machine-credential".into()),
+            ..Default::default()
+        };
+        config.cloud_relay = Some(machine_only.clone());
+        assert_eq!(enrolled_owner(&config, "owner").unwrap(), "owner");
+
+        let mut by_kernel = machine_only.clone();
+        by_kernel.machine_credential = None;
+        by_kernel.kernel_credential = Some("kernel-credential".into());
+        by_kernel.kernel_id = Some(config.daemon_id.clone());
+        by_kernel.kernel_public_key_thumbprint = Some(thumbprint);
+        config.cloud_relay = Some(by_kernel.clone());
+        assert_eq!(enrolled_owner(&config, "owner").unwrap(), "owner");
+
+        // A half-enrolled kernel, another machine and another caller stay refused.
+        let mut half = by_kernel;
+        half.kernel_credential = None;
+        config.cloud_relay = Some(half);
+        assert!(enrolled_owner(&config, "owner").is_err());
+        let mut elsewhere = machine_only;
+        elsewhere.machine_id = Some("another-machine".into());
+        config.cloud_relay = Some(elsewhere);
+        assert!(enrolled_owner(&config, "owner").is_err());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "owner".into(),
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            machine_credential: Some("machine-credential".into()),
+            ..Default::default()
+        });
+        assert!(enrolled_owner(&config, "somebody-else").is_err());
     }
 }

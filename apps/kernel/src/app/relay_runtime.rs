@@ -16,8 +16,7 @@ impl DaemonApp {
             .map(|account| {
                 let copyable = account.auth_state
                     == crate::account_profile::ProviderAccountAuthState::Authenticated
-                    && (account.provider == "codex"
-                        || account.provider == "opencode"
+                    && (matches!(account.provider.as_str(), "codex" | "opencode")
                         || (account.provider == "claude"
                             && self
                                 .provider_account_profiles
@@ -66,7 +65,6 @@ impl DaemonApp {
                 "relay_request_proxy".to_string(),
                 "relay_peer_transport".to_string(),
                 "execution_lease_management".to_string(),
-                crate::provider_account_copy::PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY.to_string(),
             ]
             .into_iter()
             .chain(crate::runtime::state::control_capabilities(

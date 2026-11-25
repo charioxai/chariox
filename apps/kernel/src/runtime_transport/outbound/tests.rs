@@ -435,6 +435,7 @@ fn account_copy_refusals_keep_their_words_at_public_error_boundary() {
         "provider_account_copy_target_credential_unreadable",
         "provider_account_copy_cli_missing",
         "provider_account_copy_replace_differs",
+        "provider_account_copy_credential_too_large",
         "provider_account_copy_conflict",
         "provider_account_copy_rejected",
         "provider_account_copy_verification_failed",

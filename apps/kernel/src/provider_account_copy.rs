@@ -7,19 +7,12 @@ pub const PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY: &str = "provider_account_copy_p
 
 pub const PROVIDER_ACCOUNT_COPY_CAPABILITY: &str = "provider_account_copy_v1";
 
-/// Where a native provider's login file lives, relative to the account's materialization root.
-/// The account copy carries this file as the credential.
-pub(crate) fn native_copy_credential_path(provider: &str) -> Option<&'static str> {
-    match provider {
-        "codex" => Some("auth.json"),
-        "opencode" => Some("data/opencode/auth.json"),
-        _ => None,
-    }
-}
+/// A receiver that installs a native OpenCode login. Without it the source
+/// refuses an OpenCode copy before it exports anything.
+pub const PROVIDER_ACCOUNT_COPY_OPENCODE_CAPABILITY: &str = "provider_account_copy_opencode_v1";
 
-/// A kernel that advertises this installs a native OpenCode login copied from another kernel.
-/// Older kernels refuse the binding, so the sender asks for it before it exports a credential.
-pub const PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY: &str = "provider_account_opencode_copy_v1";
+/// The most credential text one copy carries, for every provider.
+pub(crate) const MAX_COPY_CREDENTIAL_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +57,17 @@ impl ProviderAccountCopyBinding {
             &self.source_profile_id,
             &self.target_kernel_id,
         )
+    }
+}
+
+/// Whether a kernel that advertised these capabilities handles a copy of this
+/// provider's login. Claude and Codex ride the base capability; a provider added
+/// later needs its own, so an older kernel refuses before anything is exported.
+pub(crate) fn kernel_handles_copy_of(provider: &str, capabilities: &[String]) -> bool {
+    let has = |wanted: &str| capabilities.iter().any(|capability| capability == wanted);
+    match provider {
+        "opencode" => has(PROVIDER_ACCOUNT_COPY_OPENCODE_CAPABILITY),
+        _ => true,
     }
 }
 
@@ -143,8 +147,8 @@ pub(crate) fn failure(code: &'static str) -> crate::error::DaemonError {
     }
 }
 
-/// Why the Vault gave no stored login: a locked Vault is the owner's to unlock,
-/// anything else (a missing record, an unreadable file) is a different problem
+/// Why the Vault gave no stored login: a locked Vault is the owner's to unlock.
+/// Anything else (a missing record, an unreadable file) is a different problem
 /// and must not be reported as a lock.
 pub(crate) fn credential_read_failure(
     error: &crate::error::DaemonError,
@@ -168,8 +172,9 @@ pub(crate) fn failure_message(code: &str) -> &'static str {
         "provider_account_copy_target_vault_unreadable" => "The receiving kernel's Vault could not be read; check that its file is present and readable, then retry the same account copy. Nothing was copied.",
         "provider_account_copy_credential_unreadable" => "The account's stored login could not be read from the Vault; sign in to the account again, then retry.",
         "provider_account_copy_target_credential_unreadable" => "The receiving kernel could not read the copied login back from its Vault; retry the same account copy.",
-        "provider_account_copy_cli_missing" => "The Claude CLI is not installed on the receiving kernel; install it there, then retry the same account copy. Nothing was copied.",
+        "provider_account_copy_cli_missing" => "The provider's command-line tool is not installed on the receiving kernel; install it there, then retry the same account copy. Nothing was copied.",
         "provider_account_copy_replace_differs" => "This operation was already used with a different replace setting; start a new operation to copy with that setting.",
+        "provider_account_copy_credential_too_large" => "The account's login is larger than an account copy carries (16 KiB). Nothing was copied.",
         "provider_account_copy_cancelled" => "Account copy was cancelled or expired; no login was transferred.",
         "provider_account_copy_conflict" => "A target profile or operation already exists; use a new operation with explicit replacement to replace the profile.",
         "provider_account_copy_rejected" => "The official provider rejected the account; sign in to the source account again.",
@@ -195,6 +200,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "provider_account_copy_target_credential_unreadable"
             | "provider_account_copy_cli_missing"
             | "provider_account_copy_replace_differs"
+            | "provider_account_copy_credential_too_large"
             | "provider_account_copy_conflict"
             | "provider_account_copy_rejected"
             | "provider_account_copy_verification_failed"
@@ -225,4 +231,59 @@ pub(crate) fn copy_profile_id(
         "{source_kernel}\0{source_key}\0{provider}\0{source_profile}\0{target_kernel}"
     ));
     format!("copy-{digest:x}")[..45].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_kernel_with_the_opencode_capability_handles_an_opencode_copy() {
+        let base = vec![PROVIDER_ACCOUNT_COPY_CAPABILITY.to_string()];
+        let with = vec![
+            PROVIDER_ACCOUNT_COPY_CAPABILITY.to_string(),
+            PROVIDER_ACCOUNT_COPY_OPENCODE_CAPABILITY.to_string(),
+        ];
+        for provider in ["claude", "codex"] {
+            assert!(kernel_handles_copy_of(provider, &base));
+        }
+        assert!(!kernel_handles_copy_of("opencode", &base));
+        assert!(kernel_handles_copy_of("opencode", &with));
+    }
+
+    #[test]
+    fn the_new_refusals_are_public_and_say_what_to_do() {
+        for code in [
+            "provider_account_copy_vault_unreadable",
+            "provider_account_copy_target_vault_unreadable",
+            "provider_account_copy_credential_unreadable",
+            "provider_account_copy_target_credential_unreadable",
+            "provider_account_copy_cli_missing",
+            "provider_account_copy_replace_differs",
+            "provider_account_copy_credential_too_large",
+        ] {
+            assert!(is_public_code(code), "{code}");
+            assert_ne!(
+                failure_message(code),
+                failure_message("invalid_request"),
+                "{code}"
+            );
+        }
+        assert!(!failure_message("provider_account_copy_cli_missing").contains("Claude"));
+    }
+
+    #[test]
+    fn an_opencode_copy_between_two_kernels_is_a_valid_binding() {
+        let binding = ProviderAccountCopyBinding {
+            operation_id: "op".into(),
+            provider: "opencode".into(),
+            source_profile_id: "profile".into(),
+            source_kernel_id: "source".into(),
+            source_key_thumbprint: "a".repeat(64),
+            target_kernel_id: "target".into(),
+            target_key_thumbprint: "b".repeat(64),
+            replace: false,
+        };
+        binding.validate().unwrap();
+    }
 }
