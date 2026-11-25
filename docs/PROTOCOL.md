@@ -863,8 +863,11 @@ an existing directory; `--worktree <path> --branch <branch>` creates a worktree
 from the parent's repository, including outside the parent's folders. An unrelated
 existing directory or repository outside those folders is refused. The end of a child's work reaches its
 parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
-`success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
-on a question when the kernel restarted ends as `interrupted_by_restart`. The kernel
+`success`, the typed turn `outcome` and `deadline_reached`. Its
+`public_answer.excerpt` carries the child's answer or explains why there is no
+text answer and identifies the child agent and prompt to open in
+`chariox.history.turn`. A turn that waited on a question when the kernel
+restarted ends as `interrupted_by_restart`. The kernel
 never deletes a finished sub-agent for its parent: it can still own running units,
 live wakes or results nobody collected. Acking the event with `handled: true` keeps
 the child, and only `agent delete` removes it. The relay peer protocol needs no
