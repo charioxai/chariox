@@ -8,14 +8,27 @@ impl KernelRuntimeOwnedState {
         selected_run: Option<&crate::provider::RuntimeProviderRun>,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        self.admit_agent_account(agent, selected_run, operation)
+            .map(|_| ())
+    }
+
+    /// The same admission, saying whether only a substitute admits the turn: the
+    /// account the selected run belongs to is refused, and the launch that starts
+    /// the turn must run it on a substitute instead of that run.
+    pub(super) fn admit_agent_account(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        selected_run: Option<&crate::provider::RuntimeProviderRun>,
+        operation: &'static str,
+    ) -> Result<bool, DaemonError> {
         // A substitute's process was admitted when it launched, on its own account.
         if selected_run.is_some_and(|run| run.turn_substitute().is_some()) {
-            return Ok(());
+            return Ok(false);
         }
         let Some((owner, provider, profile)) =
             self.agent_account_for_prompt(agent, selected_run)?
         else {
-            return Ok(());
+            return Ok(false);
         };
         match self.provider_account_profiles.require_authenticated(
             &owner,
@@ -24,17 +37,35 @@ impl KernelRuntimeOwnedState {
             agent.model(),
             operation,
         ) {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(false),
             // The turn is admitted when a substitute can answer the refusal;
             // the launch runs it there.
             Err(refusal)
                 if crate::substitute_admission::substitute_can_answer(&refusal)
                     && self.has_usable_substitute(agent, &owner)? =>
             {
-                Ok(())
+                Ok(true)
             }
             Err(refusal) => Err(refusal),
         }
+    }
+
+    /// Whether `run`, a live process of the agent's configured profile, must not serve its
+    /// next turn: its account is refused and only a substitute admits the turn. The
+    /// dispatcher retires such a run and starts the turn on the substitute; every way a turn
+    /// reaches a run (a new prompt, a queued one after a completion or a cancellation) passes
+    /// through it.
+    pub(super) fn run_refused_for_substitute(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> bool {
+        run.state() != crate::provider::ProviderRunState::Ended
+            && run.turn_substitute().is_none()
+            // A failing admission has its own answer where the prompt is admitted.
+            && self
+                .admit_agent_account(agent, Some(run), "serve turn")
+                .unwrap_or(false)
     }
 
     fn has_usable_substitute(

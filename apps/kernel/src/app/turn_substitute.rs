@@ -164,7 +164,8 @@ impl DaemonApp {
         // A live process of the configured profile that holds no turn is idle:
         // retire it so the substitute's process serves this turn.
         if let Some(run) = self.providers.get_run_for_agent(session_id, agent_id) {
-            if run.turn_substitute().is_none()
+            if run.state() != crate::provider::ProviderRunState::Ended
+                && run.turn_substitute().is_none()
                 && self.provider_run_has_active_prompt(session_id, &run)?
             {
                 return Ok(false);

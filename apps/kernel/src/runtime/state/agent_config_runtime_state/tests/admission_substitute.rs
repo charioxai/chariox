@@ -31,6 +31,24 @@ fn far_future_ms() -> u64 {
 /// A Codex agent whose `default` account is exhausted, with `substitutes`
 /// (dev-stub models) configured in order.
 async fn refused_primary(substitutes: &[&str]) -> RefusedPrimary {
+    let fixture = healthy_primary(substitutes).await;
+    exhaust_primary_account(&fixture);
+    fixture
+}
+
+fn exhaust_primary_account(fixture: &RefusedPrimary) {
+    crate::test_support::exhaust_provider_account(
+        &fixture.runtime.owned.provider_account_profiles,
+        OWNER,
+        "codex",
+        "default",
+        far_future_ms(),
+    )
+    .unwrap();
+}
+
+/// The same agent while its `default` account is still usable.
+async fn healthy_primary(substitutes: &[&str]) -> RefusedPrimary {
     let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-admission-substitute-{:016x}",
         rand::random::<u64>()
@@ -78,12 +96,11 @@ async fn refused_primary(substitutes: &[&str]) -> RefusedPrimary {
             )
             .unwrap();
     }
-    crate::test_support::exhaust_provider_account(
+    crate::test_support::authenticate_provider_account(
         &runtime.owned.provider_account_profiles,
         OWNER,
         "codex",
         "default",
-        far_future_ms(),
     )
     .unwrap();
     RefusedPrimary {
@@ -299,4 +316,297 @@ async fn a_refusal_wins_over_an_older_healthy_credit_reading() {
             .is_some(),
         "the reset watcher sees the account blocked"
     );
+}
+
+// An idle primary process that is still running between turns holds no turn: when its account
+// is refused after the last one, the next prompt goes to the substitute, not to that process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_idle_primary_whose_account_is_refused_hands_the_next_turn_to_the_substitute() {
+    crate::test_support::isolated_env_test!();
+    let fixture = refused_primary(&[SUBSTITUTE_A]).await;
+    // The process was started while the account was usable and is idle now.
+    let request = crate::provider::LaunchProviderRequest::new(
+        &fixture.session_id,
+        "codex",
+        "codex",
+        "default",
+        PRIMARY_MODEL,
+    )
+    .with_agent_id(&fixture.agent_id);
+    let mut primary = crate::provider::RuntimeProviderRun::new(
+        "idle-primary-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    primary.mark_running();
+    fixture
+        .runtime
+        .with_app_side_effect(move |app| {
+            app.providers_mut().insert_run_for_test(primary.clone());
+            Ok::<(), crate::error::DaemonError>(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(fixture.wait_for_live_run().await.id(), "idle-primary-run");
+
+    let mut submission = fixture
+        .runtime
+        .submit_prepared_prompt(fixture.prepared("after-the-refusal"))
+        .await
+        .expect("a refused idle primary with a usable substitute must admit the turn");
+    // The caller sends the started prompt through the dispatcher.
+    let dispatch = submission
+        .dispatch
+        .take()
+        .expect("the prompt starts on the idle process");
+    fixture
+        .runtime
+        .enqueue_prompt_dispatch_after_liveness(&dispatch, &fixture.runtime.owned)
+        .await
+        .expect("the dispatcher accepts the prompt");
+
+    let run = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(run) = fixture
+                .live_run()
+                .filter(|run| run.turn_substitute().is_some())
+            {
+                return run;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the turn runs on a substitute's process");
+    assert_eq!(run.model(), SUBSTITUTE_A);
+    assert_ne!(run.id(), "idle-primary-run");
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .provider_store
+            .get_run("idle-primary-run")
+            .map(|run| run.state())
+            .unwrap(),
+        ProviderRunState::Ended,
+        "the refused process is retired"
+    );
+}
+
+impl RefusedPrimary {
+    /// A live primary process of `adapter_key` that serves turn A, with turn B queued behind it.
+    /// Nothing is dispatched to the process: the turns are only admitted.
+    async fn running_primary_with_a_queued_successor(&self, adapter_key: &str) {
+        let request = crate::provider::LaunchProviderRequest::new(
+            &self.session_id,
+            adapter_key,
+            "codex",
+            "default",
+            PRIMARY_MODEL,
+        )
+        .with_agent_id(&self.agent_id);
+        let mut primary = crate::provider::RuntimeProviderRun::new(
+            "serving-primary-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-codex-runtime".to_string()),
+            },
+        );
+        primary.mark_running();
+        self.runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(primary);
+        let session = self
+            .runtime
+            .owned
+            .session_store
+            .get_session(&self.session_id)
+            .unwrap();
+        for id in ["turn-a", "turn-b"] {
+            self.runtime
+                .owned
+                .prompt_state_owner
+                .submit_prepared_prompt_with_queue_policy(
+                    &session,
+                    self.prepared(id).prompt,
+                    false,
+                    true,
+                )
+                .unwrap();
+        }
+        let (active, queued) = self
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &self.agent_id);
+        self.runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&self.session_id, &self.agent_id, active, queued)
+            .unwrap();
+    }
+
+    fn queued_head(&self) -> crate::session::PromptQueueItem {
+        let session = self
+            .runtime
+            .owned
+            .session_store
+            .get_session(&self.session_id)
+            .unwrap();
+        self.runtime
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, &self.agent_id)
+            .expect("turn B is queued")
+    }
+
+    /// The dispatch that starts turn B once turn A has settled, run to its end.
+    async fn dispatch_then_expect_the_substitute(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+    ) {
+        self.runtime
+            .enqueue_prompt_dispatch_after_liveness(&dispatch, &self.runtime.owned)
+            .await
+            .expect("the queued turn is dispatched");
+        let run = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(run) = self
+                    .live_run()
+                    .filter(|run| run.turn_substitute().is_some())
+                {
+                    return run;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the queued turn runs on a substitute's process");
+        assert_eq!(run.model(), SUBSTITUTE_A);
+        assert_eq!(
+            self.runtime
+                .owned
+                .provider_store
+                .get_run("serving-primary-run")
+                .map(|run| run.state())
+                .unwrap(),
+            ProviderRunState::Ended,
+            "the refused process is retired"
+        );
+    }
+}
+
+// The primary serves turn A with turn B queued; its account is refused before A settles. B is
+// not started on the refused process, whichever way the process takes its prompts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_successor_of_a_refused_structured_primary_runs_on_the_substitute() {
+    crate::test_support::isolated_env_test!();
+    let fixture = healthy_primary(&[SUBSTITUTE_A]).await;
+    fixture
+        .running_primary_with_a_queued_successor("codex")
+        .await;
+    exhaust_primary_account(&fixture);
+
+    let completion = fixture
+        .runtime
+        .owned
+        .complete_local_prompt_with_queued_advance_if_matches(
+            &fixture.session_id,
+            &fixture.agent_id,
+            Some("serving-primary-run"),
+            &fixture.queued_head(),
+            Some("turn-a"),
+        )
+        .unwrap()
+        .expect("turn A settles");
+
+    assert!(
+        completion.completion.started_next.is_some(),
+        "turn B is promoted"
+    );
+    let dispatch = completion
+        .dispatch
+        .expect("turn B goes through the dispatcher, not straight to the refused process");
+    fixture.dispatch_then_expect_the_substitute(dispatch).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_successor_of_a_refused_primary_runs_on_the_substitute() {
+    crate::test_support::isolated_env_test!();
+    let fixture = healthy_primary(&[SUBSTITUTE_A]).await;
+    fixture
+        .running_primary_with_a_queued_successor("dev-stub")
+        .await;
+    exhaust_primary_account(&fixture);
+
+    let completion = fixture
+        .runtime
+        .owned
+        .complete_local_prompt_with_queued_advance_if_matches(
+            &fixture.session_id,
+            &fixture.agent_id,
+            Some("serving-primary-run"),
+            &fixture.queued_head(),
+            Some("turn-a"),
+        )
+        .unwrap()
+        .expect("turn A settles");
+
+    let dispatch = completion.dispatch.expect("turn B is dispatched");
+    fixture.dispatch_then_expect_the_substitute(dispatch).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_successor_of_a_cancelled_turn_on_a_refused_primary_runs_on_the_substitute() {
+    crate::test_support::isolated_env_test!();
+    let fixture = healthy_primary(&[SUBSTITUTE_A]).await;
+    fixture
+        .running_primary_with_a_queued_successor("dev-stub")
+        .await;
+    exhaust_primary_account(&fixture);
+
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .begin_cancelling_prompt_if_matches(&session, &fixture.agent_id, Some("turn-a"))
+        .expect("turn A is cancelling");
+    let cancellation = fixture
+        .runtime
+        .owned
+        .finalize_local_prompt_cancellation_with_queued_advance(
+            &fixture.session_id,
+            &fixture.agent_id,
+            "turn-a",
+            Some("serving-primary-run"),
+        )
+        .unwrap();
+
+    let dispatch = cancellation.dispatch.expect("turn B is dispatched");
+    fixture.dispatch_then_expect_the_substitute(dispatch).await;
 }
