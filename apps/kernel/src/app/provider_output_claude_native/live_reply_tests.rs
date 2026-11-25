@@ -785,3 +785,35 @@ fn the_answer_left_on_the_screen_is_not_streamed_under_the_next_prompt_by_a_read
         "the previous answer streamed under the next prompt: {deltas:?}"
     );
 }
+
+#[test]
+fn a_block_that_grew_while_the_reader_was_lost_is_not_streamed_again_once_completed() {
+    let dir = crate::test_support::TestTempDir::new("live-reader-grew");
+    let context = dir.path().join("context.json");
+    let mut reply = with_state(&context);
+    let streamed = read_twice(&mut reply, "prompt-1", &draw(FIRST));
+    let key = streamed
+        .first()
+        .expect("the block streams")
+        .merge_key_suffix
+        .clone();
+    // The reader is lost. Claude writes the answer further, and its transcript text completes the block.
+    let completed = "Result\nFirst body one.\nFirst body two.\nFirst body three.\nFirst body four.\nFirst body five.";
+    super::super::reader_state::mark_done(&context.display().to_string(), &key, Some(completed));
+    let grown = draw(&[
+        "● Result",
+        "  First body one.",
+        "  First body two.",
+        "  First body three.",
+        "  First body four.",
+        "  First body five.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    let mut lost = with_state(&context);
+    let again = read_twice(&mut lost, "prompt-1", &grown);
+    assert!(
+        again.is_empty(),
+        "the completed block, grown, streamed again: {again:?}"
+    );
+}

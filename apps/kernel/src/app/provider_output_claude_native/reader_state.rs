@@ -20,6 +20,9 @@ pub(super) struct Taken {
     pub(super) rows: Vec<String>,
     /// The block was handed over, or its transcript text completed it.
     pub(super) done: bool,
+    /// The transcript text that completed it: the block may have grown beyond the rows the reader had taken.
+    #[serde(default)]
+    pub(super) completed: Option<String>,
 }
 
 fn blocks_file(context_file: &str) -> PathBuf {
@@ -61,6 +64,7 @@ pub(super) fn note_block(
         prompt_id: prompt_id.to_string(),
         rows: rows.to_vec(),
         done,
+        completed: None,
     };
     match blocks.iter_mut().find(|block| block.key == key) {
         Some(block) if *block == taken => return,
@@ -76,13 +80,11 @@ pub(super) fn note_block(
 }
 
 /// The transcript text completed the block under `key`, whether or not a reader streamed it.
-pub(super) fn mark_done(context_file: &str, key: &str) {
+pub(super) fn mark_done(context_file: &str, key: &str, completed: Option<&str>) {
     let mut blocks = recall(context_file);
-    if let Some(block) = blocks
-        .iter_mut()
-        .find(|block| block.key == key && !block.done)
-    {
+    if let Some(block) = blocks.iter_mut().find(|block| block.key == key) {
         block.done = true;
+        block.completed = completed.map(str::to_string);
         write(context_file, blocks);
     }
 }

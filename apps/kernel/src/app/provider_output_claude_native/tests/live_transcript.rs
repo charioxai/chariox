@@ -766,6 +766,51 @@ fn a_reply_streamed_before_a_kernel_restart_is_replaced_not_shown_twice() {
     assert_eq!(turn.stored_replies(), [reply]);
 }
 
+// The answer grew while the reader was lost: the transcript text that completes the block is longer than the rows the
+// reader had streamed, and Claude's screen shows the longer block.
+#[test]
+fn a_block_that_grew_while_the_reader_was_lost_is_not_streamed_again_once_completed_in_the_kernel()
+{
+    let mut turn = running_turn("streamed-grew-while-lost");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● Here is the plan:",
+        "",
+        "  First we read the file.",
+        "",
+        "  Then we write it.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    super::live_reply::forget(turn.run.id());
+    let reply = "Here is the plan:\n\n1. First we **read** the file.\n\nThen we write it.\n\nFinally we run the tests.";
+    turn.append_transcript(assistant_text("reply", reply));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [reply]);
+    let grown = screen(&[
+        "● Here is the plan:",
+        "",
+        "  First we read the file.",
+        "",
+        "  Then we write it.",
+        "",
+        "  Finally we run the tests.",
+        "",
+        "✻ Working (9s)",
+    ]);
+    turn.terminal_shows(&grown);
+    turn.terminal_shows(&grown);
+    assert_eq!(
+        turn.live_rows(),
+        [reply],
+        "a redraw of the grown block adds no row"
+    );
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
 // The same, when a reader had already taken over (it streamed nothing yet) before the transcript text arrived.
 #[test]
 fn a_block_completed_without_its_reader_is_not_streamed_again_even_by_a_reader_that_took_over_before(

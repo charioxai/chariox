@@ -1435,7 +1435,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         if let Some(key) =
                             merge_key.strip_prefix(&format!("claude-transcript:{provider_run_id}:"))
                         {
-                            reader_state::mark_done(context_file, key);
+                            reader_state::mark_done(context_file, key, Some(&chunk.text));
                         }
                     }
                     live_reply::refresh_taken(provider_run_id);
