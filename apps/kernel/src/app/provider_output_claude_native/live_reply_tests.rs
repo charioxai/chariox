@@ -744,7 +744,10 @@ fn a_completed_block_drawn_again_after_the_reader_was_lost_is_not_streamed_again
     // The reader is lost; the one that takes over sees the screen drawn again.
     let mut lost = with_state(&context);
     let again = read_twice(&mut lost, "prompt-1", &draw(FIRST));
-    assert!(again.is_empty(), "the completed block streamed again: {again:?}");
+    assert!(
+        again.is_empty(),
+        "the completed block streamed again: {again:?}"
+    );
     // A block it has not seen still streams, in a row of its own.
     let later = read_twice(&mut lost, "prompt-1", &draw(SECOND));
     assert!(!later.is_empty());
@@ -760,11 +763,15 @@ fn a_block_handed_over_but_not_yet_adopted_is_not_streamed_again_after_the_reade
     assert!(!read_twice(&mut reply, "prompt-1", &draw(SECOND)).is_empty());
     let mut lost = with_state(&context);
     let again = read_twice(&mut lost, "prompt-1", &draw(FIRST));
-    assert!(again.is_empty(), "the handed-over block streamed again: {again:?}");
+    assert!(
+        again.is_empty(),
+        "the handed-over block streamed again: {again:?}"
+    );
 }
 
 #[test]
-fn the_answer_left_on_the_screen_is_not_streamed_under_the_next_prompt_by_a_reader_that_took_over() {
+fn the_answer_left_on_the_screen_is_not_streamed_under_the_next_prompt_by_a_reader_that_took_over()
+{
     let dir = crate::test_support::TestTempDir::new("live-reader-lost-previous");
     let context = dir.path().join("context.json");
     let mut reply = with_state(&context);
@@ -773,5 +780,8 @@ fn the_answer_left_on_the_screen_is_not_streamed_under_the_next_prompt_by_a_read
     // The reader is lost as the next prompt starts, while the screen still shows the previous answer.
     let mut lost = with_state(&context);
     let deltas = read_twice(&mut lost, "prompt-2", &draw(FIRST));
-    assert!(deltas.is_empty(), "the previous answer streamed under the next prompt: {deltas:?}");
+    assert!(
+        deltas.is_empty(),
+        "the previous answer streamed under the next prompt: {deltas:?}"
+    );
 }

@@ -26,6 +26,7 @@ mod live_reply;
 mod local_denial;
 mod permission;
 mod question;
+mod reader_state;
 mod readiness;
 mod session_start;
 mod start_screen;
@@ -2002,6 +2003,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             reading.map(|prompt| prompt.id()),
             terminal_bytes,
             unfinished,
+            provider_run
+                .pty_env()
+                .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+                .map(String::as_str),
         );
         if deltas.is_empty() {
             return Ok(());

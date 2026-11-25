@@ -65,6 +65,7 @@ pub(super) fn read_terminal(
     prompt_id: Option<&str>,
     bytes: &[u8],
     unfinished: Option<Unfinished>,
+    context_file: Option<&str>,
 ) -> Vec<LiveDelta> {
     let mut replies = replies();
     if !replies.contains_key(provider_run_id) && replies.len() >= RUNS {
@@ -79,6 +80,7 @@ pub(super) fn read_terminal(
     let reply = replies
         .entry(provider_run_id.to_string())
         .or_insert_with(|| LiveReply::new(SCREEN_ROWS, SCREEN_COLS));
+    reply.context_file = context_file.map(str::to_string);
     if reply.is_fresh() {
         reply.unfinished = unfinished;
     }
@@ -132,6 +134,8 @@ struct LiveReply {
     unfinished: Option<Unfinished>,
     /// The run's context file: what the reader must not forget when it is lost is kept next to it.
     context_file: Option<String>,
+    /// Whether what an earlier reader left next to the context file has been taken in (once, on the first read of a prompt).
+    recalled: bool,
 }
 
 struct Block {
@@ -166,15 +170,39 @@ fn next_reader() -> u64 {
 }
 
 impl LiveReply {
-    /// The merge key of this reader's `block`th block for the prompt it reads. Adoption finds a row left by an earlier
-    /// reader by the prefix `live-{prompt}-`, so that stays the start of every key.
     fn is_fresh(&self) -> bool {
         self.blocks_started == 0 && self.block.is_none() && self.streamed.is_empty()
     }
 
+    /// The merge key of this reader's `block`th block for the prompt it reads. Adoption finds a row left by an earlier
+    /// reader by the prefix `live-{prompt}-`, so that stays the start of every key.
     fn block_key(&self, block: usize) -> String {
         let prompt_id = self.prompt_id.as_deref().unwrap_or_default();
         format!("assistant:live-{prompt_id}-{}.{block}:0", self.reader)
+    }
+
+    /// What the reader that was lost had taken: the blocks it handed over for this prompt are not streamed again when
+    /// Claude draws them again, and the answer of the prompt before, still on the screen, is not taken for a new one.
+    fn recall_taken_blocks(&mut self) {
+        let (Some(context_file), Some(prompt_id)) =
+            (self.context_file.as_deref(), self.prompt_id.clone())
+        else {
+            return;
+        };
+        let taken = super::reader_state::recall(context_file);
+        for block in taken.iter().filter(|block| block.prompt_id == prompt_id) {
+            if self.finished.len() >= KEPT_BLOCKS {
+                self.finished.pop_front();
+            }
+            self.finished.push_back(block.rows.clone());
+        }
+        if self.left_over.is_none() {
+            self.left_over = taken
+                .iter()
+                .rev()
+                .find(|block| block.prompt_id != prompt_id && !block.rows.is_empty())
+                .map(|block| block.rows.clone());
+        }
     }
 
     fn new(rows: u16, cols: u16) -> Self {
@@ -192,6 +220,7 @@ impl LiveReply {
             left_over: None,
             unfinished: None,
             context_file: None,
+            recalled: false,
         }
     }
 
@@ -207,6 +236,10 @@ impl LiveReply {
             self.finished.clear();
             self.previous_rows.clear();
             self.prompt_id = prompt_id.map(str::to_string);
+        }
+        if !self.recalled && prompt_id.is_some() {
+            self.recalled = true;
+            self.recall_taken_blocks();
         }
         self.screen.process(bytes);
         if prompt_id.is_none() {
@@ -314,7 +347,8 @@ impl LiveReply {
             // that was begun, and send only what clients do not hold yet. The offer is for this first piece only.
             if let Some(earlier) = self.unfinished.take() {
                 if !earlier.text.is_empty()
-                    && (earlier.text.starts_with(&block.text) || block.text.starts_with(&earlier.text))
+                    && (earlier.text.starts_with(&block.text)
+                        || block.text.starts_with(&earlier.text))
                 {
                     block.merge_key_suffix = earlier.merge_key_suffix;
                     block.shown = earlier.text.len();
@@ -327,7 +361,11 @@ impl LiveReply {
         let sent_from = before.max(block.shown);
         Some(LiveDelta {
             merge_key_suffix: block.merge_key_suffix.clone(),
-            text: block.text.get(sent_from..).unwrap_or(&block.text).to_string(),
+            text: block
+                .text
+                .get(sent_from..)
+                .unwrap_or(&block.text)
+                .to_string(),
             text_so_far: block.text.clone(),
         })
     }
@@ -337,6 +375,11 @@ impl LiveReply {
             return;
         };
         if !block.rows.is_empty() {
+            if let (Some(context_file), Some(prompt_id)) =
+                (self.context_file.as_deref(), self.prompt_id.as_deref())
+            {
+                super::reader_state::note_taken(context_file, prompt_id, &block.rows);
+            }
             self.finished.push_back(block.rows.clone());
             if self.finished.len() > KEPT_BLOCKS {
                 self.finished.pop_front();
