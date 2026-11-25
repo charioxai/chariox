@@ -210,6 +210,43 @@ async fn ask_me_resume_at_the_reset_resumes_the_agent() {
     assert!(team.cards(0).is_empty());
 }
 
+/// Union review P1: at the reset an explicit "Ask me" stop is the person's to decide. Ticking on
+/// past the reset must keep the stop and its one "Usage is back" decision until they answer; the
+/// reset must not apply `StopEvent::Reset`, which would drop the stop and close the decision.
+#[tokio::test]
+async fn ask_me_keeps_the_stop_and_its_one_decision_through_the_reset_until_answered() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    team.make_reset_due(0);
+    let now = crate::session::unix_epoch_ms();
+    for after_ms in [0, 1_000, 60_000, 3_600_000] {
+        tick(team.rt(), now + after_ms).await;
+        let stop = team
+            .stop(0)
+            .unwrap_or_else(|| panic!("the stop is still there {after_ms} ms past the reset"));
+        assert_eq!(stop.state, UsageLimitStopState::Asking, "{stop:?}");
+        let cards = team.cards(0);
+        assert_eq!(cards.len(), 1, "exactly one decision is up: {cards:?}");
+        assert!(cards[0].ends_with("-back"), "{cards:?}");
+        assert_eq!(card_titles(&team, 0), ["Usage is back"]);
+        assert!(!team.has_turn(0), "Ask me never resumes without the person");
+    }
+    assert!(
+        row_stop(&team, 0).is_some_and(|stop| stop.state == UsageLimitStopState::Asking),
+        "the row still says paused"
+    );
+
+    let cards = team.cards(0);
+    team.answer(&cards[0], "resume_when_back").await;
+    team.until(0, |stop| {
+        matches!(stop.state, UsageLimitStopState::Armed { .. })
+    })
+    .await;
+    tick(team.rt(), now + 3_700_000).await;
+    assert!(team.has_turn(0), "choosing Resume resumes the agent");
+    assert!(team.cards(0).is_empty(), "the answered decision is gone");
+}
+
 #[tokio::test]
 async fn agent_resume_goes_on_after_leave_paused() {
     let team = team(config(UsageLimitResume::Ask), 1).await;

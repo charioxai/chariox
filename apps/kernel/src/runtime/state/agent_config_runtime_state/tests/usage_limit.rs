@@ -2103,7 +2103,11 @@ impl Team {
 
 #[tokio::test]
 async fn an_unanswered_card_closes_at_the_named_reset_without_resuming_work() {
-    let team = team(config(UsageLimitResume::Ask), 1).await;
+    // The stripe card at the stop is the default policy's (a spare account to switch to). An explicit
+    // Ask me raises no card at the stop and keeps its stop at the reset until answered.
+    let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
+        .await
+        .with_second_account();
     team.hit_the_limit(0).await;
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
     tick(team.rt(), reset - 1).await;
