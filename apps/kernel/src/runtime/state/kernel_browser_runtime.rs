@@ -46,6 +46,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
         device_scale_factor: u32,
         initial_push: bool,
         tab_display: bool,
+        viewer_density_stills: bool,
     },
     EncodedCapture {
         subscription_id: String,
@@ -307,6 +308,7 @@ impl KernelRuntimeState {
                 device_scale_factor,
                 initial_push,
                 tab_display,
+                viewer_density_stills,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
@@ -316,6 +318,7 @@ impl KernelRuntimeState {
                 device_scale_factor,
                 initial_push,
                 tab_display,
+                viewer_density_stills,
             },
             KernelBrowserCommand::DisplayNext {
                 subscription_id,
@@ -671,10 +674,14 @@ impl KernelRuntimeState {
                 device_scale_factor,
                 initial_push,
                 tab_display,
+                viewer_density_stills,
             } => {
                 let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
                 if tab_display {
                     params["tab_display"] = true.into();
+                }
+                if viewer_density_stills {
+                    params["viewer_density_stills"] = true.into();
                 }
                 if let Some(target) = target {
                     params["target"] = serde_json::to_value(target)

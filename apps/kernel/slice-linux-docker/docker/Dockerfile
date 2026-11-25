@@ -466,6 +466,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-identity.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-process.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-refiner.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-viewer-still.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-sample-lane.mjs \
