@@ -107,6 +107,14 @@ pub(super) fn input_kind(input: &crate::local::KernelBrowserInput) -> String {
         .unwrap_or_else(|| "input".into())
 }
 
+/// The kind of a person's web input (`click`, `text`, `key`, ...), by name only.
+pub(super) fn mirror_action_kind(action: &crate::local::KernelBrowserMirrorAction) -> String {
+    serde_json::to_value(action)
+        .ok()
+        .and_then(|value| value["kind"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "input".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

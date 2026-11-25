@@ -225,15 +225,28 @@ async fn web_refusal() {
         serde_json::json!({"kind": "text", "text": "never-kept-web-text"}),
     )
     .await;
-    mirror_input(&world, "DOC-A", serde_json::json!({"kind": "key", "key": "a"})).await;
+    mirror_input(
+        &world,
+        "DOC-A",
+        serde_json::json!({"kind": "key", "key": "a"}),
+    )
+    .await;
     let result = room_command(&world, "a", "room card card-web").await;
     assert!(result.ok, "{result:?}");
     let card = &result.payload["response"];
     let last = &card["browser"]["input"]["last_refused"];
-    assert_eq!(last["kind"], "key", "the latest refusal is the one read: {last:?}");
+    assert_eq!(
+        last["kind"], "key",
+        "the latest refusal is the one read: {last:?}"
+    );
     assert_eq!(last["generation"], 9);
     assert_eq!(last["document_id"], "DOC-A");
-    assert!(last["reason"].as_str().is_some_and(|reason| !reason.is_empty()), "{last:?}");
+    assert!(
+        last["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "{last:?}"
+    );
     assert!(codes(card).contains(&"last_input_refused".to_owned()));
     assert!(!card.to_string().contains("never-kept-web-text"));
 }
