@@ -220,6 +220,12 @@ test('MP-08/MP-11 removing the element or replacing its document settles conditi
   assert.deepEqual(await region({ generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser document changed' });
 }));
 
+test('546 an element that went away with a navigation is a changed document, not a removed element', () => withHost(async ({ snapshot, region, node, state }) => {
+  await snapshot();
+  node.isConnected = false; state.document_id = 'replacement';
+  assert.deepEqual(await region({ generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser document changed' });
+}));
+
 test('MP-08/MP-11 an isolated-frame reference maps its owned quad into the Tab viewport', () => withHost(async ({ host, snapshot, region, state, node }) => {
   const ref = 'frame:child:child-doc:backend:43';
   host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });

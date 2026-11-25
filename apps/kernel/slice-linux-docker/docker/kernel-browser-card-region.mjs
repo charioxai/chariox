@@ -228,6 +228,12 @@ export async function resolveCardRegion(host, command, scope, signal) {
   const browser = host.browser, connection = await browser.ensureConnection();
   const sessionId = await browser.ensureTargetSession(connection, tab.target_id);
   const current = async () => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree?.frame;
+  // A page that navigates takes its element with it: the element is gone because the document changed, which is a navigation
+  // of the card's Tab (the person's step goes on), not the element being removed from the page the card was raised on.
+  const goneElement = async () => {
+    const now = await current().catch(() => null);
+    return gone(now?.loaderId !== undefined && now.loaderId !== remembered.document_id ? 'Browser document changed' : 'Browser element disappeared');
+  };
   const frame = await current();
   if (frame?.loaderId !== remembered.document_id) return gone('Browser document changed');
   if (key) {
@@ -249,7 +255,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     if (anchor && (anchor.verification || anchor.doneText !== null) && !anchor.elementResolver) {
       const resolved=await connection.send('DOM.resolveNode',{backendNodeId:Number(command.ref.slice(8)),executionContextId:world.contextId},sessionId);
       objectId=resolved.object?.objectId;
-      if(!objectId)return gone('Browser element disappeared');
+      if(!objectId)return goneElement();
       const tracked = await connection.send('Runtime.callFunctionOn', {objectId,functionDeclaration:String(trackCardElement),returnByValue:false},sessionId);
       if (tracked.exceptionDetails || !tracked.result?.objectId) throw new Error('Browser card element tracking could not start');
       anchor.elementResolver = tracked.result.objectId;
@@ -261,23 +267,23 @@ export async function resolveCardRegion(host, command, scope, signal) {
       if (objectId) await connection.send('Runtime.releaseObject',{objectId},sessionId);
       objectId = undefined;
       const resolved = await connection.send('Runtime.callFunctionOn', {objectId:anchor.elementResolver,functionDeclaration:'function(){return this()}',returnByValue:false},sessionId);
-      if (resolved.exceptionDetails) return gone('Browser element disappeared');
+      if (resolved.exceptionDetails) return goneElement();
       objectId = resolved.result?.objectId;
-      if (!objectId) return gone('Browser element disappeared');
+      if (!objectId) return goneElement();
     }
     if (remembered.children.has(command.ref)) {
       box = await childFrameBox(browser, connection, sessionId, tab, command);
     } else {
       const resolved = objectId ? {object:{objectId}} : await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
       objectId = resolved.object?.objectId;
-      if (!objectId) return gone('Browser element disappeared');
+      if (!objectId) return goneElement();
       const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }, { value: command.done_text ?? null }, ...(anchor?.elementResolver ? [{ objectId: anchor.elementResolver }] : [])], returnByValue: true, awaitPromise: true }, sessionId);
       if (signal?.aborted) throw new Error('Browser card observation cancelled');
       if (reply.exceptionDetails) throw new Error('Browser card geometry could not be read');
       box = reply.result?.value;
     }
     if ((await current())?.loaderId !== remembered.document_id) return gone('Browser document changed');
-    if (box === null) return gone('Browser element disappeared');
+    if (box === null) return goneElement();
     if (box.done === true) return { state: 'condition_met', reason: 'The page shows what the person was asked to reach' };
     if (!box || ![box.rect?.x, box.rect?.y, box.rect?.width, box.rect?.height, box.viewport_width, box.viewport_height].every(v => Number.isSafeInteger(v) && v >= 0)) throw new Error('Invalid browser card geometry');
     // Only the site origin is projected: URLs can contain userinfo and secret query parameters.
@@ -288,7 +294,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     if (anchor) anchor.region = region;
     return {state:'present',region};
   } catch (error) {
-    if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return gone('Browser element disappeared');
+    if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return goneElement();
     if (/Execution context was destroyed|Cannot find context with specified id/.test(error?.message ?? '')) return gone('Browser document changed');
     if (error instanceof BrowserSnapshotError && ['stale_document_reference', 'stale_element_reference'].includes(error.code)) return gone('Browser document changed');
     throw error;
