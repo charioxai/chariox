@@ -6,6 +6,8 @@ mod finalized_snapshot_tests;
 mod parts;
 mod permission;
 #[cfg(test)]
+mod free_limit_tests;
+#[cfg(test)]
 mod retry_status_tests;
 mod snapshot;
 mod state;

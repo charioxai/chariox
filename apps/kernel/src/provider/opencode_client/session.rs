@@ -34,6 +34,32 @@ pub struct OpenCodeSessionStatus {
     pub attempt: Option<u64>,
     #[serde(default)]
     pub next: Option<u64>,
+    /// What OpenCode offers the person for this retry, when it names one.
+    #[serde(default)]
+    pub action: Option<OpenCodeStatusAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OpenCodeStatusAction {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `action.reason` OpenCode reports when its free service answered HTTP 429
+/// `FreeUsageLimitError`: it then retries for hours and ends nothing itself.
+const FREE_TIER_LIMIT_REASON: &str = "free_tier_limit";
+
+impl OpenCodeSessionStatus {
+    /// The free model refused the turn for the free-usage limit; waiting in
+    /// OpenCode's own retry loop cannot succeed.
+    pub fn is_free_tier_limit(&self) -> bool {
+        self.kind == "retry"
+            && self
+                .action
+                .as_ref()
+                .and_then(|action| action.reason.as_deref())
+                == Some(FREE_TIER_LIMIT_REASON)
+    }
 }
 
 impl From<&str> for OpenCodeSessionStatus {
@@ -43,6 +69,7 @@ impl From<&str> for OpenCodeSessionStatus {
             message: None,
             attempt: None,
             next: None,
+            action: None,
         }
     }
 }
