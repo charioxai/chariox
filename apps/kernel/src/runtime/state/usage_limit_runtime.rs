@@ -278,7 +278,12 @@ impl KernelRuntimeState {
             let Some(stop) = agent.usage_limit_stop().cloned() else {
                 continue;
             };
-            if stop.state == UsageLimitStopState::Asking && stop.reset_reached(now) {
+            // An explicit "Ask me" stays the person's to decide at the reset: the stop and its
+            // "Usage is back" decision stay until they choose Resume or Leave paused.
+            if stop.state == UsageLimitStopState::Asking
+                && stop.reset_reached(now)
+                && !self.owned.usage_limit_resume_is_asked()
+            {
                 self.apply_stop_event(
                     agent.id(),
                     &StopEvent::Reset {
