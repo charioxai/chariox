@@ -225,6 +225,24 @@ async fn cell_2_a_backstop_does_not_wake_an_agent_another_turn_already_resumed()
             now: crate::session::unix_epoch_ms(),
         })
         .unwrap();
+    // Review P2: the idle agent is not "armed" by a backstop a later turn already superseded: a
+    // message sent now starts its turn, it does not wait for the old deadline.
+    let message = crate::durable_state::agent_lifecycle::occurrence(
+        &team.room,
+        &team.child,
+        "peer",
+        "after-the-review",
+        "message",
+        serde_json::json!({"message": "go ahead"}),
+    );
+    store.agent_lifecycle(Operation::Occur(message)).unwrap();
+    assert!(
+        team.runtime
+            .owned
+            .release_queued_for_stranded(&team.room, &team.child)
+            .unwrap(),
+        "cell 2: a superseded backstop still holds the idle agent's message"
+    );
     let tasks_before = store
         .agent_tasks(Some(&team.room), Some(&team.child))
         .unwrap()
