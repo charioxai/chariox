@@ -39,6 +39,15 @@ test('the release build refuses a worker that does not report its identity', () 
   assert.match(workflow, /unsigned\/bin\/chariox-app-wasm-worker identity/);
 });
 
+// The worker prints its identity as camelCase JSON (AotRuntimeIdentity, serde camelCase), which the kernel parses;
+// both worker checks must grep that field name, not a snake_case spelling the worker never prints.
+test('both worker identity checks look for the field the worker prints', () => {
+  const checks = workflow.split('\n').filter((line) => line.includes('chariox-app-wasm-worker') && line.includes(' identity | grep'));
+  assert.equal(checks.length, 2, 'one check after the build and one after macOS signing');
+  for (const line of checks) assert.match(line, /grep -q "\\"workerBuild\\""/, line);
+  assert.doesNotMatch(workflow, /worker_build/);
+});
+
 test('the macOS release job starts the signed worker under the hardened runtime', () => {
   const signed = workflow.indexOf('"$RUNNER_TEMP/signed/bin/chariox-app-wasm-worker" identity');
   assert.ok(signed > workflow.indexOf('node scripts/sign-macos-release.mjs --input "$RUNNER_TEMP/executables"'));
