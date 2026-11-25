@@ -244,3 +244,69 @@ fn a_tool_younger_than_two_seconds_is_not_looked_at() {
 
     assert!(running.stopped(41_010, at(base, 1)).is_empty());
 }
+
+/// Review of #1745, P1: the same command twice on one server. Neither process
+/// can be told from the other, so neither tool may take either one.
+#[test]
+fn identical_commands_are_never_paired_by_process_order() {
+    let base = Instant::now();
+    // The second command's process is listed first: the shorter one ends normally.
+    let longer = child(30, 1_100, &["bash", "-c", "cargo build"]);
+    let shorter = child(31, 1_200, &["bash", "-c", "cargo build"]);
+    let server = Server::with(vec![longer.clone(), shorter]);
+    let mut running = tools(&server);
+    running.note(&part("prt_a", "running", "cargo build", 1_000), base, 1_000);
+    running.note(&part("prt_b", "running", "cargo build", 1_000), base, 1_000);
+    assert!(running.stopped(41_020, at(base, 3)).is_empty());
+
+    // The shorter one ends normally and OpenCode completes its tool; the longer
+    // one is still running with its own process.
+    server.set(Some(vec![longer]));
+    running.note(
+        &part("prt_a", "completed", "cargo build", 1_000),
+        at(base, 4),
+        4_000,
+    );
+    for seconds in [5, 10, 20, 60] {
+        assert!(
+            running.stopped(41_020, at(base, seconds)).is_empty(),
+            "the longer command's process is alive (after {seconds} s)"
+        );
+    }
+}
+
+/// Review of #1745, P1: another session's identical command is not this tool's
+/// process, even when it is the only candidate.
+#[test]
+fn another_sessions_identical_command_is_not_taken_as_this_tools_process() {
+    let base = Instant::now();
+    let theirs = child(32, 1_100, &["bash", "-c", "cargo build"]);
+    let server = Server::with(vec![theirs]);
+    let mut dead = tools(&server);
+    let mut alive = tools(&server);
+    dead.note(&part("prt_dead", "running", "cargo build", 1_000), base, 1_000);
+    alive.note(&part("prt_live", "running", "cargo build", 1_000), base, 1_000);
+
+    // The first tool has no process of its own; the one process is the other's.
+    for seconds in [3, 10, 20] {
+        assert!(dead.stopped(41_021, at(base, seconds)).is_empty());
+        assert!(
+            alive.stopped(41_021, at(base, seconds)).is_empty(),
+            "the live command is never stopped (after {seconds} s)"
+        );
+    }
+}
+
+/// Review of #1745, P1: a lone unclaimed child is no proof of ownership.
+#[test]
+fn a_lone_unrelated_child_is_not_taken_as_this_tools_process() {
+    let base = Instant::now();
+    let server = Server::with(vec![child(33, 1_100, &["node", "server.js"])]);
+    let mut running = tools(&server);
+    running.note(&part("prt_lone", "running", "make", 1_000), base, 1_000);
+    assert!(running.stopped(41_022, at(base, 3)).is_empty());
+    // The unrelated process ends; the tool's own was never there.
+    server.set(Some(Vec::new()));
+    assert!(running.stopped(41_022, at(base, 4)).is_empty());
+    assert_eq!(running.stopped(41_022, at(base, 10)).len(), 1);
+}

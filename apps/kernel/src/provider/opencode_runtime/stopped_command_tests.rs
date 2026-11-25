@@ -1,5 +1,5 @@
 //! A turn whose command lost its process ends through the drain.
-use super::stuck_tool::{ChildProcess, RunningTools, ServerChildren};
+use super::stuck_tool::{server_port, ChildProcess, RunningTools, ServerChildren};
 use super::*;
 use crate::terminal::TerminalOutputKind;
 use std::io::{Read, Write};
@@ -69,10 +69,14 @@ fn opencode(
 }
 
 fn running_bash() -> crate::provider::opencode_client::OpenCodePart {
+    bash_part("part-bash", "sleep 240")
+}
+
+fn bash_part(id: &str, command: &str) -> crate::provider::opencode_client::OpenCodePart {
     serde_json::from_value(serde_json::json!({
-        "id": "part-bash", "sessionID": "session-1", "messageID": "assistant-1",
+        "id": id, "sessionID": "session-1", "messageID": "assistant-1",
         "type": "tool", "tool": "bash",
-        "state": {"status": "running", "input": {"command": "sleep 240"}, "time": {"start": 1}},
+        "state": {"status": "running", "input": {"command": command}, "time": {"start": 1}},
     }))
     .unwrap()
 }
@@ -164,6 +168,59 @@ fn a_turn_whose_command_process_is_alive_is_left_running() {
         .unwrap()
         .iter()
         .any(|line| line.contains("/abort")));
+    drop(state);
+    stop.store(true, Ordering::Relaxed);
+    let _ = server.join();
+}
+
+/// Review of #1745, P2: the abort ends the whole session, so a sibling command
+/// that still had its process is cancelled with it and its row must close too.
+#[test]
+fn aborting_for_one_stopped_command_closes_the_rows_of_its_siblings() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (endpoint, server) = opencode(requests.clone(), stop.clone());
+    let child = |pid, command: &str| ChildProcess {
+        pid,
+        started_ms: 10,
+        argv: vec!["bash".into(), "-c".into(), command.into()],
+    };
+    let sibling = child(4343, "sleep 300");
+    let children = Arc::new(Mutex::new(vec![child(4242, "sleep 240"), sibling.clone()]));
+    let (mut state, _events) = state(endpoint, children.clone());
+    state.running_tools.note(
+        &bash_part("part-sibling", "sleep 300"),
+        Instant::now() - Duration::from_secs(30),
+        1,
+    );
+    // Both processes are seen and paired with their tools; then one is killed.
+    let port = server_port(&state.base_url).unwrap();
+    assert!(state.running_tools.stopped(port, Instant::now()).is_empty());
+    *children.lock().unwrap() = vec![sibling];
+    state.running_tools.backdate_gone(Duration::from_secs(10));
+
+    let drained = drain_opencode_events(&tests::test_run(), &mut state, None).unwrap();
+
+    assert!(drained.prompt_completed);
+    let mut rows: Vec<(String, serde_json::Value)> = drained
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+        .map(|chunk| {
+            (
+                chunk.merge_key.clone().unwrap_or_default(),
+                serde_json::from_slice(&chunk.bytes).unwrap(),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let keys: Vec<&str> = rows.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(keys, ["part-bash", "part-sibling"]);
+    for (key, row) in &rows {
+        assert_eq!(row["status"], "error", "{key}");
+        assert_eq!(row["error"], "The command was stopped.", "{key}");
+    }
+    assert_eq!(rows[1].1["input"]["command"], "sleep 300");
     drop(state);
     stop.store(true, Ordering::Relaxed);
     let _ = server.join();

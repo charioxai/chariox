@@ -134,6 +134,7 @@ impl RunningTools {
         for tool in self.tools.values_mut() {
             tool.gone_since = Some(Instant::now() - by);
         }
+        self.checked_at = None;
     }
 
     pub(super) fn is_empty(&self) -> bool {
