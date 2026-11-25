@@ -723,6 +723,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::CloudAccountKernels(_)
         | LocalDaemonRequest::ControlPlane(_)
+        | LocalDaemonRequest::MachineAcquisition(_)
         | LocalDaemonRequest::GetEnvironmentOperation(_)
         | LocalDaemonRequest::SaveProjectEnvironment(_)
         | LocalDaemonRequest::SetProjectEnvironmentSecret(_)

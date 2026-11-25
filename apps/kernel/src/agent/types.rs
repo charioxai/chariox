@@ -647,7 +647,10 @@ impl AgentInstance {
             self.matches_usage_limit_profile(&stop.provider, &stop.account_profile)
                 && matches!(
                     stop.state,
-                    UsageLimitStopState::Asking | UsageLimitStopState::Armed { .. }
+                    UsageLimitStopState::Asking
+                        | UsageLimitStopState::Armed { .. }
+                        // Left paused by the person: the row still says paused, and `agent resume` goes on.
+                        | UsageLimitStopState::Declined
                 )
         })
     }

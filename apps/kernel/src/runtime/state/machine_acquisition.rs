@@ -2,13 +2,19 @@
 //! asking within limits (`without_asking`).
 use super::*;
 use crate::durable_state::acquire_choices::AcquireOption;
-use crate::local::{ControlPlaneRequest, MachineAllocationCapability};
+use crate::local::{
+    ControlPlaneRequest, MachineAcquisitionChoice, MachineAcquisitionEstimate,
+    MachineAcquisitionRequest, MachineAcquisitionResult, MachineAllocationCapability,
+};
 use crate::runtime::command::KernelCommand;
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
 use sha2::Digest;
 
 /// Every machine acquisition decision's id starts with this; the rest is derived from the request.
 const ACQUISITION_DECISION_PREFIX: &str = "machine-acquisition-";
+
+/// How long the owner has to decide before the request is not sent.
+const ACQUISITION_DECISION_SECONDS: u64 = 300;
 
 /// A machine acquisition decision is the one kernel operation an agent may answer for the person: the
 /// holder above the requester (`agent answer`) or an agent of the same owner in another Room
@@ -88,11 +94,33 @@ impl KernelRuntimeState {
             .map(|r| r.agent_id.as_str())
             .or(command.agent_id.as_deref())
             .or(command.caller.metaagent_id.as_deref());
-        let room = agent.and_then(|agent| self.owned.agent_store.get_agent(agent).ok()).map(|a| a.session_id().to_owned())
-            .or_else(|| command.session_id.clone())
-            .ok_or_else(|| acquisition_error("approval_required", "An agent allocation needs an active Room for the owner's approval; request it from your Room"))?;
+        let agent_room = agent
+            .and_then(|agent| self.owned.agent_store.get_agent(agent).ok())
+            .map(|a| a.session_id().to_owned())
+            .or_else(|| command.session_id.clone());
+        // An agent acting for the owner through an access grant has no Room: its decision is one of
+        // the owner's cards outside any Room, answered like an App's host offer.
+        let (room, owner) = match agent_room {
+            Some(room) => {
+                let owner = self
+                    .owned
+                    .session_store
+                    .get_session(&room)?
+                    .owner_user_id()
+                    .to_owned();
+                (room, owner)
+            }
+            None if command.external_grant_id().is_some() => {
+                (String::new(), self.kernel_owner_user_id())
+            }
+            None => {
+                return Err(acquisition_error(
+                    "approval_required",
+                    "An agent allocation needs an active Room for the owner's approval; request it from your Room",
+                ));
+            }
+        };
         // The one rentals toggle decides (row 405): no /sudo shortcut around its single card.
-        let session = self.owned.session_store.get_session(&room)?;
         let request_id = match request {
             ControlPlaneRequest::Acquire { request_id, .. }
             | ControlPlaneRequest::AcquireJob { request_id, .. } => request_id,
@@ -114,7 +142,7 @@ impl KernelRuntimeState {
             .durable_state_store
             .load_subject_events_by_kind(&id, "compute.acquisition_approved", 1)?
             .iter()
-            .any(|event| event.payload["owner"] == session.owner_user_id())
+            .any(|event| event.payload["owner"] == owner.as_str())
         {
             return Ok(Approval::Owner);
         }
@@ -216,7 +244,13 @@ impl KernelRuntimeState {
                     .get_agent(agent)
                     .ok()
                     .map(|known| known.alias().unwrap_or(known.agent_ref()).to_owned())
-                    .or_else(|| session.agent_display_name(agent))
+                    .or_else(|| {
+                        self.owned
+                            .session_store
+                            .get_session(&room)
+                            .ok()
+                            .and_then(|session| session.agent_display_name(agent))
+                    })
                     .unwrap_or_else(|| agent.to_owned())
             }),
             self.owned
@@ -249,17 +283,21 @@ impl KernelRuntimeState {
         if let Some(agent) = agent {
             interaction = interaction.with_related_agent_id(agent.into());
         }
+        if room.is_empty() {
+            interaction = interaction.with_timeout_sec(ACQUISITION_DECISION_SECONDS);
+        }
         let receiver = self
             .create_kernel_operation_interaction(
                 crate::runtime::state::CardKind::OwnerControl,
                 &room,
-                session.owner_user_id(),
+                &owner,
                 interaction,
             )
             .await?;
         let mut pending = PendingAcquisition(Some((self.clone(), room.clone(), id.clone())));
         let asked = std::time::Instant::now();
-        let waited = tokio::time::timeout(Duration::from_secs(300), receiver).await;
+        let waited =
+            tokio::time::timeout(Duration::from_secs(ACQUISITION_DECISION_SECONDS), receiver).await;
         // Only an answer is the owner's decision; every other end says what closed the card.
         let unanswered = match waited {
             Ok(Ok(answer)) if answer.status == "answered" => {
@@ -289,10 +327,16 @@ impl KernelRuntimeState {
             self.timeout_runtime_interaction(&room, &id).await?;
             return Err(acquisition_error(
                 "acquisition_unanswered",
-                &format!("The owner's card {id} for this request closed without a decision: {why}. It was not sent to the service and nothing was allocated or charged; retry with the same request_id when the owner can answer."),
+                &format!(
+                    "The owner's card {id} for this request closed without a decision: {why}. It was not sent to the service and nothing was allocated or charged; retry with the same request_id when the owner can answer."
+                ),
             ));
         }
-        self.owned.durable_state_store.append_event("compute.acquisition_approved", Some(id), serde_json::json!({"owner":session.owner_user_id(),"approved_at_ms":crate::session::unix_epoch_ms()}))?;
+        self.owned.durable_state_store.append_event(
+            "compute.acquisition_approved",
+            Some(id),
+            serde_json::json!({"owner":owner,"approved_at_ms":crate::session::unix_epoch_ms()}),
+        )?;
         Ok(Approval::Owner)
     }
 }
@@ -368,6 +412,18 @@ fn money(amount_micros: u64) -> String {
         .trim_end_matches('.')
         .to_owned()
 }
+/// The service does not know the allocation: say so and where a valid one comes from.
+fn unknown_allocation(error: DaemonError, allocation_ref: &str) -> DaemonError {
+    if crate::runtime::cloud_api_client::cloud_error_code(&error) == Some("not_found") {
+        return acquisition_error(
+            "not_found",
+            &format!(
+                "No machine {allocation_ref} belongs to this account; use the allocation_ref an acquire returned"
+            ),
+        );
+    }
+    error
+}
 pub(super) fn acquisition_error(code: &str, message: &str) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -426,14 +482,77 @@ impl KernelRuntimeState {
                     "Only a running agent of the kernel owner may acquire machines",
                 )
             })?;
-        let origin = reach.origin();
-        let caps = self
-            .job_control_plane(
-                &origin,
-                &ControlPlaneRequest::Capabilities {},
-                "machines:capabilities",
-            )
+        let allocation_ref = || {
+            args.allocation_ref
+                .clone()
+                .ok_or_else(|| acquisition_error("invalid_request", "allocation_ref is required"))
+        };
+        let request = match tool {
+            "chariox.machines.options" => MachineAcquisitionRequest::Options {},
+            "chariox.machines.acquire" => MachineAcquisitionRequest::Acquire {
+                request_id: args.request_id.clone(),
+                class_id: args.class_id.clone(),
+                region: args.region.clone(),
+                timeout_s: args.timeout_s,
+                purpose: args.purpose.clone(),
+            },
+            "chariox.machines.status" => MachineAcquisitionRequest::Status {
+                allocation_ref: allocation_ref()?,
+            },
+            "chariox.machines.release" => MachineAcquisitionRequest::Release {
+                allocation_ref: allocation_ref()?,
+            },
+            _ => {
+                return Err(acquisition_error(
+                    "invalid_request",
+                    "Unknown machine action",
+                ));
+            }
+        };
+        let origin = &reach.origin();
+        let result = self
+            .machine_acquire(&reach.agent_id, request, |request, command_id| async move {
+                self.job_control_plane(origin, &request, &command_id).await
+            })
             .await?;
+        // A ready machine's status also tells the agent which build toolchain its target has installed.
+        let ready_target = match &result {
+            MachineAcquisitionResult::Machine(crate::local::ControlPlaneResponse::Machine {
+                state,
+                kernel_target,
+                ..
+            }) if tool == "chariox.machines.status" && state == "ready" => kernel_target.clone(),
+            _ => None,
+        };
+        let mut payload = serde_json::to_value(result)
+            .map_err(|e| acquisition_error("invalid_response", &e.to_string()))?;
+        if let Some(target) = ready_target {
+            payload["build_toolchain"] = self
+                .target_build_toolchain(&target.kernel_id, &origin.harness)
+                .await;
+        }
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+
+    /// Options, acquire, status and release for any caller: `key` names who asked (an agent, or the
+    /// owner) for the request-id rows, and `plane` sends one request to the connected service
+    /// under that caller's authority (and its owner card). The owner CLI, an agent acting through
+    /// a grant and a Room agent all acquire through here.
+    pub(crate) async fn machine_acquire<P, F>(
+        &self,
+        key: &str,
+        request: MachineAcquisitionRequest,
+        plane: P,
+    ) -> Result<MachineAcquisitionResult, DaemonError>
+    where
+        P: Fn(ControlPlaneRequest, String) -> F,
+        F: std::future::Future<Output = Result<crate::local::ControlPlaneResponse, DaemonError>>,
+    {
+        let caps = plane(
+            ControlPlaneRequest::Capabilities {},
+            "machines:capabilities".into(),
+        )
+        .await?;
         let crate::local::ControlPlaneResponse::Capabilities {
             machine_allocation: Some(capability),
         } = caps
@@ -443,47 +562,44 @@ impl KernelRuntimeState {
                 "This kernel has no connected machine service",
             ));
         };
-        let result = match tool {
-            "chariox.machines.options" => {
-                serde_json::json!({"options":capability.offers,"default":capability.offer})
-            }
-            "chariox.machines.acquire" => {
-                let request_id = args
-                    .request_id
-                    .clone()
+        match request {
+            MachineAcquisitionRequest::Options {} => Ok(MachineAcquisitionResult::Options {
+                options: capability.offers,
+                default: capability.offer,
+            }),
+            MachineAcquisitionRequest::Acquire {
+                request_id,
+                class_id,
+                region,
+                timeout_s,
+                purpose,
+            } => {
+                let request_id = request_id
                     .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));
-                let option = self.acquire_option(
-                    &reach.agent_id,
-                    &request_id,
-                    &capability,
-                    args.class_id.clone(),
-                    args.region.clone(),
-                )?;
+                let option =
+                    self.acquire_option(key, &request_id, &capability, class_id, region)?;
                 let service_request_id = choice::service_request_id(
                     &self.owned.config_projection.snapshot().daemon_id,
-                    &reach.agent_id,
+                    key,
                     &request_id,
                 );
-                let _purpose =
-                    AcquirePurpose::hold(self, &service_request_id, args.purpose.as_deref());
-                let result = match self
-                    .job_control_plane(
-                        &origin,
-                        &ControlPlaneRequest::Acquire {
-                            capability_revision: capability.revision.clone(),
-                            request_id: service_request_id.clone(),
-                            class_id: option.class_id().map(str::to_owned),
-                            region: option.region().map(str::to_owned),
-                            timeout_s: args.timeout_s,
-                        },
-                        &format!("machine:{service_request_id}:acquire"),
-                    )
-                    .await
+                let _purpose = AcquirePurpose::hold(self, &service_request_id, purpose.as_deref());
+                let allocation = match plane(
+                    ControlPlaneRequest::Acquire {
+                        capability_revision: capability.revision.clone(),
+                        request_id: service_request_id.clone(),
+                        class_id: option.class_id().map(str::to_owned),
+                        region: option.region().map(str::to_owned),
+                        timeout_s,
+                    },
+                    format!("machine:{service_request_id}:acquire"),
+                )
+                .await
                 {
                     Ok(result) => result,
                     Err(error) => {
-                        self.close_acquire_option(&reach.agent_id, &request_id, &option, &error)?;
-                        // The agent retries with its own request_id, not the service's derived one.
+                        self.close_acquire_option(key, &request_id, &option, &error)?;
+                        // The caller retries with its own request_id, not the service's derived one.
                         let error = without_asking::name_agent_request(
                             error,
                             &service_request_id,
@@ -497,106 +613,81 @@ impl KernelRuntimeState {
                         ));
                     }
                 };
-                let crate::local::ControlPlaneResponse::Machine { allocation_ref, .. } = &result
+                let crate::local::ControlPlaneResponse::Machine { allocation_ref, .. } =
+                    &allocation
                 else {
                     return Err(acquisition_error(
                         "invalid_response",
                         "The service returned no allocation",
                     ));
                 };
-                self.accept_acquire_option(&reach.agent_id, &request_id, &option, allocation_ref)?;
+                self.accept_acquire_option(key, &request_id, &option, allocation_ref)?;
                 // The service decides whether the choice can be acquired, and replays a retry of one it accepted.
-                match option {
-                    AcquireOption::Named { class_id, region } => {
-                        let option = capability.offers.iter().find(|option| {
+                let chosen = match option {
+                    AcquireOption::Named { class_id, region } => MachineAcquisitionChoice::Option {
+                        option: capability.offers.into_iter().find(|option| {
                             option.class_id == class_id
                                 && region
                                     .as_ref()
                                     .is_none_or(|region| &option.region == region)
-                        });
-                        serde_json::json!({"allocation":result,"option":option,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
-                    }
-                    AcquireOption::ServiceDefault => {
-                        serde_json::json!({"allocation":result,"offer":capability.offer,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
-                    }
-                }
-            }
-            "chariox.machines.status" => {
-                let allocation_ref = args.allocation_ref.ok_or_else(|| {
-                    acquisition_error("invalid_request", "allocation_ref is required")
-                })?;
-                let status = self
-                    .job_control_plane(
-                        &origin,
-                        &ControlPlaneRequest::Get { allocation_ref },
-                        "machines:status",
-                    )
-                    .await?;
-                let mut result = serde_json::to_value(&status)
-                    .map_err(|error| acquisition_error("invalid_response", &error.to_string()))?;
-                let ready_target = match status {
-                    crate::local::ControlPlaneResponse::Machine {
-                        state,
-                        kernel_target,
-                        ..
-                    } if state == "ready" => kernel_target,
-                    _ => None,
+                        }),
+                    },
+                    AcquireOption::ServiceDefault => MachineAcquisitionChoice::ServiceDefault {
+                        offer: capability.offer,
+                    },
                 };
-                if let Some(target) = ready_target {
-                    result["build_toolchain"] = self
-                        .target_build_toolchain(&target.kernel_id, &origin.harness)
-                        .await;
-                }
-                result
+                Ok(MachineAcquisitionResult::Acquired {
+                    allocation,
+                    chosen,
+                    estimate: MachineAcquisitionEstimate::unknown(),
+                })
             }
-            "chariox.machines.release" => {
-                let allocation_ref = args.allocation_ref.ok_or_else(|| {
-                    acquisition_error("invalid_request", "allocation_ref is required")
-                })?;
-                let current = self
-                    .job_control_plane(
-                        &origin,
-                        &ControlPlaneRequest::Get {
+            MachineAcquisitionRequest::Status { allocation_ref } => {
+                Ok(MachineAcquisitionResult::Machine(
+                    plane(
+                        ControlPlaneRequest::Get {
                             allocation_ref: allocation_ref.clone(),
                         },
-                        "machines:release:get",
+                        "machines:status".into(),
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| unknown_allocation(error, &allocation_ref))?,
+                ))
+            }
+            MachineAcquisitionRequest::Release { allocation_ref } => {
+                let current = plane(
+                    ControlPlaneRequest::Get {
+                        allocation_ref: allocation_ref.clone(),
+                    },
+                    "machines:release:get".into(),
+                )
+                .await
+                .map_err(|error| unknown_allocation(error, &allocation_ref))?;
                 let crate::local::ControlPlaneResponse::Machine { revision, .. } = current else {
                     return Err(acquisition_error(
                         "invalid_response",
                         "The service returned another allocation",
                     ));
                 };
-                serde_json::to_value(
-                    self.job_control_plane(
-                        &origin,
-                        &ControlPlaneRequest::Release {
+                Ok(MachineAcquisitionResult::Machine(
+                    plane(
+                        ControlPlaneRequest::Release {
                             allocation_ref: allocation_ref.clone(),
                             capability_revision: capability.revision,
                             request_id: format!("release:{allocation_ref}"),
                             expected_revision: revision,
                         },
-                        "machines:release",
+                        "machines:release".into(),
                     )
                     .await?,
-                )
-                .map_err(|e| acquisition_error("invalid_response", &e.to_string()))?
+                ))
             }
-            _ => {
-                return Err(acquisition_error(
-                    "invalid_request",
-                    "Unknown machine action",
-                ));
-            }
-        };
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: result,
-        })
+        }
     }
 }
 
+#[cfg(test)]
+mod acquire_tests;
 mod build_toolchain;
 mod choice;
 #[cfg(test)]

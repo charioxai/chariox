@@ -387,8 +387,10 @@ pub use api::{
 };
 
 pub use api::{
-    ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse, MachineAcquisitionOffer,
-    MachineAcquisitionPeriod, MachineAcquisitionTerms, MachineAllocationCapability, MachineOption,
+    ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse, MachineAcquisitionChoice,
+    MachineAcquisitionEstimate, MachineAcquisitionOffer, MachineAcquisitionPeriod,
+    MachineAcquisitionRequest, MachineAcquisitionResult, MachineAcquisitionTerms,
+    MachineAllocationCapability, MachineOption,
 };
 
 pub use api::{

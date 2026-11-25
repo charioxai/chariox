@@ -270,6 +270,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ControlPlane(_) => {
             LocalRequestMetadata::new("control_plane", Interactive)
         }
+        LocalDaemonRequest::MachineAcquisition(_) => {
+            LocalRequestMetadata::new("machine_acquire", Interactive)
+        }
         LocalDaemonRequest::ObserveKernelRuntimeIdentity(_) => {
             LocalRequestMetadata::new("kernel.runtime_identity.observe", Interactive)
         }
@@ -683,6 +686,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CloudAccountKernels(request) => account_kernels_command_type(request),
         LocalDaemonRequest::ControlPlane(_) => "control_plane",
+        LocalDaemonRequest::MachineAcquisition(_) => "machine_acquire",
         LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
         LocalDaemonRequest::IssueOwnMachineEnrollment(_) => "machine.enroll",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",

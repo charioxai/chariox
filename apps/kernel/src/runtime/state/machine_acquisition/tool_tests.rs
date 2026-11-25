@@ -6,7 +6,7 @@ use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// How the stand-in service answers the next acquire.
-enum Answer {
+pub(super) enum Answer {
     /// Commits the allocation, then fails with this status and Cloud code (none for a bare 5xx).
     FailAfterCommit(&'static str, Option<&'static str>),
     /// Commits the allocation, then closes the connection: the response is lost.
@@ -23,20 +23,20 @@ enum Answer {
     },
 }
 
-struct Service {
-    api_url: String,
-    acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+pub(super) struct Service {
+    pub(super) api_url: String,
+    pub(super) acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     /// The options the service lists; a test changes them to change the stock.
-    offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
+    pub(super) offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
     /// Answers for the next acquires, before the service's own judgement.
-    answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
-    capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
+    pub(super) answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
+    pub(super) capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
     ready_target: Arc<std::sync::Mutex<Option<ControlPlaneMachineTarget>>>,
 }
 
 /// How the stand-in service answers the next capability calls, in order; it answers at once when
 /// none is queued.
-enum CapabilityAnswer {
+pub(super) enum CapabilityAnswer {
     Answer,
     Fail(&'static str, &'static str),
     /// Notifies `arrived` when the call comes in, and answers only when `release` is notified.
@@ -46,12 +46,15 @@ enum CapabilityAnswer {
     },
 }
 
-type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
+pub(super) type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
 
 /// A connected service that lists `offers` and, like Cloud, binds each accepted request id to its
 /// class and region and replays it, whatever the stock says now. A new request for a class named
 /// in `sold_out` is refused and, like Cloud, closed: every later try of it is refused as closed.
-async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) -> Service {
+pub(super) async fn service(
+    offers: Vec<MachineOption>,
+    sold_out: &'static [&'static str],
+) -> Service {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_url = format!("http://{}", listener.local_addr().unwrap());
     let acquires = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -226,6 +229,9 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                             )
                         }
                     }
+                }
+                "get" | "release" if request["allocation_ref"] == "unknown-machine" => {
+                    ("404 Not Found", error("not_found"))
                 }
                 // The kernel reconciles the machines it recorded against the service's whole list.
                 "list" => (

@@ -193,6 +193,7 @@ response_policies! {
     ],
     Public => [
         ControlPlane,
+        MachineAcquisition,
         EventSubscription,
         NotificationSources,
         EventsListed,

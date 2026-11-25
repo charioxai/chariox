@@ -1,7 +1,9 @@
 //! Optional connected service operations; no catalog, policy or compute vendor lives here.
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::local::{ControlPlaneRequest, ControlPlaneResponse, LocalDaemonResponse};
+use crate::local::{
+    ControlPlaneRequest, ControlPlaneResponse, LocalDaemonResponse, MachineAcquisitionRequest,
+};
 use crate::runtime::command::KernelCommand;
 use crate::runtime::state::KernelRuntimeState;
 
@@ -38,6 +40,31 @@ pub(crate) async fn kernel_was_released(config: &DaemonConfig, kernel_id: &str) 
     )
     .await
     .is_ok_and(|status| status.released)
+}
+
+/// Machine acquisition for the kernel owner or an agent acting for them through a grant: the same
+/// acquisition path the agent's `chariox.machines.*` tools take, one control-plane request at a time.
+pub(crate) async fn execute_acquire(
+    config: &DaemonConfig,
+    state: &KernelRuntimeState,
+    command: &KernelCommand,
+    gateway: &crate::runtime::kernel_gateway::KernelGateway,
+    request: &MachineAcquisitionRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    // Owner and grant holders acquire as the owner, so a retry from another process finds its request.
+    let key = format!("owner:{}", state.kernel_owner_user_id());
+    let result = state
+        .machine_acquire(&key, request.clone(), |request, _| async move {
+            match execute(config, state, command, gateway, &request).await? {
+                LocalDaemonResponse::ControlPlane { result } => Ok(result),
+                _ => Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The connected service returned another response type",
+                )),
+            }
+        })
+        .await?;
+    Ok(LocalDaemonResponse::MachineAcquisition { result })
 }
 
 pub(crate) async fn execute(
@@ -380,7 +407,10 @@ mod tests {
         let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("control_plane_unavailable"), "the owner reaches the connected-service boundary without a separate agent grant: {error}");
+        assert!(
+            error.to_string().contains("control_plane_unavailable"),
+            "the owner reaches the connected-service boundary without a separate agent grant: {error}"
+        );
         command.source = crate::runtime::command::KernelCommandSource::RelayClient;
         command.caller.caller_kind = crate::runtime::command::KernelCallerKind::RemoteClient;
         command.caller.user_id = Some("another-user".into());

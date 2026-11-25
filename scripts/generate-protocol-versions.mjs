@@ -24,6 +24,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-release-notes.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-kernel-access.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/program-stdin-1014.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/machine-acquire-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/runtime-mcp-paging-1014.json",
