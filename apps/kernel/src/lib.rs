@@ -70,6 +70,7 @@ pub mod shutdown;
 pub mod skill;
 pub mod slice;
 pub mod slice_provider_auth;
+pub(crate) mod substitute_admission;
 pub mod terminal;
 pub mod transport;
 pub(crate) mod watcher;

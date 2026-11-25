@@ -96,7 +96,7 @@ fn rental_kernel_diagnostics_are_part_of_machine_status() {
                 "kernel_target": null,
                 "kernel_diagnostics": {
                     "kernel_version": "0.1.0",
-                    "kernel_protocol": 1014,
+                    "kernel_protocol": 1016,
                     "last_relay_refusal": null,
                     "relay_error": "The relay closed the connection because its reply queue filled."
                 }
@@ -107,6 +107,6 @@ fn rental_kernel_diagnostics_are_part_of_machine_status() {
     assert_eq!(serde_json::to_value(parsed).unwrap(), shape);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
-        "23b3a48818d406b92d7d9a0971a0c2bbe92415ab5e306bf86664977fad967a2b",
+        "4cba3f1dd45475acba9df3ad33f8880d768b39f3125897e078290a3369e655a0",
     );
 }

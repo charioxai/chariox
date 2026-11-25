@@ -85,6 +85,11 @@ pub(super) enum StopEvent<'a> {
         shown: &'a UsageLimitStop,
         at_ms: u64,
     },
+    /// The account's usage came back before the armed time: the resume is due now.
+    Reset {
+        selected: &'a UsageLimitStop,
+        now: u64,
+    },
     /// The person, or an agent for an armed resume, shown `shown`, leaves it stopped.
     Decline { shown: &'a UsageLimitStop },
     /// The scheduler claims the armed stop it selected.
@@ -192,6 +197,11 @@ pub(super) fn transition(
     match (event, &held.state) {
         (StopEvent::Arm { shown, at_ms }, Asking | Declined) if held == *shown => {
             with(Armed { at_ms: *at_ms })
+        }
+        (StopEvent::Reset { selected, now }, Armed { at_ms })
+            if held == *selected && at_ms > now =>
+        {
+            with(Armed { at_ms: *now })
         }
         (StopEvent::Decline { shown }, Asking | Armed { .. }) if held == *shown => with(Declined),
         (StopEvent::ClaimDue { selected, now }, Armed { at_ms })

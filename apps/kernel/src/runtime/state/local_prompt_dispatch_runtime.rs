@@ -367,6 +367,43 @@ impl KernelRuntimeState {
             .map(Some)
     }
 
+    /// A turn bound to a live run of the agent's configured profile whose account has been
+    /// refused since: the run is retired and the turn starts on a substitute, as it does when
+    /// the turn arrives with no run at all.
+    async fn dispatch_off_refused_run(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        if dispatch.steering {
+            return Ok(None);
+        }
+        let Ok(run) = self.owned.provider_store.get_run(&dispatch.provider_run_id) else {
+            return Ok(None);
+        };
+        let agent = self.owned.agent_store.get_agent(&dispatch.agent_id)?;
+        if !self.owned.run_refused_for_substitute(&agent, &run) {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .filter(|prompt| {
+                prompt.id() == dispatch.prompt_id
+                    && prompt.durable_delivery_phase()
+                        != Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            })
+        else {
+            return Ok(None);
+        };
+        self.retire_owned_provider_run_after_terminal_failure(&dispatch.session_id, run.id())
+            .await;
+        self.redispatch_on_fresh_run(dispatch, &prompt)
+            .await
+            .map(Some)
+    }
+
     /// A run that ended before this dispatch reached it (its provider exited
     /// between turns) never received the prompt: it goes to a fresh run.
     async fn dispatch_off_ended_run(
@@ -464,7 +501,10 @@ impl KernelRuntimeState {
         }
         let rerouted = match self.dispatch_off_finished_turn_substitute(dispatch).await? {
             Some(rerouted) => Some(rerouted),
-            None => self.dispatch_off_ended_run(dispatch).await?,
+            None => match self.dispatch_off_refused_run(dispatch).await? {
+                Some(rerouted) => Some(rerouted),
+                None => self.dispatch_off_ended_run(dispatch).await?,
+            },
         };
         if let Some(rerouted) = rerouted {
             return Box::pin(self.enqueue_prompt_dispatch_after_liveness_with_receipt(

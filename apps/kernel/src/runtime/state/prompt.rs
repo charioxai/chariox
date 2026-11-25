@@ -607,10 +607,13 @@ impl KernelRuntimeOwnedState {
         );
         // A substitute run serves only its own turn; the next one goes through
         // the dispatcher, which moves it to the agent's configured profile.
+        // A run whose account is refused does not take it either: the dispatcher moves the
+        // turn to a substitute.
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
             && provider_run.turn_substitute().is_none()
+            && !self.run_refused_for_substitute(&target_agent, &provider_run)
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
