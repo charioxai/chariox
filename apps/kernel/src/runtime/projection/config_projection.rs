@@ -5,12 +5,17 @@ use std::sync::Mutex as StdMutex;
 #[derive(Clone)]
 pub(crate) struct DaemonConfigProjectionStore {
     config: Arc<StdMutex<DaemonConfig>>,
+    observers: Arc<StdMutex<Vec<ConfigObserver>>>,
 }
+
+/// Called on the updating thread, after the new config is visible and no lock is held.
+type ConfigObserver = Arc<dyn Fn(&DaemonConfig) + Send + Sync>;
 
 impl DaemonConfigProjectionStore {
     pub(crate) fn new(config: DaemonConfig) -> Self {
         Self {
             config: Arc::new(StdMutex::new(config)),
+            observers: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -76,7 +81,24 @@ impl DaemonConfigProjectionStore {
         *self
             .config
             .lock()
-            .expect("daemon config projection lock should not be poisoned") = config;
+            .expect("daemon config projection lock should not be poisoned") = config.clone();
+        let observers = self
+            .observers
+            .lock()
+            .expect("daemon config observers lock should not be poisoned")
+            .clone();
+        for observer in observers {
+            observer(&config);
+        }
+    }
+
+    /// Runs `observer` inside every later `update`, before the caller of `update` goes on. A revocation that must take
+    /// effect before its own reply (a logout) cannot wait for a poll of the snapshot.
+    pub(crate) fn observe_updates(&self, observer: impl Fn(&DaemonConfig) + Send + Sync + 'static) {
+        self.observers
+            .lock()
+            .expect("daemon config observers lock should not be poisoned")
+            .push(Arc::new(observer));
     }
 
     /// Remember the management URL the registry gave for a generator, keeping any target the

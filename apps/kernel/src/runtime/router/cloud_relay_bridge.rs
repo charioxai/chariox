@@ -17,6 +17,14 @@ impl CommandRouter {
         self.config_projection.snapshot()
     }
 
+    /// See `DaemonConfigProjectionStore::observe_updates`.
+    pub(crate) fn observe_relay_config_updates(
+        &self,
+        observer: impl Fn(&crate::config::DaemonConfig) + Send + Sync + 'static,
+    ) {
+        self.config_projection.observe_updates(observer);
+    }
+
     pub(crate) fn cloud_relay_token_refresh_due(&self) -> bool {
         let config = self.config_projection.snapshot();
         cloud_relay_token_refresh_due(&config, crate::session::unix_epoch_ms())

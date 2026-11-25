@@ -66,6 +66,8 @@ pub(super) struct AgentCommandEnvelope {
     /// MP-08/MP-11: keep the submitting turn, including a missing binding.
     pub(super) sudo_binding: Option<(String, String)>,
     pub(super) command: AgentCommand,
+    /// A revocable transport's mark that this command has not begun: a cancelled one is skipped.
+    pub(super) start_gate: Option<crate::runtime::start_gate::StartGate>,
     pub(super) result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 
@@ -107,6 +109,10 @@ impl AgentRuntime {
             .state
             .with_kernel_command_authority(kernel_command, &command.local_request())
             .sudo_binding();
+        let start_gate = crate::runtime::start_gate::current();
+        if start_gate.as_ref().is_some_and(|gate| gate.is_cancelled()) {
+            return Err(crate::runtime::start_gate::cancelled());
+        }
         let lane_key = agent_id;
         let lane = self.agent_lane(&lane_key).await;
         let (result_tx, result_rx) = oneshot::channel();
@@ -120,6 +126,7 @@ impl AgentRuntime {
             external_grant_id,
             sudo_binding,
             command,
+            start_gate,
             result_tx,
         }) {
             Ok(()) => {
@@ -221,6 +228,12 @@ pub(super) async fn run_agent_command_lane(
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
+        if envelope.start_gate.as_ref().is_some_and(|gate| !gate.begin()) {
+            let _ = envelope
+                .result_tx
+                .send(Err(crate::runtime::start_gate::cancelled()));
+            continue;
+        }
         let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
         log_lane_dispatched(
             &envelope.telemetry,

@@ -6,6 +6,7 @@ use futures_util::{Sink, Stream};
 
 use super::leases::LocalBrowserLeaseState;
 use super::*;
+use crate::runtime::start_gate::{self, StartGate};
 use crate::runtime_transport::CONNECTION_INBOUND_REQUEST_LIMIT;
 
 const SESSION_QUEUE_LIMIT: usize = 1024;
@@ -46,6 +47,7 @@ pub(super) async fn run<S, E>(
         "local browser session admitted",
         serde_json::json!({"subject": identity.subject}),
     );
+    let gate_session = direct.next_gate_session();
     let close_reason = loop {
         tokio::select! {
             _ = shutdown.changed() => break "daemon shutting down",
@@ -110,6 +112,7 @@ pub(super) async fn run<S, E>(
                     &subscription_tasks,
                     &input_order,
                     &mut requests,
+                    (gate_session, &grant.authority),
                     &payload,
                 )).await
                 {
@@ -121,6 +124,11 @@ pub(super) async fn run<S, E>(
         }
     };
     direct.retire_lease(&lease_id);
+    // This session lost its authority: a mutation of its own still waiting in a command lane never begins. A begun one
+    // settles below. A pairing change already cancelled every session's waiting mutations when it was published.
+    if close_reason == "local browser authority revoked" {
+        direct.cancel_session_start_gates(gate_session);
+    }
     // Accepted commands own their dispatch and cache settlement independently
     // of this socket. A relay retry must observe the original result.
     requests.detach_all();
@@ -196,6 +204,7 @@ async fn handle_client_frame(
     subscription_tasks: &RelaySubscriptionTasks,
     input_order: &super::super::browser_input_order::BrowserInputOrder,
     requests: &mut JoinSet<()>,
+    (gate_session, admitted): (u64, &LocalBrowserAuthority),
     payload: &str,
 ) -> Result<(), &'static str> {
     let FrameCaller {
@@ -233,7 +242,14 @@ async fn handle_client_frame(
                 None => (None, false),
             };
             let outgoing_tx = outgoing_tx.clone();
-            requests.spawn(async move {
+            #[cfg(test)]
+            direct.await_frame_for_test().await;
+            let gate = StartGate::default();
+            direct.register_start_gate(gate_session, admitted, gate.clone());
+            requests.spawn(start_gate::scope(Some(gate.clone()), async move {
+                if gate.is_cancelled() {
+                    return;
+                }
                 let turn = match turn {
                     Some(turn) => turn.enter(read).await,
                     None => None,
@@ -271,7 +287,7 @@ async fn handle_client_frame(
                         error: outcome.error,
                     },
                 );
-            });
+            }));
             Ok(())
         }
         RelayEnvelope::ClientSubscribe {

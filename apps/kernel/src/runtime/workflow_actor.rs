@@ -27,6 +27,8 @@ struct WorkflowCommandEnvelope {
     caller_metaagent_id: Option<String>,
     command_state: KernelRuntimeState,
     request: LocalDaemonRequest,
+    /// A revocable transport's mark that this command has not begun: a cancelled one is skipped.
+    start_gate: Option<crate::runtime::start_gate::StartGate>,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 
@@ -77,6 +79,10 @@ impl WorkflowRuntime {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let start_gate = crate::runtime::start_gate::current();
+        if start_gate.as_ref().is_some_and(|gate| gate.is_cancelled()) {
+            return Err(crate::runtime::start_gate::cancelled());
+        }
         let session_id = self.resolve_workflow_lane_key(&request)?;
         let lane = self.workflow_lane(&session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
@@ -104,6 +110,7 @@ impl WorkflowRuntime {
             caller_metaagent_id,
             command_state,
             request,
+            start_gate,
             result_tx,
         }) {
             Ok(()) => {
@@ -246,6 +253,12 @@ async fn run_workflow_command_lane(
     let executor =
         WorkflowRuntimeCommandExecutor::new(store, session_projection, agent_runtime_projection);
     while let Some(envelope) = rx.recv().await {
+        if envelope.start_gate.as_ref().is_some_and(|gate| !gate.begin()) {
+            let _ = envelope
+                .result_tx
+                .send(Err(crate::runtime::start_gate::cancelled()));
+            continue;
+        }
         let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
         log_lane_dispatched(
             &envelope.telemetry,
