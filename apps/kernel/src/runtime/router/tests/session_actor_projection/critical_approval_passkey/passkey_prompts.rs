@@ -31,6 +31,7 @@ impl Fixture {
         self.router
             .runtime_state
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
                 &self.session,
                 DEFAULT_LOCAL_USER_ID,
                 RuntimeInteraction::for_kernel_operation(
@@ -105,6 +106,7 @@ async fn a_critical_approval_is_a_passkey_prompt_for_its_owner_alone() {
         .router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &f.session,
             DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(
@@ -129,6 +131,7 @@ async fn a_passkey_prompt_has_one_approve_and_one_refuse_choice() {
         .router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &f.session,
             DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(

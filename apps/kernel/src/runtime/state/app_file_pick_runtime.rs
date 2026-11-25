@@ -79,7 +79,12 @@ impl KernelRuntimeState {
             let remaining_sec = pick.expires_ms.saturating_sub(now_ms) / 1000;
             let interaction = pick_interaction(&pick).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
-                .create_kernel_operation_interaction(&session, &pick.owner, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &session,
+                    &pick.owner,
+                    interaction,
+                )
                 .await
             {
                 Ok(receiver) => receiver,
@@ -185,7 +190,12 @@ impl KernelRuntimeState {
             let interaction =
                 export_interaction(&export).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
-                .create_kernel_operation_interaction(&session, &export.owner, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &session,
+                    &export.owner,
+                    interaction,
+                )
                 .await
             {
                 Ok(receiver) => receiver,

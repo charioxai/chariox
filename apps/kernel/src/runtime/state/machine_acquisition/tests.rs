@@ -163,7 +163,12 @@ async fn machine_acquisition_reclaims_stale_owner_decisions_before_admission() {
         )
         .with_timeout_sec(300);
         let receiver = state
-            .create_kernel_operation_interaction("", &owner, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                "",
+                &owner,
+                interaction,
+            )
             .await
             .unwrap();
         if index < 4 {

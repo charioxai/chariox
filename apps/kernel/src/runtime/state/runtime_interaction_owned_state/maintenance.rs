@@ -59,7 +59,6 @@ impl KernelRuntimeOwnedState {
         let Ok(_mutation) = self.pending_interactions.mutation.lock() else {
             return;
         };
-        let handoffs_rearm = self.config_projection.snapshot().room_agent_tools;
         let orphans = {
             let pending = self.pending_interactions.write();
             self.session_store
@@ -71,7 +70,6 @@ impl KernelRuntimeOwnedState {
                         .iter()
                         .filter(|interaction| {
                             waits_in_memory(interaction)
-                                && !(handoffs_rearm && interaction.handoff().is_some())
                                 && !pending.get(interaction.id()).is_some_and(|value| {
                                     value.session_id == session.id()
                                         && value.belongs_to(&self.session_store)

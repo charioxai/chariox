@@ -744,18 +744,9 @@ impl RuntimeSession {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
-        // Agent decisions have process-local responders. Task and usage-limit
-        // decisions must be recreated with live responders after recovery.
-        let interaction_count = self.active_interactions.len();
-        self.active_interactions.retain(|interaction| {
-            interaction.agent_id().is_none()
-                && !crate::session::is_blocked_task_decision(interaction.id())
-                && !interaction
-                    .id()
-                    .starts_with(crate::agent::UsageLimitStop::DECISION_PREFIX)
-        });
-        reconciliation.cleared_agent_interaction_count =
-            interaction_count - self.active_interactions.len();
+        // A saved presentation has no live responder. Domain state owns rearming.
+        reconciliation.cleared_agent_interaction_count = self.active_interactions.len();
+        self.active_interactions.clear();
         let terminal_workflow_run_ids = self
             .workflow_runs
             .iter()

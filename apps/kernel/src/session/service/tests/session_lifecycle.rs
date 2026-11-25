@@ -1981,7 +1981,7 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
 }
 
 #[test]
-fn card_rules_cold_restart_discards_saved_task_and_agent_cards() {
+fn card_rules_cold_restart_discards_saved_presentations() {
     use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
     let mut service = SessionService::new(&test_config());
     let mut session = service
@@ -2008,13 +2008,13 @@ fn card_rules_cold_restart_discards_saved_task_and_agent_cards() {
         None,
         None,
     );
-    session.add_active_interaction(decision.clone());
-    session.add_active_interaction(agent_approval);
+    session.add_interaction_fixture(decision.clone());
+    session.add_interaction_fixture(agent_approval);
     for (id, title) in [
         ("task-blocked-old-attempt-2", "Agent needs your action"),
         ("task-blocked-answered-question-3", "Question"),
     ] {
-        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+        session.add_interaction_fixture(RuntimeInteraction::for_kernel_operation(
             id,
             id,
             title,
@@ -2032,7 +2032,7 @@ fn card_rules_cold_restart_discards_saved_task_and_agent_cards() {
         restored.active_interaction_for_agent("agent-1").is_none(),
         "a restored agent approval with no receiver still blocks Vault management"
     );
-    assert_eq!(restored.active_interactions(), &[decision]);
+    assert!(restored.active_interactions().is_empty());
     assert!(
         reconciliation.changed(),
         "interaction cleanup must be saved even without a run or attachment"

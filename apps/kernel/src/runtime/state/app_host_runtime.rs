@@ -36,7 +36,12 @@ impl KernelRuntimeState {
             let interaction = host_interaction(&offer)
                 .with_timeout_sec((offer.expires_ms.saturating_sub(now_ms) / 1000).clamp(1, 300));
             let receiver = match self
-                .create_kernel_operation_interaction(&session, &offer.owner, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &session,
+                    &offer.owner,
+                    interaction,
+                )
                 .await
             {
                 Ok(receiver) => receiver,

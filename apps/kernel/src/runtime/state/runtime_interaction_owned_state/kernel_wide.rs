@@ -75,6 +75,7 @@ impl KernelRuntimeOwnedState {
     /// shows as a popup. It has the secret choice and no passkey; the answer is the value.
     pub(super) fn register_kernel_wide_secret_interaction(
         &self,
+        kind: super::CardKind,
         interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         owner: Option<&str>,
@@ -98,6 +99,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid kernel-wide secret request"));
         }
+        super::card_registry::admit_scoped_card(kind, &interaction, &responder)?;
         let scope = crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE;
         let prompt = super::super::passkey_prompts::vault_secret_prompt(
             scope,
@@ -143,6 +145,7 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn register_kernel_wide_access_interaction(
         &self,
+        kind: super::CardKind,
         interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         owner: Option<&str>,
@@ -167,6 +170,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid kernel-wide access decision"));
         }
+        super::card_registry::admit_scoped_card(kind, &interaction, &responder)?;
         let scope = crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE;
         let prompt = super::super::passkey_prompts::passkey_prompt_for_scope(
             scope,

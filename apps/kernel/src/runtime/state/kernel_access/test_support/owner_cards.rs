@@ -60,6 +60,7 @@ impl KernelRuntimeState {
             let id = interaction.id().to_owned();
             let answered = self
                 .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
                     "access-session",
                     crate::session::DEFAULT_LOCAL_USER_ID,
                     interaction,
@@ -129,7 +130,17 @@ impl KernelRuntimeState {
             let id = interaction.id().to_owned();
             let (tx, answered) = tokio::sync::oneshot::channel();
             self.owned
-                .register_runtime_interaction(session, interaction, tx, owner, None, None)
+                .register_runtime_interaction(
+                    crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                        crate::runtime::state::CardKind::NativePermissionInput,
+                        interaction,
+                    ),
+                    session,
+                    tx,
+                    owner,
+                    None,
+                    None,
+                )
                 .unwrap();
             answers.push((id, answered));
         }

@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn mp08_mp10_mp11_unattached_utility_review_is_visible_without_provider_work() {
         let mut session = session_with_agents(vec![agent("agent-1", AgentState::Idle, false)]);
-        session.add_active_interaction(crate::session::RuntimeInteraction::new(
+        session.add_interaction_fixture(crate::session::RuntimeInteraction::new(
             "review",
             "agent-1",
             crate::session::RuntimeInteractionKind::Choice,

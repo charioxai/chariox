@@ -89,7 +89,11 @@ impl Tree {
         interaction: RuntimeInteraction,
     ) -> tokio::sync::oneshot::Receiver<PendingInteractionResolution> {
         self.runtime
-            .create_runtime_interaction(&self.room, interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &self.room,
+                interaction,
+            )
             .await
             .unwrap()
     }
@@ -355,7 +359,11 @@ async fn a_cross_room_childs_permission_goes_to_its_parent() {
     }
     let mut answer = t
         .runtime
-        .create_runtime_interaction(&destination, permission("perm-cross-room", &child))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &destination,
+            permission("perm-cross-room", &child),
+        )
         .await
         .unwrap();
 
@@ -1661,7 +1669,12 @@ async fn a_sub_agents_owner_card_is_listed_for_the_person_in_its_top_parents_pan
     let owner = t.session().owner_user_id().to_owned();
     let _answer = t
         .runtime
-        .create_kernel_operation_interaction(&t.room, &owner, card)
+        .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &t.room,
+            &owner,
+            card,
+        )
         .await
         .unwrap();
     assert!(

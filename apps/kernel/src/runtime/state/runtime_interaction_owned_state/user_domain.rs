@@ -7,6 +7,7 @@ impl KernelRuntimeOwnedState {
     /// Called under the shared interaction mutation/admission guards.
     pub(super) fn register_user_domain_interaction(
         &self,
+        kind: super::CardKind,
         interaction: RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         owner: Option<&str>,
@@ -24,6 +25,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid unattached kernel decision"));
         }
+        super::card_registry::admit_scoped_card(kind, &interaction, &responder)?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {
@@ -216,6 +218,7 @@ mod tests {
             receivers.push(
                 state
                     .create_kernel_operation_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         "",
                         "alice",
                         interaction(&format!("detached-{number}")),

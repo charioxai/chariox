@@ -338,7 +338,11 @@ pub(crate) async fn execute_credential_enrollment_interaction(
         None,
     );
     let receiver = state
-        .create_runtime_interaction(&request.session_id, interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::ProviderLogin,
+            &request.session_id,
+            interaction,
+        )
         .await?;
     let timeout_state = state.clone();
     let timeout_session_id = request.session_id.clone();
