@@ -120,29 +120,46 @@ impl RuntimeStateNativeInteractionBridge {
             })?
             .to_string();
         let state = self.state.clone();
-        let remote_target = self.handle.block_on(async {
-            state
-                .remote_native_interaction_context(&session_id, &interaction_agent_id, &origin)
-                .await
-        })?;
-        if let Some(target) = remote_target {
-            return self.handle.block_on(forward_native_interaction_to_home(
-                &state,
-                &session_id,
-                &origin,
-                target,
-                interaction,
-            ));
-        }
-        let state = self.state.clone();
-        self.handle.block_on(wait_for_runtime_interaction(
-            &state,
-            &session_id,
-            interaction,
-            "provider_native_interaction_bridge",
-            None,
-            codex_approval,
-        ))
+        // Shutdown withdraws every pending decision: a provider thread blocked here is released
+        // with a timed-out answer instead of holding the drain.
+        self.handle.block_on(async {
+            tokio::select! {
+                biased;
+                () = state.wait_for_provider_decisions_closed() => Ok(shutdown_resolution()),
+                resolution = async {
+                    if let Some(target) = state
+                        .remote_native_interaction_context(&session_id, &interaction_agent_id, &origin)
+                        .await?
+                    {
+                        return forward_native_interaction_to_home(
+                            &state,
+                            &session_id,
+                            &origin,
+                            target,
+                            interaction,
+                        )
+                        .await;
+                    }
+                    wait_for_runtime_interaction(
+                        &state,
+                        &session_id,
+                        interaction,
+                        "provider_native_interaction_bridge",
+                        None,
+                        codex_approval,
+                    )
+                    .await
+                } => resolution,
+            }
+        })
+    }
+}
+
+fn shutdown_resolution() -> ProviderNativeInteractionResolution {
+    ProviderNativeInteractionResolution {
+        status: "timed_out".into(),
+        choice_id: None,
+        reply: None,
     }
 }
 
@@ -306,14 +323,23 @@ pub(crate) async fn request_provider_native_interaction(
             reply: None,
         });
     };
-    if let Some(target) = state
-        .remote_native_interaction_context(session_id, &agent_id, &origin)
-        .await?
-    {
-        return forward_native_interaction_to_home(state, session_id, &origin, target, interaction)
-            .await;
+    tokio::select! {
+        biased;
+        () = state.wait_for_provider_decisions_closed() => Ok(shutdown_resolution()),
+        resolution = async {
+            if let Some(target) = state
+                .remote_native_interaction_context(session_id, &agent_id, &origin)
+                .await?
+            {
+                return forward_native_interaction_to_home(
+                    state, session_id, &origin, target, interaction,
+                )
+                .await;
+            }
+            request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None)
+                .await
+        } => resolution,
     }
-    request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None).await
 }
 
 struct AbandonedInteractionGuard(Option<(KernelRuntimeState, String, String)>);

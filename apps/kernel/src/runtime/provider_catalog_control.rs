@@ -178,7 +178,7 @@ pub(super) async fn read_catalog(
     let registry = account_profiles.clone();
     let load_started = Instant::now();
     let load_owner = owner_user_id.clone();
-    let catalog = tokio::task::spawn_blocking(move || {
+    let catalog = crate::shutdown::spawn_blocking("provider catalog load", move || {
         load_provider_catalog(config, registry, load_owner, request)
     })
     .await
@@ -232,10 +232,11 @@ fn refresh_provider_catalog_in_background(
             return;
         }
         let load_started = Instant::now();
-        let result = tokio::task::spawn_blocking(move || {
-            load_provider_catalog(config, registry, owner_user_id, request)
-        })
-        .await;
+        let result =
+            crate::shutdown::spawn_blocking("provider catalog background refresh", move || {
+                load_provider_catalog(config, registry, owner_user_id, request)
+            })
+            .await;
         match result {
             Ok(Ok(catalog)) => {
                 crate::logging::info_with_fields(

@@ -255,6 +255,46 @@ impl KernelRuntimeOwnedState {
         queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
     ) -> Result<(), DaemonError> {
+        self.mirror_prompt_owner_agent_state_inner(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+            true,
+        )
+    }
+
+    /// For a caller that already holds the interaction mutation guard: the same mirror, without
+    /// the stale-interaction sweep, which takes that (non-reentrant) guard itself. The caller
+    /// withdraws what it needs under its own guard.
+    pub(super) fn mirror_prompt_owner_agent_state_holding_interactions(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<crate::session::PromptQueueItem>,
+        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
+    ) -> Result<(), DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        self.mirror_prompt_owner_agent_state_inner(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+            false,
+        )
+    }
+
+    fn mirror_prompt_owner_agent_state_inner(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<crate::session::PromptQueueItem>,
+        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+        sweep_stale_interactions: bool,
+    ) -> Result<(), DaemonError> {
         let before = self.session_store.get_session(session_id)?;
         let had_prompt_work = before.active_prompt_for_agent(agent_id).is_some()
             || before
@@ -300,7 +340,9 @@ impl KernelRuntimeOwnedState {
             self.unhide_agent(agent_id)?;
         }
         activity_mutation.record();
-        self.withdraw_stale_agent_interactions();
+        if sweep_stale_interactions {
+            self.withdraw_stale_agent_interactions();
+        }
         self.provider_process_projection.invalidate();
         let _ = self.session_snapshot(session_id)?;
         Ok(())
