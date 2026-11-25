@@ -98,6 +98,22 @@ async fn state_for_terminals() -> crate::runtime::state::KernelRuntimeState {
     .runtime_state()
 }
 
+/// What the kernel says about its own terminals, for a failure message.
+async fn terminals_said(state: &crate::runtime::state::KernelRuntimeState) -> String {
+    use crate::runtime::command::{KernelCaller, KernelCommandSource};
+    let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+    let listed = state
+        .kernel_terminal_for_client(
+            &caller,
+            crate::local::KernelTerminalRequest {
+                directory: None,
+                operation: crate::local::RoomTerminalOperation::List,
+            },
+        )
+        .await;
+    format!("{listed:?}")
+}
+
 async fn open_shell(
     state: &crate::runtime::state::KernelRuntimeState,
     class: crate::local::KernelConnectionClass,
@@ -140,7 +156,7 @@ fn shell_grants(state: &crate::runtime::state::KernelRuntimeState) -> usize {
 async fn a_shell_the_owners_own_client_opened_is_covered() {
     let state = state_for_terminals().await;
     open_shell(&state, crate::local::KernelConnectionClass::Terminal).await;
-    assert_eq!(shell_grants(&state), 1);
+    assert_eq!(shell_grants(&state), 1, "{}", terminals_said(&state).await);
 }
 
 #[tokio::test]
