@@ -355,20 +355,22 @@ async fn cell_4_a_queued_message_to_an_idle_agent_with_nothing_armed_starts_its_
     .await
     .unwrap();
     assert!(sent.ok, "{:?}", sent.payload);
-    // What delivery does for a message that can start its recipient's turn.
-    Box::pin(team.runtime.deliver_agent_inbox(&team.room, &team.child))
-        .await
-        .unwrap();
-
-    let message = team
-        .runtime
-        .owned
-        .durable_state_store
-        .agent_inbox(&team.room, &team.child, 0)
-        .unwrap()
-        .into_iter()
-        .find(|e| e.kind == "message")
-        .expect("the child's inbox holds the message");
+    // The send itself starts the delivery: wait for the turn it starts.
+    let find = || {
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(&team.room, &team.child, 0)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == "message")
+            .expect("the child's inbox holds the message")
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while find().prompt_id.is_none() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let message = find();
     assert!(
         message.prompt_id.is_some(),
         "cell 4: the idle child's turn started for the message ({:?}, reply {:?})",
