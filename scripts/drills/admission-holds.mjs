@@ -109,8 +109,8 @@ try{
  const jobStart=async code=>(await tool('chariox.jobs.run',{command:['node','-e',code],wait_s:0,timeout_s:400})).job_id;
  const jobDone=async(id,ms=240000)=>{let st;await until(async()=>{st=await tool('chariox.jobs.status',{job_id:id});return !!st.result},'job '+id+' finished',ms);return st};
  const termOpen=async()=>{const r=await tool('chariox.terminal_open',{title:'admission'},true);out.term_open_raw=JSON.stringify(r).slice(0,400);save();return r.terminal_id??r.terminal?.terminal_id??r.terminal?.id??r.id};
- const termRun=async(tid,code,tag)=>{await tool('chariox.terminal_send',{terminal_id:tid,text:`node -e ${sh(code)}; echo ${tag.slice(0,2)}$((1+1))${tag.slice(2)}`,enter:true},true)};
- const termDone=async(tid,tag,ms=240000)=>{await tool('chariox.terminal_wait',{terminal_id:tid,until:[{text:`${tag.slice(0,2)}2${tag.slice(2)}`}],after_offset:0,timeout_seconds:Math.min(80,Math.floor(ms/1000))},true)};
+ const termRun=async(tid,code,tag)=>{await tool('chariox.terminal_send',{terminal_id:tid,text:`node -e ${sh(code)}; echo A6RC$?END${tag}`,enter:true},true)};
+ const termDone=async(tid,tag,ms=240000)=>{const text=`A6RC0END${tag}`;await tool('chariox.terminal_wait',{terminal_id:tid,until:[{text}],after_offset:0,timeout_seconds:Math.min(80,Math.floor(ms/1000))},true);const read=await tool('chariox.terminal_read',{terminal_id:tid},true);assert(JSON.stringify(read).includes(text),'the terminal command did not exit 0 (no '+text+' in its output)')};
  const cells=new Set((process.env.CELLS??'A6,A1,A3,A2,A4,A5').split(','));
  const peaks0=peakOf();out.peaks_before=peaks0;save();
  // A6: an unknown command grows and ends: its peak is recorded; its next run waits while a hog holds the room.
@@ -118,7 +118,7 @@ try{
   const start=path==='exec'?execStart:path==='job'?jobStart:null;
   const code=alloc('path_'+path,heavyGiB,1500);
   const before=(peakOf()??[]).filter(m=>m>=(heavyGiB-1)*GiB).length;
-  if(path==='term'){const tid=await termOpen();await termRun(tid,code,'A6TERMDONE');await delay(3000);const ps=()=>{const pids=[];const walk=d=>{try{for(const p of readFileSync(join(d,'cgroup.procs'),'utf8').split('\n'))if(p)pids.push(p)}catch{}try{for(const e of readdirSync(d,{withFileTypes:true}))if(e.isDirectory())walk(join(d,e.name))}catch{}};walk(join(kernelCgroup(),'..'));return pids.length?execFileSync('ps',['-o','pid,ppid,pgid,stat,rss,comm','-p',pids.join(',')],{encoding:'utf8'}).slice(0,4000):''};out.ps_term_running=ps();await termDone(tid,'A6TERMDONE');await delay(2000);out.ps_term_after=ps();out.term_id=tid;save()}
+  if(path==='term'){const tid=await termOpen();await termRun(tid,code,'L');await delay(3000);const ps=()=>{const pids=[];const walk=d=>{try{for(const p of readFileSync(join(d,'cgroup.procs'),'utf8').split('\n'))if(p)pids.push(p)}catch{}try{for(const e of readdirSync(d,{withFileTypes:true}))if(e.isDirectory())walk(join(d,e.name))}catch{}};walk(join(kernelCgroup(),'..'));return pids.length?execFileSync('ps',['-o','pid,ppid,pgid,stat,rss,comm','-p',pids.join(',')],{encoding:'utf8'}).slice(0,4000):''};out.ps_term_running=ps();await termDone(tid,'L');await delay(2000);out.ps_term_after=ps();out.term_id=tid;save()}
   else{const id=await start(code);path==='exec'?await execDone(id):await jobDone(id)}
   let recorded=false;for(let i=0;i<40&&!recorded;i++){recorded=(peakOf()??[]).filter(m=>m>=(heavyGiB-1)*GiB).length>before;if(!recorded)await delay(250)}
   if(!recorded){await delay(5000);out['peaks_raw_'+path]=peaksFile()?readFileSync(peaksFile(),'utf8'):null;save()}
@@ -131,14 +131,16 @@ try{
   const code=alloc('path_'+path,heavyGiB,1500);
   let id,tid,started=performance.now();
   const states=new Set();
-  if(path==='term'){tid=await termOpen();await termRun(tid,code,'A6TERM'+nth+'DONE')}
+  const heldBefore=decisions('path_'+path,['held']),startedBefore=decisions('path_'+path,['started','resumed']);
+  if(path==='term'){tid=await termOpen();await termRun(tid,code,'H'+nth)}
   else id=path==='exec'?await execStart(code):await jobStart(code);
   await delay(5000);
-  const heldLines=admissionLog(new RegExp('path_'+path)).filter(r=>r.decision==='held').length;
+  const heldLines=decisions('path_'+path,['held'])-heldBefore;
   if(path==='exec')states.add(execState(await execRow(id)));
   await execDone(hog,120000);
-  if(path==='term')await termDone(tid,'A6TERM'+nth+'DONE');else path==='exec'?await execDone(id):await jobDone(id);
-  const startedLines=admissionLog(new RegExp('path_'+path)).filter(r=>r.decision==='started'||r.decision==='resumed').length;
+  if(path==='term')await termDone(tid,'H'+nth);else if(path==='exec'){await execDone(id);assert(exitedOk(await execExit(id)),'A6 exec: the held run did not exit 0')}else{const st=await jobDone(id);assert.equal(st.result.exit_code,0,'A6 job: the held run did not exit 0')}
+  assert(exitedOk(await execExit(hog)),'A6 '+path+': the hog did not exit 0');
+  const startedLines=decisions('path_'+path,['started','resumed'])-startedBefore;
   return {path,held_lines_while_hog_ran:heldLines,started_lines_after:startedLines,exec_state_while_hog_ran:[...states],waited_ms:Math.round(performance.now()-started)};
  };
  if(cells.has('A6')){
