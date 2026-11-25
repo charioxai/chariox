@@ -244,17 +244,17 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// outcome and the mirror v2 header's `page_wheel`, and requires the relay's registration acknowledgment before reporting
 /// the kernel online.
 /// Peer 451 carries the local 1014 terminal `stdin` of a program.
-/// Provisional peer 452 (local 1015): the relay issuer requests of a self-hosted kernel.
-/// Peer 452 (local 1015) carries the agent pane feed in the embedded local request and response unions.
-/// Peer 452 (local 1015) carries the owner's limits for machines acquired without asking: three `agents.*` user config keys.
-/// Peer 452 (local 1015) carries the Claude compaction row: terminal output kind `context_compacted`, a running, done or failed summary.
-/// Peer 452 (provisional, local 1015) follows the local workflow archive shapes.
-/// Peer 452 (local 1015) carries Room-scoped browser commands, the Room download wait and the download reveal.
+/// Peer 452 (local 1015, Landing 14): the relay issuer requests of a self-hosted kernel.
+/// Peer 452 (local 1015, Landing 14) carries the agent pane feed in the embedded local request and response unions.
+/// Peer 452 (local 1015, Landing 14) carries the owner's limits for machines acquired without asking: three `agents.*` user config keys.
+/// Peer 452 (local 1015, Landing 14) carries the Claude compaction row: terminal output kind `context_compacted`, a running, done or failed summary.
+/// Peer 452 (local 1015, Landing 14) follows the local workflow archive shapes.
+/// Peer 452 (local 1015, Landing 14) carries Room-scoped browser commands, the Room download wait and the download reveal.
 /// Peer 452 carries the non-secret provider account ID in native account transfer metadata.
 /// Peer 452 carries the local 1015 task card choice descriptions.
-/// Peer 452 (provisional, local 1015) pairs with the local turn-end profile shapes.
+/// Peer 452 (local 1015, Landing 14) pairs with the local turn-end profile shapes.
 /// Peer 452 accompanies local 1015: the Environment Secret request carries its `source`.
-/// Provisional peer 452 (local 1015): the control-plane acquire request carries an optional `timeout_s`.
+/// Peer 452 (local 1015, Landing 14): the control-plane acquire request carries an optional `timeout_s`.
 /// Peer 452 carries file slices as bytes: the `content` of `FileSliceRead`, `WriteLeasedAgentFile` and
 /// `ProjectEnvironmentFilePulled` is `data_base64` in the peer plaintext, which is lifted out of the JSON, and a
 /// kernel that offers `x-chariox-relay-peer-binary: v1` sends and takes peer requests and replies as `CXR3`/`CXR2` frames.

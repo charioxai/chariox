@@ -46,6 +46,7 @@ impl CommandRouter {
                 "pane-workflows",
                 LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
                     session_id: request.session_id.clone(),
+                    include_archived: false,
                 }),
             )
             .await

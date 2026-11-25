@@ -230,6 +230,7 @@ async fn dismissing_a_blocked_question_keeps_its_task_and_inbox_card() {
             task: task.task_id,
             prompt: task.prompt_id,
             reason: "Which branch should I use?".into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -662,6 +663,7 @@ async fn d1_dismissing_a_question_card_does_not_cancel_the_task() {
             task: task.task_id,
             prompt: task.prompt_id,
             reason: "Which branch should I use?".into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -714,6 +716,7 @@ async fn d4_dismissing_a_passed_up_question_card_does_not_cancel_the_childs_task
             task: task.task_id,
             prompt: task.prompt_id,
             reason: "Which snapshot should I delete?".into(),
+            reply: None,
         })
         .unwrap()
     else {

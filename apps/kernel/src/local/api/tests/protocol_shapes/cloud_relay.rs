@@ -45,6 +45,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "framed_plaintext_v1",
             "provider_account_copy_v1",
             "provider_account_copy_pull_v1",
+            "provider_account_copy_opencode_v1",
             "viewer_density_stills_v1"
         ])
     );
@@ -53,7 +54,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "c652fecb353e41d4809de159c7e09f4c59fe33d810b7165bd8ceeac190d20861"
+        "cf45be2ecd9173bd4f9f22c8a97ba1e23536f183d981fe9cceb9bfb4e412774a"
     );
 }
 

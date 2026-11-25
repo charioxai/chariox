@@ -710,9 +710,6 @@ impl<'a> ReplayState<'a> {
                 self.attached_provider_transcript_cursors
                     .detach_session(session.id());
                 self.prompt_state_owner.remove_session(session.id());
-                if let Some(app) = self.app {
-                    app.forget_room_computer_session_access(session.id());
-                }
                 self.agents.remove_session_agents(session.id());
                 self.sessions.remove_restored_session(session.id());
                 self.session_projection.remove(session.id());
@@ -739,9 +736,6 @@ impl<'a> ReplayState<'a> {
                 self.attached_provider_transcript_cursors
                     .detach_session(session.id());
                 self.prompt_state_owner.remove_session(session.id());
-                if let Some(app) = self.app {
-                    app.forget_room_computer_session_access(session.id());
-                }
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.remove_restored_session(session.id());
@@ -755,9 +749,6 @@ impl<'a> ReplayState<'a> {
                     "durable_state.restore_deleted_agent",
                 )?;
                 let session_id = agent.session_id().to_string();
-                if let Some(app) = self.app {
-                    app.forget_room_computer_access(agent.id());
-                }
                 self.external_provider_sessions
                     .detach_agent(&session_id, agent.id());
                 self.attached_provider_transcript_cursors

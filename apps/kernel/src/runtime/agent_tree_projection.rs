@@ -590,8 +590,8 @@ mod tests {
             )
             .with_agent_id(agent_id)
         };
-        session.add_active_interaction(card("i-user", "c1", "Value for the Vault"));
-        session.add_active_interaction(card("i-agent", "root", "Run the build?"));
+        session.add_interaction_fixture(card("i-user", "c1", "Value for the Vault"));
+        session.add_interaction_fixture(card("i-agent", "root", "Run the build?"));
         let quiet: crate::runtime::projection::AgentRuntimeActivity = serde_json::from_value(
             serde_json::json!({"status":"idle","prompt_status":"none","busy":false,
                 "active_prompt_count":0,"queued_prompt_count":0}),

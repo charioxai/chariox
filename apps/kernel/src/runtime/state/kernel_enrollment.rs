@@ -373,7 +373,12 @@ impl KernelRuntimeState {
             .with_related_agent_id(agent.to_owned())
             .with_timeout_sec(lifetime.min(MAX_WAIT).as_secs().max(1));
         let receiver = self
-            .create_kernel_operation_interaction(room, session.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                room,
+                session.owner_user_id(),
+                interaction,
+            )
             .await?;
         let (state, profile, room, id, owner, user_code) = (
             self.clone(),

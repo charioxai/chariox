@@ -4,8 +4,8 @@
     "MP-10"
   ],
   "local_protocol": 1015,
-  "peer_protocol": 451,
-  "allocation": "local 1015, relay peer unchanged: additive layout_delta (a complete mirror v2 snapshot follows a page size change by a delta whose header carries css_width/css_height, not a layout reset)",
+  "peer_protocol": 452,
+  "allocation": "Local 1015 (relay peer 452, Landing 14): additive layout_delta (a complete mirror v2 snapshot follows a page size change by a delta whose header carries css_width/css_height, not a layout reset)",
   "subscribe": {
     "KernelBrowser": {
       "command": {

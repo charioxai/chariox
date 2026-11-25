@@ -188,7 +188,12 @@ impl KernelRuntimeState {
                 .without_timeout()
                 .with_related_agent_id(agent.id().to_owned());
         let rx = self
-            .create_kernel_operation_interaction(room.id(), agent.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                room.id(),
+                agent.owner_user_id(),
+                interaction,
+            )
             .await?;
         let state = self.as_kernel();
         let action_notice = notice.clone();
