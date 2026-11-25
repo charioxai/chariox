@@ -130,6 +130,8 @@ struct LiveReply {
     left_over: Option<Vec<String>>,
     /// The unfinished block of an earlier reader, which the first block this reader streams may go on in.
     unfinished: Option<Unfinished>,
+    /// The run's context file: what the reader must not forget when it is lost is kept next to it.
+    context_file: Option<String>,
 }
 
 struct Block {
@@ -189,6 +191,7 @@ impl LiveReply {
             previous_rows: HashMap::new(),
             left_over: None,
             unfinished: None,
+            context_file: None,
         }
     }
 

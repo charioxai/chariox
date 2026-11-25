@@ -852,8 +852,12 @@ fn a_block_streamed_after_the_reader_was_lost_keeps_the_earlier_answer() {
     turn.append_transcript(assistant_text("first", first));
     turn.pass();
     assert_eq!(turn.live_rows(), [first], "the first block is the transcript's");
-    // The reader is lost; the screen it had is gone.
+    // The reader is lost; the screen it had is gone. Claude draws the completed block again before anything new.
     super::live_reply::forget(turn.run.id());
+    turn.terminal_shows(&first_drawn);
+    turn.terminal_shows(&first_drawn);
+    assert_eq!(turn.live_rows(), [first], "the completed block is not streamed again");
+    assert_eq!(turn.stored_replies(), [first]);
     let second_drawn = screen(&[
         "● Then the build.",
         "",

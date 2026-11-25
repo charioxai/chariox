@@ -707,3 +707,71 @@ fn a_transcript_block_of_another_reply_is_not_paired_with_a_streamed_row() {
     }
     assert!(checked > 100, "only {checked} pairs were checked");
 }
+
+// A reader lost to a restart or to the registry's eviction forgets the blocks it handed over. What it drew is still on
+// the screen when Claude redraws it, and the reader that takes over must not stream it again as a new row.
+const FIRST: &[&str] = &[
+    "● Result",
+    "  First body one.",
+    "  First body two.",
+    "  First body three.",
+    "",
+    "✻ Working (1s)",
+];
+const FIRST_TEXT: &str = "Result\nFirst body one.\nFirst body two.\nFirst body three.";
+const SECOND: &[&str] = &[
+    "● Next",
+    "  Second body one.",
+    "  Second body two.",
+    "  Second body three.",
+    "",
+    "✻ Working (2s)",
+];
+
+fn with_state(file: &std::path::Path) -> LiveReply {
+    let mut reply = LiveReply::new(40, 120);
+    reply.context_file = Some(file.display().to_string());
+    reply
+}
+
+#[test]
+fn a_completed_block_drawn_again_after_the_reader_was_lost_is_not_streamed_again() {
+    let dir = crate::test_support::TestTempDir::new("live-reader-lost-completed");
+    let context = dir.path().join("context.json");
+    let mut reply = with_state(&context);
+    assert!(!read_twice(&mut reply, "prompt-1", &draw(FIRST)).is_empty());
+    assert!(matches!(reply.adopt(FIRST_TEXT), Adoption::Streamed { .. }));
+    // The reader is lost; the one that takes over sees the screen drawn again.
+    let mut lost = with_state(&context);
+    let again = read_twice(&mut lost, "prompt-1", &draw(FIRST));
+    assert!(again.is_empty(), "the completed block streamed again: {again:?}");
+    // A block it has not seen still streams, in a row of its own.
+    let later = read_twice(&mut lost, "prompt-1", &draw(SECOND));
+    assert!(!later.is_empty());
+}
+
+#[test]
+fn a_block_handed_over_but_not_yet_adopted_is_not_streamed_again_after_the_reader_was_lost() {
+    let dir = crate::test_support::TestTempDir::new("live-reader-lost-handed-over");
+    let context = dir.path().join("context.json");
+    let mut reply = with_state(&context);
+    assert!(!read_twice(&mut reply, "prompt-1", &draw(FIRST)).is_empty());
+    // The screen moves on to another block, which hands the first one over.
+    assert!(!read_twice(&mut reply, "prompt-1", &draw(SECOND)).is_empty());
+    let mut lost = with_state(&context);
+    let again = read_twice(&mut lost, "prompt-1", &draw(FIRST));
+    assert!(again.is_empty(), "the handed-over block streamed again: {again:?}");
+}
+
+#[test]
+fn the_answer_left_on_the_screen_is_not_streamed_under_the_next_prompt_by_a_reader_that_took_over() {
+    let dir = crate::test_support::TestTempDir::new("live-reader-lost-previous");
+    let context = dir.path().join("context.json");
+    let mut reply = with_state(&context);
+    assert!(!read_twice(&mut reply, "prompt-1", &draw(FIRST)).is_empty());
+    assert!(matches!(reply.adopt(FIRST_TEXT), Adoption::Streamed { .. }));
+    // The reader is lost as the next prompt starts, while the screen still shows the previous answer.
+    let mut lost = with_state(&context);
+    let deltas = read_twice(&mut lost, "prompt-2", &draw(FIRST));
+    assert!(deltas.is_empty(), "the previous answer streamed under the next prompt: {deltas:?}");
+}
