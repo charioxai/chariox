@@ -26,7 +26,7 @@ const read = p => existsSync(p) ? readFileSync(p, "utf8") : ""
 
 const origins = restartFixtures()
 const needles = join(evidence, "needles"); mkdirSync(needles, { recursive: true, mode: 0o700 })
-const k = await startDrillKernel({ label: "d3live", binary: process.env.D3_KERNEL_BIN, stateRoot: "/root/.chariox/dev/orch15-vaultd3prep/state", evidence, tokenFile: "/root/.claude-lanes/oauth-token.chariox", model, extraEnv: process.env.D3_KERNEL_SCRIPT ? { CHARIOX_KERNEL_BROWSER_SCRIPT: process.env.D3_KERNEL_SCRIPT } : {} })
+const k = await startDrillKernel({ label: "d3live", binary: process.env.D3_KERNEL_BIN, stateRoot: "/root/.chariox/dev/orch15-vaultd3prep/state", evidence, tokenFile: "/root/.claude-lanes/oauth-token.chariox", model, extraEnv: { D3_DEBUG_FILE: join(evidence, "controller-errors.jsonl"), ...(process.env.D3_KERNEL_SCRIPT ? { CHARIOX_KERNEL_BROWSER_SCRIPT: process.env.D3_KERNEL_SCRIPT } : {}) } })
 const exportDir = join(evidence, "export"); mkdirSync(exportDir, { recursive: true, mode: 0o700 })
 const hasFiles = p => { try { return statSync(p).isFile() || readdirSync(p).some(n => hasFiles(join(p, n))) } catch { return false } }
 const exportState = async (r, name) => writeFileSync(join(exportDir, name), JSON.stringify(await k.session(r.id)), { mode: 0o600 })
