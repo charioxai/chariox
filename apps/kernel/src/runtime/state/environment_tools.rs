@@ -65,6 +65,22 @@ pub(crate) fn environment_tool_specs() -> Vec<RuntimeToolSpec> {
 }
 
 impl KernelRuntimeState {
+    /// The Environment tools this agent can use now. Giving a Secret its value from a Vault entry
+    /// needs a saved Environment, so that tool is listed only when the Room's Project has one.
+    pub(crate) fn environment_tool_specs_for(&self, token: &str) -> Vec<RuntimeToolSpec> {
+        let has_environment = (|| -> Result<bool, DaemonError> {
+            let context = self.vault_agent_context(token)?;
+            let session = self.owned.session_store.get_session(&context.session_id)?;
+            let project = self.tool_project(&session, &context.owner_user_id)?;
+            Ok(self.environment_store().load(project.id())?.is_some())
+        })()
+        .unwrap_or(false);
+        environment_tool_specs()
+            .into_iter()
+            .filter(|spec| has_environment || spec.name != ENVIRONMENT_USE_VAULT_ENTRY)
+            .collect()
+    }
+
     pub(crate) async fn environment_tool(
         &self,
         token: &str,

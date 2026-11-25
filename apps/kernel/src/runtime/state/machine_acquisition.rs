@@ -155,10 +155,7 @@ impl KernelRuntimeState {
         }
         // An approved request that was sent keeps its approval whatever the quote says now: the
         // owner is not asked again for a machine that may already be charged under it.
-        if let Some(first) = self
-            .owned
-            .first_acquisition_send(&identity, &owner)?
-        {
+        if let Some(first) = self.owned.first_acquisition_send(&identity, &owner)? {
             return Ok(Approval::Replay {
                 capability_revision: first,
             });
@@ -367,7 +364,11 @@ impl KernelRuntimeState {
                 ),
             ));
         }
-        self.owned.durable_state_store.append_event("compute.acquisition_approved", Some(id.clone()), serde_json::json!({"owner":owner,"approved_at_ms":crate::session::unix_epoch_ms()}))?;
+        self.owned.durable_state_store.append_event(
+            "compute.acquisition_approved",
+            Some(id.clone()),
+            serde_json::json!({"owner":owner,"approved_at_ms":crate::session::unix_epoch_ms()}),
+        )?;
         // The card is gone; the receipt keeps the approved request visible until the service answers.
         self.save_machine_receipt(
             &room,
@@ -706,7 +707,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire machines without asking: within the owner's limits (allowed classes, machines at the same time, daily spending) it goes ahead with no card and the Room records its class, rate and cost; outside them the owner's card says why, and the call waits up to 5 minutes for the owner's answer. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Pass timeout_s (seconds) as the rental's hard stop: the service stops the machine then, with nobody to remember it; release it earlier when the work is finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be. Say in purpose, in one line, what the machine is for: the person's card names you and shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without it the first option in stock is acquired. A named option out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire without asking: within the owner's limits (allowed classes, machines at once, daily spending; service limits always apply) it goes ahead with no card (the Room records class, rate and cost); outside them the owner's card says why and the call waits up to 5 minutes for it. Returns allocation_ref, machine type and terms; poll status until access is available, then reach the kernel with Room commands. timeout_s is the rental's hard stop: the service stops the machine then; release earlier when done. Reuse request_id when retrying after a lost response, a timeout or a refusal: it keeps the first try's option and returns the allocation the service accepted. Use a new one only when a refusal says the service closed the old one. Say in purpose, in one line, what the machine is for; the card shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
