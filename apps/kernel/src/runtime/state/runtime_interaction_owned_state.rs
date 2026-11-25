@@ -1,6 +1,9 @@
 use super::*;
 
 mod agent_lifetime;
+mod card_registry;
+pub(super) use card_registry::CardRequest;
+pub(crate) use card_registry::{CardKind, LiveRoomCard};
 mod kernel_wide;
 mod maintenance;
 mod registration;
@@ -191,10 +194,11 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?;
-        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+        if !session.update_active_interaction(interaction_id, |interaction| {
+            interaction.with_provider_login(login)
+        }) {
             return Ok(());
-        };
-        session.add_active_interaction(interaction.with_provider_login(login));
+        }
         sessions.restore_session(session);
         drop(sessions);
         activity_mutation.record();
@@ -688,6 +692,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        self.record_task_question_answer(session_id, &interaction, choice_id, &resolved_reply)?;
         self.record_async_question_resolution(
             &interaction,
             &super::PendingInteractionResolution {
@@ -832,7 +837,8 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
-        if !session.replace_active_interaction(refreshed) {
+        let id = refreshed.id().to_owned();
+        if !session.update_active_interaction(&id, |_| refreshed) {
             return Err(interaction_error("interaction is not active"));
         }
         self.persist_session_activity(&mut session, crate::session::unix_epoch_ms())?;

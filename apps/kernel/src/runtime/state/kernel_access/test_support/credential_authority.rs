@@ -147,6 +147,7 @@ impl KernelRuntimeState {
             "large-room" => {
                 let receiver = self
                     .create_kernel_operation_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         SESSION,
                         "local",
                         crate::session::RuntimeInteraction::for_kernel_operation(
@@ -169,6 +170,7 @@ impl KernelRuntimeState {
                 let critical = action == "agent-critical-question";
                 let receiver = self
                     .create_runtime_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         SESSION,
                         crate::session::RuntimeInteraction::new(
                             if critical {

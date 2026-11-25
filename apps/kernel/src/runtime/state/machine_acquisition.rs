@@ -227,7 +227,12 @@ impl KernelRuntimeState {
             interaction = interaction.with_related_agent_id(agent.into());
         }
         let receiver = self
-            .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                &room,
+                session.owner_user_id(),
+                interaction,
+            )
             .await?;
         let mut pending = PendingAcquisition(Some((self.clone(), room.clone(), id.clone())));
         let asked = std::time::Instant::now();

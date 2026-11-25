@@ -126,8 +126,11 @@ impl Fixture {
             ],
         );
         self.state.owned.register_runtime_interaction(
+            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                interaction,
+            ),
             &self.session,
-            interaction,
             send,
             Some(DEFAULT_LOCAL_USER_ID),
             None,
@@ -596,6 +599,7 @@ async fn decisioncap_owner_list_and_admission_agree_after_room_deletion() {
         receivers.push(
             f.state
                 .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
                     &lost_room,
                     DEFAULT_LOCAL_USER_ID,
                     RuntimeInteraction::for_kernel_operation(
@@ -708,7 +712,7 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
     {
         let mut sessions = fixture.state.owned.session_store.write();
         let mut session = sessions.get_session(&fixture.session).unwrap().clone();
-        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+        session.add_interaction_fixture(RuntimeInteraction::for_kernel_operation(
             &orphan,
             &orphan,
             "Install App?",
@@ -731,7 +735,7 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
         .into_iter()
         .enumerate()
         {
-            session.add_active_interaction(RuntimeInteraction::new(
+            session.add_interaction_fixture(RuntimeInteraction::new(
                 id,
                 format!("agent-{}", agent + 1),
                 crate::session::RuntimeInteractionKind::Choice,
@@ -1461,7 +1465,11 @@ async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
     let original = read_task();
     let id = format!("native-goal-approval-{session}");
     let mut receiver = state
-        .create_runtime_interaction(&session, permission(&id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            permission(&id),
+        )
         .await
         .unwrap();
     let blocked = read_task();
@@ -1521,7 +1529,11 @@ async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
     // A later lifecycle change must win over an answer to this approval.
     let second_id = format!("native-goal-second-{session}");
     let _second = state
-        .create_runtime_interaction(&session, permission(&second_id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            permission(&second_id),
+        )
         .await
         .unwrap();
     store
@@ -1564,7 +1576,11 @@ async fn a_hidden_agent_that_raises_a_decision_comes_back() {
     assert!(hidden(&agent));
     let id = format!("hidden-agent-decision-{session}");
     let _receiver = state
-        .create_runtime_interaction(&session, native_goal_permission(&agent, &id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            native_goal_permission(&agent, &id),
+        )
         .await
         .unwrap();
     assert!(
@@ -1593,7 +1609,11 @@ async fn a12_native_approval_timeout_restores_the_goal() {
     let original = read_task();
     let id = format!("native-goal-timeout-{session}");
     let mut receiver = state
-        .create_runtime_interaction(&session, native_goal_permission(&agent, &id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            native_goal_permission(&agent, &id),
+        )
         .await
         .unwrap();
     assert_eq!(read_task().state, ExecutionState::Blocked);
@@ -1615,7 +1635,11 @@ async fn a12_native_approval_timeout_restores_the_goal() {
     // A later owner pause wins over the expiring approval.
     let second = format!("native-goal-timeout-second-{session}");
     let _receiver = state
-        .create_runtime_interaction(&session, native_goal_permission(&agent, &second))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            native_goal_permission(&agent, &second),
+        )
         .await
         .unwrap();
     store
@@ -1677,7 +1701,7 @@ async fn rewording_a_task_decision_on_a_managed_kernel_does_not_wait_for_itself(
         let mut sessions = f.state.owned.session_store.write();
         let mut room = sessions.get_session(&f.session).unwrap();
         let open = room.remove_active_interaction(&card).unwrap();
-        room.add_active_interaction(open.with_message("An older wording".to_string()));
+        room.add_interaction_fixture(open.with_message("An older wording".to_string()));
         sessions.restore_session(room);
     }
     let state = f.state.clone();
@@ -1812,4 +1836,118 @@ async fn a_blocked_task_card_is_answered_by_the_room_owner_and_the_agent_owner_n
             answered.unwrap_or_else(|error| panic!("{answerer} must answer: {error}"));
         }
     }
+}
+
+#[tokio::test]
+async fn answered_task_question_does_not_reopen_before_its_waiter_runs() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = Fixture::with_room_tools();
+    let task = f.id("crash-after-answer");
+    let store = &f.state.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: task.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::BlockForQuestion {
+            task: task.clone(),
+            prompt: task,
+            reason: "Please choose which check to run".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+
+    // Keep the response receiver alive without running its callback, as at a
+    // crash after the owner response returns but before its waiter can run.
+    let id = format!(
+        "task-blocked-{}-{}",
+        blocked.task_id, blocked.blocked_revision
+    );
+    let _receiver = f
+        .state
+        .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::Task,
+            &f.session,
+            DEFAULT_LOCAL_USER_ID,
+            RuntimeInteraction::for_kernel_operation(
+                &id,
+                &id,
+                "Question",
+                &blocked.reason,
+                vec![RuntimeInteractionChoice::new(
+                    "cancel", "Dismiss", "cancel", None,
+                )],
+            )
+            .with_question_reply(crate::session::RuntimeInteractionCustomChoice::new(
+                "reply",
+                "Reply",
+                None,
+                Some(1),
+                None,
+            ))
+            .with_related_agent_id(blocked.agent_id.clone()),
+        )
+        .await
+        .unwrap();
+    f.state
+        .owned
+        .resolve_runtime_interaction(
+            &f.session,
+            &id,
+            "reply",
+            Some("Run the smoke check"),
+            Some(DEFAULT_LOCAL_USER_ID),
+            false,
+        )
+        .unwrap();
+    assert!(
+        store
+            .agent_inbox(&f.session, &blocked.agent_id, 0)
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry.payload["task_id"] == blocked.task_id
+                    && entry.payload["public_answer"]["reply"] == "Run the smoke check"
+            }),
+        "the accepted answer must be durable before the waiter runs"
+    );
+    assert!(!f.active_ids().contains(&id));
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: f.session.clone(),
+            agent: blocked.agent_id.clone(),
+            prompt: blocked.prompt_id.clone(),
+            run: "question-run".into(),
+            has_answer: false,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("expected the asking turn to settle");
+    };
+    assert_eq!(
+        task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+    );
+    assert!(
+        !correction,
+        "the asking turn must yield to its accepted answer"
+    );
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    assert!(
+        !f.active_ids().contains(&id),
+        "recovery reopened an acknowledged question"
+    );
 }

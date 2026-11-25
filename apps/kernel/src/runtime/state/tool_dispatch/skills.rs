@@ -250,7 +250,11 @@ impl KernelRuntimeState {
             None,None,None,
         );
         let resolution = self
-            .create_runtime_interaction(session.id(), interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::RuntimeGrant,
+                session.id(),
+                interaction,
+            )
             .await?
             .await
             .map_err(|_| failure("skill catalog approval ended without a decision"))?;

@@ -659,6 +659,90 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             save(tx, &t)?;
             Ok(Outcome::Task(t))
         }
+        Operation::AnswerTaskQuestion {
+            room,
+            task,
+            revision,
+            reply,
+            now,
+        } => {
+            let mut t = load(tx, &task)?;
+            if t.room_id != room
+                || t.state != ExecutionState::Blocked
+                || t.blocked_revision != revision
+                || t.owner_action != Some(TaskOwnerAction::Question)
+            {
+                return Err(error("task question has already closed"));
+            }
+            let Some(reply) = reply else {
+                return apply(
+                    tx,
+                    Operation::OwnerResponse {
+                        task,
+                        revision,
+                        resume: false,
+                        now,
+                    },
+                );
+            };
+            super::goals::clock(&mut t, now);
+            let source = format!("owner-question-{task}-{revision}");
+            let answer = event(
+                tx,
+                occurrence(
+                    &room,
+                    &t.agent_id,
+                    &source,
+                    "answered",
+                    "source_completed",
+                    serde_json::json!({
+                        "task_id":task,
+                        "success":true,
+                        "public_answer":{
+                            "kind":"interaction","status":"answered",
+                            "question":t.reason,"reply":reply,
+                        }
+                    }),
+                ),
+            )?;
+            // The source has already ended. Its registration ties the pending
+            // receipt to the retained wait until the original turn settles.
+            let registration = Registration {
+                id: format!("completion-{source}"),
+                task_id: task,
+                source_id: answer.source_id,
+                obligation_id: None,
+                source_cursor: 0,
+                live: false,
+                peer: false,
+            };
+            tx.execute(
+                "INSERT INTO agent_registrations VALUES(?1,?2,?3)",
+                params![
+                    registration.id,
+                    registration.task_id,
+                    encode(&registration)?
+                ],
+            )
+            .map_err(sql)?;
+            // The existing inbox admission binds this receipt to the same task.
+            // Its retry restores this wait if a provider refuses before I/O.
+            t.state = ExecutionState::Waiting;
+            t.owner_action = None;
+            t.pending_prompt_id = None;
+            t.last_progress_at_ms = now;
+            t.wait = Some(AgentWait {
+                registration_ids: vec![registration.id],
+                deadline_ms: Some(now.saturating_add(DEFAULT_WAIT_TIMEOUT_MS)),
+                started_at_ms: now,
+                inbox_cursor: answer.sequence.saturating_sub(1),
+                last_checked_at_ms: now,
+            });
+            t.reason = "The owner answered the question; the answer is in the inbox".into();
+            t.revision += 1;
+            save(tx, &t)?;
+            Ok(Outcome::Task(t))
+        }
         Operation::OwnerResponse {
             task,
             revision,

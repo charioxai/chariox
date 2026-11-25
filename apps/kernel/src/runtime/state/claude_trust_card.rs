@@ -61,7 +61,11 @@ impl KernelRuntimeState {
                     },
                 ));
                 let receiver = match self
-                    .create_runtime_interaction(session_id, interaction)
+                    .create_runtime_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
+                        session_id,
+                        interaction,
+                    )
                     .await
                 {
                     Ok(receiver) => receiver,

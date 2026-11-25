@@ -359,7 +359,12 @@ impl KernelRuntimeState {
         // One decision per deployment at a time: another release's consent
         // still awaiting the owner is answered first.
         let answer = self
-            .create_kernel_operation_interaction(&consent.session_id, &owner, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::App,
+                &consent.session_id,
+                &owner,
+                interaction,
+            )
             .await
             .map_err(|error| {
                 if super::runtime_interaction_owned_state::interaction_waits(&error) {

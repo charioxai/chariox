@@ -207,6 +207,7 @@ async fn a12_many_pending_decisions_never_block_a_new_one() {
     receivers.push(
         f.state
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
                 &f.session,
                 DEFAULT_LOCAL_USER_ID,
                 RuntimeInteraction::for_kernel_operation(
@@ -238,16 +239,19 @@ async fn owner_task_decision_is_removed_when_its_task_is_missing() {
     f.state
         .owned
         .register_runtime_interaction(
-            &f.session,
-            RuntimeInteraction::for_kernel_operation(
-                id,
-                id,
-                "Agent needs your action",
-                "Continue?",
-                vec![RuntimeInteractionChoice::new(
-                    "cancel", "Cancel", "cancel", None,
-                )],
+            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                RuntimeInteraction::for_kernel_operation(
+                    id,
+                    id,
+                    "Agent needs your action",
+                    "Continue?",
+                    vec![RuntimeInteractionChoice::new(
+                        "cancel", "Cancel", "cancel", None,
+                    )],
+                ),
             ),
+            &f.session,
             sender,
             Some(DEFAULT_LOCAL_USER_ID),
             None,

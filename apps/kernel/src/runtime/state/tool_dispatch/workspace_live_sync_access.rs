@@ -62,7 +62,11 @@ impl KernelRuntimeState {
             workspace_live_sync_permission_interaction(agent_id, tool_name, arguments)?;
         let interaction_id = interaction.id().to_string();
         let resolution = self
-            .create_runtime_interaction(session_id, interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::RuntimeGrant,
+                session_id,
+                interaction,
+            )
             .await?
             .await
             .map_err(|error| DaemonError::LocalTransport {

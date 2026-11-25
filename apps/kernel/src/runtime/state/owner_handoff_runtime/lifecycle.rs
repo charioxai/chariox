@@ -122,13 +122,19 @@ impl KernelRuntimeState {
             Err(_) => return None, // Unknown durability never permits replay.
             _ => {}
         }
-        let Some(handoff) = session
-            .active_interactions()
-            .iter()
-            .find(|i| i.id() == handoff_id)
-            .and_then(|i| i.handoff().cloned())
-        else {
-            return Some(false);
+        let store = &self.owned.durable_state_store;
+        match store.load_subject_events_by_kind(handoff_id, "handoff.outcome", 1) {
+            Ok(outcomes) if !outcomes.is_empty() => return Some(false),
+            Err(_) => return None,
+            _ => {}
+        }
+        let handoff = match store.owner_handoff(handoff_id) {
+            Ok(Some(record)) if record.room == session.id() => record.handoff,
+            Ok(_) => return Some(false),
+            Err(error) => {
+                tracing::error!(%error, "could not recover the owner hand-off");
+                return None;
+            }
         };
         if self
             .owned
@@ -169,7 +175,7 @@ impl KernelRuntimeState {
             return None;
         }
         if let Err(error) = self
-            .register_handoff_interaction(
+            .open_handoff_card(
                 session.id(),
                 session.owner_user_id(),
                 handoff.clone(),
@@ -177,6 +183,15 @@ impl KernelRuntimeState {
             )
             .await
         {
+            if self
+                .owned
+                .pending_interactions
+                .write()
+                .get(handoff_id)
+                .is_some_and(|pending| pending.belongs_to(&self.owned.session_store))
+            {
+                return None;
+            }
             tracing::warn!(%error, "MP-08 A07: restored hand-off could not be re-armed");
             let result = outcome(
                 handoff_id,

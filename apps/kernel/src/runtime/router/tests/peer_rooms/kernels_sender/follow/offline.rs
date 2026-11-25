@@ -941,7 +941,11 @@ fn no_request_from_another_kernel_answers_a_card_on_this_one() {
             let mut answer = b
                 .router
                 .runtime_state
-                .create_runtime_interaction(&b.room, card)
+                .create_runtime_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    &b.room,
+                    card,
+                )
                 .await
                 .unwrap();
             for request in every_peer_request(&a, &b) {
