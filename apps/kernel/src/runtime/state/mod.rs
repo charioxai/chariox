@@ -1845,6 +1845,7 @@ mod background_hold;
 mod child_finish_window;
 mod child_finished_event;
 
+mod agent_blocked_task;
 #[cfg(test)]
 mod agent_delivery_recovery_tests;
 mod agent_gone_announcement;

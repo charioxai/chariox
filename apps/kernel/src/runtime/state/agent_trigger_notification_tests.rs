@@ -1756,6 +1756,7 @@ async fn notification_lineage_follows_the_active_agent_prompt() {
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: a source emits once per decision revision, through the shared router.
+// Only the agent's own question is a decision the person answers; a blocked task is status.
 #[tokio::test]
 async fn owner_action_source_queues_a_reduced_alert_once() {
     let rig = rig().await;
@@ -1791,10 +1792,11 @@ async fn owner_action_source_queues_a_reduced_alert_once() {
         })
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::Block {
+        .agent_lifecycle(Operation::BlockForQuestion {
             task: "blocked-source-drill".into(),
             prompt: "blocked-source-drill".into(),
             reason: "private reason excluded from notifications".into(),
+            reply: None,
         })
         .unwrap()
     else {

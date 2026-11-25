@@ -1011,11 +1011,18 @@ When a turn ends with the usage-limit outcome, the kernel records `AgentInstance
 `{prompt_id, provider, account_profile, account_label, stopped_at_ms, resumes_at_ms?, refused?,
 state}` with `state` one of `asking`, `armed {at_ms}`, `resuming {since_ms, sent}` or `declined`. The reset
 time is read from the provider's own words ("resets 4pm (UTC)", "resets Oct 28, 9pm (UTC)"); with
-none the kernel backs off. The user setting `agents.usage_limit_resume` is `ask` (default; the stop is
-`asking` and the kernel raises one decision, `usage-limit-<agent>-<stopped_at>-<refused>`, shown in the
-agent's pane (in the room agent's pane for a sub-agent) with `resume_when_back`, `not_now` and
-`continue_on:<profile>` choices, answered like any kernel decision and withdrawn when the stop moves on) or `automatic` (the stop is `armed` at
-the reset time). The kernel alone resumes: its one-second scheduler fires an armed stop at its time,
+none the kernel backs off. A stop is status on the agent's row (`usage_limit_stop`: paused, with `resumes_at_ms`),
+not a card, and the kernel raises a card only when the person has something to decide. The user setting
+`agents.usage_limit_resume` left unset (the default) arms the stop at the reset and resumes by itself, with no
+card, unless the person has a real choice: another account of the provider with room, and no orchestrator
+above the agent owning the switch. Then the stop is `asking` and the kernel raises one decision,
+`usage-limit-<agent>-<stopped_at>-<refused>`, titled **Usage limit reached**, with `resume_when_back`,
+`not_now` and `continue_on:<profile>` choices; `not_now` raises nothing further. A person who set `ask`
+themselves decides the resume: the stop is `asking` with no card at the stop and none before the reset; at
+the reset one decision, `...-back`, titled **Usage is back** ("<agent>: usage is back."), with `resume_when_back`
+(**Resume**) and `not_now` (**Leave paused**, the stop becomes `declined` and the row still says paused, with
+`agent resume` to go on). `automatic` arms the stop at the reset time and never raises a card.
+The kernel alone resumes: its one-second scheduler fires an armed stop at its time,
 one agent per 20 seconds, so nothing depends on an agent that may sit on the same exhausted account,
 and a restart finds the stop on the agent again. A task that was blocked by the stop goes on as the same
 task; otherwise the agent gets one kernel prompt in the same conversation. The stop follows the turn that
@@ -1028,11 +1035,13 @@ again the kernel retries after 1, 5 and 15 minutes (after 15, 30, 60 and 120 min
 was named) and then asks again. The person's decision is `UpdateAgentConfig.usage_limit`, given alone:
 `{"action":"resume_when_back"}`, `{"action":"not_now"}`, `{"action":"cancel"}` (takes an armed resume
 back) or `{"action":"continue_on","account_profile":"..."}` (moves the turn to another account and goes
-on now). A sub-agent is in no room agent list, so its stop travels as `usage_limit_stop` on its `AgentTreeNode` of
+on now). Given for an agent that no usage limit stopped, `resume_when_back` resumes and `cancel` (or `not_now`)
+cancels its blocked task (see the blocked-task text under Hybrid Tasks); `continue_on` is refused.
+A `declined` stop is part of `usage_limit_stop` so the row says paused. A sub-agent is in no room agent list, so its stop travels as `usage_limit_stop` on its `AgentTreeNode` of
 `ListDescendants` (omitted when none; withheld from a viewer who may not read the node's parameters).
 `child_finished` carries `resumes_at_ms` while a resume is armed. The room commands `agent
 resume <agent>` and `agent resume cancel <agent>` let an agent above take an armed resume back at any
-time and arm one only when the person chose automatic resume; nothing depends on them. The kernel
+time and arm one unless the person set Ask me themselves; nothing depends on them. The kernel
 reads no usage meters for this and paces nothing: it only reacts to a limit stop.
 
 ### Agent deadlines (MP-08 / MP-09 / MP-10 / MP-11)
@@ -1299,12 +1308,18 @@ recipient handles the request in another task, the sender receives a
 `source_lost` event with `public_answer.kind = "no_answer"` and a reason. Ordinary
 messages do not settle requested replies or create courtesy feedback loops.
 
-Blocked tasks create one kernel-owned **Agent needs your action** interaction.
-A helper's decision goes first to its nearest eligible parent as an urgent
-`child_decision` inbox event. The holder answers with `agent answer <interaction>
-resume|cancel`, or hands the same decision up with `agent pass <interaction>`.
-A root task, or a decision no eligible ancestor can hold, keeps the person's
-card. Browser-access consent stays with the person. A block the agent raises
+A blocked task is status, not a card (Local 1015, the Landing 14 union). The projected task in
+`RuntimeSession.agent_tasks` carries `unblock {steps, resume_command, cancel_command}` (never stored; set only
+while the task is `blocked`, for a task the owner settles by command): what unblocks it, `agent resume <agent>` and
+`agent resume cancel <agent>`. The agent's row shows blocked, the reason and these words. A helper's parent is told
+once, with an urgent `child_blocked` inbox event
+`{child_agent_id, child_alias, task_id, reason, unblock, resume_command, cancel_command, needs_answer: false}`;
+a root agent has no one to tell. The person (`chariox agent resume [cancel] <agent>`, `UpdateAgentConfig.usage_limit`)
+and the agents above the blocked agent resume (`agent resume <agent>`) or cancel (`agent resume cancel <agent>`)
+it: the same authority that answered the retired **Agent needs your action** decision (`task-blocked-…`), which is
+no longer raised, and an older one is withdrawn. A card is raised only for what no command can give: the
+agent's own question (below), a secret, a login, a payment or a consent each have their own kind of card.
+A block the agent raises
 itself with `chariox.events.blocked` is its question to the owner: the task gets
 `owner_action: "question"` and the decision is titled **Question**, a `choice`
 whose message is the agent's own words, with `custom_choice {id: "reply"}` and
@@ -1315,13 +1330,12 @@ Inbox, and every client reads the same projection. Only the separate **Stop <age
 choice (id `stop`) cancels the task. The correction and Resume
 instruction name every unresolved obligation, its source label when available,
 and the calls that settle it, using the actual registrations and receipt sequences.
-For a person-held card in the TUI, open it with F8, Ctrl+G or `/approvals`, select
-Resume or Cancel, then confirm. Resume revalidates the blocked revision and
+Resume revalidates the blocked revision and
 retained receipts; progress or reconnect alone cannot resume. Cancellation retains obligations until actual owned
 resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
 task; an older independent wait still receives its source completion or deadline
 wake. Historical task ordering is not an agent stop disposition.
-The blocked-task decision is the one kernel-operation decision that is not terminal-only: an external access holder, or an owner's agent driving the Room through reach, answers it with `RespondToInteraction` (`resume` or `cancel`, never implied), and its outside event carries the question instead of a pointer. Every other kernel-operation decision stays terminal-only.
+The agent's **Question** decision is the one kernel-operation decision that is not terminal-only: an external access holder, or an owner's agent driving the Room through reach, answers it with `RespondToInteraction`, and its outside event carries the question instead of a pointer. Every other kernel-operation decision stays terminal-only.
 Legacy `/agent task` commands still address Meta tasks;
 they are not selectors for regular `agent_tasks`. Process/timer watcher sources
 belong to PR3 and leased delivery reconciliation to PR10; unsupported leased

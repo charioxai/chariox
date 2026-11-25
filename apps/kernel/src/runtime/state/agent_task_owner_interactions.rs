@@ -64,16 +64,30 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
-    /// A task-owner card needs a current blocker the owner can act on.
+    /// Only the agent's own question is a card here: it asks the person for something only they can
+    /// give. Any other blocked task is status on the agent's row and an event to its parent
+    /// (`agent_blocked_task.rs`), settled by `agent resume`.
     fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> Result<bool, DaemonError> {
+        Ok(task.owner_action
+            == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question)
+            && self.blocked_task_is_open(task)?)
+    }
+
+    /// A blocked task is open while a blocker is current: the task is blocked, not a paused goal,
+    /// not a usage-limit stop (a stop of any state is the agent's own status and resumes at its
+    /// reset, or by the decision on its stop: a person's "Not now" ends no stop's status), and its
+    /// agent is not deleted.
+    pub(super) fn blocked_task_is_open(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<bool, DaemonError> {
         if task.state != ExecutionState::Blocked
             || task.goal.as_ref().is_some_and(|goal| goal.paused)
-            // A usage-limit stop has its own stripe and its own resume.
+            // A usage-limit stop has its own status and its own resume, whatever its state.
             || self.agent_store.get_agent(&task.agent_id).is_ok_and(|agent| {
-                agent.usage_limit_stop().is_some_and(|stop| {
-                    stop.prompt_id == task.prompt_id
-                        && !matches!(stop.state, crate::agent::UsageLimitStopState::Declined)
-                })
+                agent
+                    .usage_limit_stop()
+                    .is_some_and(|stop| stop.prompt_id == task.prompt_id)
             })
             || self.durable_state_store.agent_deletion_recorded(&task.agent_id)?
         {
@@ -210,6 +224,9 @@ impl KernelRuntimeState {
         if !self.owned.task_needs_owner_interaction(&task)? {
             self.retract_stale_task_owner_interactions(&task.room_id)
                 .await;
+            if self.owned.blocked_task_is_open(&task)? {
+                Box::pin(self.announce_blocked_task(&task)).await?;
+            }
             return Ok(());
         }
         let id = format!(
@@ -217,24 +234,18 @@ impl KernelRuntimeState {
             task.task_id, task.blocked_revision
         );
         let session = self.owned.session_store.get_session(&task.room_id)?;
-        let question = task.owner_action
-            == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question);
         let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
         let name = agent
             .as_ref()
             .map(|agent| agent.alias().unwrap_or(agent.agent_ref()));
-        let message = if question {
-            let reason = crate::terminal::public_task_failure_reason(&task.reason);
-            match name {
-                Some(name) => format!("{name}: {reason}"),
-                None => reason,
-            }
-        } else {
-            self.owned.blocked_card_message(name, &task)
+        // The agent's own words: the person answers them, so the recovery steps are not shown.
+        let reason = crate::terminal::public_task_failure_reason(&task.reason);
+        let message = match name {
+            Some(name) => format!("{name}: {reason}"),
+            None => reason,
         };
         // The agent sets the box's label and placeholder; with none the card has a plain box.
-        // Only an agent's question has a free-text box: a recovery card (Resume / Cancel) keeps its own kind and choices.
-        let reply_choice = question.then(|| {
+        let reply_choice = {
             crate::session::RuntimeInteractionCustomChoice::new(
                 "reply",
                 task.question_reply
@@ -248,7 +259,7 @@ impl KernelRuntimeState {
                 None,
             )
             .with_description("Send your reply and continue the waiting task.")
-        });
+        };
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self
                 .owned
@@ -267,19 +278,16 @@ impl KernelRuntimeState {
             if live {
                 if existing.message() != message
                     || existing.related_agent_id() != Some(task.agent_id.as_str())
-                    || (question && existing.custom_choice() != reply_choice.as_ref())
+                    || existing.custom_choice() != Some(&reply_choice)
                 {
                     let mutation = self.owned.begin_managed_activity_mutation();
                     let mut sessions = self.owned.session_store.write();
                     let mut latest = sessions.get_session(&task.room_id)?;
                     if latest.update_active_interaction(&id, |current| {
-                        let updated = current
+                        current
                             .with_message(message)
-                            .with_related_agent_id(task.agent_id.clone());
-                        match reply_choice.clone() {
-                            Some(reply) => updated.with_question_reply(reply),
-                            None => updated,
-                        }
+                            .with_related_agent_id(task.agent_id.clone())
+                            .with_question_reply(reply_choice.clone())
                     }) {
                         sessions.restore_session(latest);
                     }
@@ -305,27 +313,6 @@ impl KernelRuntimeState {
         .with_description(
             "Hide this card from the Room. The task keeps waiting and you can answer in the Inbox.",
         )];
-        if !question {
-            let (id, label, description) =
-                if crate::provider::switch_turn::needs_fresh_agent(&task.reason) {
-                    (
-                        "start_fresh_agent",
-                        "Start a fresh agent",
-                        "Start a new agent for this work.",
-                    )
-                } else {
-                    ("resume", "Resume", "Continue the waiting task.")
-                };
-            choices.push(
-                RuntimeInteractionChoice::new(
-                    id,
-                    label,
-                    id,
-                    Some(RuntimeInteractionChoiceStyle::Primary),
-                )
-                .with_description(description),
-            );
-        }
         choices.push(
             RuntimeInteractionChoice::new(
                 STOP_BLOCKED_TASK,
@@ -342,23 +329,17 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .task_card_is_dismissed(&task.task_id, task.blocked_revision)?;
-        let mut interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+        let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
-            if question {
-                "Question"
-            } else {
-                "Agent needs your action"
-            },
+            "Question",
             &message,
             choices,
         )
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone())
-        .with_room_dismissed(dismissed);
-        if let Some(reply) = reply_choice {
-            interaction = interaction.with_question_reply(reply);
-        }
+        .with_room_dismissed(dismissed)
+        .with_question_reply(reply_choice);
 
         let rx = self
             .create_kernel_operation_interaction(
@@ -377,18 +358,7 @@ impl KernelRuntimeState {
                 if answer.status == "timed_out" {
                     return;
                 }
-                if question {
-                    state.schedule_agent_lifecycle_sweep();
-                    return;
-                }
-                use super::agent_task_owner_resolution::OwnerTaskAction;
-                let action = match answer.choice_id.as_deref() {
-                    Some("resume") => OwnerTaskAction::Resume,
-                    Some("start_fresh_agent") => OwnerTaskAction::StartFreshAgent,
-                    Some(STOP_BLOCKED_TASK) => OwnerTaskAction::Cancel,
-                    _ => return,
-                };
-                state.resolve_agent_task_owner_action(&task, action).await;
+                state.schedule_agent_lifecycle_sweep();
             }
         });
         notification?;
