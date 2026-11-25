@@ -239,6 +239,27 @@ async fn async_main(
             "event_ready": false,
         }),
     );
+    // The new program of a hot reload keeps the PID and writes the file again.
+    let _kernel_pid_file = match boot_listener
+        .local_addr()
+        .and_then(|address| chariox_kernel::kernel_pid_file::KernelPidFile::write(address.port()))
+    {
+        Ok(file) => Some(file),
+        Err(error) => {
+            // A pid file naming another kernel is worse than none.
+            if let Ok(address) = boot_listener.local_addr() {
+                let _ = std::fs::remove_file(
+                    chariox_kernel::kernel_pid_file::KernelPidFile::path_for(address.port()),
+                );
+            }
+            chariox_kernel::logging::error_with_fields(
+                "daemon.startup",
+                "could not write the kernel pid file",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            None
+        }
+    };
     let bootstrap_started = Instant::now();
     let app = DaemonApp::bootstrap(config)?;
     chariox_kernel::logging::info_with_fields(
@@ -261,6 +282,7 @@ async fn async_main(
             "the new kernel program could not start; exiting for a restart",
             serde_json::json!({ "error": error }),
         );
+        drop(_kernel_pid_file);
         std::process::exit(1);
     }
     result
