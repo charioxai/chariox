@@ -42,6 +42,9 @@ pub(crate) struct WatcherRecord {
     pub kernel_id: String,
     pub session_id: String,
     pub creator_agent_id: Option<String>,
+    /// The owner took responsibility for turning on each revision of this source.
+    #[serde(default)]
+    pub owner_activation: bool,
     pub manifest: WatcherManifest,
     pub script: WatcherScript,
     pub state: WatcherState,
@@ -70,14 +73,26 @@ pub(crate) struct WatcherRecord {
 pub(crate) struct PassedDryRun {
     pub revision: u64,
     pub result: WatcherDryRun,
+    /// Some dry run of this revision reported a reading: a later preview that lost it does not
+    /// lift the requirement, since the source may have become unreadable since.
+    #[serde(default)]
+    pub reading_demonstrated: bool,
 }
 
 impl WatcherRecord {
-    fn passed_dry_run(&self) -> Option<&WatcherDryRun> {
+    pub(crate) fn passed_dry_run(&self) -> Option<&WatcherDryRun> {
         self.dry_run
             .as_ref()
             .filter(|dry_run| dry_run.revision == self.revision)
             .map(|dry_run| &dry_run.result)
+    }
+
+    /// A run of this revision must report a reading: one of its dry runs did.
+    pub(crate) fn expects_reading(&self) -> bool {
+        self.dry_run
+            .as_ref()
+            .filter(|dry_run| dry_run.revision == self.revision)
+            .is_some_and(|dry_run| dry_run.reading_demonstrated || dry_run.result.reading.is_some())
     }
 
     pub(crate) fn summary(&self) -> WatcherSummary {
@@ -151,6 +166,7 @@ pub(crate) enum WatcherOperation {
         owner: String,
         watcher_id: String,
         state: WatcherState,
+        by_owner: bool,
         at: u64,
     },
     /// The name the person gave it at Turn on: it changes what it is called, not what it does.
@@ -257,7 +273,9 @@ pub(super) fn apply(
             record.script = script;
             record.revision += 1;
             record.state = WatcherState::Draft;
-            record.health = WatcherHealth::Ok;
+            if !record.owner_activation {
+                record.health = WatcherHealth::Ok;
+            }
             record.held.clear();
             record.held_release_ms = None;
             register(tx, &record, true)?;
@@ -275,29 +293,44 @@ pub(super) fn apply(
                     "the watcher changed during its dry run; run it again",
                 ));
             }
-            record.dry_run = Some(PassedDryRun { revision, result });
+            let reading_demonstrated = result.reading.is_some() || record.expects_reading();
+            record.dry_run = Some(PassedDryRun {
+                revision,
+                result,
+                reading_demonstrated,
+            });
             written(record, None)
         }
         WatcherOperation::SetState {
             owner,
             watcher_id,
             state,
+            by_owner,
             at,
         } => {
             let mut record = load_owned(tx, &owner, &watcher_id)?;
             match (record.state, state) {
-                (WatcherState::Draft, WatcherState::Active)
-                    if record.passed_dry_run().is_none() =>
-                {
-                    return Err(error(
-                        "run a dry run of this version of the watcher before turning it on",
-                    ))
+                (WatcherState::Draft, WatcherState::Active) => {
+                    if record.owner_activation && !by_owner {
+                        return Err(error(
+                            "only the owner can turn this watcher on after reviewing its dry run",
+                        ));
+                    }
+                    if record.passed_dry_run().is_none() {
+                        return Err(error(
+                            "run a dry run of this version of the watcher before turning it on",
+                        ));
+                    }
+                    record.owner_activation = by_owner;
+                    record.health = WatcherHealth::Ok;
+                    record.last_check_ms = None;
+                    record.last_ok_ms = None;
+                    record.active_since_ms = Some(at);
                 }
                 (WatcherState::Draft, WatcherState::Paused) => {
                     return Err(error("the watcher is not on yet; activate it first"))
                 }
-                (WatcherState::Paused, WatcherState::Active)
-                | (WatcherState::Draft, WatcherState::Active) => {
+                (WatcherState::Paused, WatcherState::Active) => {
                     record.health = WatcherHealth::Ok;
                     record.active_since_ms = Some(at);
                 }

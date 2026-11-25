@@ -139,7 +139,12 @@ echo "{\"cursor\":{\"uid\":$((uid+1))}}"
         Duration::from_secs(30),
     )
     .await;
-    assert_eq!(end, RunEnd::Finished);
+    assert_eq!(
+        end,
+        RunEnd::Finished {
+            output: String::new()
+        }
+    );
     assert_eq!(
         reports,
         vec![
