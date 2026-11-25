@@ -4,7 +4,6 @@ use super::*;
 use crate::provider_account_copy::{
     failure, AccountCopyInstall, ProviderAccountCopyBinding, ProviderAccountCopyCredential,
     ProviderAccountCopyReceipt, PROVIDER_ACCOUNT_COPY_CAPABILITY,
-    PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY,
 };
 
 fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
@@ -141,12 +140,6 @@ impl KernelRuntimeState {
             .capabilities
             .iter()
             .any(|c| c == PROVIDER_ACCOUNT_COPY_CAPABILITY)
-            // A target that cannot install an OpenCode login must not be sent one.
-            || (binding.provider == "opencode"
-                && !peer
-                    .capabilities
-                    .iter()
-                    .any(|c| c == PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY))
         {
             return Err(failure("provider_account_copy_unsupported"));
         }
@@ -260,10 +253,6 @@ impl KernelRuntimeState {
         }
         let owner = self.provider_account_authority_owner_user_id(&profile.user_id);
         let profiles = self.provider_account_profile_registry().clone();
-        // An OpenCode login lives only in its own native store: the receiving Vault is neither
-        // needed to install it nor opened by it, so a locked Vault does not refuse the copy and
-        // an "ask every time" policy has nothing to lock afterwards.
-        let uses_vault = binding.provider != "opencode";
         let unlock = vault_unlock_request_lock(&expand_vault_path(
             &config.user_config.credential_vault.path,
         ))
@@ -271,14 +260,11 @@ impl KernelRuntimeState {
         .await;
         let result = tokio::task::spawn_blocking(move || {
             let _unlock = unlock;
-            if uses_vault {
-                unlocked(&config)?;
-            }
+            unlocked(&config)?;
             let receipt = profiles.install_account_copy(&config, &owner, &binding, &credential)?;
             // "Ask every time": the owner's unlock covered this one copy.
             let vault = &config.user_config.credential_vault;
-            if uses_vault
-                && vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
+            if vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
                 && vault.unlock_policy == crate::config::CredentialVaultUnlockPolicy::Always
             {
                 crate::secret::lock_chariox_encrypted_vault(expand_vault_path(&vault.path))?;

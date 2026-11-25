@@ -35,16 +35,14 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
     ) -> Result<ProviderAccountCopyCredential, DaemonError> {
         let source = self.credential_source_profile_id(owner, provider, profile_id)?;
-        if let Some(relative_path) =
-            crate::provider_account_copy::native_copy_credential_path(provider)
-        {
+        if provider == "codex" {
             let materialization = self
                 .export_managed_context_materialization(owner, provider, &source)
                 .map_err(|_| failure("provider_account_copy_profile"))?;
             let file = materialization
                 .files
                 .iter()
-                .find(|file| file.relative_path == relative_path)
+                .find(|file| file.relative_path == "auth.json")
                 .ok_or_else(|| failure("provider_account_copy_profile"))?;
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&file.contents_base64)
@@ -134,8 +132,6 @@ impl ProviderAccountProfileRegistry {
         drop(guard);
         let native_auth = if binding.provider == "codex" {
             Some(native::verify_codex_copy(&root, credential)?)
-        } else if binding.provider == "opencode" {
-            Some(native::check_opencode_copy(credential)?)
         } else {
             create_private_roots(&locator).map_err(map_storage)?;
             let mut environment = locator.environment();
@@ -196,36 +192,22 @@ impl ProviderAccountProfileRegistry {
         // Never publish an authenticated account until its own credential exists.
         // An orphan credential after a crash is overwritten by the same retry; it
         // has no registered profile and therefore cannot be selected for launch.
-        // OpenCode keeps its login only in its own native store, as it does when it signs in.
-        if binding.provider != "opencode" {
-            crate::provider::store_provider_account_copy_credential(
-                config,
-                owner,
-                &binding.provider,
-                &profile_id,
-                credential.value(),
-            )
-            .map_err(map_storage)?;
-        }
+        crate::provider::store_provider_account_copy_credential(
+            config,
+            owner,
+            &binding.provider,
+            &profile_id,
+            credential.value(),
+        )
+        .map_err(map_storage)?;
         if let Some(auth) = native_auth {
             create_private_roots(&locator).map_err(map_storage)?;
-            match &locator {
-                ProviderAccountLocator::Codex { codex_home } => {
-                    enforce_codex_file_credentials(codex_home).map_err(map_storage)?;
-                    atomic_write_private(&codex_home.join("auth.json"), auth.as_bytes())
-                        .map_err(map_storage)?;
-                }
-                ProviderAccountLocator::Opencode { .. } => {
-                    let path = materialization_destination(&locator, "data/opencode/auth.json")
-                        .map_err(map_storage)?;
-                    let parent = path
-                        .parent()
-                        .ok_or_else(|| failure("provider_account_copy_install_failed"))?;
-                    validate_materialization_root(parent).map_err(map_storage)?;
-                    atomic_write_private(&path, auth.as_bytes()).map_err(map_storage)?;
-                }
-                ProviderAccountLocator::Claude { .. } => unreachable!(),
-            }
+            let ProviderAccountLocator::Codex { codex_home } = &locator else {
+                unreachable!()
+            };
+            enforce_codex_file_credentials(codex_home).map_err(map_storage)?;
+            atomic_write_private(&codex_home.join("auth.json"), auth.as_bytes())
+                .map_err(map_storage)?;
         }
         let mut next = guard.clone();
         let mut public = existing
@@ -240,18 +222,12 @@ impl ProviderAccountProfileRegistry {
                     false,
                 )
             });
+        public.auth_state = ProviderAccountAuthState::Authenticated;
         public.auth_error = None;
         public.identity_summary = None;
         public.plan = None;
         public.usage = ProviderAccountUsageSnapshot::unavailable(&profile_id, &binding.provider);
-        if binding.provider == "opencode" {
-            // Nothing here can check an OpenCode login; its state is read when it is first used.
-            public.auth_state = ProviderAccountAuthState::Unknown;
-            public.last_validated_at_ms = None;
-        } else {
-            public.auth_state = ProviderAccountAuthState::Authenticated;
-            public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
-        }
+        public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
         // A remote launch from the source kernel with this account runs on this copy.
         let transferred_from = Some(TransferredAccountOrigin {
             source_kernel_id: binding.source_kernel_id.clone(),
@@ -397,7 +373,7 @@ fn installed_receipt(
     if !profile_exists {
         return Err(failure("provider_account_copy_conflict"));
     }
-    if crate::provider_account_copy::native_copy_credential_path(&binding.provider).is_some() {
+    if binding.provider == "codex" {
         // Installed receipts are immutable. The official provider or a fresh
         // device login may already have replaced the transferred credential.
         return Ok(ProviderAccountCopyReceipt::installed(binding));

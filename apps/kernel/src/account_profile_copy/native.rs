@@ -1,5 +1,4 @@
-//! Native Codex credentials are checked in an isolated staging profile before publication. A native
-//! OpenCode login has no offline check: it is read as the JSON object OpenCode wrote.
+//! Native Codex credentials are checked in an isolated staging profile before publication.
 use super::*;
 
 struct CopyStage(PathBuf);
@@ -8,20 +7,6 @@ impl Drop for CopyStage {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-
-/// The login file as OpenCode wrote it: a JSON object, small enough to be one login.
-pub(super) fn check_opencode_copy(
-    credential: &ProviderAccountCopyCredential,
-) -> Result<zeroize::Zeroizing<String>, DaemonError> {
-    let value = credential.value();
-    let object = !value.is_empty()
-        && value.len() <= 16 * 1024
-        && serde_json::from_str::<serde_json::Value>(value).is_ok_and(|json| json.is_object());
-    if !object {
-        return Err(failure("provider_account_copy_rejected"));
-    }
-    Ok(zeroize::Zeroizing::new(value.to_string()))
 }
 
 pub(super) fn verify_codex_copy(

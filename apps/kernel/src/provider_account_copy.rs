@@ -7,20 +7,6 @@ pub const PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY: &str = "provider_account_copy_p
 
 pub const PROVIDER_ACCOUNT_COPY_CAPABILITY: &str = "provider_account_copy_v1";
 
-/// Where a native provider's login file lives, relative to the account's materialization root.
-/// The account copy carries this file as the credential.
-pub(crate) fn native_copy_credential_path(provider: &str) -> Option<&'static str> {
-    match provider {
-        "codex" => Some("auth.json"),
-        "opencode" => Some("data/opencode/auth.json"),
-        _ => None,
-    }
-}
-
-/// A kernel that advertises this installs a native OpenCode login copied from another kernel.
-/// Older kernels refuse the binding, so the sender asks for it before it exports a credential.
-pub const PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY: &str = "provider_account_opencode_copy_v1";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderAccountCopyBinding {
@@ -37,6 +23,7 @@ pub struct ProviderAccountCopyBinding {
 impl ProviderAccountCopyBinding {
     pub(crate) fn validate(&self) -> Result<(), crate::error::DaemonError> {
         if !["claude", "codex", "opencode"].contains(&self.provider.as_str())
+            || (self.provider == "opencode" && self.source_kernel_id != self.target_kernel_id)
             || ![
                 &self.operation_id,
                 &self.source_profile_id,

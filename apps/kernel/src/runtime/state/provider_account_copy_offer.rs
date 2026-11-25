@@ -3,7 +3,7 @@ use super::*;
 use crate::local::CopyProviderAccountFromKernelRequest;
 use crate::provider_account_copy::{
     failure, ProviderAccountCopyBinding, ProviderAccountCopyOffer, ProviderAccountCopyReceipt,
-    PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY, PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY,
+    PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
@@ -160,15 +160,9 @@ impl KernelRuntimeState {
                     else {
                         continue;
                     };
-                    if !["claude", "codex", "opencode"].contains(&profile.provider.as_str())
+                    if !["claude", "codex"].contains(&profile.provider.as_str())
                         || profile.state != "authenticated"
                         || !profile.copyable
-                        // A kernel that cannot install an OpenCode login is not offered one.
-                        || (profile.provider == "opencode"
-                            && !kernel
-                                .capabilities
-                                .iter()
-                                .any(|c| c == PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY))
                     {
                         continue;
                     }
