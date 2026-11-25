@@ -783,3 +783,47 @@ fn the_first_use_of_an_approved_request_decides_every_later_try() {
         "{results:?}"
     );
 }
+
+#[tokio::test]
+async fn an_approved_try_that_ends_before_the_post_withdraws_its_receipt() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    assert_eq!(receipts(&state, &room).len(), 1);
+    // The reauthorization recheck refused the try: the guard drops without posting.
+    drop(state.machine_approval_guard(&command, &request).unwrap());
+    assert!(receipts(&state, &room).is_empty());
+}
+
+#[tokio::test]
+async fn an_approved_try_cancelled_while_the_service_answers_settles_its_receipt_as_sent() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    let mut guard = state.machine_approval_guard(&command, &request).unwrap();
+    guard.posting();
+    // The caller is cancelled with the response delayed: the future and its guard drop.
+    drop(guard);
+    let held = receipts(&state, &room);
+    assert_eq!(held.len(), 1);
+    assert_eq!(
+        held[0].state,
+        crate::session::MachineApprovalReceiptState::Sent
+    );
+}
+
+#[tokio::test]
+async fn a_restart_withdraws_the_receipts_of_tries_it_interrupted() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    assert_eq!(receipts(&state, &room).len(), 1);
+    state.withdraw_interrupted_machine_approvals();
+    assert!(receipts(&state, &room).is_empty());
+}

@@ -137,3 +137,22 @@ fn machine_hard_stop_1015_shapes_and_hash() {
         .is_err());
     }
 }
+
+/// Local 1015 (unreleased with Landing 14): the `runtime_interactions_changed` event carries the machine
+/// approval's receipt in each of its three states.
+#[test]
+fn machine_approval_receipt_event_shape_and_hash() {
+    let receipts = serde_json::json!([
+        {"id": "machine-acquisition-direct-a", "shown_in_agent_id": "agent", "message": "builder in Build Room · Run the build — Acquire small in north at 0.000284 EUR per minute", "state": "approving", "expires_at_ms": null},
+        {"id": "machine-acquisition-direct-b", "shown_in_agent_id": null, "message": "Acquire a machine", "state": "sent", "expires_at_ms": null},
+        {"id": "machine-acquisition-direct-c", "shown_in_agent_id": "agent", "message": "Acquire small", "state": "expired", "expires_at_ms": 300000}
+    ]);
+    let shape = serde_json::json!({"event": "runtime_interactions_changed", "session_id": "room", "active_interactions": [], "machine_approval_receipts": receipts});
+    let event: crate::transport::kernel_protocol::KernelEvent =
+        serde_json::from_value(shape.clone()).unwrap();
+    assert_eq!(serde_json::to_value(event).unwrap(), shape);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "f941a4989240727c5de851ba45dfa9557d45472a54231a019cec6dd9bd77edfb"
+    );
+}

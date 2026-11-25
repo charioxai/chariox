@@ -110,6 +110,7 @@ pub(crate) async fn execute(
         };
     };
     let mut acquisition_hold = None;
+    let mut approval_guard = None;
     if matches!(
         request,
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
@@ -163,6 +164,7 @@ pub(crate) async fn execute(
         let approval = state
             .approve_machine_acquisition(command, request, machine_allocation.as_ref())
             .await?;
+        approval_guard = state.machine_approval_guard(command, request);
         // The approved request goes again as the approved one, and the service refuses it unless
         // it holds that request.
         if let crate::runtime::state::Approval::Replay {
@@ -204,6 +206,9 @@ pub(crate) async fn execute(
             acquisition_hold = Some(hold);
         }
         still_allowed?;
+    }
+    if let Some(guard) = approval_guard.as_mut() {
+        guard.posting();
     }
     let send = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),

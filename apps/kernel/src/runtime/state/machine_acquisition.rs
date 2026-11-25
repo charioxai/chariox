@@ -505,6 +505,41 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Holds the approved request's "Approving" receipt until the try ends. Dropped before the
+    /// post (a failed recheck, a cancelled caller) it withdraws the receipt; after the post began
+    /// it settles it as sent, however the await ends.
+    pub(crate) fn machine_approval_guard(
+        &self,
+        command: &KernelCommand,
+        request: &ControlPlaneRequest,
+    ) -> Option<MachineApprovalGuard> {
+        let subject = self.acquisition_subject(command, request).ok().flatten()?;
+        Some(MachineApprovalGuard {
+            state: self.clone(),
+            room: subject.room,
+            id: subject.id,
+            posting: false,
+        })
+    }
+
+    /// A restart ended every try that was waiting on the service: no "Approving" line outlives it.
+    pub(crate) fn withdraw_interrupted_machine_approvals(&self) {
+        for session in self.owned.session_store.list_all_sessions() {
+            if session
+                .machine_approval_receipts()
+                .iter()
+                .any(|receipt| receipt.state == MachineApprovalReceiptState::Approving)
+            {
+                let room = session.id().to_string();
+                if let Err(error) = self.change_machine_receipts(&room, |session| {
+                    session.withdraw_machine_approval(None)
+                }) {
+                    tracing::warn!(%error, "could not withdraw an interrupted machine approval");
+                }
+            }
+        }
+    }
+
     fn save_machine_receipt(&self, room: &str, receipt: MachineApprovalReceipt) {
         if let Err(error) = self.change_machine_receipts(room, |session| {
             session.upsert_machine_approval_receipt(receipt);
@@ -534,6 +569,35 @@ impl KernelRuntimeState {
                 .notify_terminal_projection_change(room);
         }
         Ok(())
+    }
+}
+
+pub(crate) struct MachineApprovalGuard {
+    state: KernelRuntimeState,
+    room: String,
+    id: String,
+    posting: bool,
+}
+
+impl MachineApprovalGuard {
+    /// The request is about to go to the service.
+    pub(crate) fn posting(&mut self) {
+        self.posting = true;
+    }
+}
+
+impl Drop for MachineApprovalGuard {
+    fn drop(&mut self) {
+        let (id, posting) = (self.id.clone(), self.posting);
+        if let Err(error) = self.state.change_machine_receipts(&self.room, |session| {
+            if posting {
+                session.mark_machine_approval_sent(&id)
+            } else {
+                session.withdraw_machine_approval(Some(&id))
+            }
+        }) {
+            tracing::warn!(%error, "could not settle the machine approval receipt");
+        }
     }
 }
 

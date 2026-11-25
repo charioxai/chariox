@@ -913,6 +913,16 @@ impl RuntimeSession {
         true
     }
 
+    /// The approved try ended before it reached the service: its "Approving" line goes away.
+    pub(crate) fn withdraw_machine_approval(&mut self, id: Option<&str>) -> bool {
+        let before = self.machine_approval_receipts.len();
+        self.machine_approval_receipts.retain(|receipt| {
+            receipt.state != MachineApprovalReceiptState::Approving
+                || id.is_some_and(|id| receipt.id != id)
+        });
+        self.machine_approval_receipts.len() != before
+    }
+
     pub fn metaagent_tasks(&self) -> &[MetaagentTask] {
         &self.metaagent_tasks
     }
