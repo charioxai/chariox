@@ -135,6 +135,14 @@ try {
     await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, "the arming turn completes", 240000)
     timerAgent = r
   })
+  // The same, with the 30 minutes of a backstop: it tells a backstop's own delivery from any pre-reload timer's.
+  let longTimer = null
+  await attempt("5b", async () => {
+    const r = await room("c5b")
+    await prompt(r, r.agent, 'Call the chariox events_timer tool once with delay_ms 1800000 and label "NW554-LONG". Do NOT call events_yield and do not wait. End your turn at once with the single word ARMED. If a wake for NW554-LONG arrives later, reply with the single word LONG-WOKE.')
+    await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, "the arming turn completes", 240000)
+    longTimer = { r, wake: { next_due_ms: Date.now() + 1800000 } }
+  })
   // An agent that is idle with nothing armed, before the reload: it must start a turn after it.
   let idleAgent = null
   await attempt("6", async () => {
@@ -191,6 +199,7 @@ try {
   if (!skipBackstopWait) {
     await woken(afterReload && afterReload.wake ? { ...afterReload } : null, "2-backstop-armed-after-the-reload-wakes-the-agent")
     await woken(backstop, "2-backstop-armed-before-the-reload-wakes-the-agent")
+    await woken(longTimer, "5b-30-minute-timer-armed-before-the-reload-wakes-the-agent")
     if (results.some(c => c.id.startsWith("2-backstop-armed-after") && c.status === "FAIL")) exitCode = 1
   }
   cell("3-no-turn-end-refused", results.every(c => c.status !== "FAIL") ? true : null, { note: "every turn above ended and completed" })
