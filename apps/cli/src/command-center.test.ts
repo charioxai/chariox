@@ -4,6 +4,7 @@ import test from "node:test"
 import { buildCommandCenterItems as buildCommandCenterItemsFromCatalog } from "./command-center.js"
 import type { CommandCenterContext } from "./command-center-context.js"
 import { loadCommandCenterTestCatalog } from "./command-center-test-catalog.js"
+import { kernelShapedCatalog } from "./kernel-shaped-catalog.fixture.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"
@@ -494,7 +495,7 @@ test("buildCommandCenterItems filters model options", () => {
 
 test("buildCommandCenterItems exposes Claude provider and models", () => {
   const providerItems = buildCommandCenterItems("/provider cla", {
-    providerCatalog: fallbackProviderCatalog(),
+    providerCatalog: kernelShapedCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
@@ -505,21 +506,21 @@ test("buildCommandCenterItems exposes Claude provider and models", () => {
   assert.equal(providerItems.some((item) => item.kind === "provider" && item.value === "claude-p"), true)
 
   const modelItems = buildCommandCenterItems("/model son", {
-    providerCatalog: fallbackProviderCatalog(),
+    providerCatalog: kernelShapedCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "claude-headless",
     focusedProvider: "claude-headless",
-    currentModel: "claude-headless/claude-sonnet-4-6",
+    currentModel: "claude-headless/claude-sonnet-5-5",
     currentVariant: "high",
   })
-  assert.deepEqual(modelItems.map((item) => item.value), ["claude-headless/claude-sonnet-4-6"])
+  assert.deepEqual(modelItems.map((item) => item.value), ["claude-headless/claude-sonnet-5-5"])
 
   const rootItems = buildCommandCenterItems("/", {
-    providerCatalog: fallbackProviderCatalog(),
+    providerCatalog: kernelShapedCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "claude-headless",
     focusedProvider: "claude-headless",
-    currentModel: "claude-headless/claude-sonnet-4-6",
+    currentModel: "claude-headless/claude-sonnet-5-5",
     currentVariant: "high",
   })
   assert.equal(rootItems.some((item) => item.kind === "group" && item.label === "/claude"), false)

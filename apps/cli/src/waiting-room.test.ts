@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { roomListTimestampLabel } from "@chariox/kernel-client/room-list-activity"
 
+import { kernelShapedCatalog } from "./kernel-shaped-catalog.fixture.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
   MAX_VISIBLE_WAITING_ROOM_SESSIONS,
@@ -71,7 +72,7 @@ test("waiting room cycles model and effort from provider catalog", () => {
 })
 
 test("waiting room cycles Claude modes as provider backends", () => {
-  const catalog = fallbackProviderCatalog()
+  const catalog = kernelShapedCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
   state = moveWaitingRoomFocus(state, [], 3)
@@ -80,11 +81,11 @@ test("waiting room cycles Claude modes as provider backends", () => {
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude headless")
-  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet 4.6")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet 5.5")
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude -p")
-  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet 4.6")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet 5.5")
 
   state = moveWaitingRoomFocus(state, [], 3)
   state = cycleWaitingRoomValue(state, [], catalog, 1)
