@@ -155,10 +155,7 @@ impl KernelRuntimeState {
         }
         // An approved request that was sent keeps its approval whatever the quote says now: the
         // owner is not asked again for a machine that may already be charged under it.
-        if let Some(first) = self
-            .owned
-            .first_acquisition_send(&identity, &owner)?
-        {
+        if let Some(first) = self.owned.first_acquisition_send(&identity, &owner)? {
             return Ok(Approval::Replay {
                 capability_revision: first,
             });
@@ -367,7 +364,11 @@ impl KernelRuntimeState {
                 ),
             ));
         }
-        self.owned.durable_state_store.append_event("compute.acquisition_approved", Some(id.clone()), serde_json::json!({"owner":owner,"approved_at_ms":crate::session::unix_epoch_ms()}))?;
+        self.owned.durable_state_store.append_event(
+            "compute.acquisition_approved",
+            Some(id.clone()),
+            serde_json::json!({"owner":owner,"approved_at_ms":crate::session::unix_epoch_ms()}),
+        )?;
         // The card is gone; the receipt keeps the approved request visible until the service answers.
         self.save_machine_receipt(
             &room,
