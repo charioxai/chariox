@@ -867,7 +867,7 @@ async fn a_refused_retry_of_a_lost_answer_keeps_the_machine_counted() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("invalid_request"), "{refused}");
+    assert!(refused.contains("not allowed now"), "{refused}");
     let acquired = state
         .owned
         .durable_state_store
