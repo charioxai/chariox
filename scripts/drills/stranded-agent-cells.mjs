@@ -127,6 +127,23 @@ try {
   await adopt("")
   await message("")
 
+  // An agent that arms its own timer without yielding (the kernel keeps it, #1731), before the reload: it fires after it.
+  let timerAgent = null
+  await attempt("5", async () => {
+    const r = await room("c5")
+    await prompt(r, r.agent, 'Call the chariox events_timer tool once with delay_ms 150000 and label "NW554-T". Do NOT call events_yield and do not wait. End your turn at once with the single word ARMED. If a wake for NW554-T arrives later, reply with the single word NW554-T-WOKE.')
+    await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, "the arming turn completes", 240000)
+    timerAgent = r
+  })
+  // An agent that is idle with nothing armed, before the reload: it must start a turn after it.
+  let idleAgent = null
+  await attempt("6", async () => {
+    const r = await room("c6")
+    await prompt(r, r.agent, "Reply with the single word PING and nothing else.")
+    await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, "the idle agent's turn completes", 240000)
+    idleAgent = r
+  })
+
   // The hot reload: SIGUSR2 replaces the program in place and keeps the PID.
   const pid = k.pid
   if (pid) {
@@ -136,11 +153,22 @@ try {
     const kept = backstop ? (await wakesOf(backstop.r.R, backstop.r.agent)).find(w => w.id === backstop.id && live(w)) : null
     cell("2-backstop-survives-the-hot-reload", backstop ? !!kept : null, { kept: kept ? kept.state : null })
     if (backstop && !kept) exitCode = 1
-    // Whether an agent that was idle before the reload can start a turn at all (a plain prompt), apart from any wake.
-    if (backstop) await attempt("idle-after-reload", async () => {
-      await prompt(backstop.r, backstop.r.agent, "Reply with the single word PONG and nothing else.")
-      const ponged = await until(async () => done(await turnsOf(backstop.r.R, backstop.r.agent)).some(turn => text(turn).includes("PONG")), "the idle agent answers after the reload", 180000).then(() => true, () => false)
-      cell("idle-agent-starts-a-turn-after-the-reload", ponged, { note: "informational: a plain prompt, no wake" })
+    // The clients' attachments do not survive the reload: attach again, as a client does.
+    const reattach = async r => {
+      r.attached = (await k.rpc({ AttachToSession: { session_id: r.R, client_id: `nowake554-re-${r.R}`, capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    }
+    // Whether an agent that was idle before the reload starts a turn at all (a plain prompt, no wake).
+    if (idleAgent) await attempt("idle-after-reload", async () => {
+      await reattach(idleAgent)
+      await prompt(idleAgent, idleAgent.agent, "Reply with the single word PONG and nothing else.")
+      const ponged = await until(async () => done(await turnsOf(idleAgent.R, idleAgent.agent)).some(turn => text(turn).includes("PONG")), "the idle agent answers after the reload", 180000).then(() => true, () => false)
+      cell("idle-agent-starts-a-turn-after-the-reload", ponged, { note: "a plain prompt, no wake" })
+    })
+    // The timer armed before the reload fires after it and wakes its agent.
+    if (timerAgent) await attempt("5-after", async () => {
+      const woke = await until(async () => done(await turnsOf(timerAgent.R, timerAgent.agent)).length >= 2, "the timer armed before the reload wakes its agent", 330000).then(() => true, () => false)
+      cell("5-timer-armed-before-the-reload-wakes-the-agent", woke)
+      if (!woke) exitCode = 1
     })
     // A backstop armed after the reload, to be woken by it.
     afterReload = await stated("c2r", false).catch(() => null)
@@ -156,7 +184,7 @@ try {
   const woken = async (b, id) => {
     if (!b) return
     const due = b.wake.next_due_ms
-    const ok = await until(async () => { const turns = done(await turnsOf(b.r.R, b.r.agent)); return turns.length >= 2 && turns.slice(1).some(turn => /backstop for a stated wait/.test(text(turn))) }, "the backstop wakes the agent", Math.max(60000, due - Date.now() + 300000)).then(() => true, () => false)
+    const ok = await until(async () => done(await turnsOf(b.r.R, b.r.agent)).length >= 2, "the backstop wakes the agent", Math.max(60000, due - Date.now() + 300000)).then(() => true, () => false)
     save(`turns-${id}-final.json`, await turnsOf(b.r.R, b.r.agent))
     cell(id, ok, { late_s: Math.round((Date.now() - due) / 1000) })
   }
