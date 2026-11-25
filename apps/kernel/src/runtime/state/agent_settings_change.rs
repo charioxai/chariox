@@ -387,6 +387,7 @@ impl KernelRuntimeOwnedState {
 pub(crate) struct SettingsContext {
     pub(crate) origin: SettingsOrigin,
     pub(crate) reason: Option<String>,
+    pub(crate) at_turn_end: bool,
 }
 
 impl SettingsContext {
@@ -394,6 +395,7 @@ impl SettingsContext {
         Self {
             origin: SettingsOrigin::Person,
             reason: None,
+            at_turn_end: false,
         }
     }
 
@@ -403,6 +405,7 @@ impl SettingsContext {
             reason: reason
                 .map(|reason| reason.trim().to_string())
                 .filter(|reason| !reason.is_empty()),
+            at_turn_end: false,
         }
     }
 
@@ -412,6 +415,7 @@ impl SettingsContext {
             reason: reason
                 .map(|reason| reason.trim().to_string())
                 .filter(|reason| !reason.is_empty()),
+            at_turn_end: false,
         }
     }
 }

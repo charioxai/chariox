@@ -503,6 +503,7 @@ pub enum LocalDaemonResponse {
     SessionAliasSuggested { workspace_id: String, alias: String, },
     RoomSetupUpdated { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
+    AgentSettings { agent: AgentSettings, },
     AgentProfileUpdated {
         agent: AgentInstance,
         session: RuntimeSession,

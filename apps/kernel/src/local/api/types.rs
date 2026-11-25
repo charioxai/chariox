@@ -664,4 +664,6 @@ pub use workspace::*;
 /// Local 1015 (provisional; the landing renumbers): the owner's agents list the account's linked kernels and unlink one
 /// (`CloudAccountKernels` `list` / `unlink` → `AccountKernelsListed` / `AccountKernelUnlinked`); a kernel's rows carry
 /// `target_id`, `kernel_id`, `name`, `status` and `last_seen_at`.
+/// 1015 (provisional, relay peer 452): explicit turn-end profile updates and the current/pending
+/// settings read.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

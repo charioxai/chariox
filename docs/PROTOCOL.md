@@ -990,6 +990,18 @@ refusal and no card. The change applies mid-turn as above and stays; `agent.sett
 asked (the origin of the call) and the pane line names them. The result of the command reads "applied, continuing" once the process takes the
 change after the command's own tool call ends.
 
+`agent settings [<agent>]` shows the active settings and any pending profile. Add `--at-turn-end`
+to a provider profile change to keep a local agent's active turn on its current profile. The
+command takes the same selections as the ordinary profile update and sends
+`UpdateAgentProfileAtTurnEnd`. An idle agent returns `now`. A busy agent returns `at_turn_end`
+with `agent.pending_profile` containing the validated provider, account profile, model and effort.
+The kernel saves that profile and applies it at settlement, before the next turn starts. If the
+kernel restarts during the turn, the pending profile remains until recovery settles the turn.
+A new request replaces the pending profile, and an ordinary profile update supersedes it. The
+headless CLI accepts `chariox agent settings [set] <agent> [--session ROOM]`. It uses
+`GetAgentSettings {session_id?, agent}` to read settings by ID, reference or alias, including
+for a sub-agent. An ambiguous name requires a Room or agent ID.
+
 When a turn ends with the usage-limit outcome, the kernel records `AgentInstance.usage_limit_stop`
 `{prompt_id, provider, account_profile, account_label, stopped_at_ms, resumes_at_ms?, refused?,
 state}` with `state` one of `asking`, `armed {at_ms}`, `resuming {since_ms, sent}` or `declined`. The reset

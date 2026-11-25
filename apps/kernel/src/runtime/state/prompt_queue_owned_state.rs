@@ -340,6 +340,7 @@ impl KernelRuntimeOwnedState {
             self.unhide_agent(agent_id)?;
         }
         activity_mutation.record();
+        self.apply_agent_profile_after_turn(&session, agent_id)?;
         if sweep_stale_interactions {
             self.withdraw_stale_agent_interactions();
         }

@@ -90,7 +90,9 @@ impl KernelRuntimeOwnedState {
         completed: crate::session::PromptQueueItem,
         settled_at_ms: u64,
     ) -> Result<OwnedPromptCompletion, DaemonError> {
-        // The workflow transition has committed, so the agent's prompt work is over unless more is queued.
+        // Only apply the next profile after the workflow and prompt transitions commit.
+        let session = self.session_store.get_session(session_id)?;
+        self.apply_agent_profile_after_turn(&session, agent_id)?;
         self.unhide_agent_without_prompt_work(session_id, agent_id)?;
         self.record_completed_prompt_settlement(
             session_id,

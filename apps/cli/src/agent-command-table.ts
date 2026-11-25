@@ -17,6 +17,14 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: "agent settings", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT"], summary: "read an agent's current settings and pending profile", brief: "Read an agent's settings" },
+  {
+    name: "agent settings set",
+    flags: [KERNEL, SESSION, SOCKET, { name: "--command-id", value: "ID" }, { name: "--provider", value: "PROVIDER" }, { name: "--account-profile", value: "PROFILE" }, { name: "--model", value: "MODEL" }, { name: "--effort", value: "EFFORT" }, { name: "--clear-effort" }, { name: "--reason", value: "TEXT" }, { name: "--at-turn-end" }],
+    args: ["AGENT"],
+    summary: "change an agent's provider profile; --at-turn-end waits for a running turn to finish",
+    brief: "Change an agent's provider profile",
+  },
   { name: "agent deadline", brief: "Change or clear an agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
   { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, { name: "--stdin-file", value: "KERNEL_PATH" }, SOCKET],
     summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait). Its stdin is yours up to 64 KiB (chariox exec -- bash -s < script.sh), or with --stdin-file KERNEL_PATH a file already on that kernel (chariox files put it first), so a long script goes in one call; an argument is at most 4096 bytes; with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },

@@ -60,6 +60,7 @@ impl SessionActor {
                 | LocalDaemonRequest::AliasAgent(_)
                 | LocalDaemonRequest::UpdateAgentConfig(_)
                 | LocalDaemonRequest::UpdateAgentProfile(_)
+                | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(_)
                 | LocalDaemonRequest::UpdateAgentSubstitutes(_)
                 | LocalDaemonRequest::AliasSession(_)
                 | LocalDaemonRequest::SuggestSessionAlias(_)
