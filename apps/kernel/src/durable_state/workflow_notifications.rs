@@ -254,6 +254,13 @@ pub(crate) enum NotificationOperation {
         subscription_id: String,
         paused: bool,
     },
+    ParkAgent {
+        subscription_id: String,
+        occurrence_id: String,
+        title: String,
+        reason: String,
+        now: u64,
+    },
     /// A new subscriber took the subscription over: its settings, counters and trace move to
     /// the subscription that replaces it.
     Carry {
@@ -397,6 +404,7 @@ pub(crate) enum NotificationOutcome {
     /// The occurrence was the one delivery of a subscription that ends after it.
     Spent,
     Hold(subscription_settings::Hold),
+    Parked(bool),
     LineageReserved,
     SteerBound,
     Protected(Option<WorkflowNotificationEnvelope>),
@@ -482,7 +490,16 @@ impl DurableKernelStateStore {
     }
     pub(crate) fn notification_has_pending(&self) -> Result<bool, DaemonError> {
         let db = self.lock_connection("workflow.notifications.backlog")?;
-        db.query_row("SELECT EXISTS(SELECT 1 FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable'))",[],|r|r.get(0)).map_err(sql)
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_outbox d
+               JOIN app_automations a ON a.owner_id=d.owner_id AND a.installation_id=d.installation_id AND a.automation_id=d.automation_id
+               LEFT JOIN notification_subscription_settings s ON s.subscription_id=d.automation_id
+               WHERE d.source_kind='workflow_completion' AND d.state IN ('accepted','retryable')
+                 AND a.status='active' AND s.parked_reason IS NULL)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)
     }
     pub(crate) fn notification_candidates(
         &self,
@@ -499,7 +516,7 @@ impl DurableKernelStateStore {
         let rows = {
             let db = self.lock_connection("workflow.notifications.pending")?;
             let state = if accepted { "accepted" } else { "retryable" };
-            let mut q = db.prepare("SELECT s.notification_json,d.payload_json FROM app_outbox d JOIN app_automations s ON s.owner_id=d.owner_id AND s.installation_id=d.installation_id AND s.automation_id=d.automation_id WHERE d.source_kind='workflow_completion' AND d.state=?1 AND d.expires_at_ms>?2 AND d.next_attempt_at_ms<=?2 AND s.status='active' ORDER BY d.next_attempt_at_ms,d.sequence LIMIT ?3").map_err(sql)?;
+            let mut q = db.prepare("SELECT s.notification_json,d.payload_json FROM app_outbox d JOIN app_automations s ON s.owner_id=d.owner_id AND s.installation_id=d.installation_id AND s.automation_id=d.automation_id WHERE d.source_kind='workflow_completion' AND d.state=?1 AND d.expires_at_ms>?2 AND d.next_attempt_at_ms<=?2 AND s.status='active' AND NOT EXISTS (SELECT 1 FROM notification_subscription_settings p WHERE p.subscription_id=d.automation_id AND p.parked_reason IS NOT NULL) ORDER BY d.next_attempt_at_ms,d.sequence LIMIT ?3").map_err(sql)?;
             let rows = q
                 .query_map(params![state, now as i64, limit as i64], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -826,6 +843,22 @@ fn apply(
             subscription_settings::set_paused_in(tx, &subscription_id, paused)?;
             Ok(NotificationOutcome::Swept)
         }
+        NotificationOperation::ParkAgent {
+            subscription_id,
+            occurrence_id,
+            title,
+            reason,
+            now,
+        } => Ok(NotificationOutcome::Parked(
+            subscription_settings::park_agent_in(
+                tx,
+                &subscription_id,
+                &occurrence_id,
+                &title,
+                &reason,
+                now,
+            )?,
+        )),
         NotificationOperation::Carry { from, to } => {
             subscription_settings::carry_in(tx, &from, &to)?;
             Ok(NotificationOutcome::Swept)
@@ -1219,8 +1252,9 @@ fn accept(
     {
         return Err(error("notification envelope invalid"));
     }
+    let parked = subscription_settings::parked_reason(tx, &sub.subscription_id)?.is_some();
     let identity = ancestry_identity(sub);
-    if env.ancestry.contains(&identity) {
+    if !parked && env.ancestry.contains(&identity) {
         subscription_settings::loop_stopped_in(tx, sub, env, now)?;
         tx.execute("INSERT INTO workflow_notification_occurrences VALUES (?1,?2,'workflow_notification_loop_dropped') ON CONFLICT(source_id,occurrence_id) DO UPDATE SET diagnostic=excluded.diagnostic",params![env.source_id,env.occurrence_id]).map_err(sql)?;
         tx.execute("UPDATE app_outbox SET state='failed' WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id]).map_err(sql)?;
@@ -1245,12 +1279,16 @@ fn accept(
         false
     };
     // An occurrence the subscriber does not want is settled here, so it wakes no one.
-    let state = match subscription_settings::gate_in(tx, sub, env, now)? {
-        subscription_settings::Gate::Deliver => {
-            subscription_settings::delivered_in(tx, sub, env, now)?;
-            "accepted"
+    let state = if parked {
+        "delivered"
+    } else {
+        match subscription_settings::gate_in(tx, sub, env, now)? {
+            subscription_settings::Gate::Deliver => {
+                subscription_settings::delivered_in(tx, sub, env, now)?;
+                "accepted"
+            }
+            subscription_settings::Gate::Skip => "delivered",
         }
-        subscription_settings::Gate::Skip => "delivered",
     };
     if retained {
         tx.execute("UPDATE app_outbox SET state=?3,next_attempt_at_ms=0 WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id,state]).map_err(sql)?;

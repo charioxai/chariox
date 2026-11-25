@@ -1070,6 +1070,63 @@ async fn listeners_already_duplicated_in_a_store_deliver_each_occurrence_once() 
 
 // MP-08 / MP-10 (VS-S2-5): a subscription lasts as long as its trigger and agent.
 #[tokio::test]
+async fn a_reached_agent_deadline_parks_the_subscription_without_retrying() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("deadline-source");
+    let source = rig.register(&workflow);
+    rig.trigger_on(&source).await;
+    let subscription_id = rig.subscriptions().pop().unwrap().subscription_id;
+    let now = crate::session::unix_epoch_ms();
+    rig.runtime
+        .set_agent_deadline(
+            "local",
+            crate::local::SetAgentDeadlineRequest {
+                session_id: rig.session_id.clone(),
+                agent_id: rig.agent_id.clone(),
+                deadline_ms: Some(now - 1),
+            },
+        )
+        .await
+        .unwrap();
+    rig.runtime.tick_agent_deadlines(now).await.unwrap();
+
+    rig.complete(&workflow, "near-deadline-1", "First occurrence");
+    rig.complete(&workflow, "near-deadline-2", "Second occurrence");
+    let store = &rig.runtime.owned.durable_state_store;
+    rig.runtime.owned.route_workflow_notifications();
+    assert!(store
+        .notification_candidates(true, now + 2_000, 8)
+        .unwrap()
+        .iter()
+        .any(|(sub, _)| sub.subscription_id == subscription_id));
+    rig.runtime.route_agent_notifications().await;
+    rig.runtime.route_agent_notifications().await;
+
+    let rows = rig.runtime.notification_subscription_rows("local").unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row.subscription.subscription_id == subscription_id)
+        .expect("the owner can still see the subscription");
+    assert!(row.paused);
+    assert!(store
+        .notification_candidates(true, now + 2_000, 8)
+        .unwrap()
+        .iter()
+        .all(|(sub, _)| sub.subscription_id != subscription_id));
+    let trace = store.notification_trace(&subscription_id).unwrap();
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|line| line
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("time limit ended")))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn deleting_the_trigger_or_losing_the_agent_ends_the_subscription() {
     for removal in ["delete", "agent_trigger_removed", "agent_archived"] {
         let rig = rig().await;

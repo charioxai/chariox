@@ -97,6 +97,12 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
         return Ok(());
     }
 
+    let progress = crate::runtime::stall_watchdog::progress_watch(
+        "daemon.relay_client",
+        "cloud_relay_token_refresh",
+        Duration::from_secs(2),
+    );
+    progress.stage("request token from Cloud", Duration::from_secs(2));
     let token_subject = cloud_runtime_token_subject(&config, &profile);
     let public_key_thumbprint =
         crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
@@ -130,6 +136,7 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     updated_profile.kernel_removal_pending = false;
     // MP-08 / MP-09 / MP-10 / MP-11: the issuer may shorten the requested TTL.
     updated_profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
+    progress.stage("persist renewed token", Duration::from_secs(2));
     runtime_state
         .finish_cloud_relay_renewal(profile, Some((updated_profile, issued.token)))
         .await?;

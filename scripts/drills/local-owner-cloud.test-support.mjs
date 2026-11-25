@@ -4,7 +4,7 @@
 import http from "node:http"
 import { randomBytes } from "node:crypto"
 
-export async function startOwnerCloud({ token, note, realm, relayPort, onServer, onPresence, listTargets = targets => targets }) {
+export async function startOwnerCloud({ token, note, realm, relayPort, onServer, onPresence, onPresenceReport, listTargets = targets => targets }) {
   const kernels = new Map()
   const machineIdsByCredential = new Map()
   const answer = (res, body, code = 200) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(body))
@@ -17,7 +17,7 @@ export async function startOwnerCloud({ token, note, realm, relayPort, onServer,
         const ask = raw ? JSON.parse(raw) : {}
         if (req.method === "GET" && url.pathname === "/relay/targets") {
           const targets = listTargets([...kernels.values()].map(k => ({
-            daemonId: k.kernelId, machineId: k.machineId, status: "ONLINE", alias: k.alias,
+            daemonId: k.kernelId, machineId: k.machineId, status: k.status ?? "ONLINE", alias: k.alias,
           })), machineIdsByCredential.get(req.headers["x-chariox-kernel-credential"]))
           return targets === null ? answer(res, { error: "directory unavailable" }, 503) : answer(res, { targets })
         }
@@ -29,9 +29,10 @@ export async function startOwnerCloud({ token, note, realm, relayPort, onServer,
           return answer(res, { kernelCredential })
         }
         if (url.pathname === "/kernels/presence") {
-          kernels.set(ask.kernelId, { ...kernels.get(ask.kernelId), kernelId: ask.kernelId, machineId: ask.machineId, publicKey: ask.metadata?.relay_public_key, alias: ask.kernelAlias ?? null })
+          kernels.set(ask.kernelId, { ...kernels.get(ask.kernelId), kernelId: ask.kernelId, machineId: ask.machineId, publicKey: ask.metadata?.relay_public_key, alias: ask.kernelAlias ?? null, status: ask.status })
           const kernel = kernels.get(ask.kernelId)
           onPresence?.({ kernelId: kernel.kernelId, keyThumbprint: kernel.thumbprint, machineId: kernel.machineId })
+          onPresenceReport?.({ kernelId: kernel.kernelId, status: ask.status, startedAtMs: ask.metadata?.kernel_started_at_ms })
           return answer(res, {})
         }
         if (req.method === "GET" && url.pathname === "/v1/owner-managed-context-tickets/peers") return answer(res, { peers: [...kernels.values()].filter(k => k.publicKey && k.thumbprint).map(k => ({ targetId: k.kernelId, peer: { relayRealmId: realm, machineId: k.machineId, kernelId: k.kernelId, relayPublicKey: k.publicKey, keyThumbprint: k.thumbprint } })) })

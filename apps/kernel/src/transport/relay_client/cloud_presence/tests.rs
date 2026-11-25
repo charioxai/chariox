@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use tokio::sync::Notify;
 
 use super::*;
@@ -15,7 +13,7 @@ struct FakeCloud {
 }
 
 fn fake_publisher(cloud: Arc<FakeCloud>) -> CloudPresencePublisher {
-    CloudPresencePublisher::start_with(move |online, _reason| {
+    CloudPresencePublisher::start_with(move |online, _reason, _registration| {
         let cloud = Arc::clone(&cloud);
         async move {
             {
