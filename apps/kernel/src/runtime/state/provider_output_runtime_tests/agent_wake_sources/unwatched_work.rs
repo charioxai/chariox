@@ -246,7 +246,24 @@ async fn cell_2_a_backstop_does_not_wake_an_agent_another_turn_already_resumed()
         .into_iter()
         .filter(|event| event.source_id == backstop.id && event.prompt_id.is_some())
         .count();
-    assert_eq!(woken, 0, "cell 2: the satisfied wait woke the agent again");
+    assert_eq!(
+        woken,
+        0,
+        "cell 2: the satisfied wait woke the agent again; tasks {:?}; events {:?}; backstop task {}",
+        store
+            .agent_tasks(Some(&team.room), Some(&team.child))
+            .unwrap()
+            .iter()
+            .map(|t| (t.task_id.clone(), t.prompt_id.clone(), t.state.clone()))
+            .collect::<Vec<_>>(),
+        store
+            .agent_inbox(&team.room, &team.child, 0)
+            .unwrap()
+            .iter()
+            .map(|e| (e.kind.clone(), e.state.clone(), e.prompt_id.clone(), e.payload.clone()))
+            .collect::<Vec<_>>(),
+        backstop.task_id
+    );
     assert_eq!(
         store
             .agent_tasks(Some(&team.room), Some(&team.child))
