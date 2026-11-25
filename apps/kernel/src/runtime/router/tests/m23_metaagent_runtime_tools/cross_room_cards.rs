@@ -116,7 +116,7 @@ async fn cards() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "a35e1d38a91b77486fe551a26d29aa078cbcec5ea156131d9244c6097c66c62f"
+        "1fa27d2595d8ab314e5e64f8024838805b11453f7ecf2c6bb6ba4cdafac41c6d"
     );
 }
 
@@ -209,7 +209,7 @@ async fn paged() {
                 .runtime_state
                 .create_kernel_operation_interaction(
                     crate::runtime::state::CardKind::NativePermissionInput,
-                    "",
+                    &world.other_room,
                     &owner,
                     interaction,
                 )
