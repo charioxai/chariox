@@ -67,8 +67,9 @@ pub(super) fn slim_for_agent(
     acting_tab: Option<&str>,
     payload: Value,
 ) -> Value {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, SeenTabs>>> =
-        std::sync::OnceLock::new();
+    static SEEN: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, SeenTabs>>,
+    > = std::sync::OnceLock::new();
     let mut by_agent = SEEN
         .get_or_init(Default::default)
         .lock()
@@ -105,13 +106,20 @@ mod tests {
         let mut seen = SeenTabs::new();
         // The first reply of an agent sets its baseline.
         let first = slim_agent_reply("input", Some("host-tab-3"), reply(14), &mut seen);
-        assert!(first.to_string().len() < ONE_K_TOKENS, "{}", first.to_string().len());
+        assert!(
+            first.to_string().len() < ONE_K_TOKENS,
+            "{}",
+            first.to_string().len()
+        );
         for _ in 0..20 {
             let slim = slim_agent_reply("input", Some("host-tab-3"), reply(14), &mut seen);
             let text = slim.to_string();
             assert!(text.len() < ONE_K_TOKENS, "{} bytes", text.len());
             assert!(!text.contains("favicon"), "icons never reach the agent");
-            assert!(slim.get("tabs_changed").is_none(), "nothing opened or closed");
+            assert!(
+                slim.get("tabs_changed").is_none(),
+                "nothing opened or closed"
+            );
             assert_eq!(slim["tab"]["tab_id"], "host-tab-3");
             assert_eq!(slim["tab_count"], 14);
             assert_eq!(slim["generation"], 4);

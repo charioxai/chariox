@@ -79,7 +79,12 @@ impl GenerateArgs {
     fn policy(&self, destination: &Destination) -> (usize, bool) {
         let command = matches!(destination, Destination::Command(_));
         (
-            self.length.unwrap_or(if self.format == GenerateFormat::Hex { 64 } else { 24 }),
+            self.length
+                .unwrap_or(if self.format == GenerateFormat::Hex {
+                    64
+                } else {
+                    24
+                }),
             self.symbols.unwrap_or(!command),
         )
     }

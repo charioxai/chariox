@@ -36,7 +36,10 @@ pub(super) fn params(arguments: Value) -> Result<Value, DaemonError> {
         || command.tab_id.len() > 256
         || command.generation == 0
         || command.query.chars().count() > 512
-        || !matches!(command.kind.as_str(), "field" | "button" | "link" | "container" | "any")
+        || !matches!(
+            command.kind.as_str(),
+            "field" | "button" | "link" | "container" | "any"
+        )
         || command.offset > 100_000
         || request
             .document_id
@@ -162,12 +165,18 @@ impl<'a> Layout<'a> {
     }
 
     fn inside(&self, reference: &str, container: &str) -> bool {
-        let mut current = self.by_ref.get(reference).and_then(|n| n["parent_ref"].as_str());
+        let mut current = self
+            .by_ref
+            .get(reference)
+            .and_then(|n| n["parent_ref"].as_str());
         for _ in 0..64 {
             match current {
                 Some(parent) if parent == container => return true,
                 Some(parent) => {
-                    current = self.by_ref.get(parent).and_then(|n| n["parent_ref"].as_str());
+                    current = self
+                        .by_ref
+                        .get(parent)
+                        .and_then(|n| n["parent_ref"].as_str());
                 }
                 None => return false,
             }
@@ -177,7 +186,8 @@ impl<'a> Layout<'a> {
 }
 
 const CONTAINER_TAGS: [&str; 12] = [
-    "DIV", "SECTION", "FORM", "PRE", "CODE", "P", "SPAN", "TD", "LI", "ARTICLE", "DIALOG", "FIELDSET",
+    "DIV", "SECTION", "FORM", "PRE", "CODE", "P", "SPAN", "TD", "LI", "ARTICLE", "DIALOG",
+    "FIELDSET",
 ];
 const CONTAINER_ROLES: [&str; 6] = ["group", "region", "form", "dialog", "article", "table"];
 const MAX_CONTROLS: usize = 8;
@@ -203,7 +213,8 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
         .iter()
         .filter_map(|key| attributes[key].as_str())
         .any(|text| text.to_lowercase().contains(query))
-        || query.is_empty() && !(attributes["id"].is_string() || attributes["data-testid"].is_string())
+        || query.is_empty()
+            && !(attributes["id"].is_string() || attributes["data-testid"].is_string())
     {
         return None;
     }
@@ -228,7 +239,9 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
         if control["ignored"] == true
             || !matches!(control_kind, "button" | "link")
             || !layout.inside(control_ref, reference)
-            || controls.iter().any(|seen: &Value| seen["node_ref"] == control_ref)
+            || controls
+                .iter()
+                .any(|seen: &Value| seen["node_ref"] == control_ref)
         {
             continue;
         }
@@ -243,12 +256,16 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
             "copy"
         } else if lowered.contains("hide") {
             "hide"
-        } else if ["reveal", "show", "unmask", "display"].iter().any(|w| lowered.contains(w)) {
+        } else if ["reveal", "show", "unmask", "display"]
+            .iter()
+            .any(|w| lowered.contains(w))
+        {
             "reveal"
         } else {
             "other"
         };
-        let mut found = json!({"node_ref":control_ref,"kind":control_kind,"name":label,"action":action});
+        let mut found =
+            json!({"node_ref":control_ref,"kind":control_kind,"name":label,"action":action});
         if let Some(bounds) = layout.bounds(control_ref) {
             found["bounds"] = bounds.clone();
         }
@@ -283,7 +300,10 @@ pub(super) fn project(payload: Value, find: Value) -> Result<Value, DaemonError>
     if requested == "container" {
         for node in snapshot["dom_nodes"].as_array().into_iter().flatten() {
             if let Some(entry) = container(node, &query, &layout, snapshot) {
-                nodes.insert(entry["node_ref"].as_str().unwrap_or_default().to_string(), entry);
+                nodes.insert(
+                    entry["node_ref"].as_str().unwrap_or_default().to_string(),
+                    entry,
+                );
             }
         }
     }
@@ -433,7 +453,8 @@ mod tests {
 
     #[test]
     fn find_accepts_the_container_kind() {
-        let command = json!({"op":"find","tab_id":"tab","generation":1,"query":"token","kind":"container"});
+        let command =
+            json!({"op":"find","tab_id":"tab","generation":1,"query":"token","kind":"container"});
         assert!(params(json!({"command":command})).is_ok());
     }
 
@@ -462,7 +483,10 @@ mod tests {
         assert_eq!(by_name("Reveal")["node_ref"], "backend:21");
         assert_eq!(by_name("Reveal")["action"], "reveal");
         assert!(by_name("Reveal")["bounds"]["x"].is_number());
-        assert!(controls.iter().all(|c| c["node_ref"] != "backend:30"), "a link outside the box");
+        assert!(
+            controls.iter().all(|c| c["node_ref"] != "backend:30"),
+            "a link outside the box"
+        );
     }
 
     #[test]
