@@ -144,10 +144,27 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
         updated_profile.clone(),
         issued.token.clone(),
     )?;
-    let runtime_state = runtime_state.clone();
+    spawn_renewed_token_save(
+        runtime_state.clone(),
+        profile,
+        updated_profile,
+        issued.token,
+    );
+    Ok(())
+}
+
+/// A plain function, so the save future is built in its own frame and not in the async renewal's:
+/// the renewal runs on small test and worker stacks.
+#[inline(never)]
+fn spawn_renewed_token_save(
+    runtime_state: KernelRuntimeState,
+    expected: crate::config::PersistedCloudRelayProfile,
+    updated: crate::config::PersistedCloudRelayProfile,
+    token: String,
+) {
     tokio::spawn(async move {
         if let Err(error) = runtime_state
-            .finish_cloud_relay_renewal(profile, Some((updated_profile, issued.token)))
+            .finish_cloud_relay_renewal(expected, Some((updated, token)))
             .await
         {
             crate::logging::warn_with_fields(
@@ -157,7 +174,6 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
             );
         }
     });
-    Ok(())
 }
 
 pub(crate) async fn execute_connect_cloud_relay_request(
