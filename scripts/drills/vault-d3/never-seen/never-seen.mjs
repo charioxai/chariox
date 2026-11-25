@@ -24,6 +24,10 @@ export function verdictOf({ roots, syntheticOk, liveControl, ocr }) {
   for (const r of roots) if (r.files === 0) reasons.push(`root ${r.target} (${r.path}) has 0 files`)
   if (liveControl) for (const [target, n] of Object.entries(liveControl.hits)) if (n === 0) reasons.push(`live control not found in ${target}`)
   if (ocr.requested && !ocr.available) reasons.push("OCR requested but tesseract is not available")
+  for (const r of roots) {
+    if (r.unreadable) reasons.push(`root ${r.target} (${r.path}) has ${r.unreadable} unreadable file(s): the scan is incomplete`)
+    if (ocr.requested && r.not_scanned) reasons.push(`root ${r.target} (${r.path}) has ${r.not_scanned} image(s) that could not be read by OCR`)
+  }
   if (reasons.length) return { verdict: "INVALID", reasons }
   const leaks = roots.reduce((n, r) => n + r.hits.length, 0)
   return { verdict: leaks ? "LEAK" : "CLEAN", reasons: [] }
@@ -52,7 +56,7 @@ async function main() {
   const { verdict, reasons } = verdictOf({ roots: real.roots, syntheticOk, liveControl, ocr: { requested: wantOcr, available: wantOcr ? await ocrAvailable() : false } })
   const scan = {
     run: flags.get("--run") ?? null, build_pin: flags.get("--build-pin") ?? null, needle_sha8: needleHash(value),
-    roots: real.roots.map(r => ({ target: r.target, kernel: r.kernel, path: r.path, files: r.files, bytes: r.bytes })),
+    roots: real.roots.map(r => ({ target: r.target, kernel: r.kernel, path: r.path, files: r.files, bytes: r.bytes, unreadable: r.unreadable, not_scanned: r.not_scanned })),
     control: { synthetic: synthetic.types, live: liveControl?.hits ?? null },
     real: countBy(real.roots),
     matches: real.roots.flatMap(r => r.hits.map(h => ({ target: r.target, path: h.path, offset: h.offset, form: h.form, via: h.via ?? "bytes" }))),

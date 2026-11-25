@@ -10,7 +10,8 @@ import { readFileSync } from "node:fs"
 import { startAll } from "../fixtures/serve.mjs"
 import { delay, packetText, reporter, withHost } from "./host-harness.mjs"
 
-const row = process.argv[2], dpr = Number(process.argv[process.argv.indexOf("--dpr") + 1] || 1)
+import { dprFrom } from "./args.mjs"
+const row = process.argv[2], dpr = dprFrom(process.argv)
 if (!["545", "546", "547"].includes(row)) { console.error("usage: kernel-layer-drill.mjs <545|546|547> [--dpr 1|2]"); process.exit(2) }
 const r = reporter(row)
 // D3_ORIGINS_FILE: the origins.json of an already running fixture host (the Boat); otherwise fixtures start locally on 127.0.0.1 / localhost.
@@ -45,7 +46,7 @@ try {
       for (let i = 0; i < 20 && !popup; i++) { await delay(250); state = await host.request({ op: "state" }); popup = state.tabs.find(t => t.opener_tab_id === rp.tab_id) }
       r.check("kernel: the popup is a tab that names its opener", !!popup)
       r.check("kernel: the popup becomes the active tab (the card stays bound to the opener: that is what the person sees as 'opened in another tab')", popup && state.active_tab_id === popup.tab_id, popup ? `active=${state.active_tab_id.slice(-6)} popup=${popup.tab_id.slice(-6)}` : "")
-      if (!popup) { r.done() }
+      if (!popup) return   // the checks above already failed; unwind (browser, state, fixtures) before the verdict is reported
       await delay(800)
       const { connection, sessionId } = await host.browser.resolvePageTarget(host.tabs.get(popup.tab_id).target_id)
       const at = await connection.send("Runtime.evaluate", { expression: "(()=>{const b=document.getElementById('allow').getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()", returnByValue: true }, sessionId)

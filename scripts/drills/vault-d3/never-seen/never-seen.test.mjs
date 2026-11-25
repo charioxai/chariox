@@ -118,3 +118,64 @@ test("surface matrix: each surface finds its own live decoy, a real secret leaki
     assert.ok(!JSON.stringify(matrix).includes(real))
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
+
+// Review findings on #1743 (scanner evidence must be complete, positive hits must never be hidden).
+test("many decoy matches in one file do not hide a real secret in the same file", async () => {
+  const { surfaceMatrix, surfaceVerdicts } = await import("./surface-scan.mjs")
+  const dir = await mkdtemp(join(tmpdir(), "ns-cap-"))
+  try {
+    const decoy = "DECOY_chat_0123456789abcdef", real = "REAL_secret_value_1234567890"
+    await mkdir(join(dir, "logs"))
+    await writeFile(join(dir, "logs", "a.log"), (decoy + "\n").repeat(40) + `${real}\n`)
+    const groups = [{ label: "d", value: decoy, role: "decoy" }, { label: "real", value: real, role: "real" }]
+    const { matrix } = await surfaceMatrix({ surfaces: [{ label: "logs", path: join(dir, "logs") }], groups })
+    assert.ok(matrix.real?.logs, "the real value is found after more than 20 decoy hits")
+    assert.equal(surfaceVerdicts({ surfaces: ["logs"], matrix, groups, decoyOf: { logs: "d" } })[0].verdict, "FAIL")
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test("a file the scanner cannot read makes the root incomplete and the verdict INVALID / BLOCKED", async () => {
+  const { surfaceMatrix, surfaceVerdicts } = await import("./surface-scan.mjs")
+  const dir = await mkdtemp(join(tmpdir(), "ns-unread-"))
+  try {
+    await mkdir(join(dir, "logs")); await writeFile(join(dir, "logs", "ok.log"), "DECOY_x_0123456789abcdef\n"); await writeFile(join(dir, "logs", "locked.log"), "x")
+    const { scanFile } = await import("./scan.mjs")
+    const reader = (path, needles) => path.endsWith("locked.log") ? Promise.reject(new Error("EACCES")) : scanFile(path, needles)
+    const groups = [{ label: "d", value: "DECOY_x_0123456789abcdef", role: "decoy" }, { label: "real", value: "REAL_secret_value_1234567890", role: "real" }]
+    const { matrix, roots } = await surfaceMatrix({ surfaces: [{ label: "logs", path: join(dir, "logs") }], groups, reader })
+    assert.equal(roots[0].unreadable, 1)
+    const v = surfaceVerdicts({ surfaces: ["logs"], matrix, groups, decoyOf: { logs: "d" }, coverage: { logs: roots[0] } })[0]
+    assert.equal(v.verdict, "BLOCKED"); assert.match(v.reason, /unreadable/)
+    assert.equal(verdictOf({ roots: [{ target: "T3", path: "/x", files: 1, hits: [], unreadable: 1 }], syntheticOk: true, liveControl: null, ocr: { requested: false, available: false } }).verdict, "INVALID")
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test("an image OCR cannot decode is not scanned: the OCR call rejects and the verdicts are not clean", async t => {
+  const { ocrAvailable, ocrBuffer } = await import("./scan.mjs")
+  if (!(await ocrAvailable())) return t.skip("tesseract not installed")
+  const corrupt = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("not a real png body")])
+  await assert.rejects(ocrBuffer(corrupt))
+  const dir = await mkdtemp(join(tmpdir(), "ns-ocr-"))
+  try {
+    await writeFile(join(dir, "shot.png"), corrupt)
+    const { roots } = await scanRoots([{ target: "T6", kind: "dir", path: dir }], needleSet(secret), { ocr: true })
+    assert.equal(roots[0].images, 1); assert.equal(roots[0].not_scanned, 1); assert.equal(roots[0].ocr_ok, 0)
+    assert.equal(verdictOf({ roots, syntheticOk: true, liveControl: null, ocr: { requested: true, available: true } }).verdict, "INVALID")
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test("a real secret hit is a FAIL even on a surface without a decoy; a missing expected needle blocks every PASS", async () => {
+  const { surfaceMatrix, surfaceVerdicts } = await import("./surface-scan.mjs")
+  const dir = await mkdtemp(join(tmpdir(), "ns-fail-"))
+  try {
+    const real = "REAL_secret_value_1234567890", decoy = "DECOY_ok_0123456789abcdef"
+    for (const d of ["blind", "ok"]) await mkdir(join(dir, d))
+    await writeFile(join(dir, "blind", "x.log"), `leak ${real}\n`); await writeFile(join(dir, "ok", "x.log"), `${decoy}\n`)
+    const groups = [{ label: "d", value: decoy, role: "decoy" }, { label: "real", value: real, role: "real" }]
+    const { matrix } = await surfaceMatrix({ surfaces: ["blind", "ok"].map(label => ({ label, path: join(dir, label) })), groups })
+    const v = Object.fromEntries(surfaceVerdicts({ surfaces: ["blind", "ok"], matrix, groups, decoyOf: { ok: "d" } }).map(x => [x.surface, x]))
+    assert.equal(v.blind.verdict, "FAIL"); assert.equal(v.blind.leaks[0].group, "real"); assert.equal(v.ok.verdict, "PASS")
+    const v2 = Object.fromEntries(surfaceVerdicts({ surfaces: ["ok"], matrix, groups, decoyOf: { ok: "d" }, expectedReal: ["real", "real-capture-token"] }).map(x => [x.surface, x]))
+    assert.equal(v2.ok.verdict, "BLOCKED"); assert.match(v2.ok.reason, /real-capture-token/)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})

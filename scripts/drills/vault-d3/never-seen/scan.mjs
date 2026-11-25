@@ -11,10 +11,13 @@ const IMAGE_BLOCK = /"(?:data|image_data|base64)"\s*:\s*"([A-Za-z0-9+/=]{2000,})
 
 export const skipped = path => SKIP_NAME.test(path.split("/").pop())
 
-/** Count needle hits in one buffer-streamed file. Hits carry form name and byte offset only. */
+/**
+ * Count needle hits in one buffer-streamed file. Hits carry form name and byte offset only. At most maxHits are KEPT per group (or per
+ * needle form when it has no group), but the whole file is always scanned: many hits of one group never hide a hit of another.
+ */
 export async function scanFile(path, needles, { maxHits = 20 } = {}) {
   const handle = await open(path, "r")
-  const hits = []
+  const hits = [], kept = new Map()
   let bytes = 0
   try {
     const overlap = Math.max(...needles.map(n => n.bytes.length)) - 1
@@ -26,14 +29,17 @@ export async function scanFile(path, needles, { maxHits = 20 } = {}) {
       bytes += bytesRead
       const window = Buffer.concat([carry, buffer.subarray(0, bytesRead)])
       for (const needle of needles) {
+        const key = needle.group ?? needle.name
         let from = 0
         for (;;) {
           const at = window.indexOf(needle.bytes, from)
           if (at < 0) break
           // A hit fully inside the carried overlap was already counted by the previous window.
-          if (at + needle.bytes.length > carry.length) hits.push({ form: needle.name, offset: base + at, ...(needle.group ? { group: needle.group } : {}) })
+          if (at + needle.bytes.length > carry.length && (kept.get(key) ?? 0) < maxHits) {
+            kept.set(key, (kept.get(key) ?? 0) + 1)
+            hits.push({ form: needle.name, offset: base + at, ...(needle.group ? { group: needle.group } : {}) })
+          }
           from = at + 1
-          if (hits.length >= maxHits) return { hits, bytes }
         }
       }
       carry = window.subarray(Math.max(0, window.length - overlap))
@@ -55,7 +61,8 @@ async function* walk(path) {
 export async function ocrAvailable() { try { await run("tesseract", ["--version"]); return true } catch { return false } }
 export async function ocrBuffer(png) {
   const child = execFile("tesseract", ["stdin", "stdout", "--psm", "11"], { maxBuffer: 16 * 1024 * 1024, encoding: "utf8" })
-  const done = new Promise((resolve, reject) => { let out = ""; child.stdout.on("data", c => { out += c }); child.on("error", reject); child.on("close", () => resolve(out)) })
+  // A nonzero exit is a failed decode, never an empty page: the caller counts the image as not scanned.
+  const done = new Promise((resolve, reject) => { let out = ""; child.stdout.on("data", c => { out += c }); child.on("error", reject); child.on("close", code => code === 0 ? resolve(out) : reject(new Error(`tesseract exited ${code}`))) })
   child.stdin.end(png)
   return done
 }
@@ -112,18 +119,19 @@ async function scanProc(needles) {
  * roots: [{target, kernel, path, kind: "dir"|"file"|"proc"}]. Returns per-root {files, bytes, hits[]} plus image counts.
  * No value and no matched line is returned: hits are {form, offset, path} only.
  */
-export async function scanRoots(roots, needles, { ocr = false } = {}) {
+export async function scanRoots(roots, needles, { ocr = false, reader = scanFile } = {}) {
   const ocrState = { available: ocr ? await ocrAvailable() : false }
   const report = []
   for (const root of roots) {
-    const entry = { target: root.target, kernel: root.kernel ?? "", path: root.kind === "proc" ? "/proc" : root.path, files: 0, bytes: 0, hits: [], images: 0, ocr_ok: 0, not_scanned: 0 }
+    const entry = { target: root.target, kernel: root.kernel ?? "", path: root.kind === "proc" ? "/proc" : root.path, files: 0, bytes: 0, hits: [], images: 0, ocr_ok: 0, not_scanned: 0, unreadable: 0, unreadable_paths: [] }
     if (root.kind === "proc") {
       const proc = await scanProc(needles)
       Object.assign(entry, { files: proc.files, bytes: proc.bytes, hits: proc.hits })
     } else {
       for await (const file of walk(root.path)) {
-        const found = await scanFile(file.path, needles).catch(() => null)
-        if (!found) continue
+        const found = await reader(file.path, needles).catch(() => null)
+        // A file that cannot be read is missing evidence, not a clean file: the root is incomplete (the verdict is INVALID / BLOCKED).
+        if (!found) { entry.unreadable++; if (entry.unreadable_paths.length < 5) entry.unreadable_paths.push(file.path); continue }
         entry.files++; entry.bytes += found.bytes
         for (const hit of found.hits) entry.hits.push({ ...hit, path: file.path })
         if (ocr) {
