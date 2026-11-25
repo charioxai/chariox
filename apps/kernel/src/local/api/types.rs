@@ -643,4 +643,7 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1016 (relay peer 453): a managed install plan and the provider-account portability preflight may name
+/// `{"kind":"all"}`, every login of the owner on the source kernel, which the source resolves when it exports;
+/// the capability `managed_context_all_providers_v1` says a kernel can.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;

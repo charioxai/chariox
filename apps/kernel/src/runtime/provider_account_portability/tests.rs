@@ -355,3 +355,20 @@ fn preflight_of_all_names_the_login_that_cannot_travel_and_the_one_step() {
     );
     assert!(refusal.contains(&bare.profile_id));
 }
+
+// Row 582: the wire shape of the `all` selection is pinned (local 1016).
+#[test]
+fn the_all_selection_has_the_one_wire_shape() {
+    let request: PreflightProviderAccountPortabilityRequest = serde_json::from_value(
+        serde_json::json!({"providerAccounts": {"kind": "all"}, "kernelContext": "empty"}),
+    )
+    .unwrap();
+    assert_eq!(
+        request.provider_accounts,
+        ProviderAccountTransferSelection::All
+    );
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"providerAccounts": {"kind": "all"}, "kernelContext": "empty"})
+    );
+}
