@@ -498,7 +498,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.destroy_execution_lease(lease_id)
     }
 
-    /// The folder of a leased agent spawned without one: its own, under the worker's home. The
+    /// The folder of a leased agent spawned without one: its own, under the machine's repository root
+    /// (the worker's home when none is recorded). The
     /// worker's working directory is a service directory (`/` under a service manager), never a
     /// place for an agent to work. Nothing is created here, so a refusal leaves the lease's
     /// authorization for the retry; a folder that exists belongs to an earlier leased agent of the
@@ -517,16 +518,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && name
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|home| home.is_absolute() && home != Path::new("/"));
-        let (true, Some(home)) = (name_is_safe, home) else {
+        // A managed machine records its repository root at rent time (the default root is the
+        // worker's home); the folder lives under that root, never beside it.
+        let base =
+            if std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV).is_some() {
+                Some(crate::managed_bootstrap::managed_repository_root_from_env()?)
+            } else {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|home| home.is_absolute() && home != Path::new("/"))
+            };
+        let (true, Some(base)) = (name_is_safe, base) else {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve leased agent working directory",
                 message: "no folder was given and this worker has no home folder to create one in; pass --dir <folder on the worker>".to_string(),
             });
         };
-        let folder = home.join("chariox-workspaces").join(name);
+        let folder = base.join("chariox-workspaces").join(name);
         if folder.exists() {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve leased agent working directory",
