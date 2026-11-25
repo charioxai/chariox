@@ -682,6 +682,7 @@ mod resource_register;
 mod room_pin;
 mod session_activity_owned_state;
 use external_command_authority::ExternalCommandAuthority;
+mod claude_login_for_worker;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
 mod prompt_transcript_owned_state;

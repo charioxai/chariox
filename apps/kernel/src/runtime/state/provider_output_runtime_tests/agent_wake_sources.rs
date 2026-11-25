@@ -2648,6 +2648,9 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 #[path = "async_popup.rs"]
 mod async_popup;
 
+#[path = "claude_login_card.rs"]
+mod claude_login_card;
+
 /// needsui: an agent's own question reaches the owner as a question with a reply box, not as a generic
 /// "Agent needs your action" with Resume; the reply resumes the task.
 #[tokio::test]

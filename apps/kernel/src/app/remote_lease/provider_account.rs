@@ -311,10 +311,10 @@ exit 2
             .ensure_remote_provider_account(context.clone(), claude_with_refresh_credential)
             .expect_err("remote Claude refresh credentials must be rejected");
         let refusal = error.to_string();
-        // The account-copy drill proves the advised steps: a native-only login
-        // is refused, and after the setup-token step it is offered and copied.
+        // A native-only login is refused; the one step is on the owner's own computer.
         assert!(refusal.contains("/provider setup-token claude"));
-        assert!(refusal.contains("/provider accounts copy"));
+        assert!(refusal.contains("your own computer"));
+        assert!(!refusal.contains("on that machine run"));
         assert!(!error.to_string().contains("bmV2ZXItbG9nLXRoaXM"));
 
         let mut wrong_owner = materialization;
