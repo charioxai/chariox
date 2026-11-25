@@ -1717,7 +1717,7 @@ impl KernelRuntimeState {
             // Stopping the turn asks the worker, which may not answer: the check ends in its
             // own work, and the sweep goes on with the other tasks.
             let (task, prompt) = (task.clone(), check.prompt_id.clone());
-            self.spawn_task_work(
+            self.spawn_child_task_work(
                 format!("goal-check:{}", task.task_id),
                 move |state| async move {
                     if let CheckExpiry::Blocked(stopped) =
@@ -1739,7 +1739,7 @@ impl KernelRuntimeState {
             // The worker that holds the run may be gone: a cancellation that is not confirmed
             // stays unsettled and is started again by the next sweep, apart from this one.
             let cancelled = task.clone();
-            self.spawn_task_work(
+            self.spawn_child_task_work(
                 format!("cancel:{}", task.task_id),
                 move |state| async move {
                     Box::pin(state.cancel_agent_task_resources(&cancelled)).await

@@ -211,23 +211,67 @@ fn watched_part(part: &Value) -> (String, Vec<u32>, Vec<i32>) {
 }
 
 fn local_job_part(part: &Value) -> (String, Vec<u32>, Vec<i32>) {
+    // A running command is the child of the previous program, kept apart from its output
+    // pipes, which the job owns and a reader on the other side may block on.
+    let streams = part.pointer("/exec/streams");
+    let command = streams
+        .and_then(|streams| streams.pointer("/child/Running/witness/root"))
+        .and_then(Value::as_u64)
+        .map(|pid| pid as u32);
     (
         text(part, &["job"]).unwrap_or_default().to_string(),
-        Vec::new(),
-        ["state_fd", "log_fd"]
-            .iter()
-            .filter_map(|key| number(part, &[key]))
-            .map(|n| n as i32)
-            .collect(),
+        command.into_iter().collect(),
+        [
+            number(part, &["state_fd"]),
+            number(part, &["log_fd"]),
+            streams.and_then(|streams| number(streams, &["stdout"])),
+            streams.and_then(|streams| number(streams, &["stderr"])),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|n| n as i32)
+        .collect(),
     )
+}
+
+/// What a document that was refused as a whole still names, as far as it can be parsed at
+/// all: every terminal, agent turn, watched process and job it holds ends as after a restart.
+pub(super) fn salvage_document(body: &[u8]) -> Vec<Unreadable> {
+    let Ok(document) = serde_json::from_slice::<Value>(body) else {
+        return Vec::new();
+    };
+    let lists: [(&'static str, Salvage); 4] = [
+        ("terminals", terminal_part),
+        ("providers", provider_part),
+        ("watched", watched_part),
+        ("local_jobs", local_job_part),
+    ];
+    let mut unreadable = Vec::new();
+    for (list, salvage) in lists {
+        for part in document
+            .get(list)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (name, pids, fds) = salvage(part);
+            unreadable.push(Unreadable {
+                part: list,
+                name,
+                reason: "the handover document was refused as a whole".to_string(),
+                pids,
+                fds,
+            });
+        }
+    }
+    unreadable
 }
 
 /// Logs each part that could not be read and ends what it left running, so
 /// that terminal or agent starts again as after a restart. Only children of
 /// this program are ended, and only descriptors no readable part names are
 /// closed.
-pub(super) fn end_unreadable(unreadable: Vec<Unreadable>, handover: &Handover) {
-    let named = handover.inherited_fds();
+pub(super) fn end_unreadable(unreadable: Vec<Unreadable>, named: &[i32]) {
     for part in unreadable {
         super::note_for_log(
             true,
@@ -277,6 +321,86 @@ mod tests {
             "no previous release's handover in {dir:?}"
         );
         documents
+    }
+
+    fn dead(pid: u32) -> bool {
+        // SAFETY: signal 0 only reports whether the process exists.
+        unsafe { libc::kill(pid as libc::pid_t, 0) != 0 }
+    }
+
+    fn command_that_waits() -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_local_job_that_cannot_be_read_names_its_running_command_and_pipes() {
+        let part = serde_json::json!({
+            "job": "job-1",
+            "exec": { "streams": {
+                "child": { "Running": { "witness": { "root": 4242, "owned": {} } } },
+                "stdout": 31, "stderr": 32 } },
+            "state_fd": 29, "log_fd": 30,
+        });
+        let (name, pids, fds) = local_job_part(&part);
+        assert_eq!(name, "job-1");
+        assert_eq!(pids, vec![4242]);
+        assert_eq!(fds, vec![29, 30, 31, 32]);
+    }
+
+    #[test]
+    fn a_corrupt_local_job_ends_its_running_command() {
+        let mut child = command_that_waits();
+        let pid = child.id();
+        let (body, mut document) = {
+            let (_, body) = previous_release_documents().remove(0);
+            let document = json(&body);
+            (body, document)
+        };
+        drop(body);
+        // The job's wake is damaged; its command and pipes are intact.
+        document["local_jobs"] = serde_json::json!([{
+            "job": "job-corrupt",
+            "exec": { "streams": { "child": { "Running": { "witness": { "root": pid, "owned": {} } } } } },
+            "state_fd": -1, "log_fd": -1,
+        }]);
+        let read = read_handover(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert_eq!(read.unreadable.len(), 1);
+        end_unreadable(read.unreadable, &[]);
+        assert!(
+            dead(pid),
+            "the command of a rejected local job kept running"
+        );
+        let _ = child.try_wait();
+    }
+
+    #[test]
+    fn a_document_refused_as_a_whole_still_ends_what_it_left_running() {
+        let mut terminal = command_that_waits();
+        let mut job = command_that_waits();
+        let document = serde_json::json!({
+            "format": 999_999,
+            "terminals": [{ "terminal_id": "t", "pty": { "pid": terminal.id(), "master_fd": -1 } }],
+            "local_jobs": [{
+                "job": "j",
+                "exec": { "streams": { "child": { "Running": { "witness": { "root": job.id(), "owned": {} } } } } },
+                "state_fd": -1, "log_fd": -1,
+            }],
+        });
+        let body = serde_json::to_vec(&document).unwrap();
+        assert!(
+            read_handover(&body).is_err(),
+            "the document is refused as a whole"
+        );
+        end_unreadable(salvage_document(&body), &[]);
+        assert!(
+            dead(terminal.id()),
+            "a terminal of a refused document kept running"
+        );
+        assert!(dead(job.id()), "a job of a refused document kept running");
+        let _ = (terminal.try_wait(), job.try_wait());
     }
 
     fn json(body: &[u8]) -> Value {
