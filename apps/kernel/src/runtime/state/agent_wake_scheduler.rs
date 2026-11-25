@@ -417,7 +417,7 @@ impl KernelRuntimeState {
     /// After a restart no process from an earlier kernel is supervised; it is
     /// reported lost and never relaunched. Descendants it left running are
     /// identified by their wake marker and stopped.
-    fn recover_lost_agent_processes(&self, now: u64) -> Result<(), DaemonError> {
+    pub(super) fn recover_lost_agent_processes(&self, now: u64) -> Result<(), DaemonError> {
         let monitor = &self.owned.agent_wakes;
         let lost: Vec<_> = self
             .owned
