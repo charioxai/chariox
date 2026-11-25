@@ -241,7 +241,8 @@ async fn cell_2_a_backstop_does_not_wake_an_agent_another_turn_already_resumed()
             .owned
             .release_queued_for_stranded(&team.room, &team.child)
             .unwrap(),
-        "cell 2: a superseded backstop still holds the idle agent's message"
+        "cell 2: a superseded backstop still holds the idle agent's message: {:?}",
+        team.runtime.owned.what_arms_agent(&team.room, &team.child)
     );
     let tasks_before = store
         .agent_tasks(Some(&team.room), Some(&team.child))

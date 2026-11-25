@@ -112,37 +112,57 @@ impl KernelRuntimeOwnedState {
         room: &str,
         agent: &str,
     ) -> Result<bool, DaemonError> {
+        Ok(self.what_arms_agent(room, agent)?.is_none())
+    }
+
+    /// What would start a turn of `agent` by itself, named; `None` when nothing would.
+    pub(super) fn what_arms_agent(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Option<String>, DaemonError> {
         let session = self.session_store.get_session(room)?;
         if self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent)
             .is_some()
-            || session
-                .queued_prompts_for_agent(agent)
-                .is_some_and(|queued| !queued.is_empty())
         {
-            return Ok(false);
+            return Ok(Some("a turn is running".into()));
+        }
+        if session
+            .queued_prompts_for_agent(agent)
+            .is_some_and(|queued| !queued.is_empty())
+        {
+            return Ok(Some("a prompt is queued".into()));
         }
         let store = &self.durable_state_store;
         let tasks = store.agent_tasks(Some(room), Some(agent))?;
-        if tasks.iter().any(|task| {
+        if let Some(task) = tasks.iter().find(|task| {
             matches!(
                 task.state,
                 ExecutionState::Working | ExecutionState::Waiting | ExecutionState::Blocked
             )
-        }) || tasks.last().is_some_and(|task| task.stopped_by_owner())
-        {
-            return Ok(false);
+        }) {
+            return Ok(Some(format!("task {} is {:?}", task.task_id, task.state)));
+        }
+        if tasks.last().is_some_and(|task| task.stopped_by_owner()) {
+            return Ok(Some("the owner stopped it".into()));
         }
         // A backstop of an earlier task covered an idle interval a later turn ended: it holds nobody.
         let latest = tasks.last().map(|task| task.task_id.as_str());
-        Ok(!store
+        Ok(store
             .agent_wakes(Some(room), Some(agent))?
             .iter()
-            .any(|wake| {
+            .find(|wake| {
                 matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
                     && !(wake.label.starts_with(BACKSTOP_LABEL)
                         && Some(wake.task_id.as_str()) != latest)
+            })
+            .map(|wake| {
+                format!(
+                    "wake `{}` ({}) of task {} is {}",
+                    wake.label, wake.kind, wake.task_id, wake.state
+                )
             }))
     }
 
