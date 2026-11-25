@@ -17,3 +17,7 @@ Rows 545 546 547 549 551 557 558 (D3 handover card, D1/D2 never-seen). Nothing h
   `D3_ORIGINS_FILE=<origins.json of a running serve.mjs>` points it at hosted fixtures instead of local ones.
 - Never-seen over a kernel: write `roots.json` (see `roots.mjs`), then `printf %s "$VALUE" | node never-seen.mjs --roots roots.json --needle-stdin --ocr --out scan.json` (value via `chariox.vault.use_env` stdin; never in argv).
 - Fixture host (Boat): `node fixtures/serve.mjs --state-dir <dir> --host :: --public-host <name> --alt-host alt.<name> --tls-key K --tls-cert C`.
+
+## Live Vault cells (rows 557 / 558): `live/`
+`live/run-live.mjs --cells d1,d2 --evidence /root/.chariox/dev/<lane>/evidence/<run>` starts a drill kernel (`drill-kernel.mjs`: own CHARIOX_HOME, ports and HOME; Vault created and unlocked; real Claude installed through `SetProviderAccountCredential` from `/root/.claude-lanes/oauth-token.chariox`, read in-process, never printed), restarts the fixtures on the Boat (`boat.mjs`), gives the agent the D1 / D2 task, then scans with the fixture's own needle piped to the scanner's stdin. Run it inside a host unit so the kernel browser can start:
+`systemd-run --wait --collect -p MemoryMax=8G -E D3_CLIENT_DIST=<built packages/kernel-client/dist> -E D3_KERNEL_BIN=<chariox-kernel> node live/run-live.mjs ...` (watch it with a kernel process wake). Output: `cells.json`, one `*.scan.json` per needle, the agent's `*-report.txt`, the session-state export. Delete the run's state dir and the needles dir afterwards.

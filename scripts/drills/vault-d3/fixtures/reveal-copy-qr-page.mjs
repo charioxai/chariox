@@ -24,7 +24,9 @@ export async function startRevealCopyQr({ stateDir, net = {} } = {}) {
   const tokens = { reveal: newToken("rev"), copy: newToken("cpy"), qr: base32(26) }
   const log = []
   const note = event => log.push({ at: Date.now(), ...event })
-  const svg = qrSvg(`otpauth://totp/Fixture:owned?secret=${tokens.qr}&issuer=Fixture`)
+  // A QR capture returns what the code encodes: the whole otpauth URI. /verify?kind=qr accepts that payload (it contains the seed).
+  const qrPayload = `otpauth://totp/Fixture:owned?secret=${tokens.qr}&issuer=Fixture`
+  const svg = qrSvg(qrPayload)
   const origin = await startOrigin("reveal-copy-qr", async (req, res, url, reply) => {
     if (url.pathname === "/" && req.method === "GET") {
       const big = url.searchParams.get("big") === "1" ? " big" : ""
@@ -43,8 +45,9 @@ document.getElementById('copy').onclick=async()=>{await navigator.clipboard.writ
     }
     if (url.pathname === "/verify" && req.method === "POST") {
       const kind = url.searchParams.get("kind")
-      const expected = Buffer.from(`Bearer ${tokens[kind] ?? "\u0000"}`), actual = Buffer.from(req.headers.authorization ?? "")
-      const ok = tokens[kind] && actual.length === expected.length && timingSafeEqual(actual, expected)
+      const wanted = kind === "qr" ? qrPayload : tokens[kind]
+      const expected = Buffer.from(`Bearer ${wanted ?? "\u0000"}`), actual = Buffer.from(req.headers.authorization ?? "")
+      const ok = wanted && actual.length === expected.length && timingSafeEqual(actual, expected)
       note({ kind: "verify", block: kind, ok: !!ok, presented_sha8: sha8((req.headers.authorization ?? "").replace(/^Bearer /, "")) })
       return reply(ok ? 200 : 401, { ok: !!ok })
     }

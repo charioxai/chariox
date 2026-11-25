@@ -16,7 +16,7 @@ export async function startAll({ stateDir, host = "127.0.0.1", publicHost = null
   const at = offset => `${proto}://${shown}:${basePort + offset}`
   // altHost: a second host name for the SAME server (localhost for 127.0.0.1, a sslip.io sub-name on the Boat), so idp, grid and the post-login page are cross-SITE.
   const atAlt = offset => altHost ? `${proto}://${altHost}:${basePort + offset}` : at(offset)
-  const signup = await startSignup({ net: net(0) })
+  const signup = await startSignup({ net: net(0), stateDir })
   const reveal = await startRevealCopyQr({ stateDir, net: net(1) })
   const login = await startLoginForm({ net: net(2), welcomeOrigin: altHost ? atAlt(2) : "" })
   const oauth = await startOauthPopup({ rpNet: net(3), idpNet: net(4), rpPublic: at(3), idpPublic: atAlt(4) })

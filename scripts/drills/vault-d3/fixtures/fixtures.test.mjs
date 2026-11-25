@@ -18,6 +18,9 @@ test("every fixture serves, the state file is mode 600, and verify/signup/grid c
     const revealToken = (await readFile(join(stateDir, "f2-reveal.needle"), "utf8")).trim()
     assert.equal((await get(o.reveal + "/verify?kind=reveal", { method: "POST", headers: { authorization: "Bearer " + revealToken } })).status, 200)
     assert.equal((await get(o.reveal + "/verify?kind=reveal", { method: "POST", headers: { authorization: "Bearer wrong" } })).status, 401)
+    const seed = (await readFile(join(stateDir, "f2-qr.needle"), "utf8")).trim()
+    assert.equal((await get(o.reveal + "/verify?kind=qr", { method: "POST", headers: { authorization: `Bearer otpauth://totp/Fixture:owned?secret=${seed}&issuer=Fixture` } })).status, 200, "the QR payload verifies")
+    assert.equal((await get(o.reveal + "/verify?kind=qr", { method: "POST", headers: { authorization: "Bearer " + seed } })).status, 401, "the bare seed is not what a QR carries")
     const state = await get(o.reveal + "/state")
     assert.ok(!state.text.includes(revealToken), "the verify log holds hashes only")
         const home = (await get(o.reveal + "/")).text
