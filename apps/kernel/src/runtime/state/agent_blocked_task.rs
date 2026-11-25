@@ -6,7 +6,6 @@
 //! login, a payment or a consent each have their own kind of card.
 use super::agent_task_owner_resolution::OwnerTaskAction;
 use super::*;
-use crate::agent::authority_limit::ancestors;
 use crate::durable_state::agent_lifecycle::{
     self as ledger, AgentTaskExecution, ExecutionState, Operation, TaskOwnerAction, TaskUnblock,
 };
@@ -114,7 +113,7 @@ impl KernelRuntimeState {
     }
 
     /// `agent resume` / `agent resume cancel` on an agent that has no usage stop: settles its
-    /// blocked task. The person, and any agent above the target, may; the authority is the one that
+    /// blocked task. The person, an agent above the target, and another of the owner's agents the peer check admits may; the authority is the one that
     /// answered the card before.
     pub(super) async fn resolve_blocked_task_command(
         &self,
@@ -124,13 +123,10 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         if let Some(caller) = caller_agent_id {
-            let agents = owned.agent_store.list_agents();
-            if !ancestors(agent, &agents)
-                .iter()
-                .any(|ancestor| ancestor.id() == caller)
-            {
-                return Err(refused("only an agent above this one may settle its task"));
-            }
+            // Row 405: the same control check that admitted the command (an agent above, or
+            // another of the owner's agents within its own authority, in this Room or another).
+            let caller = owned.agent_store.get_agent(caller)?;
+            self.authorize_peer_control(&caller, agent, super::peer_rooms::PeerControl::Cancel)?;
         }
         let resume = match action {
             UsageLimitStopAction::ResumeWhenBack => true,
