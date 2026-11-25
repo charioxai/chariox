@@ -50,6 +50,44 @@ impl KernelRuntimeState {
         id
     }
 
+    /// A grant held by `holder`, which may already have exited.
+    pub(crate) fn insert_access_grant_held_by_for_test(&self, holder: ProcessIdentity) -> String {
+        let id = format!("held-access-{:016x}", rand::random::<u64>());
+        let grant = Grant {
+            covered: Vec::new(),
+            summary: KernelAccessGrant {
+                covered: Vec::new(),
+                grant_id: id.clone(),
+                owner_user_id: "owner".into(),
+                holder_pid: holder.pid,
+                holder_executable: holder.executable.clone(),
+                holder_harness: None,
+                term: KernelAccessTerm::UntilHolderExits,
+                expires_at_ms: None,
+            },
+            holder,
+            clock: None,
+        };
+        self.owned
+            .kernel_access
+            .lock()
+            .unwrap()
+            .grants
+            .insert(id.clone(), grant);
+        id
+    }
+
+    pub(crate) fn access_grant_ids_for_test(&self) -> Vec<String> {
+        self.owned
+            .kernel_access
+            .lock()
+            .unwrap()
+            .grants
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// One open choice for `agent_id`, watched by a fresh grant; returns the grant.
     pub(crate) fn open_watched_decision_for_test(
         &self,

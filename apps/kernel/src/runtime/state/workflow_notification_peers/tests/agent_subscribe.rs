@@ -177,6 +177,101 @@ fn an_agent_of_the_owner_follows_a_source_of_another_kernel_from_a_cold_cache() 
 }
 
 #[test]
+fn a_reached_agent_deadline_parks_the_subscription_without_retrying_from_a_peer() {
+    on_a_big_stack(async {
+        let mut drill = Drill::connect().await;
+        let source_id = drill.source.source(&drill.workflow).source_id;
+        let caller = room_agent(&drill);
+        let subscribed = caller
+            .tool(
+                NOTIFICATION_SUBSCRIBE,
+                serde_json::json!({"source":{"workflow":{"source_id":source_id}},"prompt":"review it"}),
+            )
+            .await
+            .unwrap();
+        assert!(subscribed.ok, "{:?}", subscribed.payload);
+        let now = crate::session::unix_epoch_ms();
+        drill
+            .target_runtime
+            .set_agent_deadline(
+                "local",
+                crate::local::SetAgentDeadlineRequest {
+                    session_id: drill.target.session.clone(),
+                    agent_id: AGENT.into(),
+                    deadline_ms: Some(now - 1),
+                },
+            )
+            .await
+            .unwrap();
+        drill
+            .target_runtime
+            .tick_agent_deadlines(now)
+            .await
+            .unwrap();
+
+        for run in ["deadline-1", "deadline-2"] {
+            drill.source.complete(
+                &drill.workflow,
+                run,
+                None,
+                WorkflowRunStatus::Completed,
+                run,
+            );
+        }
+        drill
+            .source_runtime
+            .owned
+            .session_store
+            .write()
+            .restore_session(
+                drill
+                    .source
+                    .sessions
+                    .get_session(&drill.source.session)
+                    .unwrap(),
+            );
+        drill
+            .source_runtime
+            .route_remote_workflow_notifications()
+            .await;
+
+        let candidates = |now| {
+            drill
+                .target
+                .store
+                .notification_candidates(true, now, 8)
+                .unwrap()
+        };
+        assert_eq!(
+            candidates(now + 2_000).len(),
+            2,
+            "Both peer deliveries were accepted"
+        );
+        drill.target_runtime.route_agent_notifications().await;
+        assert!(
+            candidates(now + 2_000).is_empty(),
+            "The parked subscriber leaves the retry queue"
+        );
+        assert_eq!(firings(&drill).0, 0);
+
+        let rows = drill
+            .target_runtime
+            .notification_subscription_rows("local")
+            .unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.subscription.source_id == source_id)
+            .unwrap();
+        assert!(row.paused, "The owner can see that delivery is parked");
+        assert_ne!(
+            row.subscription.source_kernel_id,
+            row.subscription.target_kernel_id
+        );
+        drill.finish().await;
+    });
+}
+
+#[test]
 fn the_trigger_command_names_a_source_of_another_kernel_by_id_or_name_with_a_prompt() {
     on_a_big_stack(async {
         let drill = Drill::connect().await;
