@@ -113,7 +113,6 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{UserCredentialInjectionConfig, UserCredentialSourceConfig};
 
     fn entry(id: &str, description: Option<&str>) -> EntryName {
         EntryName {
