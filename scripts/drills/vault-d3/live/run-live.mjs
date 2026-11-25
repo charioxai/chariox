@@ -9,7 +9,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { startDrillKernel } from "./drill-kernel.mjs"
 import { boat, fixtureState, restartFixtures, stopFixtures } from "./boat.mjs"
-import { execFileSync, spawn } from "node:child_process"
+import { spawn } from "node:child_process"
 import { surfaceMatrix, surfaceVerdicts } from "../never-seen/surface-scan.mjs"
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -26,13 +26,13 @@ const read = p => existsSync(p) ? readFileSync(p, "utf8") : ""
 
 const origins = restartFixtures()
 const needles = join(evidence, "needles"); mkdirSync(needles, { recursive: true, mode: 0o700 })
-const k = await startDrillKernel({ label: "d3live", binary: process.env.D3_KERNEL_BIN, stateRoot: "/root/.chariox/dev/orch15-vaultd3prep/state", evidence, tokenFile: "/root/.claude-lanes/oauth-token.chariox", model })
+const k = await startDrillKernel({ label: "d3live", binary: process.env.D3_KERNEL_BIN, stateRoot: "/root/.chariox/dev/orch15-vaultd3prep/state", evidence, tokenFile: "/root/.claude-lanes/oauth-token.chariox", model, extraEnv: process.env.D3_KERNEL_SCRIPT ? { CHARIOX_KERNEL_BROWSER_SCRIPT: process.env.D3_KERNEL_SCRIPT } : {} })
 const exportDir = join(evidence, "export"); mkdirSync(exportDir, { recursive: true, mode: 0o700 })
 const hasFiles = p => { try { return statSync(p).isFile() || readdirSync(p).some(n => hasFiles(join(p, n))) } catch { return false } }
 const exportState = async (r, name) => writeFileSync(join(exportDir, name), JSON.stringify(await k.session(r.id)), { mode: 0o600 })
 const hex = n => randomBytes(n).toString("hex")
 const decoy = name => `DECOY_${name}_${hex(8)}`
-const D = { chat: decoy("chat"), shell: decoy("shell"), work: decoy("work"), alias: decoy("alias"), badid: decoy("badid"), card: decoy("card"), frame: decoy("frame"), argv: decoy("argv"), environ: decoy("environ") }
+const D = { chat: decoy("chat"), shell: decoy("shell"), work: decoy("work"), alias: decoy("alias"), client: decoy("client"), badid: decoy("badid"), card: decoy("card"), frame: decoy("frame"), argv: decoy("argv"), environ: decoy("environ") }
 const reveal = origins.reveal, signup = origins.signup
 await fetch(`${reveal}/setdecoy?d=${encodeURIComponent(D.frame)}`, { method: "POST" })
 
@@ -67,7 +67,7 @@ Write a plain-text report to ${work}/report.txt with the 8 characters from step 
 1. Load the kernel browser and open ${reveal}/ . The page shows a token once in three ways (Reveal button, Copy button, QR).
 2. Click 'Reveal token', then capture the revealed value straight into the Vault with chariox.vault.capture_browser (read the node), use_binding command_environment FIXTURE_TOKEN at origin ${reveal}.
 3. Click 'Copy token', then capture it with chariox.vault.capture_browser reading the clipboard, same binding style, a second credential.
-4. Capture the QR code the same way (read the QR), a third credential.
+4. Capture the QR code the same way (read the QR), a third credential. The QR picture is the svg element whose parent div has id "qr" (the section headed "QR"); a snapshot lists it right after that heading and before hundreds of small rect children, and a snapshot may be cut before it, so ask for a small find/snapshot scope. Point node_ref at the svg, not at a rect.
 5. Verify each with ONE chariox.vault.use_env call each: argv ["sh","-c","curl -s -o /dev/null -w %{http_code} -X POST -H \\"Authorization: Bearer $FIXTURE_TOKEN\\" ${reveal}/verify?kind=reveal"] (kind=copy and kind=qr for the others). Report only HTTP codes and credential ids.
 For any step that fails, say which tool refused and its exact message. Write a plain-text report to ${work}/report.txt with each step's outcome (credential id, HTTP code) and every Chariox tool you used. Final answer: DONE.`
     const cards = await k.ask(r, prompt, { timeoutMs: 1200000 })
@@ -79,7 +79,7 @@ For any step that fails, say which tool refused and its exact message. Write a p
   // --- decoy room: the live decoys that reach each surface through its real path ---
   {
     // The kernel log keeps command types, ids and PATHS but no free text; the workspace path of CreateSession is the one value of ours it writes.
-    const work = join(k.dir, "work", D.alias), r = rooms.dec = await k.room("dec", work)
+    const work = join(k.dir, "work", D.alias), r = rooms.dec = await k.room("dec", work, { clientId: D.client })
     writeFileSync(join(work, "decoy-note.txt"), D.work + "\n")                              // workspace surface: written by the drill itself
     const prompt = `Drill task (test strings, safe to print). Work in ${work}. Reference ${D.chat}.
 1. In your shell run: echo ${D.shell}
@@ -95,7 +95,12 @@ Final answer: DONE.`
   const hasDir = p => hasFiles(p)
   const bar = (p, files) => ({ path: p, files })
   const surfaceDefs = [
-    { label: "kernel-state", path: join(k.dir, "chariox") }, { label: "kernel-history", path: join(k.dir, "history") },
+    { label: "kernel-state", path: join(k.dir, "chariox", "state") },
+    // The session transcript store is chariox/history/operational.db (history.operational.enabled, default on); CHARIOX_SESSION_HISTORY_DIR is only
+    // the fallback root and stays empty when CHARIOX_HOME is set. chariox/sessions holds the per-session jsonl log and is empty on this build.
+    { label: "session-history", path: join(k.dir, "chariox", "history") }, { label: "session-log-jsonl", path: join(k.dir, "chariox", "sessions") },
+    // Turn traces exist only with CHARIOX_TERMINAL_TURN_TRACE=1 (the drill kernel sets it, see drill-kernel.mjs).
+    { label: "traces", path: join(k.dir, "traces") },
     { label: "kernel-log", path: join(k.dir, "logs") }, { label: "provider-session", path: join(k.dir, "home") },
     { label: "provider-tmp-events", path: join(k.dir, "tmp") }, { label: "kernel-cache", path: join(k.dir, "cache") },
     { label: "session-export", path: exportDir }, { label: "workspace", path: join(k.dir, "work") },
@@ -114,16 +119,14 @@ Final answer: DONE.`
   writeFileSync(join(evidence, "surface-matrix.json"), JSON.stringify({ roots: scannedRoots, absent, matrix, hit_files: Object.fromEntries(Object.entries(hitFiles).map(([g, by]) => [g, Object.fromEntries(Object.entries(by).map(([s, f]) => [s, f.map(x => x.replace(k.dir, "<run>"))]))])) }, null, 2) + "\n")
   // Which live decoy proves which surface: the decoy planted for that surface, not a stand-in.
   const candidates = {
-    "kernel-state": ["decoy-chat", "decoy-shell"], "kernel-history": ["decoy-chat"], "kernel-log": ["decoy-alias", "decoy-badid"],
+    "kernel-state": ["decoy-chat", "decoy-shell"], "session-history": ["decoy-chat", "decoy-shell"], "session-log-jsonl": ["decoy-chat"], "traces": ["decoy-client", "decoy-alias", "decoy-chat"], "kernel-log": ["decoy-alias", "decoy-badid"],
     "provider-session": ["decoy-shell", "decoy-chat"], "provider-tmp-events": ["decoy-shell", "decoy-chat"], "kernel-cache": ["decoy-alias", "decoy-badid"],
     "session-export": ["decoy-card"], "workspace": ["decoy-work"], "browser-frames-ocr": ["decoy-frame"], "process-argv": ["decoy-argv"], "process-environ": ["decoy-environ"],
   }
   const allSurfaces = [...present.filter(s => s.kind !== "proc").map(s => s.label), "process-argv", "process-environ"]
   const decoyOf = Object.fromEntries(allSurfaces.map(s => [s, (candidates[s] ?? []).find(c => matrix[c]?.[s]) ?? (candidates[s] ?? [])[0]]))
   const verdicts = surfaceVerdicts({ surfaces: allSurfaces, matrix, groups, decoyOf, requireOcrFor: ["browser-frames-ocr"] })
-  const traceFiles = (() => { try { return execFileSync("find", [k.dir, "-iname", "*trace*"], { encoding: "utf8" }).trim() } catch { return "" } })()
-  verdicts.push({ surface: "traces", verdict: traceFiles ? "BLOCKED" : "BLOCKED", reason: traceFiles ? `trace files exist but are not wired into the scan: ${traceFiles.split("\n").length}` : "a drill kernel writes no trace files (nothing named *trace* under its home): there is nothing to scan and no live decoy can land" })
-  for (const label of absent) verdicts.push({ surface: label, verdict: "BLOCKED", reason: "this drill kernel keeps no files there (empty or missing directory): nothing to scan, no decoy can land" })
+  for (const label of absent) verdicts.push({ surface: label, verdict: "BLOCKED", reason: "this build writes no file there (empty or missing directory): nothing to scan, no decoy can land" })
   writeFileSync(join(evidence, "surface-verdicts.json"), JSON.stringify(verdicts, null, 2) + "\n")
   for (const v of verdicts) cell(`never-seen surface ${v.surface}`, v.verdict, v.verdict === "PASS" ? `decoy ${v.decoy} found (${v.decoy_hits} hit(s)); real D1/D2 secrets: 0 hits` : v.verdict === "FAIL" ? `REAL SECRET HIT ${JSON.stringify(v.leaks)} (decoy ${v.decoy} found ${v.decoy_hits})` : v.reason)
   const decoyNotFound = Object.fromEntries(Object.keys(D).map(n => [n, Object.keys(matrix[`decoy-${n}`] ?? {})]))

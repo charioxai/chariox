@@ -39,7 +39,9 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, tok
     CHARIOX_HOME: join(dir, "chariox"), CHARIOX_LOG_DIR: join(dir, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"),
     CHARIOX_DAEMON_SOCKET: join(socketDir, "kernel.sock"), CHARIOX_DAEMON_ALIAS: label, CHARIOX_MACHINE_ALIAS: `${label}-machine`,
     CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
-    CHARIOX_KERNEL_BROWSER_EXECUTABLE: "/usr/bin/google-chrome", ...extraEnv,
+    CHARIOX_KERNEL_BROWSER_EXECUTABLE: "/usr/bin/google-chrome",
+    // Turn traces are OFF by default (debug_trace.rs: CHARIOX_TERMINAL_TURN_TRACE=1 turns them on, one jsonl per session in the trace dir).
+    CHARIOX_TERMINAL_TURN_TRACE: "1", CHARIOX_TERMINAL_TURN_TRACE_DIR: join(dir, "traces"), ...extraEnv,
   }
   const log = openSync(join(evidence, "kernel.log"), "a", 0o600)
   const child = spawn(binary, [], { env, stdio: ["ignore", log, log] })
@@ -60,11 +62,11 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, tok
   const profile = (await rpc({ GetProviderAccountProfile: { provider: "claude", account_profile: "default" } })).ProviderAccountProfile.profile.profile_id
   note("claude-account-installed", { profile })
   const session = async id => (await rpc({ GetSessionState: { session_id: id } })).SessionState.session
-  async function room(alias, workDir) {
+  async function room(alias, workDir, { clientId } = {}) {
     mkdirSync(workDir, { recursive: true })
     const made = (await rpc({ CreateSession: { workspace_id: workDir, worktree_id: workDir, alias, agent_defaults: { provider: "claude", account_profile: profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
     const id = made.session.id, agent = made.agent.id
-    const attachment = (await rpc({ AttachToSession: { session_id: id, client_id: `${label}-owner`, capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    const attachment = (await rpc({ AttachToSession: { session_id: id, client_id: clientId ?? `${label}-owner`, capability_level: "FullTerminal" } })).SessionAttached.attachment.id
     await client.subscribeToKernelEvents(id, attachment)
     await rpc({ LaunchProviderRun: { session_id: id, agent_id: agent, adapter_key: "claude", provider: "claude", account_profile: profile, model, variant: "low", native_tui: false } })
     return { id, agent, attachment, workDir }
