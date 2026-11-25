@@ -408,6 +408,20 @@ fn copy_peer_failure(code: &str) -> DaemonError {
         "provider_account_copy_target_vault_locked" => {
             failure("provider_account_copy_target_vault_locked")
         }
+        "provider_account_copy_vault_unreadable" => {
+            failure("provider_account_copy_vault_unreadable")
+        }
+        "provider_account_copy_target_vault_unreadable" => {
+            failure("provider_account_copy_target_vault_unreadable")
+        }
+        "provider_account_copy_credential_unreadable" => {
+            failure("provider_account_copy_credential_unreadable")
+        }
+        "provider_account_copy_target_credential_unreadable" => {
+            failure("provider_account_copy_target_credential_unreadable")
+        }
+        "provider_account_copy_cli_missing" => failure("provider_account_copy_cli_missing"),
+        "provider_account_copy_replace_differs" => failure("provider_account_copy_replace_differs"),
         "provider_account_copy_conflict" => failure("provider_account_copy_conflict"),
         "provider_account_copy_rejected" => failure("provider_account_copy_rejected"),
         "provider_account_copy_verification_failed" => {
