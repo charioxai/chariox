@@ -57,9 +57,11 @@ export async function closeDisplayChild(child, graceMs = 500) {
 }
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set();this.nativeSession=randomUUID(); }
-  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = []) {
+  // R1 (agreed with webperf-r19 11-22): options.crop {x,y,width,height} in device pixels: an encoded image (a region of a
+  // display-less browser's Tab screencast) is cropped in the child right after decoding; the raw frame shape is unchanged.
+  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = [], {crop} = {}) {
     if(png?.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(png,bitrate,reset,false);
-    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions});
+    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions,...(crop?{crop}:{})});
   }
   async encodeStripes(raw,bitrate,reset=false,codec='avc1.420033'){
     if(raw.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(raw,bitrate,reset,true);
@@ -106,7 +108,14 @@ export class PortableEncoder {
       this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
     }
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
+  // Row 401 F2: start the helper ahead of the first frame. Its cold start (process, imports, first decode and crop) cost ~96 ms
+  // of a region's first key frame after every (re)subscribe; a frame sent meanwhile waits for it rather than being refused busy.
+  warm() {
+    if(this.child||this.failure)return Promise.resolve();
+    return this.warming??=this.exchange({operation:'warm'}).then(()=>{},()=>{}).finally(()=>{this.warming=null;});
+  }
   async exchange(request) {
+    if(this.warming&&request.operation!=='warm')await this.warming;
     if(request.raw)request={...request,protected_regions:request.raw[displayMaskRegions]??[]};
     if (this.failure) throw this.failure;
     if (!this.child) {
@@ -146,6 +155,8 @@ export class PortableEncoder {
               this.packets.add(reply.packet.name);
             }
             this.pending.resolve({stripes:reply.stripes,...(reply.packet?{packet:reply.packet}:{})});
+          }else if(this.pending?.warm){
+            this.pending.resolve(reply.warm===true);
           }else if(this.pending?.hash){
             if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>2560||reply.width*reply.height>2560*1600)return fail();
             this.pending.resolve(reply);
@@ -163,7 +174,7 @@ export class PortableEncoder {
     try {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
-        this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
+        this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint',warm:request.operation==='warm', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
         if(request.raw?.[displayNativeMaskSource]){
           // MP-08/MP-10/MP-11: lease held by MotionEncoder until the native
           // helper finishes. No unmasked bytes enter a codec or packet file.
@@ -387,7 +398,7 @@ export class DisplayStream {
     else if (this.codec === 'png'||source.force_lossless) payload = full();
     else {
       codec.used = true;
-      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[]);
+      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[],source.crop?{crop:source.crop}:{});
       offer=encoded.lease??null;
       if(encoded.dropped)payload=full();
       else if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}

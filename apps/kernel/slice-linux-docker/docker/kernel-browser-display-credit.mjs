@@ -112,7 +112,7 @@ export async function displayCredit(host, stream, command, signal) {
     // packet. A lost canvas base also reoffers any skipped patchable source.
     // Once retired, empty credits must let the pending recovery key finish.
     if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate(true,stream.document_id!==tab.document_id?'document':'credit_lag');
-    if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:host.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
+    if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:region&&stream.regionSource.exactCapture?stream.regionSource.exactCapture():host.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
     const policy=host.protection;
     const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
     // Always run the deadline/epoch-aware verifier before unchanged reuse.
@@ -190,6 +190,13 @@ export async function displayCredit(host, stream, command, signal) {
   return { generation: host.generation, frame_sent: frame !== null, display_frame: frame };
 }
 
+// The source's next frame, the pause or an abort, whichever comes first.
+const nextSourceFrame = (source, ms, signal) => new Promise(resolve => {
+  let off = () => {};
+  const done = () => { clearTimeout(timer); off(); signal?.removeEventListener('abort', done); resolve(); };
+  const timer = setTimeout(done, ms); off = source.subscribe(done); signal?.addEventListener('abort', done, { once: true });
+});
+
 // MP-08/MP-10: a push credit returns a frame or, after a bounded wait on
 // encoder/refiner/source readiness, nothing. The kernel pump re-issues it.
 export async function displayPushCredit(host, stream, command, signal, { budgetMs = 100, now = () => performance.now() } = {}) {
@@ -218,7 +225,13 @@ export async function displayPushCredit(host, stream, command, signal, { budgetM
     const refining = stream.refiner?.active;
     // A protected CDP capture source has no readiness signal: retry at the
     // old viewer idle-credit cadence (33 ms while active, else 100 ms).
-    if (!producer) { await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(now() - (stream.pushedAt ?? -Infinity) < 300 ? 33 : 100, deadline - now())))); if (now() >= deadline) return reply; continue; }
+    if (!producer) {
+      const pause = Math.max(0, Math.min(now() - (stream.pushedAt ?? -Infinity) < 300 ? 33 : 100, deadline - now()));
+      // Row 401 F1 (webperf-r19 A1): a screencast region (re)subscribed before its source's first frame wakes on that frame; the
+      // blind pause slept through it (~100 ms of the first picture after every re-subscribe). Other sources keep the idle cadence.
+      await (stream.regionScreencast ? nextSourceFrame(stream.regionSource, pause, signal) : new Promise(resolve => setTimeout(resolve, pause)));
+      if (now() >= deadline) return reply; continue;
+    }
     // Exact repair waits for the end of the quiet window, never past it.
     const quiet = stream.refiner?.quietNativeMs ?? 50;
     const changed = Math.max((stream.regionSource??host.compositors.get(stream.tab_id)?.source)?.changedAt ?? -Infinity, host.inputChangedAt.get(stream.tab_id) ?? -Infinity);

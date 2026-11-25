@@ -2465,19 +2465,121 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
-// A headless browser has no window to read a region from: it refused every region display as a stale reference, and the
-// viewer asked again every second for as long as the page was open. It now says once, with a fixed reason, that it never can.
-test("MP-08: a browser with no display of its own refuses a region display with that reason", () => mirrored(
-  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c"></canvas>',
+// R1 (proposal R): a browser with no display of its own (headless) gives a page region video from Chrome's own frames: the region
+// display is granted as a crop of the Tab's screencast, and a canvas animating at 60 fps reaches it at >= 25 frames a second.
+// (It used to refuse with region_video_no_display, and the viewer showed one still a second.)
+test("R1a: a browser with no display of its own streams a region as a crop of the Tab's screencast", () => mirrored(
+  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
   async ({ host, next, subscription_id, generation, tab_id }) => {
     const packet = await next(), stream = host.mirror.streams.get(subscription_id);
     const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
     assert(region_id, "MP-10: the canvas is an opaque region");
     const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
-    const refused = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
-    assert(refused, "MP-08: no region display without a display");
-    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", `the region display is granted: ${JSON.stringify(reply)}`);
+    assert.deepEqual([reply.css_width, reply.css_height], [200, 100]);
+    const source = host.displays.get(reply.subscription_id)?.regionSource;
+    assert(source, "the region's source is attached");
+    const serials = new Set(), off = source.subscribe(frame => { if (frame?.crop) serials.add(frame.serial); });
+    await settle(500); serials.clear(); const t0 = Date.now(); await settle(2000);
+    const fps = serials.size / ((Date.now() - t0) / 1000); off();
+    assert(fps >= 25, `the region gets >= 25 frames a second from the screencast (${fps.toFixed(1)})`);
+    const sample = source.sample();
+    assert.deepEqual([sample.width, sample.height, sample.crop.width, sample.crop.height], [200, 100, 200, 100], "frames are named at the crop");
+    // The display's own frame path: the shared screencast image goes to the encoder with the region's crop, and the video is
+    // the crop's size.
+    const display = host.displays.get(reply.subscription_id), calls = [], encode = display.encoder.encode.bind(display.encoder);
+    const encoded = [];
+    display.encoder.encode = async (...args) => { const data = typeof args[0] === "string" ? args[0] : ""; const call = { crop: args[5]?.crop ?? null, jpeg: data.startsWith("/9j/") }; calls.push(call); const result = await encode(...args); encoded.push(Boolean(result?.data_base64)); return result; };
+    for (let i = 0; i < 20 && !encoded.includes(true); i++) { await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); await settle(100); }
+    assert(calls.length >= 1 && calls.every(c => !c.jpeg || c.crop?.width === 200 && c.crop?.height === 100), `a screencast image reaches the encoder only with the region's crop (${JSON.stringify(calls)})`);
+    assert(encoded.includes(true), `the encoder produced video for the crop (${JSON.stringify(encoded)})`);
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 1 (P1): once a screencast region stops moving, its lossless exact still is the region's own crop at the viewer's
+// density (the presenter accepts only css size x DPR), never the whole viewport.
+for (const dpr of [1, 2]) test(`R1: a screencast region at rest gets its exact still at the region's size (viewer DPR${dpr})`, () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:30px;top:40px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false}(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);if(run)requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: dpr });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), captures = [], frames = [];
+    const screenshot = host.displayScreenshot.bind(host);
+    host.displayScreenshot = async (...args) => { const shot = await screenshot(...args); captures.push([shot.width, shot.height]); return shot; };
+    const source = display.regionSource, own = source.exactCapture?.bind(source);
+    if (own) source.exactCapture = async () => { const shot = await own(); captures.push([shot.width, shot.height]); return shot; };
+    const credit = async () => { const r = await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); if (r?.display_frame) frames.push(r.display_frame); };
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !captures.length; i++) { await credit(); await settle(120); }
+    assert(captures.length, "an exact still is captured once the region rests");
+    // The display's density is the page's own (observation never changes it): the presenter accepts css size x reply DPR.
+    const k = reply.device_scale_factor;
+    assert(captures.every(([w, h]) => w === 200 * k && h === 100 * k), `every exact capture is the region's crop at the display's DPR ${k} (${JSON.stringify(captures)})`);
+    const exact = frames.filter(f => f.payload?.kind === "png" || f.kind === "png");
+    for (const f of exact) { const png = Buffer.from(f.payload?.data_base64 ?? f.data_base64, "base64"); assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [200 * k, 100 * k], "the exact frame is the region's size"); }
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, { device_scale_factor: dpr }, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 2 (P2): a CDP clip is in page coordinates, the lease rect in viewport ones. On a page scrolled to y=500 a canvas seen at
+// viewport y=40 is captured at page y=540: the exact still at rest holds the canvas's own final pixels, not the page elsewhere.
+test("R1: a screencast region's exact still on a scrolled page holds the region's own pixels", () => mirrored(
+  '<style>body{margin:0;height:3000px;background:#f0f}canvas{position:absolute;left:30px;top:540px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>scrollTo(0,500);const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false;g.fillStyle="rgb(0,128,255)";g.fillRect(0,0,200,100)}(function f(){if(!run)return;g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    await evaluate("scrollTo(0,500)"); await settle(300);
+    let packet = await next(); for (let i = 0; i < 4 && !(await evaluate("scrollY")); i++) packet = await next();
+    assert.equal(await evaluate("scrollY"), 500, "fixture: the page is scrolled");
+    const stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), shots = [], errors = [];
+    const source = display.regionSource, own = source.exactCapture.bind(source);
+    source.exactCapture = async () => { try { const shot = await own(); shots.push(shot); return shot; } catch (error) { errors.push(String(error?.message ?? error)); throw error; } };
+    const credit = () => host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null);
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !shots.length; i++) { await credit(); await settle(120); }
+    assert(shots.length, `an exact still is captured once the region rests (${JSON.stringify(errors)})`);
+    const { pixels, width, height } = decodePng(shots.at(-1).data_base64, 1), at = ((height >> 1) * width + (width >> 1)) * 4;
+    assert.deepEqual([...pixels.subarray(at, at + 3)], [0, 128, 255], "the exact still is the canvas's final picture, not the page beside it");
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 S4/S1 (orch14 decision 11-22 under AGENTS.md "Secrets and agents"): a Vault fill on a page whose region streams raw screencast
+// pixels fences before the value is written (the kernel registers the target, host.protect, then fills): no frame captured at or
+// after that moment reaches the lease, and the region stops. The same when the target is in a child frame.
+const fillPage = child => `<style>body{margin:0}canvas{width:300px;height:120px;display:block}#v{position:absolute;left:20px;top:40px;width:200px;font:20px monospace}</style><canvas id="c" width="300" height="120"></canvas>${child ? '<iframe id="f" srcdoc="<input id=v>" style="position:absolute;left:20px;top:40px;width:220px;height:40px;border:0"></iframe>' : '<input id="v">'}<script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=\`hsl(\${(n++*7)%360},80%,50%)\`;g.fillRect(0,0,300,120);requestAnimationFrame(f)})()</script>`;
+for (const child of [false, true]) test(`R1 S4${child ? "/S1 (target in a child frame)" : ""}: a Vault fill fences the region screencast before the value is written`, () => mirrored(fillPage(child),
+  async ({ host, next, subscription_id, generation, tab_id }) => {
+    await settle(400);
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    const source = host.displays.get(reply.subscription_id).regionSource, frames = [];
+    source.subscribe(frame => frames.push({ at: Date.now(), captured: frame.capturedAt }));
+    await settle(700);
+    assert(frames.length > 5, `frames flow before the fill (${frames.length})`);
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+    const { nodeIds } = await connection.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: child ? "iframe" : "#v" }, sessionId);
+    let backendNodeId = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0] }, sessionId)).node.backendNodeId;
+    if (child) { const frame = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0], depth: -1, pierce: true }, sessionId)).node; const find = n => n.attributes?.includes("v") && n.nodeName === "INPUT" ? n : (n.children ?? []).concat(n.contentDocument ? [n.contentDocument] : []).map(find).find(Boolean); backendNodeId = find(frame).backendNodeId; }
+    const before = frames.length, fillStart = Date.now();
+    await host.protect({ values: ["SECRET-4242"], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${backendNodeId}` }] });
+    await evaluate_fill(host, tab, child);
+    await settle(1200);
+    const late = frames.slice(before).filter(f => f.captured >= fillStart);
+    assert.deepEqual(late, [], `no frame captured after the fill started reached the lease (${late.length} of ${frames.length - before} after)`);
+    assert.equal(source.valid(), false, "the region stops"); assert.equal(source.sample(), null);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+async function evaluate_fill(host, tab, child) {
+  const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  await connection.send("Runtime.evaluate", { expression: child ? `document.getElementById("f").contentDocument.getElementById("v").value="SECRET-4242"` : `document.getElementById("v").value="SECRET-4242"` }, sessionId);
+}
 // The navigation preview asks for a Tab display. A headless browser answered with a CDP display at the viewer's layout
 // size, which the viewer rejects as invalid geometry: every navigation retried it while the new page stayed hidden.
 test("MP-08: a browser with no display of its own refuses a Tab display with that reason", () => mirrored(
