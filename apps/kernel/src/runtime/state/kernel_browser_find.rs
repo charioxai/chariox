@@ -92,6 +92,8 @@ fn kind(node: &Value) -> Option<&'static str> {
 /// DOM layout the accessibility tree lacks: bounds by node, parents, and each document's scroll.
 struct Layout<'a> {
     by_ref: BTreeMap<&'a str, &'a Value>,
+    /// Refs the accessibility tree names a button or link: a control is not a box.
+    controls: std::collections::BTreeSet<&'a str>,
     scroll: Vec<(f64, f64)>,
 }
 
@@ -114,7 +116,18 @@ impl<'a> Layout<'a> {
                 )
             })
             .collect();
-        Self { by_ref, scroll }
+        let controls = snapshot["accessibility_nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|node| matches!(kind(node), Some("button" | "link")))
+            .filter_map(|node| node["node_ref"].as_str())
+            .collect();
+        Self {
+            by_ref,
+            controls,
+            scroll,
+        }
     }
 
     fn bounds(&self, reference: &str) -> Option<&'a Value> {
@@ -178,6 +191,8 @@ fn container(node: &Value, query: &str, layout: &Layout<'_>, snapshot: &Value) -
         .as_str()
         .is_some_and(|role| CONTAINER_ROLES.contains(&role));
     if node["ignored"] == true
+        || layout.controls.contains(reference)
+        || matches!(attributes["role"].as_str(), Some("button" | "link"))
         || !(CONTAINER_TAGS.contains(&node["node_name"].as_str().unwrap_or_default()) || named_role)
         || !node["bounds"]["width"].as_f64().is_some_and(|w| w > 0.0)
     {

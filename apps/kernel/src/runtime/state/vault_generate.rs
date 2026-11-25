@@ -88,15 +88,15 @@ impl GenerateArgs {
 pub(crate) fn vault_generate_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_GENERATE.into(),
-        description: "Generate a random value without sudo or task approval and store it only in the owner's Vault. Returns an opaque credential_id, never the value. Give exactly one of: origin, a password for one exact site (fill it with chariox.kernel_browser_paste_secret into an observed password field, then click the observed submit button); or use_binding, a random secret for one command environment variable, command stdin or workspace file (a webhook, database or app secret; use it with chariox.vault.use_env or chariox.vault.write_file at exactly that destination). format hex makes length hex characters (default 64 = 32 bytes). Command values have no symbols unless symbols is true. Retrying with the same request_id returns the same credential.".into(),
+        description: "Generate a random value and store it only in the owner's Vault, without sudo or approval. Returns an opaque credential_id, never the value. Give exactly one of: origin (a password for one exact site; fill it with chariox.kernel_browser_paste_secret), or use_binding (a random secret for one command environment variable, stdin or workspace file, used at exactly that destination with chariox.vault.use_env or write_file). format hex makes length hex characters (default 64). Command values have no symbols unless symbols is true. The same request_id returns the same credential.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
-            "origin":{"type":"string","description":"Site origin such as https://example.com (a site password)"},
-            "use_binding": super::vault_command::capture_binding_schema(),
+            "origin":{"type":"string","description":"Site origin such as https://example.com"},
+            "use_binding":{"type":"object","description":"As in capture_command: {target:{kind:command_environment,name,origin} | {kind:command_stdin,origin} | {kind:file,path}}"},
             "format":{"type":"string","enum":["password","hex"],"default":"password"},
             "description":{"type":"string","maxLength":200},
-            "length":{"type":"integer","minimum":16,"maximum":128,"description":"default 24 (password) or 64 (hex)"},
-            "symbols":{"type":"boolean","description":"default true for a site password, false for a command value"}},"additionalProperties":false}),
+            "length":{"type":"integer","minimum":16,"maximum":128,"description":"default 24, hex 64"},
+            "symbols":{"type":"boolean","description":"default true for a site, false for a command"}},"additionalProperties":false}),
     }
 }
 
