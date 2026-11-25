@@ -33,6 +33,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             font_absent: None,
             viewport_first: None,
             visited_links: None,
+            layout_delta: None,
             layout_width: None,
             layout_height: None,
         },
@@ -57,6 +58,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             font_absent: None,
             viewport_first: None,
             visited_links: None,
+            layout_delta: None,
             layout_width: None,
             layout_height: None,
         },
@@ -90,11 +92,13 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             node_id: "n1".into(),
             x: None,
             y: None,
+            button: None,
         }),
         binding(A::Click {
             node_id: "n1".into(),
             x: Some(4.5),
             y: Some(2.0),
+            button: None,
         }),
         binding(A::Focus {
             node_id: "n1".into(),
@@ -192,6 +196,37 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         "MP-11: no retained mirror DOM/media receipts"
     );
 }
+// B3/B4: a hover move, a leave and a right click are mirror actions of their own shape; a middle-button page click is not one.
+#[test]
+fn browser_mirror_move_and_right_click_shapes() {
+    for (value, ok) in [
+        (
+            serde_json::json!({"kind":"move","node_id":"n1","x":4.5,"y":2.0}),
+            true,
+        ),
+        (
+            serde_json::json!({"kind":"click","node_id":"n1","x":4.5,"y":2.0,"button":"right"}),
+            true,
+        ),
+        (serde_json::json!({"kind":"leave"}), true),
+        (serde_json::json!({"kind":"leave","node_id":"n1"}), false),
+        (serde_json::json!({"kind":"move","node_id":"n1"}), false),
+        (
+            serde_json::json!({"kind":"move","node_id":"n1","x":1.0,"y":1.0,"button":"right"}),
+            false,
+        ),
+        (
+            serde_json::json!({"kind":"click","node_id":"n1","button":"left"}),
+            false,
+        ),
+    ] {
+        let parsed = serde_json::from_value::<A>(value.clone());
+        assert_eq!(parsed.is_ok(), ok, "{value}");
+        if let Ok(action) = parsed {
+            assert_eq!(serde_json::to_value(action).unwrap(), value);
+        }
+    }
+}
 #[test]
 fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {
     for value in [
@@ -236,7 +271,7 @@ fn browser_mirror2_font_cache_1011_shape_is_pinned() {
     let snapshot = include_str!("browser-mirror2-font-cache-1011.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
-        "bd367795e39ec2a0656433ac55474448d9e1cef23ee3fdf4065184a4df34f2dc"
+        "e2e4607965f221ee299d1ede36f02705a7ce09c8c6ea4730a888224139611968"
     );
     let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
@@ -280,7 +315,7 @@ fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-failures-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "dd04039287e6ac99cf0260532c258be868223c2a06a5982c9221be799ab44503"
+        "20683960d8f2849fa3b2cf8ac876d8dc19764b4738a14329d5c3a9d92e17070d"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -301,7 +336,7 @@ fn browser_mirror2_font_absent_567_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-absent-567.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "e3ee1a8ac64028e3c297d5f9cc0463de159bef7a955117cc433d9a894437adc8"
+        "3fb925f8246eb0f1cc618d4778ba9bd36e8dc85c69cec2837f34aa34be8e77c0"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -329,7 +364,7 @@ fn browser_mirror2_viewport_first_629_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-viewport-first-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "e7e6e1e613ed5eee6a8b47a48bd1abfe49a61ca7672f0c705283333869c81550"
+        "46445639e3999b3d7062224129c64a6ba91346d97688ed2743d6344af7de78fb"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -357,7 +392,7 @@ fn browser_mirror2_visited_links_629_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-visited-links-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "218b322f543ce9491b0a71d8c2829266347ae0c5e492e0943da364b81a6731ae"
+        "b2cb105790065ef402c99fd4a24e8b3254f0c347b07dac24ca70df66fa416bbf"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -379,13 +414,42 @@ fn browser_mirror2_visited_links_629_shape_is_pinned() {
 }
 
 #[test]
+fn browser_mirror2_layout_delta_1015_shape_is_pinned() {
+    // MP-08/MP-10: local 1015 (relay peer unchanged): a subscription that asks for `layout_delta` and holds a complete
+    // snapshot follows a page size change by an ordinary delta whose header names the new `css_width`/`css_height`;
+    // the page's own reaction follows as ops. Without it the stream still re-snapshots (resetReason 'layout').
+    let bytes = include_bytes!("browser-mirror2-layout-delta-1015.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "e259ae19cbbe732177e24e0985fd7d7f5bc0a15312ea1996a5032a755fe10461"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["subscribed", "resized_delta", "reaction_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
 fn browser_mirror2_focus_visible_1013_shape_is_pinned() {
     // MP-08/MP-10: local 1013 (relay peer 450): the mirror v2 header says whether the page's focused element
     // matches :focus-visible, beside `focused`; a delta carries it when only the ring changes.
     let bytes = include_bytes!("browser-mirror2-focus-visible-1013.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "e91dcd34e3a5927695c7c8721871146fb5fbf07db1b4910c266f89f012b5080e"
+        "785ce6b5870fb827bef7ad8c464431dc41167ac531fb42d2572f3a416962935a"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -412,7 +476,7 @@ fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "7f6d5137d0d95142c88e0f404b4d5ea85f4c14f6cb547e0a913d991eb017e25c"
+        "3f720b62261811a416506bf2f41d2bdd61ba27ecf8371bc245d9a0176ddbc027"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -460,7 +524,7 @@ fn browser_pointer_cursor_and_document_mode_920_shape_is_pinned() {
     let bytes = include_bytes!("browser-pointer-cursor-document-mode-920.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "0eab8fedec393601d8aef360dc9a7d3692862dbcbdcf862caacec97f92d077ee"
+        "6d20c06829d61f08e1f112dcc1ddb036c75cee3998d7037e9a3b780cc698c358"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -475,6 +539,62 @@ fn browser_pointer_cursor_and_document_mode_920_shape_is_pinned() {
         fixture["pointer_cursor"]
     );
     for name in ["pointer_cursor_result", "quirks_reset"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn browser_mirror2_page_wheel_1014_shape_is_pinned() {
+    // MP-08/MP-10: provisional 1014 (relay peer 451): the mirror v2 header says whether the page's own script takes the
+    // wheel (a non-passive wheel listener on window, document, html or body); a delta carries it when it changes.
+    let bytes = include_bytes!("browser-mirror2-page-wheel-1014.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "61de9ef91edcba1f741661dbb697f7b551eca6e40522e435319b6e12a512ab13"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["takes_delta", "gives_back_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn browser_mirror2_media_playing_1015_shape_is_pinned() {
+    // Row 486: provisional local 1015: the mirror v2 header says whether a mirrored video or audio element plays (muted or
+    // not), so the viewer never evicts that Tab; a delta carries it when it changes.
+    let bytes = include_bytes!("browser-mirror2-media-playing-1015.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "ee70cc0c9ab352f083e523c06d2634842865c993582df7bd97cf5cd3bddf5397"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["starts_playing", "stops_playing"] {
         let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), wire);

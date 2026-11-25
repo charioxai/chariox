@@ -37,7 +37,7 @@ async fn cold_restart_releases_open_kernel_access_decisions() {
 }
 
 async fn request_access(kernel: &Kernel, terminal: &mut Socket) -> String {
-    let stream = tokio::net::UnixStream::connect(kernel.scratch.join("k.sock"))
+    let stream = tokio::net::UnixStream::connect(super::short_socket_path(kernel.port))
         .await
         .unwrap();
     let (mut unix, _) = tokio_tungstenite::client_async("ws://localhost/kernel", stream)

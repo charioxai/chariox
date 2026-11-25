@@ -25,9 +25,10 @@ impl DaemonApp {
             .map(|session| session.id().to_string())
             .collect::<Vec<_>>();
         let mut first_error = None;
+        let mut reaps = crate::pty::PtyShutdownReaps::default();
 
         for session_id in session_ids {
-            if let Err(error) = self.shutdown_cleanup_session_runtime(&session_id) {
+            if let Err(error) = self.shutdown_cleanup_session_runtime(&session_id, &mut reaps) {
                 crate::logging::error_with_fields(
                     "daemon.shutdown",
                     "failed to clean session runtime during daemon shutdown",
@@ -42,6 +43,9 @@ impl DaemonApp {
             }
         }
 
+        if let Err(error) = reaps.finish() {
+            first_error.get_or_insert(error);
+        }
         crate::provider::shutdown_opencode_account_endpoints();
         crate::provider::shutdown_codex_account_endpoints();
 
@@ -90,11 +94,15 @@ impl DaemonApp {
             }
         }
         if let Some(access) = crate::hot_reload::take_user_domain() {
-            self.kernel_browser_host.adopt_access(access);
+            self.kernel_browser_host.adopt_loaded(access);
         }
     }
 
-    fn shutdown_cleanup_session_runtime(&mut self, session_id: &str) -> Result<(), DaemonError> {
+    fn shutdown_cleanup_session_runtime(
+        &mut self,
+        session_id: &str,
+        reaps: &mut crate::pty::PtyShutdownReaps,
+    ) -> Result<(), DaemonError> {
         let removed_attachments = self.attachments.remove_session_attachments(session_id);
         #[cfg(unix)]
         crate::hot_reload::hand_over_attachments(&removed_attachments);
@@ -132,7 +140,8 @@ impl DaemonApp {
             // A PTY offered to a hot reload ends before the swap unless its
             // turn is handed over.
             if !offered_ptys.iter().any(|run_id| run_id == run.id()) {
-                provider_runtime::ProviderProcessTracker::new(self).remove_run(run.id())?;
+                provider_runtime::ProviderProcessTracker::new(self)
+                    .remove_run_with_reaps(run.id(), Some(reaps))?;
             }
         }
 
@@ -180,6 +189,9 @@ impl DaemonApp {
     }
 
     async fn run_with_listener(self, listener: Option<TcpListener>) -> Result<(), DaemonError> {
+        let startup_probe = self
+            .managed_kernel_registration()
+            .map(|registration| (self.config().clone(), registration));
         let empty_context_completion =
             crate::managed_context::empty::EmptyManagedContextCompletion::prepare(
                 self.config(),
@@ -242,6 +254,14 @@ impl DaemonApp {
         );
         let empty_context_completion_task = empty_context_completion.map(|completion| {
             tokio::spawn(completion.run(relay_state.clone(), shutdown_rx.clone()))
+        });
+        let startup_probe_task = startup_probe.map(|(config, registration)| {
+            tokio::spawn(crate::managed_context::startup_health::verify_and_report(
+                config,
+                registration,
+                relay_state.clone(),
+                shutdown_rx.clone(),
+            ))
         });
         let event_delivery_config = {
             let app = app.lock().await;
@@ -332,6 +352,9 @@ impl DaemonApp {
         let _ = relay_task.await;
         crate::shutdown::stage("managed context completion");
         if let Some(task) = empty_context_completion_task {
+            let _ = task.await;
+        }
+        if let Some(task) = startup_probe_task {
             let _ = task.await;
         }
         crate::shutdown::stage("event delivery");

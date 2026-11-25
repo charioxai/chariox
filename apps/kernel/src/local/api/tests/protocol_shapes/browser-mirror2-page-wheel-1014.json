@@ -1,0 +1,30 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10"
+  ],
+  "local_protocol": 1015,
+  "peer_protocol": 452,
+  "allocation": "provisional local 1014, relay peer 451: additive mirror v2 header page_wheel (the page's own script takes the wheel: a non-passive wheel listener on window, document, html or body); absent means the viewer scrolls its copy",
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "device_scale_factor": 1,
+        "wire": 2
+      }
+    }
+  },
+  "takes_delta": {
+    "wire": 2,
+    "sequence": 2,
+    "page_wheel": true
+  },
+  "gives_back_delta": {
+    "wire": 2,
+    "sequence": 3,
+    "page_wheel": false
+  }
+}

@@ -71,7 +71,7 @@ impl KernelRuntimeState {
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
-        refuse_forwarded_exec_place(request)?;
+        authorize_local_only_request(request)?;
         if let Some(user_id) = grant_id.strip_prefix(super::reach::OWNER_GRANT_PREFIX) {
             return if self.is_gateway_owner(user_id) {
                 Ok(())
@@ -131,6 +131,35 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Who a linked-kernel directory request acts for: the owner's own grant holder, or the owner's Room agent
+    /// on its live run. `None` is a caller that is neither, and the request is refused.
+    pub(crate) fn account_kernel_actor(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+    ) -> Option<String> {
+        if let Some(grant_id) = command.external_grant_id() {
+            // An elevated agent's request carries its sudo window's identity: the window, still bound to the
+            // running turn it was authorized for, names the owner and the agent the audit records.
+            if grant_id.starts_with("sudo:") {
+                let window = self.sudo_window_bound(&grant_id).ok()?;
+                return self
+                    .is_gateway_owner(&window.owner_user_id)
+                    .then_some(window.agent_id);
+            }
+            let grant = self.access_grant_summary(&grant_id)?;
+            return self
+                .is_gateway_owner(&grant.owner_user_id)
+                .then_some(grant.grant_id);
+        }
+        if command.caller.caller_kind != crate::runtime::command::KernelCallerKind::Metaagent {
+            return None;
+        }
+        let run = command.provider_run_id.as_deref()?;
+        let reach = self.reach_for_id(&format!("{}{run}", super::reach::REACH_PREFIX))?;
+        (command.caller.metaagent_id.as_deref() == Some(reach.agent_id.as_str()))
+            .then_some(reach.agent_id)
+    }
+
     /// The kernel owner is the one person who forwards to the owner's other kernels without
     /// an access grant: the owner's own gateway grant on this kernel.
     pub(crate) fn is_gateway_owner(&self, user_id: &str) -> bool {
@@ -173,7 +202,7 @@ impl KernelRuntimeState {
         on_behalf_of: &OnBehalfOf,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        refuse_forwarded_exec_place(request)?;
+        authorize_local_only_request(request)?;
         // An owner's agent: the same classification its origin applied, so a request kept
         // from agents is refused here too, whatever the origin decided.
         let kept_from_agents = on_behalf_of
@@ -384,6 +413,8 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::JoinTerminalPairingLink(_)
                 | LocalDaemonRequest::JoinKernelLink(_)
                 | LocalDaemonRequest::RecordPairedClient(_)
+                | LocalDaemonRequest::ConfigureRelayIssuer(_)
+                | LocalDaemonRequest::IssueRelayClientToken(_)
                 | LocalDaemonRequest::JoinSessionInvite(_)
                 | LocalDaemonRequest::ConfigureRelay(_)
                 | LocalDaemonRequest::StartCloudRelayLogin(_)
@@ -407,10 +438,12 @@ fn owner_vault_is_not_a_kernel_access_operation() {
     )));
 }
 
-/// A held launch is placed by the kernel that holds it. Forwarded, the request would run
-/// under this kernel's owner grant for a requester that has none here.
-fn refuse_forwarded_exec_place(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
+/// These operations must run on the kernel that holds their authority.
+fn authorize_local_only_request(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
     match request {
+        LocalDaemonRequest::CloudAccountKernels(_) => Err(error(
+            "Manage linked kernels from the owner's enrolled kernel directly",
+        )),
         LocalDaemonRequest::RoomTerminal(terminal)
             if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecPlace { .. }) =>
         {

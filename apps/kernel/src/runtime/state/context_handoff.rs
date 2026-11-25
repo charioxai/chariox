@@ -16,7 +16,7 @@ const HIDDEN_HANDOFF_SUFFIX: &str = "The active user request is supplied separat
 /// The packet's share of the target model's window, and the bytes it allows
 /// per token: conservative, since code and paths tokenize densely.
 const HANDOFF_WINDOW_PERCENT: u64 = 15;
-const HANDOFF_BYTES_PER_TOKEN: u64 = 3;
+const HANDOFF_BYTES_PER_TOKEN: u64 = crate::skill::resolver::BYTES_PER_TOKEN;
 /// The prompt-prefix transport's cap, whatever the window.
 const MAX_PROMPT_HANDOFF_BYTES: u64 = 256_000;
 
@@ -49,6 +49,8 @@ pub(crate) struct PendingAgentContextHandoffStore {
     /// Each agent's run known to hold its conversation, so later prompts to it
     /// skip the history checks and the derived handoff is delivered once.
     conversation_runs: Arc<StdMutex<BTreeMap<String, ConversationRun>>>,
+    /// Agents whose brief is being brought up to date: one fold at a time each.
+    folding_briefs: Arc<StdMutex<std::collections::BTreeSet<String>>>,
     /// Unsupported brief models are remembered only for this kernel lifetime,
     /// and only for the selected provider account and exact model.
     unavailable_brief_models: Arc<StdMutex<std::collections::BTreeSet<(String, String, String)>>>,
@@ -75,6 +77,21 @@ pub(super) fn native_session_id(run: &RuntimeProviderRun) -> Option<&str> {
 }
 
 impl PendingAgentContextHandoffStore {
+    /// Claims the agent's brief fold; false while another fold runs.
+    pub(super) fn begin_brief_fold(&self, session_id: &str, agent_id: &str) -> bool {
+        self.folding_briefs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(pending_handoff_key(session_id, agent_id))
+    }
+
+    pub(super) fn end_brief_fold(&self, session_id: &str, agent_id: &str) {
+        self.folding_briefs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&pending_handoff_key(session_id, agent_id));
+    }
+
     pub(super) fn brief_model_is_unavailable(&self, run: &RuntimeProviderRun) -> bool {
         self.unavailable_brief_models
             .lock()
@@ -107,8 +124,10 @@ impl PendingAgentContextHandoffStore {
         &self,
         session_id: &str,
         agent_id: &str,
-        handoff: PendingAgentContextHandoff,
+        mut handoff: PendingAgentContextHandoff,
     ) {
+        // A stored handoff waits for its run; it does not keep the history it was read from.
+        handoff.conversation.source_events = None;
         self.write()
             .insert(pending_handoff_key(session_id, agent_id), handoff);
     }
@@ -178,8 +197,23 @@ impl PendingAgentContextHandoffStore {
 }
 
 impl PendingAgentContextHandoff {
+    /// A packet that fits keeps the verbatim history alone: a stored brief
+    /// would only repeat it, maybe stale. A harness that writes briefs gets
+    /// the stored one only when its packet needs one.
+    fn with_stored_brief_where_needed(mut self, target_run: &RuntimeProviderRun) -> Self {
+        if brief_refresh::writes_handoff_briefs(target_run) {
+            let brief = self.conversation.brief.take();
+            if self.needs_brief() {
+                self.conversation.brief = brief;
+            }
+        }
+        self
+    }
+
     pub(super) fn needs_brief(&self) -> bool {
-        self.derived && !self.conversation.fits_without_brief(self.budget())
+        self.derived
+            && (self.conversation.older_history_left_out
+                || !self.conversation.fits_without_brief(self.budget()))
     }
 
     fn matches_target(&self, target_run: &RuntimeProviderRun) -> bool {
@@ -209,6 +243,10 @@ impl PendingAgentContextHandoff {
 
     /// The handoff as the provider reads it, in at most `max_bytes`.
     fn render(&self, max_bytes: usize) -> Option<String> {
+        self.render_with(max_bytes, false)
+    }
+
+    fn render_with(&self, max_bytes: usize, compact: bool) -> Option<String> {
         let switch = format!(
             "Provider/account switch: {} ({}) -> {} [{}] ({}).",
             self.source_provider,
@@ -217,9 +255,12 @@ impl PendingAgentContextHandoff {
             self.target_account_profile,
             model_label(self.target_model.as_deref()),
         );
-        let context = self
-            .conversation
-            .render(max_bytes.checked_sub(switch.len() + 2)?)?;
+        let room = max_bytes.checked_sub(switch.len() + 2)?;
+        let context = if compact {
+            self.conversation.render_switch_summary(room)
+        } else {
+            self.conversation.render(room)
+        }?;
         let handoff = format!("{context}\n\n{switch}");
         crate::logging::info_with_fields(
             "daemon.provider_context_handoff",
@@ -233,6 +274,26 @@ impl PendingAgentContextHandoff {
             }),
         );
         Some(handoff)
+    }
+
+    pub(super) fn render_switch(&self, room: usize) -> String {
+        let preferred = self.render(self.budget()).unwrap_or_default();
+        if preferred.len() <= room {
+            return preferred;
+        }
+        self.render_with(room, true).unwrap_or_default()
+    }
+
+    pub(super) fn render_switch_hidden(&self, room: usize) -> String {
+        let Some(room) = room.checked_sub(HIDDEN_HANDOFF_SUFFIX.len() + 2) else {
+            return String::new();
+        };
+        let handoff = self.render_switch(room);
+        if handoff.is_empty() {
+            handoff
+        } else {
+            format!("{handoff}\n\n{HIDDEN_HANDOFF_SUFFIX}")
+        }
     }
 
     /// The handoff as Claude native hidden context, sized to `room`: the space
@@ -454,15 +515,26 @@ impl super::KernelRuntimeOwnedState {
                     native_session_id(target_run),
                 )?
             {
-                let mut conversation = self.agent_conversation(session_id, agent_id, Some(prompt_id))
-                    .ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "restore compacted session context",
-                        message: "Retained conversation is unavailable at the pending compaction boundary".into(),
-                    })?;
+                // The native session keeps Claude's own post-compaction summary. When the
+                // kernel holds no earlier conversation to restore, the turn still starts
+                // and the boundary stays pending for a later turn. Failing here blocked
+                // the task behind a Resume card and lost the agent (row 449).
+                let Some(mut conversation) =
+                    self.agent_conversation(session_id, agent_id, Some(prompt_id))
+                else {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider_context_handoff",
+                        "no retained conversation at the pending compaction boundary; the turn starts on the native session",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "compaction_revision": boundary.revision,
+                        }),
+                    );
+                    return Ok(None);
+                };
                 self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
-                if !brief_refresh::writes_handoff_briefs(target_run) {
-                    conversation.brief = self.stored_handoff_brief(session_id, agent_id);
-                }
+                conversation.brief = self.stored_handoff_brief(session_id, agent_id);
                 let handoff = PendingAgentContextHandoff {
                     source_provider: boundary.source_provider,
                     source_model: boundary.source_model,
@@ -477,7 +549,8 @@ impl super::KernelRuntimeOwnedState {
                     derived: true,
                     compaction_revision: Some(boundary.revision),
                     room_revision: self.room_secret_observations.revision(session_id).ok(),
-                };
+                }
+                .with_stored_brief_where_needed(target_run);
                 self.pending_agent_context_handoffs
                     .set(session_id, agent_id, handoff.clone());
                 return Ok(Some(handoff));
@@ -525,11 +598,8 @@ impl super::KernelRuntimeOwnedState {
         // Output recorded without a provider session id is the target
         // session's own only when the same provider family answered it.
         let answered_without_session_id = |latest: &crate::history::HistoryEvent, run_session| {
-            latest.provider_session_id.is_none()
-                && latest
-                    .provider
-                    .as_deref()
-                    .and_then(crate::provider::canonical_provider_family)
+            answered_session(latest).is_none()
+                && answered_provider(latest).and_then(crate::provider::canonical_provider_family)
                     == Some(target_run.adapter_key())
                 && self
                     .operational_history_store
@@ -553,16 +623,14 @@ impl super::KernelRuntimeOwnedState {
         // receives the turns it missed.
         let holds_conversation = |latest: &crate::history::HistoryEvent| {
             // Native /clear can replace the session without replacing the run.
-            let same_session = latest
-                .provider_session_id
-                .as_deref()
+            let same_session = answered_session(latest)
                 .zip(run_session)
                 .is_none_or(|(latest, current)| latest == current);
             (same_session
                 && latest.provider_run_id.as_deref() == Some(target_run.id())
                 && latest.timestamp_ms >= target_run.started_at_ms())
                 || run_session.is_some_and(|run_session| {
-                    latest.provider_session_id.as_deref() == Some(run_session)
+                    answered_session(latest) == Some(run_session)
                         || answered_without_session_id(latest, run_session)
                 })
         };
@@ -578,11 +646,10 @@ impl super::KernelRuntimeOwnedState {
             return Ok(None);
         };
         self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
-        // Structured harnesses load the brief once during refresh. Other harnesses
-        // carry the last stored brief alongside their deterministic packet.
-        if !brief_refresh::writes_handoff_briefs(target_run) {
-            conversation.brief = self.stored_handoff_brief(session_id, agent_id);
-        }
+        // The packet carries the last stored brief where it needs one; a harness
+        // that writes briefs brings it up to date in the background, never ahead
+        // of the turn.
+        conversation.brief = self.stored_handoff_brief(session_id, agent_id);
         let latest = latest.as_ref();
         crate::logging::info_with_fields(
             "daemon.provider_context_handoff",
@@ -591,28 +658,91 @@ impl super::KernelRuntimeOwnedState {
                 "session_id": session_id,
                 "agent_id": agent_id,
                 "source_provider_run_id": latest.and_then(|latest| latest.provider_run_id.as_deref()),
-                "source_provider_session_id": latest.and_then(|latest| latest.provider_session_id.as_deref()),
+                "source_provider_session_id": latest.and_then(answered_session),
                 "target_provider_run_id": target_run.id(),
                 "derive_ms": started.elapsed().as_millis() as u64,
             }),
         );
-        Ok(Some(PendingAgentContextHandoff {
-            source_provider: latest
-                .and_then(|latest| latest.provider.clone())
-                .unwrap_or_default(),
-            source_model: latest
-                .and_then(|latest| latest.model.clone())
-                .unwrap_or_default(),
-            target_provider_run_id: Some(target_run.id().to_string()),
-            target_provider: target_run.provider().to_string(),
-            target_account_profile: target_run.account_profile().to_string(),
-            target_model: Some(target_run.model().to_string()),
-            target_1m_context_disabled: crate::provider::claude_1m_context_disabled(target_run),
-            conversation,
-            derived: true,
-            compaction_revision: None,
-            room_revision: self.room_secret_observations.revision(session_id).ok(),
-        }))
+        Ok(Some(
+            PendingAgentContextHandoff {
+                source_provider: latest
+                    .and_then(|latest| latest.provider.clone())
+                    .unwrap_or_default(),
+                source_model: latest
+                    .and_then(|latest| latest.model.clone())
+                    .unwrap_or_default(),
+                target_provider_run_id: Some(target_run.id().to_string()),
+                target_provider: target_run.provider().to_string(),
+                target_account_profile: target_run.account_profile().to_string(),
+                target_model: Some(target_run.model().to_string()),
+                target_1m_context_disabled: crate::provider::claude_1m_context_disabled(target_run),
+                conversation,
+                derived: true,
+                compaction_revision: None,
+                room_revision: self.room_secret_observations.revision(session_id).ok(),
+            }
+            .with_stored_brief_where_needed(target_run),
+        ))
+    }
+
+    pub(super) fn fresh_agent_switch_brief(
+        &self,
+        task: &crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    ) -> Result<String, DaemonError> {
+        let protection = &self.room_secret_observations;
+        let _guard = protection
+            .barrier(&task.room_id)?
+            .try_read_owned()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "start a fresh agent",
+                message: "Room history is being updated. Try again when it finishes.".into(),
+            })?;
+        protection.require(&task.room_id, false)?;
+        let events = protection.protect_history_events(
+            self.operational_history_store
+                .load_session_events(&task.room_id, Some(&task.agent_id))?,
+        );
+        let request = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.kind == crate::history::HistoryEventKind::UserPrompt
+                    && event.prompt_id.as_deref() == Some(task.prompt_id.as_str())
+            })
+            .and_then(|event| event.content.as_deref())
+            .unwrap_or_default();
+        let mut prior = AgentConversation::from_events(&events).before_prompt(&task.prompt_id);
+        prior.brief = self
+            .protected_stored_handoff_brief(&task.room_id, &task.agent_id)?
+            .map(|stored| stored.brief);
+        let brief = builder::truncate_bytes(
+            task.goal
+                .as_ref()
+                .map_or_else(|| prior.task_brief(), |goal| goal.objective.clone())
+                .as_str(),
+            4_000,
+        );
+        let request = builder::truncate_bytes(request, 1_600);
+        protection.scrub(&task.room_id, format!(
+            "Continue the work using this brief from the previous agent. Check existing work before repeating it.\n\n{brief}\n\nLatest request (excerpt):\n{request}"
+        ))
+    }
+
+    pub(super) fn stall_recovery_notes(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Option<String> {
+        const NOTES_BYTES: usize = 16_000;
+        let brief = self.stored_handoff_brief(room, agent);
+        match self.agent_conversation(room, agent, Some(prompt)) {
+            Some(mut conversation) => {
+                conversation.brief = brief;
+                conversation.render(NOTES_BYTES)
+            }
+            None => brief,
+        }
     }
 
     pub(super) fn stored_handoff_brief(&self, session_id: &str, agent_id: &str) -> Option<String> {
@@ -744,6 +874,27 @@ impl super::KernelRuntimeOwnedState {
                 .note_run_holds_conversation(session_id, agent_id, target_run);
         }
     }
+}
+
+/// The provider session an answer came from. A turn the kernel observed in the
+/// provider's own transcript (as restart recovery does) names it only in its
+/// observation metadata.
+fn answered_session(event: &crate::history::HistoryEvent) -> Option<&str> {
+    event.provider_session_id.as_deref().or_else(|| {
+        event
+            .metadata
+            .get("external_provider_session_id")
+            .and_then(serde_json::Value::as_str)
+    })
+}
+
+fn answered_provider(event: &crate::history::HistoryEvent) -> Option<&str> {
+    event.provider.as_deref().or_else(|| {
+        event
+            .metadata
+            .get("external_provider")
+            .and_then(serde_json::Value::as_str)
+    })
 }
 
 fn pending_handoff_key(session_id: &str, agent_id: &str) -> String {
@@ -1251,6 +1402,29 @@ mod tests {
             );
         }
 
+        /// One answer row of the turn that began with `prompt_id`.
+        fn answer_of(&self, sequence: u64, prompt_id: &str, text: &str) {
+            self.append(
+                sequence,
+                crate::history::SessionHistoryEntry::provider_output(
+                    &self.session_id,
+                    "run-old",
+                    Some(&self.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    None,
+                    text,
+                ),
+                crate::history::HistoryEventTurnContext {
+                    provider: Some("codex".to_string()),
+                    model: Some("gpt-5.5".to_string()),
+                    provider_run_id: Some("run-old".to_string()),
+                    prompt_id: Some(prompt_id.to_string()),
+                    ..crate::history::HistoryEventTurnContext::default()
+                },
+                None,
+            );
+        }
+
         fn append(
             &self,
             sequence: u64,
@@ -1519,6 +1693,120 @@ mod tests {
 
         let fresh = fixture.run("provider-run-1", "claude", None);
         assert!(fixture.prompt(&fresh).contains("amber-kestrel"));
+    }
+
+    /// After a restart the kernel reconciles an interrupted turn from Claude's
+    /// own transcript; such observed answers name their session only in their
+    /// observation metadata. A run resuming that session holds the
+    /// conversation: it resumes natively, with no handoff rebuilt.
+    #[tokio::test]
+    async fn a_run_resuming_the_session_of_an_observed_answer_holds_the_conversation() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember the codename amber-kestrel");
+        let mut observed = crate::history::HistoryEvent::transcript(
+            2,
+            &crate::history::SessionHistoryEntry::provider_output(
+                &fixture.session_id,
+                "",
+                Some(&fixture.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                None,
+                "OK",
+            ),
+            crate::history::HistoryEventTurnContext::default(),
+        );
+        observed.provider = None;
+        observed.provider_run_id = None;
+        observed.provider_session_id = None;
+        observed
+            .metadata
+            .insert("external_provider".into(), serde_json::json!("claude"));
+        observed.metadata.insert(
+            "external_provider_session_id".into(),
+            serde_json::json!("claude-session-1"),
+        );
+        fixture.history.append(&observed).unwrap();
+
+        let resumed = fixture.run("provider-run-1", "claude", Some("claude-session-1"));
+        assert_eq!(fixture.prompt(&resumed), "next");
+        let other = fixture.run("provider-run-2", "claude", Some("claude-session-2"));
+        assert!(fixture.prompt(&other).contains("amber-kestrel"));
+    }
+
+    /// C-FALLBACK / C-HIST: a rebuilt handoff reads only the newest history,
+    /// the same amount however long the history grows; older work reaches the
+    /// new session through the brief.
+    #[tokio::test]
+    async fn a_rebuilt_handoff_reads_the_same_newest_history_whatever_its_length() {
+        let fixture = DerivedHandoffFixture::new().await;
+        let filler = "x".repeat(100_000);
+        let mut read = Vec::new();
+        for round in 0..2u64 {
+            for turn in 0..20u64 {
+                let sequence = round * 100 + turn + 1;
+                fixture.user(sequence, &format!("turn {sequence} {filler}"));
+            }
+            let conversation = load_agent_conversation(
+                &fixture.history,
+                &fixture.session_id,
+                &fixture.agent_id,
+                None,
+                &fixture.runtime.owned.room_secret_observations,
+            )
+            .unwrap();
+            assert!(conversation.older_history_left_out);
+            let events = conversation.source_events.unwrap();
+            let newest = format!("turn {} ", round * 100 + 20);
+            assert!(events.iter().any(|event| event
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with(&newest)));
+            read.push(events.len());
+        }
+        assert!(read[0] < 20, "older turns are left to the brief: {read:?}");
+        assert_eq!(read[0], read[1], "the read does not grow with the history");
+    }
+
+    /// The newest turn's opening prompt can lie outside the bounded read: its
+    /// work stays as a leading turn that names its prompt, whether a new
+    /// prompt follows it or the same prompt is retried.
+    #[tokio::test]
+    async fn one_long_turn_whose_prompt_fell_outside_the_read_keeps_its_work() {
+        for dispatching in ["prompt-20", "prompt-1"] {
+            let fixture = DerivedHandoffFixture::new().await;
+            fixture.user(1, "carry out the long migration");
+            let filler = "y".repeat(100_000);
+            for sequence in 2..=14u64 {
+                fixture.answer_of(sequence, "prompt-1", &format!("step {sequence} {filler}"));
+            }
+            fixture.user(20, "continue");
+            let conversation = load_agent_conversation(
+                &fixture.history,
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(dispatching),
+                &fixture.runtime.owned.room_secret_observations,
+            )
+            .unwrap();
+            assert!(conversation.older_history_left_out, "{dispatching}");
+            assert!(
+                !conversation.is_empty(),
+                "the turn's work was dropped with its prompt ({dispatching})"
+            );
+            let packet = conversation
+                .render(MAX_PROMPT_HANDOFF_BYTES as usize)
+                .unwrap();
+            // The turn's work is in the packet, without the prompt that fell outside the read.
+            assert!(
+                packet.contains("step "),
+                "{dispatching}: no work in the packet"
+            );
+            assert!(
+                !packet.contains("carry out the long migration"),
+                "{dispatching}: the packet names a prompt the read left out"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1847,7 +2135,12 @@ mod tests {
         let (stored, events) = fixture
             .runtime
             .owned
-            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .handoff_brief_update_history(
+                &fixture.session_id,
+                &fixture.agent_id,
+                "next-dispatch",
+                None,
+            )
             .unwrap();
         assert!(
             stored.is_none(),
@@ -1872,7 +2165,12 @@ mod tests {
         let (stored, events) = fixture
             .runtime
             .owned
-            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .handoff_brief_update_history(
+                &fixture.session_id,
+                &fixture.agent_id,
+                "next-dispatch",
+                None,
+            )
             .unwrap();
         assert_eq!(stored.unwrap().brief, current);
         assert!(events.iter().all(|event| event.sequence > 2));

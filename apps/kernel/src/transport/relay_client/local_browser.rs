@@ -82,6 +82,16 @@ pub(crate) struct LocalBrowserDirect {
     leases: std::sync::Mutex<BTreeMap<String, leases::LocalBrowserLease>>,
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
     authority_watch: std::sync::Once,
+    /// Start gates of the requests every session has running; revocation cancels the ones that have not begun.
+    start_gates: std::sync::Mutex<StartGateRegistry>,
+    next_gate_session: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    frame_pause: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     rtc: rtc::RtcEndpoint,
 }
 
@@ -133,9 +143,23 @@ impl LocalBrowserDirect {
             bound,
             grants: std::sync::Mutex::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
-            authority: watch::channel(authority).0,
+            authority: watch::channel(authority.clone()).0,
             authority_watch: std::sync::Once::new(),
+            start_gates: std::sync::Mutex::new(StartGateRegistry {
+                authority,
+                gates: Vec::new(),
+            }),
+            next_gate_session: std::sync::atomic::AtomicU64::new(1),
+            #[cfg(test)]
+            frame_pause: tokio::sync::Mutex::new(None),
             rtc,
+        });
+        // A logout, re-pairing or key change cuts the queue before its own call returns; the poll below only backstops.
+        let weak = Arc::downgrade(&direct);
+        direct.router.observe_relay_config_updates(move |_| {
+            if let Some(direct) = weak.upgrade() {
+                direct.refresh_authority();
+            }
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
         // that can issue grants, so it must not be part of `ensure_endpoint`.
@@ -178,6 +202,8 @@ impl LocalBrowserDirect {
             "kernel_id": self.router.relay_daemon_id(),
             "endpoint_epoch": endpoint.epoch,
             "expires_at_ms": grant.expires_at_ms,
+            // c#794 review (row 236): how long the grant lasts from now, independent of any clock but the kernel's own.
+            "expires_in_ms": grant.expires_at_ms.saturating_sub(crate::session::unix_epoch_ms()),
         });
         let name = match client {
             LocalDirectClient::Browser => "LocalBrowserConnectIssued",
@@ -209,6 +235,7 @@ impl LocalBrowserDirect {
             "kernel_id": self.router.relay_daemon_id(),
             "endpoint_epoch": epoch,
             "expires_at_ms": grant.expires_at_ms,
+            "expires_in_ms": grant.expires_at_ms.saturating_sub(crate::session::unix_epoch_ms()),
         }}))
     }
 
@@ -364,9 +391,82 @@ impl LocalBrowserDirect {
         }
     }
 
-    /// Publishes the current pairing authority; a change retires every session.
+    /// A session's request is waiting for its command lane; revocation can cancel it until the lane takes it.
+    fn next_gate_session(&self) -> u64 {
+        self.next_gate_session
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    async fn pause_next_frame_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, reached) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *self.frame_pause.lock().await = Some((entered, resume));
+        (reached, release)
+    }
+
+    #[cfg(test)]
+    async fn await_frame_for_test(&self) {
+        let pause = self.frame_pause.lock().await.take();
+        if let Some((entered, resume)) = pause {
+            let _ = entered.send(());
+            let _ = resume.await;
+        }
+    }
+
+    /// A session's request is waiting for its command lane; revocation can cancel it until the lane takes it.
+    /// `admitted` is the authority the session was admitted under. Registration and revocation share one lock and one
+    /// authority, so a request that was admitted before a logout but registers after it is cancelled here, not left
+    /// able to begin.
+    fn register_start_gate(
+        &self,
+        session: u64,
+        admitted: &LocalBrowserAuthority,
+        gate: crate::runtime::start_gate::StartGate,
+    ) {
+        let mut registry = self.start_gates.lock().expect("start gates poisoned");
+        if registry.authority.as_ref() != Some(admitted) {
+            gate.cancel();
+            return;
+        }
+        if registry.gates.len() >= 64 {
+            registry
+                .gates
+                .retain(|(_, gate)| crate::runtime::start_gate::StartGate::is_waiting(gate));
+        }
+        registry.gates.push((session, gate));
+    }
+
+    /// One session ended on its own (its lease ran out): the mutations it queued that have not begun never will.
+    /// Other sessions, whose authority did not change, keep theirs.
+    fn cancel_session_start_gates(&self, session: u64) {
+        let mut registry = self.start_gates.lock().expect("start gates poisoned");
+        registry.gates.retain(|(owner, gate)| {
+            if *owner == session {
+                gate.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Publishes the current pairing authority; a change retires every session and cancels every request that has not
+    /// begun, before this returns. Held under the registry lock, so no registration slips in between the two.
     fn refresh_authority(&self) -> Option<LocalBrowserAuthority> {
+        let mut registry = self.start_gates.lock().expect("start gates poisoned");
         let next = current_authority(&self.router.relay_config_snapshot());
+        if registry.authority != next {
+            registry.authority = next.clone();
+            for (_, gate) in registry.gates.drain(..) {
+                gate.cancel();
+            }
+        }
         self.authority.send_if_modified(|current| {
             if *current == next {
                 return false;
@@ -376,6 +476,12 @@ impl LocalBrowserDirect {
         });
         next
     }
+}
+
+/// The start gates of the requests the direct sessions have running, under the authority they were admitted under.
+struct StartGateRegistry {
+    authority: Option<LocalBrowserAuthority>,
+    gates: Vec<(u64, crate::runtime::start_gate::StartGate)>,
 }
 
 fn current_authority(config: &crate::config::DaemonConfig) -> Option<LocalBrowserAuthority> {
@@ -391,7 +497,7 @@ fn current_authority(config: &crate::config::DaemonConfig) -> Option<LocalBrowse
 
 /// The exact web Origin of the paired Cloud: HTTPS, or HTTP on loopback for
 /// local development. Anything else is not a browser origin we admit.
-fn paired_cloud_origin(api_url: &str) -> Option<String> {
+pub(crate) fn paired_cloud_origin(api_url: &str) -> Option<String> {
     let url = url::Url::parse(api_url).ok()?;
     let loopback = matches!(
         url.host(),

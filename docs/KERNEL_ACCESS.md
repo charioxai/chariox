@@ -43,6 +43,24 @@ An agent of the kernel's owner has the owner's authority on every kernel of the 
 - Identity: the agent's own live provider run (`reach:<run>`), never a token. The target kernel admits the request because it arrives from a gateway kernel paired to its owner over the relay, and it applies the same refusal list itself.
 - Agents of another account, and guests' agents, are refused: "only agents of this kernel's owner reach other rooms and kernels".
 - An agent leased to a worker kernel acts the same way: the worker forwards its `chariox_kernel_request` home, which judges it as that agent.
+### Room agent access
+
+An agent of the kernel's owner needs none of this (see above). Any other Room agent, including a sub-agent, can ask the kernel owner for access. The kernel identifies the
+agent from its running provider process. The provider shell gets the matching installed CLI as
+`CHARIOX_CLI` and the Unix socket address as `CHARIOX_DAEMON_SOCKET`. In a source installation,
+start the kernel with `CHARIOX_CLI_BIN` set to the absolute path of the CLI built from the same revision
+if the CLI is installed separately.
+
+```sh
+"$CHARIOX_CLI" access request --no-wait --reason "Check the target kernel OS"
+"$CHARIOX_CLI" access status
+"$CHARIOX_CLI" exec --kernel <other-kernel> -- uname -a
+```
+
+The owner sees one card with the requester, Room and reason. They can grant timed access, grant
+access until the agent's provider exits, or deny the request. Only run the command after status
+reports `granted`. While pending, status gives the time the request will expire. A denial and an
+unanswered expiry have distinct outcomes. Standing external grants do not apply to Room agents.
 
 ### Development standing grants
 
@@ -65,9 +83,9 @@ Exit codes and the error codes behind them:
 | 0 | ok | |
 | 1 | request failed: the kernel answered with an error code of its own; read `code` and `message` | any code not listed below, for example `session_not_found`, `file_not_found`, `ledger_unavailable` |
 | 2 | usage | `usage`, `file_path_invalid` |
-| 3 | refused | `events_refused`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_sub_agent`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
+| 3 | refused | `events_refused`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_agent_unavailable`, `kernel_access_request_denied`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed`, `kernel_not_available` |
-| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed` |
+| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_access_request_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed`, `steer_unconfirmed` |
 | 6 | approval pending (`access request --no-wait`, `secret request --no-wait`, `secret status` while pending) | |
 | 7 | event cursor expired: resync followed targets | `cursor_expired` |
 
@@ -75,7 +93,7 @@ Forwarded Room writes return their changed rows and the Room ID in `session_id` 
 
 If the reply details exceed the durable receipt limit (about 256 KiB), exit 0 with `GatewayWriteCompleted` confirms that the kernel completed the request. Its `response_kind` identifies the result whose details were omitted. A shell command includes its own `exit_code`. Read the current state to see the effect. For commands that produce large output, write the output to a file on that kernel and read it with `chariox files get`.
 
-On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfirmed` (the kernel could not read the caller's process just now; the grant has not changed), retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
+On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfirmed` (the kernel could not read the caller's process just now; the grant has not changed), retry once with the same `--command-id`. A steer that returns `steer_unconfirmed` may still arrive. Retry once with the command ID in the message. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
 
 
 MP-08 / MP-10 / MP-11: `kernel_sudo_refused` means the person refused the request;

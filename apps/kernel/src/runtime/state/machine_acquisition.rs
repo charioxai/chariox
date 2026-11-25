@@ -1,4 +1,5 @@
-//! One owner decision before an agent can start charged work.
+//! One owner decision before an agent can start charged work, unless the owner allowed it without
+//! asking within limits (`without_asking`).
 use super::*;
 use crate::durable_state::acquire_choices::AcquireOption;
 use crate::local::{ControlPlaneRequest, MachineAllocationCapability};
@@ -6,35 +7,78 @@ use crate::runtime::command::KernelCommand;
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
 use sha2::Digest;
 
+/// Every machine acquisition decision's id starts with this; the rest is derived from the request.
+const ACQUISITION_DECISION_PREFIX: &str = "machine-acquisition-";
+
+/// A machine acquisition decision is the one kernel operation an agent may answer for the person: the
+/// holder above the requester (`agent answer`) or an agent of the same owner in another Room
+/// (`agent answer --room`). The requester and its own sub-agents never may: see
+/// `refuse_self_approval`.
+pub(super) fn is_machine_acquisition_decision(id: &str) -> bool {
+    id.starts_with(ACQUISITION_DECISION_PREFIX)
+}
+
+impl KernelRuntimeOwnedState {
+    /// A machine acquisition needs an OK from outside the subtree that asked for it, so an agent cannot
+    /// approve its own request or have a sub-agent do it. Checked by the answering agent's
+    /// authenticated identity at the kernel, never by what the answer claims.
+    pub(super) fn refuse_self_approval(
+        &self,
+        interaction: &RuntimeInteraction,
+        answering: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let Some(requester) = interaction
+            .related_agent_id()
+            .filter(|_| is_machine_acquisition_decision(interaction.id()))
+        else {
+            return Ok(());
+        };
+        // The whole agent tree, not the answering agent's Room: a sub-agent spawned into another
+        // Room keeps its spawner as its parent, so the requester can sit in a different Room.
+        let agents = self.agent_store.list_agents();
+        let own_subtree = answering.id() == requester
+            || crate::agent::authority_limit::ancestors(answering, &agents)
+                .iter()
+                .any(|ancestor| ancestor.id() == requester);
+        if own_subtree {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "An agent cannot approve a machine acquisition it or its sub-agents asked for; another agent or the person must answer it",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// How an acquisition was allowed to go ahead.
+#[derive(Debug)]
+pub(crate) enum Approval {
+    /// The person asked, the owner approved it, or the owner's /sudo covers it.
+    Owner,
+    /// Within the owner's limits for acquiring without asking, or a retry of a request admitted
+    /// before; the service's answer settles it (`settle_acquisition`).
+    WithoutAsking(without_asking::AcquisitionHold),
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn approve_machine_acquisition(
         &self,
         command: &KernelCommand,
         request: &ControlPlaneRequest,
         capability: Option<&MachineAllocationCapability>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Approval, DaemonError> {
         if !matches!(
             request,
             ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
         ) {
-            return Ok(());
+            return Ok(Approval::Owner);
         }
         let agent_request = command.external_grant_id().is_some()
             || command.reach_caller_id().is_some()
             || command.caller.metaagent_id.is_some()
             || command.caller.connection_class
                 == Some(crate::local::KernelConnectionClass::KernelAgent);
-        if !agent_request
-            || self
-                .owned
-                .config_projection
-                .snapshot()
-                .user_config
-                .agents
-                .offload_without_asking
-                == Some(true)
-        {
-            return Ok(());
+        if !agent_request {
+            return Ok(Approval::Owner);
         }
         let reach = command
             .reach_caller_id()
@@ -62,7 +106,7 @@ impl KernelRuntimeState {
         )
         .durable_request_fingerprint();
         let id = format!(
-            "machine-acquisition-{:x}",
+            "{ACQUISITION_DECISION_PREFIX}{:x}",
             sha2::Sha256::digest(format!("{digest}:{}", agent.unwrap_or_default()).as_bytes())
         );
         if self
@@ -72,8 +116,18 @@ impl KernelRuntimeState {
             .iter()
             .any(|event| event.payload["owner"] == session.owner_user_id())
         {
-            return Ok(());
+            return Ok(Approval::Owner);
         }
+        let outside_limits = match self.admit_without_asking(
+            &room,
+            agent.unwrap_or_default(),
+            request,
+            capability,
+        )? {
+            without_asking::Admission::Within(hold) => return Ok(Approval::WithoutAsking(hold)),
+            without_asking::Admission::Off => None,
+            without_asking::Admission::Outside(reason) => Some(reason),
+        };
         let description = match (request, capability) {
             (
                 ControlPlaneRequest::AcquireJob {
@@ -140,10 +194,42 @@ impl KernelRuntimeState {
                 ))
             }
         };
+        let description = match outside_limits {
+            Some(reason) => format!("{description} Asked because {reason}."),
+            None => description,
+        };
+        let description = match request {
+            ControlPlaneRequest::Acquire {
+                timeout_s: Some(timeout_s),
+                ..
+            } => format!(
+                "{description} It stops by itself after {} minutes.",
+                timeout_s.saturating_add(59) / 60
+            ),
+            _ => description,
+        };
+        // The owner tells the Room's agents apart by name, and decides on what the machine is for (row 257).
+        let title = machine_request_title(
+            agent.map(|agent| {
+                self.owned
+                    .agent_store
+                    .get_agent(agent)
+                    .ok()
+                    .map(|known| known.alias().unwrap_or(known.agent_ref()).to_owned())
+                    .or_else(|| session.agent_display_name(agent))
+                    .unwrap_or_else(|| agent.to_owned())
+            }),
+            self.owned
+                .acquire_purposes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(request_id)
+                .cloned(),
+        );
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
-            "",
+            title,
             description,
             vec![
                 RuntimeInteractionChoice::new(
@@ -164,30 +250,105 @@ impl KernelRuntimeState {
             interaction = interaction.with_related_agent_id(agent.into());
         }
         let receiver = self
-            .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                &room,
+                session.owner_user_id(),
+                interaction,
+            )
             .await?;
         let mut pending = PendingAcquisition(Some((self.clone(), room.clone(), id.clone())));
-        let answer = match tokio::time::timeout(Duration::from_secs(300), receiver).await {
-            Ok(Ok(answer)) => answer,
-            _ => {
-                self.timeout_runtime_interaction(&room, &id).await?;
-                return Err(acquisition_error(
-                    "acquisition_denied",
-                    "The owner did not approve this request, so it was not sent to the service",
-                ));
+        let asked = std::time::Instant::now();
+        let waited = tokio::time::timeout(Duration::from_secs(300), receiver).await;
+        // Only an answer is the owner's decision; every other end says what closed the card.
+        let unanswered = match waited {
+            Ok(Ok(answer)) if answer.status == "answered" => {
+                pending.0 = None;
+                if answer.choice_id.as_deref() != Some("approve") {
+                    return Err(acquisition_error(
+                        "acquisition_denied",
+                        "The owner denied this request, so it was not sent to the service; nothing was allocated or charged",
+                    ));
+                }
+                None
             }
+            Ok(Ok(answer)) => Some(match answer.reply {
+                Some(reason) => format!("it could not be answered: {reason}"),
+                None => format!("nobody answered it within {} s", asked.elapsed().as_secs()),
+            }),
+            Ok(Err(_)) => Some(format!(
+                "the kernel withdrew it after {} s, before anyone answered",
+                asked.elapsed().as_secs()
+            )),
+            Err(_) => Some(format!(
+                "nobody answered it within {} s",
+                asked.elapsed().as_secs()
+            )),
         };
-        pending.0 = None;
-        if answer.status != "answered" || answer.choice_id.as_deref() != Some("approve") {
+        if let Some(why) = unanswered {
+            self.timeout_runtime_interaction(&room, &id).await?;
             return Err(acquisition_error(
-                "acquisition_denied",
-                "The owner denied this request, so it was not sent to the service",
+                "acquisition_unanswered",
+                &format!("The owner's card {id} for this request closed without a decision: {why}. It was not sent to the service and nothing was allocated or charged; retry with the same request_id when the owner can answer."),
             ));
         }
         self.owned.durable_state_store.append_event("compute.acquisition_approved", Some(id), serde_json::json!({"owner":session.owner_user_id(),"approved_at_ms":crate::session::unix_epoch_ms()}))?;
-        Ok(())
+        Ok(Approval::Owner)
     }
 }
+/// The card's title: who asks, and the purpose it gave, as one sentence the card's message follows.
+fn machine_request_title(agent: Option<String>, purpose: Option<String>) -> String {
+    let who = agent.unwrap_or_else(|| "An agent".into());
+    match purpose {
+        Some(purpose) => {
+            let end = if purpose.ends_with(['.', '?', '!']) {
+                ""
+            } else {
+                "."
+            };
+            format!("{who} asks for a machine. Purpose: {purpose}{end}")
+        }
+        None => format!("{who} asks for a machine and gave no purpose."),
+    }
+}
+
+/// The purpose an agent gave with one acquire, readable by the owner's card while the request is in flight.
+struct AcquirePurpose(Option<(KernelRuntimeState, String)>);
+impl AcquirePurpose {
+    /// One line of at most 200 characters; an empty purpose is none.
+    fn hold(state: &KernelRuntimeState, request_id: &str, purpose: Option<&str>) -> Self {
+        let purpose = purpose
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty())
+            .map(|text| match text.char_indices().nth(200) {
+                Some((end, _)) => format!("{}…", &text[..end]),
+                None => text,
+            });
+        let Some(purpose) = purpose else {
+            return Self(None);
+        };
+        state
+            .owned
+            .acquire_purposes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(request_id.to_owned(), purpose);
+        Self(Some((state.clone(), request_id.to_owned())))
+    }
+}
+impl Drop for AcquirePurpose {
+    fn drop(&mut self) {
+        if let Some((state, request_id)) = self.0.take() {
+            state
+                .owned
+                .acquire_purposes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&request_id);
+        }
+    }
+}
+
 /// Dropping a waiting job withdraws its decision before an agent can leave a stale stripe.
 struct PendingAcquisition(Option<(KernelRuntimeState, String, String)>);
 impl Drop for PendingAcquisition {
@@ -219,8 +380,8 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
-        ("chariox.machines.status", "Read a allocation's state and its verified target kernel. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire machines without asking: within the owner's limits (allowed classes, machines at the same time, daily spending) it goes ahead with no card and the Room records its class, rate and cost; outside them the owner's card says why, and the call waits up to 5 minutes for the owner's answer. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Pass timeout_s (seconds) as the rental's hard stop: the service stops the machine then, with nobody to remember it; release it earlier when the work is finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be. Say in purpose, in one line, what the machine is for: the person's card names you and shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
 }
@@ -238,11 +399,13 @@ impl KernelRuntimeState {
             allocation_ref: Option<String>,
             class_id: Option<String>,
             region: Option<String>,
+            timeout_s: Option<u64>,
+            purpose: Option<String>,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use request_id, class_id and region for acquire, allocation_ref for status and release, and no arguments for options",
+                "Use request_id, class_id, region, timeout_s and purpose for acquire, allocation_ref for status and release, and no arguments for options",
             )
         })?;
         let runs = self
@@ -301,6 +464,8 @@ impl KernelRuntimeState {
                     &reach.agent_id,
                     &request_id,
                 );
+                let _purpose =
+                    AcquirePurpose::hold(self, &service_request_id, args.purpose.as_deref());
                 let result = match self
                     .job_control_plane(
                         &origin,
@@ -309,6 +474,7 @@ impl KernelRuntimeState {
                             request_id: service_request_id.clone(),
                             class_id: option.class_id().map(str::to_owned),
                             region: option.region().map(str::to_owned),
+                            timeout_s: args.timeout_s,
                         },
                         &format!("machine:{service_request_id}:acquire"),
                     )
@@ -317,6 +483,12 @@ impl KernelRuntimeState {
                     Ok(result) => result,
                     Err(error) => {
                         self.close_acquire_option(&reach.agent_id, &request_id, &option, &error)?;
+                        // The agent retries with its own request_id, not the service's derived one.
+                        let error = without_asking::name_agent_request(
+                            error,
+                            &service_request_id,
+                            &request_id,
+                        );
                         return Err(choice::acquire_refusal(
                             error,
                             &capability,
@@ -353,15 +525,29 @@ impl KernelRuntimeState {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {
                     acquisition_error("invalid_request", "allocation_ref is required")
                 })?;
-                serde_json::to_value(
-                    self.job_control_plane(
+                let status = self
+                    .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Get { allocation_ref },
                         "machines:status",
                     )
-                    .await?,
-                )
-                .map_err(|e| acquisition_error("invalid_response", &e.to_string()))?
+                    .await?;
+                let mut result = serde_json::to_value(&status)
+                    .map_err(|error| acquisition_error("invalid_response", &error.to_string()))?;
+                let ready_target = match status {
+                    crate::local::ControlPlaneResponse::Machine {
+                        state,
+                        kernel_target,
+                        ..
+                    } if state == "ready" => kernel_target,
+                    _ => None,
+                };
+                if let Some(target) = ready_target {
+                    result["build_toolchain"] = self
+                        .target_build_toolchain(&target.kernel_id, &origin.harness)
+                        .await;
+                }
+                result
             }
             "chariox.machines.release" => {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {
@@ -401,7 +587,7 @@ impl KernelRuntimeState {
                 return Err(acquisition_error(
                     "invalid_request",
                     "Unknown machine action",
-                ))
+                ));
             }
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -411,8 +597,12 @@ impl KernelRuntimeState {
     }
 }
 
+mod build_toolchain;
 mod choice;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tool_tests;
+pub(in crate::runtime::state) mod tool_tests;
+pub(crate) mod without_asking;
+#[cfg(test)]
+mod without_asking_tests;

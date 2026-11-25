@@ -18,15 +18,19 @@ pub use api::{
 };
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 pub use api::{
-    GetPersonInboxRequest, InboxCardChange, PersonInboxCard, PersonInboxCardBody,
-    PersonInboxNotice, PersonInboxNoticeAction, PersonInboxOrigin, PersonInboxPriority,
-    SetInboxCardStateRequest, SetInboxMuteRequest,
+    GetPaneFeedRequest, PaneCard, PaneCardChoice, PaneCardReply, PaneFeed, PaneIdentity,
+    PaneNotice, PaneSettings, PaneState, PaneStripe, ReportPaneSettingsRequest,
 };
 pub use api::{
-    GetRemoteJobPolicyRequest, JobCommand, JobMachineOffer, JobMachineRate, JobNeeds, JobOutcome,
-    JobPlacement, JobRanOn, JobResult, JobResultSummary, JobView, OffloadPolicy, RemoteJobEstimate,
-    RemoteJobPlacement, RemoteJobPolicy, RunJobRequest, RunSessionProcessRemotelyRequest,
-    SetRemoteJobPolicyRequest,
+    GetPersonInboxRequest, InboxCardChange, PersonInboxCard, PersonInboxCardBody,
+    PersonInboxNotice, PersonInboxNoticeAction, PersonInboxNoticeOrigin, PersonInboxOrigin,
+    PersonInboxPriority, SetInboxCardStateRequest, SetInboxMuteRequest,
+};
+pub use api::{
+    GetRemoteJobPolicyRequest, JobCommand, JobMachineOffer, JobMachineRate, JobMachineTarget,
+    JobNeeds, JobOutcome, JobPlacement, JobRanOn, JobResult, JobResultSummary, JobView,
+    OffloadPolicy, RemoteJobEstimate, RemoteJobPlacement, RemoteJobPolicy, RunJobRequest,
+    RunSessionProcessRemotelyRequest, SetRemoteJobPolicyRequest,
 };
 pub use api::{
     ListNotificationSubscriptionsRequest, NotificationSubscriptionChange,
@@ -35,6 +39,7 @@ pub use api::{
     ReadNotificationTraceRequest, RemoveNotificationSubscriptionRequest,
     TestNotificationSubscriptionRequest, UpdateNotificationSubscriptionRequest,
 };
+pub use api::{OwnerViewRequest, OwnerViewRows, OwnerViewWatcher};
 mod api;
 #[doc(hidden)]
 pub use api::PeerSpawnOrigin;
@@ -82,8 +87,8 @@ pub use api::{
     ClearWorkflowPromptQueueRequest, ClearWorkflowRunAttentionRequest, ClientCatalogRevisions,
     ClientCatalogSnapshot, CloudRelayLoginPoll, CloudRelayLoginPollStatus, CloudRelayLoginStart,
     CloudRelayProfile, CloudRelayRuntimeToken, CloudRelayStatusRequest,
-    CommitWorkspaceChangesRequest, CompletePromptRequest, ConfigureRelayRequest,
-    ConnectCloudRelayRequest, ControlRoomWorkflowRunsRequest,
+    CommitWorkspaceChangesRequest, CompletePromptRequest, ConfigureRelayIssuerRequest,
+    ConfigureRelayRequest, ConnectCloudRelayRequest, ControlRoomWorkflowRunsRequest,
     ControlWorkflowPublicationRuntimeRequest, CopyProviderAccountFromKernelRequest,
     CopyProviderAccountToKernelRequest, CreateAgentTriggerRequest, CreateAgentWorkflowRequest,
     CreatePairingInviteRequest, CreateProjectRequest, CreateSessionInviteRequest,
@@ -113,10 +118,10 @@ pub use api::{
     ExportWorkflowPublicationPackageRequest, ExtensionKind, ExtensionPresence,
     ExternalProviderSessionCapabilities, ExternalProviderSessionPage,
     ExternalProviderSessionRecord, FocusAgentRequest, ForgetRemoteMachineRequest, ForkAgentRequest,
-    GenerateWorkspaceCommitMessageRequest, GetClientCatalogSnapshotRequest,
-    GetConnectorAdapterRequest, GetConnectorRequest, GetCredentialRequest,
-    GetCredentialVaultStatusRequest, GetDaemonHealthRequest, GetEnvironmentRequest,
-    GetEventConnectionRequest, GetEventDeliveryStatusRequest,
+    GenerateWorkspaceCommitMessageRequest, GetAgentSettingsRequest,
+    GetClientCatalogSnapshotRequest, GetConnectorAdapterRequest, GetConnectorRequest,
+    GetCredentialRequest, GetCredentialVaultStatusRequest, GetDaemonHealthRequest,
+    GetEnvironmentRequest, GetEventConnectionRequest, GetEventDeliveryStatusRequest,
     GetEventGeneratorCatalogLandingRequest, GetEventGeneratorDetailRequest,
     GetMachineRoomResourcesRequest, GetManagedContextLaunchTargetRequest,
     GetManagedContextTransferStatusRequest, GetMcpServerRequest, GetMetaagentTurnBlobRequest,
@@ -138,11 +143,11 @@ pub use api::{
     ImportWorkflowCodeArtifactRequest, ImportWorkflowCodePackageRequest,
     InspectGitCapabilityRequest, InstallEventConnectionRequest, InstallMcpServerRequest,
     InvokeAgentTriggerRequest, InvokeWorkflowEndpointRequest, IssueCloudRelayClientTokenRequest,
-    JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
-    KernelClientConnection, KernelFileWatchParams, KernelResourceRefusal, KernelResourceWatch,
-    KernelRuntimeIdentityObservationAcknowledgement, KernelRuntimeProcessIdentity,
-    LaunchProviderRunRequest, LaunchProviderRunsRequest, ListAgentsRequest,
-    ListConnectorAdaptersRequest, ListConnectorsRequest, ListCredentialsRequest,
+    IssueRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
+    JoinTerminalPairingLinkRequest, KernelClientConnection, KernelFileWatchParams,
+    KernelResourceRefusal, KernelResourceWatch, KernelRuntimeIdentityObservationAcknowledgement,
+    KernelRuntimeProcessIdentity, LaunchProviderRunRequest, LaunchProviderRunsRequest,
+    ListAgentsRequest, ListConnectorAdaptersRequest, ListConnectorsRequest, ListCredentialsRequest,
     ListEnvironmentsRequest, ListEventConnectionDependenciesRequest,
     ListEventConnectionEventsRequest, ListEventConnectionResourcesRequest,
     ListEventConnectionsRequest, ListEventGeneratorResourcesRequest,
@@ -173,21 +178,23 @@ pub use api::{
     PollCloudRelayLoginRequest, PollRuntimeNoticesRequest, PreviewPromptSettingRequest,
     PreviewWorkflowScheduleRequest, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView,
     ProjectEnvironmentFilePath, ProjectEnvironmentFilePresenceKind, ProjectEnvironmentFileView,
-    ProjectEnvironmentSecretName, ProjectEnvironmentSecretView, ProjectEnvironmentSetupField,
-    ProjectEnvironmentSetupState, ProjectEnvironmentView, PromptBatchSubmissionResult,
-    PromptInputHistoryEntry, PromptInputHistoryEntryKind, PromptReceipt, PromptSettingVersion,
-    ProviderAccountTransferProfile, ProviderAccountTransferSelection,
-    ProviderCapabilityImportDuplicate, ProviderCapabilityImportEntry,
-    ProviderCapabilityImportReport, ProviderCapabilityImportSummary, ProviderLoginProcessState,
-    ProviderLoginStatus, ProviderRunBatchLaunchResult, PumpTerminalOutputRequest,
-    QueryRecallRequest, ReadAgentTriggerHttpOptionsRequest, ReadAgentTriggerReplyRequest,
-    ReadAgentTriggerTranscriptRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, ReadMetaagentEventRequest, ReadRoomEnvironmentClipboardRequest,
-    RebuildWorkflowCodeSourceRequest, ReconnectEventConnectionRequest, RecordPairedClientRequest,
-    RecordPromptInputHistoryRequest, RefreshEventConnectionRequest,
-    RefreshExternalProviderSessionsRequest, RegisterConnectorAdapterRequest,
-    RegisterConnectorRequest, RegisterCredentialRequest, RegisterEnvironmentRequest,
-    RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest, RelayStatus,
+    ProjectEnvironmentSecretName, ProjectEnvironmentSecretSource, ProjectEnvironmentSecretView,
+    ProjectEnvironmentSetupField, ProjectEnvironmentSetupState, ProjectEnvironmentView,
+    PromptBatchSubmissionResult, PromptInputHistoryEntry, PromptInputHistoryEntryKind,
+    PromptReceipt, PromptSettingVersion, ProviderAccountTransferProfile,
+    ProviderAccountTransferSelection, ProviderCapabilityImportDuplicate,
+    ProviderCapabilityImportEntry, ProviderCapabilityImportReport, ProviderCapabilityImportSummary,
+    ProviderLoginProcessState, ProviderLoginStatus, ProviderRunBatchLaunchResult,
+    PumpTerminalOutputRequest, QueryRecallRequest, ReadAgentTriggerHttpOptionsRequest,
+    ReadAgentTriggerReplyRequest, ReadAgentTriggerTranscriptRequest,
+    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, ReadMetaagentEventRequest,
+    ReadRoomEnvironmentClipboardRequest, RebuildWorkflowCodeSourceRequest,
+    ReconnectEventConnectionRequest, RecordPairedClientRequest, RecordPromptInputHistoryRequest,
+    RefreshEventConnectionRequest, RefreshExternalProviderSessionsRequest,
+    RegisterConnectorAdapterRequest, RegisterConnectorRequest, RegisterCredentialRequest,
+    RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
+    RelayClientToken, RelayClientTokenScope, RelayIssuerKeyRecord, RelayIssuerRecord,
+    RelayIssuerStatusRequest, RelayIssuerStep, RelayRegistrationRefusal, RelayStatus,
     RelayStatusRequest, ReleaseRoomEnvironmentInputRequest, RemoteEnvironmentOperationRequest,
     RemoteMachineInventory, RemoteMachineKernel, RemoteMachinePresence, RemoteMachineRecord,
     RemoteMachineTrustStatus, RemoveConnectorAdapterRequest, RemoveConnectorRequest,
@@ -223,10 +230,12 @@ pub use api::{
     SemanticSearchRecallMode, SemanticSearchRecallRequest, SendProviderLoginInputRequest,
     SendProviderLoginVaultEntryRequest, SendTerminalInputRequest, SessionHistoryBlobContentPage,
     SessionHistoryOutlineAgent, SessionHistoryOutlineBlob, SessionHistoryOutlineCursor,
-    SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle, SessionInviteRecord,
-    SetAgentParentRequest, SetCredentialSecretRequest, SetProjectEnvironmentSecretRequest,
-    SetProjectPinnedRequest, SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest,
-    SetRoomPinnedRequest, SetUserConfigValueRequest, SetWorkflowFlushContextRequest,
+    SessionHistoryOutlineDeltaCursor, SessionHistoryOutlineDeltaItem,
+    SessionHistoryOutlineSummaryDelta, SessionHistoryOutlineTurn, SessionHistoryOutlineTurnDelta,
+    SessionHistoryOutlineTurnLifecycle, SessionInviteRecord, SetAgentParentRequest,
+    SetCredentialSecretRequest, SetProjectEnvironmentSecretRequest, SetProjectPinnedRequest,
+    SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest, SetRoomPinnedRequest,
+    SetUserConfigValueRequest, SetWorkflowFlushContextRequest,
     SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
     SetWorkflowNodeWaitForAllInputsRequest, SetWorkflowResponsibleRequest,
@@ -359,7 +368,6 @@ pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteResult, NoteSelection, NoteTextQuote, NoteWindow,
     NotesRequest,
 };
-pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
 pub use api::{
     WatcherCoalesce, WatcherDryRun, WatcherEvent, WatcherEventDeclaration, WatcherHealth,
     WatcherManifest, WatcherMode, WatcherRequest, WatcherScript, WatcherState, WatcherSummary,
@@ -383,7 +391,10 @@ pub use api::{
     MachineAcquisitionPeriod, MachineAcquisitionTerms, MachineAllocationCapability, MachineOption,
 };
 
-pub use api::{ControlPlaneMachineRow, ControlPlaneSavedStateRow};
+pub use api::{
+    AccountKernel, AccountKernelStatus, AccountKernelsRequest, ControlPlaneMachineRow,
+    ControlPlaneSavedStateRow,
+};
 
 pub use api::{
     CreateCredentialVaultRequest, CredentialVaultOrigin, IssueOwnMachineEnrollmentRequest,

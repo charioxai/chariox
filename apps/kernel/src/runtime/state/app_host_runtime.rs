@@ -36,7 +36,12 @@ impl KernelRuntimeState {
             let interaction = host_interaction(&offer)
                 .with_timeout_sec((offer.expires_ms.saturating_sub(now_ms) / 1000).clamp(1, 300));
             let receiver = match self
-                .create_kernel_operation_interaction(&session, &offer.owner, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &session,
+                    &offer.owner,
+                    interaction,
+                )
                 .await
             {
                 Ok(receiver) => receiver,
@@ -145,7 +150,17 @@ fn host_interaction(offer: &HostOffer) -> RuntimeInteraction {
     RuntimeInteraction::for_kernel_operation(
         format!("app_host_{}", offer.operation_id), format!("host_action:{}", offer.operation_id), title,
         format!("An App asks you to accept this action in your terminal.\n\nInstallation: {}\n{detail}\n\nOnly {} (the App's owner) can answer. Accept in this terminal, or decline. In a text terminal: close this panel (Esc), then /app host accept\nIf several offers are pending: /app host accept {}\nNo clipboard contents are read. The action is taken once.", offer.installation, offer.owner, offer.operation_id),
-        vec![RuntimeInteractionChoice::new("decline", "Decline", "deny", None)],
+        // Accept is the dedicated terminal path (`AcceptAppHostAction`): the payload goes to the
+        // client that takes it, so a client's Accept button sends that request, not a reply.
+        vec![
+            RuntimeInteractionChoice::new(
+                "accept_host_action",
+                "Accept",
+                "accept_host_action",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+            ),
+            RuntimeInteractionChoice::new("decline", "Decline", "deny", None),
+        ],
     )
 }
 
@@ -158,7 +173,7 @@ fn visible_text(text: &str) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn host_prompt_shows_exact_url_and_safe_text_with_only_decline() {
+    fn host_prompt_shows_exact_url_and_safe_text_with_accept_and_decline() {
         let mut offer = HostOffer {
             operation_id: "op".into(),
             owner: "alice".into(),
@@ -179,7 +194,13 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("/app host accept op"));
-        assert_eq!(wire["choices"].as_array().unwrap().len(), 1);
+        let choices = wire["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| choice["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(choices, ["accept_host_action", "decline"]);
         assert!(wire.get("default_on_timeout").is_none());
         offer.action = AppHostAction::OpenLink {
             url: "https://bücher.example/path".into(),

@@ -72,12 +72,7 @@ impl KernelRuntimeState {
         let store = &self.owned.durable_state_store;
         let now = crate::session::unix_epoch_ms();
         Ok(match name {
-            "chariox.events.wakes" => {
-                let wakes = store.agent_visible_wakes(&task.room_id, Some(&task.agent_id), now)?;
-                let receipts =
-                    store.agent_wake_receipts(Some(&task.room_id), Some(&task.agent_id))?;
-                serde_json::json!({"now_ms":now,"scheduler":self.wake_scheduler_health(now),"wakes":wakes,"receipts":receipts})
-            }
+            "chariox.events.wakes" => self.list_agent_wakes(task, args, now)?,
             "chariox.events.timer" => {
                 let delay = args["delay_ms"]
                     .as_u64()
@@ -167,6 +162,7 @@ impl KernelRuntimeState {
                         .start_home_leased_process(
                             wake,
                             args["cwd"].as_str().map(str::to_string),
+                            None,
                             &task.task_id,
                             &task.prompt_id,
                         )
@@ -186,7 +182,7 @@ impl KernelRuntimeState {
                 let run = self.watched_process_run(run.id())?;
                 let cwd =
                     super::super::agent_process_watch::workspace_cwd(&run, args["cwd"].as_str())?;
-                let argv = super::super::agent_process_watch::command_argv(&args["argv"])?;
+                let argv = super::super::agent_process_watch::command_argv(&args["argv"], false)?;
                 let match_text = match args["match_text"].as_str() {
                     Some(m) if m.is_empty() || m.len() > 200 => {
                         return Err(ledger::error("match_text of 1-200 bytes required"))
@@ -410,6 +406,9 @@ mod security_tests {
 
     #[tokio::test]
     async fn review_r1_safe_argument_boundaries_survive_metadata_retention() {
+        if !crate::test_support::has_user_namespaces() {
+            return;
+        }
         let (state, run, task, _worktree) = fixture("codex", false).await;
         let argv = vec!["/bin/echo", "two words", "", "quote\"and\\slash"];
         let result = state.dispatch_agent_wake_tool(Some(&run), "chariox.events.process",

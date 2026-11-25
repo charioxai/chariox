@@ -76,6 +76,10 @@ pub struct AgentTreeNode {
     /// in no Room agent list, so this is where a client reads the stop it decides on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_limit_stop: Option<crate::agent::UsageLimitStop>,
+    /// What the node waits on and since when, from the same projection the Room's agent activity
+    /// carries; absent while it has nothing to say (an idle or plainly running node).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<crate::runtime::projection::AgentLiveness>,
 }
 
 /// The descendants of `root` in creation order (stable); the client builds the

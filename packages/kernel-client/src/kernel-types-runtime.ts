@@ -47,14 +47,32 @@ export type AgentRuntimeActivity = {
 export type AgentLiveness = {
   last_activity_at_ms?: number
   waiting_on?: AgentWaitingOn
+  /** Every event the waiting task would wake on, oldest first; `waiting_on` names only the oldest. */
+  waiting_events?: AgentWaitEvent[]
   stalled?: boolean
 }
 
+export type AgentWaitKind = "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held" | "card"
+
 export type AgentWaitingOn = {
-  kind: "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held"
+  kind: AgentWaitKind
   detail?: string
   resource?: "memory" | "disk"
   since_ms: number
+  /** A timer's due time. */
+  due_at_ms?: number
+}
+
+export type AgentWaitEvent = {
+  id: string
+  kind: AgentWaitKind
+  /** In plain words: "sub-agent sub-agent-1", "timer check the build", "your answer on 'Value for the Vault'". */
+  label: string
+  since_ms: number
+  due_at_ms?: number
+  task_id: string
+  wait_started_at_ms: number
+  cancel_wake_id?: string
 }
 
 export type AgentQueuedPromptControl = {
@@ -269,6 +287,7 @@ export type PaymentCardSummary = {
 export type RuntimeInteractionChoice = {
   id: string
   label: string
+  description?: string
   reply: string
   style?: "primary" | "secondary" | "danger" | null
   /** Protocol 392: answering with this choice needs the Chariox passkey. */
@@ -347,6 +366,7 @@ export type PasskeyPrompt = {
 export type RuntimeInteractionCustomChoice = {
   id: string
   label: string
+  description?: string
   placeholder?: string | null
   min_length?: number | null
   max_length?: number | null
@@ -421,7 +441,7 @@ export type SessionConfigState = {
 export type CharioxUserConfig = {
   skills?: { metadata_budget_percent: number }
   version: number
-  agents?: { offload_without_asking?: boolean }
+  agents?: { offload_without_asking?: boolean; offload_classes?: string[]; offload_max_machines?: number; offload_daily_cap_micros?: number }
   slices?: {
     linux?: {
       disk_layer_mb?: number
@@ -570,6 +590,12 @@ export type AgentInstance = {
   model: string | null
   effort?: string | null
   account_profile?: string | null
+  pending_profile?: {
+    provider: string
+    model: string | null
+    effort: string | null
+    account_profile: string
+  }
   execution_mode_override?: "build" | "plan" | null
   permission_level_override?: "required" | "yolo" | null
   max_context_tokens?: number | null
@@ -711,8 +737,9 @@ export type OwnerInteraction = {
   interaction_id: string
   title?: string
   message: string
-  choices: { id: string; label: string }[]
+  choices: { id: string; label: string; description?: string }[]
   reply_choice_id?: string
+  reply_choice_description?: string
   person_only?: string
 }
 export type OwnerInteractionsListedResponse = { OwnerInteractionsListed: { interactions: OwnerInteraction[] } }
@@ -761,6 +788,8 @@ export interface AgentTreeNode {
   needs_user: boolean
   deadline_ms: number | null
   created_at_ms: number
+  /** What the node waits on and its stall; absent when it has nothing to say (idle, or plainly running). */
+  liveness?: AgentLiveness
 }
 
 /** `ListDescendants`: no holder, path or card; read again when an `agent_tree` event arrives. */

@@ -61,6 +61,21 @@ impl KernelRuntimeOwnedState {
         agent: &str,
         diagnostic: &str,
     ) -> Result<(), DaemonError> {
+        // A turn refused because its task already exists means the delegate is alive on that
+        // task (blocked, or resumed by its owner). Telling the parent it is gone ends a wait on
+        // an agent that is still working (row 449).
+        if diagnostic.contains("superseded turn or conflicting task identity") {
+            crate::logging::warn_with_fields(
+                "daemon.agent_task",
+                "delegate start refused: its task already exists; not reported as gone",
+                serde_json::json!({
+                    "session_id": room,
+                    "agent_id": agent,
+                    "reason": crate::provider::sanitize_provider_diagnostic(diagnostic),
+                }),
+            );
+            return Ok(());
+        }
         crate::logging::warn_with_fields(
             "daemon.agent_task",
             "delegate could not start its requested turn",
@@ -122,14 +137,19 @@ impl KernelRuntimeOwnedState {
                 }
             }
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);
+            let reason = if crate::provider::switch_turn::needs_fresh_agent(&diagnostic) {
+                diagnostic
+            } else {
+                format!(
+                    "{}. Check the result before using Resume to retry, or Cancel.",
+                    diagnostic.trim_end_matches('.')
+                )
+            };
             self.durable_state_store
                 .agent_lifecycle(Operation::BlockInterrupted {
                     task: task.task_id,
                     prompt: task.prompt_id,
-                    reason: format!(
-                        "{}. Check the result before using Resume to retry, or Cancel.",
-                        diagnostic.trim_end_matches('.')
-                    ),
+                    reason,
                 })?;
         }
         Ok(())

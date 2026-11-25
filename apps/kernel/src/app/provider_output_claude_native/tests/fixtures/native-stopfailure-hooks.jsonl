@@ -1,0 +1,2 @@
+{"prompt_id": "fixture-prompt", "hook_event_name": "PreCompact", "trigger": "manual", "custom_instructions": "payload probe"}
+{"prompt_id": "fixture-prompt", "hook_event_name": "StopFailure", "error": "unknown"}

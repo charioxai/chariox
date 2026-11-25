@@ -477,3 +477,72 @@ async fn a_cover_that_fails_to_persist_is_not_live_and_a_retry_records_it() {
     kill_pid(background);
     kill_pid(holder_pid);
 }
+
+// EA2-77: the command a covered process runs asks for the status of that process by pid, as
+// `chariox access status --holder-pid <pid>` does from a covered background process. It is
+// granted; a pid outside the caller's chain is still refused.
+#[tokio::test]
+async fn a_covered_process_named_by_its_own_command_is_granted() {
+    let root = crate::test_support::TestWorktree::new("cover-own-status");
+    let holder_pid = detached(
+        root.path(),
+        "holder",
+        &format!(
+            "sh -c 'sleep 600 & echo $! > {}; wait' & echo $! > {}; exec sleep 600",
+            root.path().join("command").display(),
+            root.path().join("background").display()
+        ),
+    );
+    let wait_pid = |name: &str| {
+        let file = root.path().join(name);
+        let started = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<u32>().ok())
+                .filter(|pid| process::inspect(*pid).is_ok())
+            {
+                return pid;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{name} was not ready"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let background = wait_pid("background");
+    let command = wait_pid("command");
+    let holder = process::inspect(holder_pid).unwrap().0;
+    let target = process::inspect(command).unwrap().0;
+    let router = kernel(&root);
+    let state = router.runtime_state();
+    state
+        .admit_grant(
+            &mut state.owned.kernel_access.lock().unwrap(),
+            "cover".into(),
+            summary(&holder),
+            holder.clone(),
+            None,
+        )
+        .unwrap();
+    state
+        .cover_kernel_access_process(
+            &holder,
+            None,
+            &CoverKernelAccessProcessRequest {
+                pid: background,
+                start: None,
+            },
+        )
+        .unwrap();
+    let named = state.kernel_access_status(&target, Some(background));
+    let outside = state
+        .kernel_access_status(&target, Some(99_999_999))
+        .is_err();
+    kill_pid(command);
+    kill_pid(background);
+    kill_pid(holder_pid);
+    assert_eq!(named.unwrap().state, KernelAccessHolderState::Granted);
+    assert!(outside, "a pid outside the caller's chain stays refused");
+}

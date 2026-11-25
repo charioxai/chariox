@@ -25,6 +25,22 @@
     "seam": "LocalDaemonRequest::ControlPlane"
   },
   {
+    "path": "/kernels/account/list",
+    "callers": [
+      "apps/kernel/src/runtime/cloud_api_client/account_kernels.rs"
+    ],
+    "why": "The connected service owns account kernel enrollment and its directory",
+    "seam": "account kernel enrollment"
+  },
+  {
+    "path": "/kernels/account/unlink",
+    "callers": [
+      "apps/kernel/src/runtime/cloud_api_client/account_kernels.rs"
+    ],
+    "why": "The connected service owns account kernel enrollment and its directory",
+    "seam": "account kernel enrollment"
+  },
+  {
     "path": "/kernels/active",
     "callers": [
       "scripts/e2e-stack/context-switch/handoff-config-live.mjs"
@@ -274,6 +290,22 @@
       "apps/kernel/src/managed_context/cloud_completion.rs"
     ],
     "why": "transfer tickets issued and completed by the owner's control plane",
+    "seam": "context transfer ticket authority"
+  },
+  {
+    "path": "/v1/kernels/startup-health",
+    "callers": [
+      "apps/kernel/src/managed_context/startup_health.rs"
+    ],
+    "why": "the enrolled kernel reports the outcome of its local and encrypted peer checks to the connected allocation service",
+    "seam": "managed machine health receipt"
+  },
+  {
+    "path": "/v1/kernels/context/report",
+    "callers": [
+      "apps/kernel/src/managed_context/outbound_report.rs"
+    ],
+    "why": "the source kernel tells the owner's control plane why a machine's context copy stopped",
     "seam": "context transfer ticket authority"
   },
   {

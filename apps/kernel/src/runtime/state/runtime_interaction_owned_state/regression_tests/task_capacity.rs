@@ -173,7 +173,7 @@ async fn a12_task_end_withdraws_a_restart_restored_card_without_a_responder() {
 }
 
 #[tokio::test]
-async fn a12_refused_replacement_still_settles_the_abandoned_card() {
+async fn a12_a_new_decision_supersedes_the_abandoned_card_of_its_subject() {
     let f = Fixture::new();
     let orphan = f.register("orphan").unwrap();
     f.state
@@ -187,123 +187,47 @@ async fn a12_refused_replacement_still_settles_the_abandoned_card() {
         receivers.push(f.register(&format!("live-{index}")).unwrap());
     }
     assert_eq!(f.active_ids().len(), 9);
-    assert!(
-        f.register("orphan").is_err(),
-        "the live owner quota remains enforced"
-    );
+    receivers.push(f.register("orphan").unwrap());
     assert_eq!(
         f.active_ids().len(),
-        8,
-        "a refused admission must commit both sides of superseded cleanup"
+        9,
+        "the new card replaces the abandoned one instead of joining it"
     );
-    assert!(!f.active_ids().contains(&f.id("orphan")));
     drop(receivers);
 }
 
 #[tokio::test]
-async fn a12_owner_elevation_reserves_the_last_slot_and_keeps_the_global_bound() {
+async fn a12_many_pending_decisions_never_block_a_new_one() {
     let f = Fixture::new();
-    let owners = [DEFAULT_LOCAL_USER_ID, "owner-a", "owner-b", "owner-c"];
-    {
-        let mut sessions = f.state.owned.session_store.write();
-        let mut session = sessions.get_session(&f.session).unwrap();
-        for owner in &owners[1..] {
-            session.add_member(*owner, None, crate::session::CollaborationLevel::Full);
-        }
-        sessions.restore_session(session);
-    }
     let mut receivers = Vec::new();
-    for index in 0..31 {
-        let id = f.id(&format!("global-{index}"));
-        receivers.push(
-            f.state
-                .create_kernel_operation_interaction(
-                    &f.session,
-                    owners[index / 8],
-                    RuntimeInteraction::for_kernel_operation(
-                        &id,
-                        &id,
-                        "Agent decision",
-                        "Choose an action",
-                        vec![RuntimeInteractionChoice::new(
-                            "cancel", "Cancel", "cancel", None,
-                        )],
-                    )
-                    .with_timeout_sec(900),
-                )
-                .await
-                .unwrap(),
-        );
+    for index in 0..40 {
+        receivers.push(f.register(&format!("pending-{index}")).unwrap());
     }
-    let id = f.id("agent-over-reservation");
-    assert!(
+    let elevation = format!("sudo:{}:after-forty", f.session);
+    receivers.push(
         f.state
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
                 &f.session,
-                owners[3],
+                DEFAULT_LOCAL_USER_ID,
                 RuntimeInteraction::for_kernel_operation(
-                    &id,
-                    &id,
-                    "Agent decision",
-                    "Choose an action",
-                    vec![RuntimeInteractionChoice::new(
-                        "cancel", "Cancel", "cancel", None
-                    ),]
+                    &elevation,
+                    &elevation,
+                    "Run one sudo task",
+                    "Owner elevation",
+                    vec![
+                        RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
+                        RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                            .requiring_passkey(),
+                    ],
                 )
                 .with_timeout_sec(900),
             )
             .await
-            .is_err(),
-        "agent requests cannot spend the reserved final slot"
-    );
-    let elevation = |suffix: &str| {
-        let id = format!("sudo:{}:{suffix}", f.session);
-        RuntimeInteraction::for_kernel_operation(
-            &id,
-            &id,
-            "Run one sudo task",
-            "Owner elevation",
-            vec![
-                RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
-                RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
-                    .requiring_passkey(),
-            ],
-        )
-        .with_timeout_sec(900)
-    };
-    receivers.push(
-        f.state
-            .create_kernel_operation_interaction(&f.session, owners[3], elevation("last-slot"))
-            .await
             .unwrap(),
     );
-    assert_eq!(f.active_ids().len(), 32);
-    assert!(
-        f.state
-            .create_kernel_operation_interaction(&f.session, owners[0], elevation("over-limit"))
-            .await
-            .is_err(),
-        "owner elevation also obeys the hard32 bound"
-    );
-    assert_eq!(f.active_ids().len(), 32);
-    for index in [0, 8] {
-        f.state
-            .owned
-            .pending_interactions
-            .write()
-            .get_mut(&f.id(&format!("global-{index}")))
-            .unwrap()
-            .kernel_operation_deadline = Some(std::time::Instant::now());
-    }
-    let admitted = f.register("after-expiry");
-    assert!(
-        admitted.is_ok(),
-        "stale decisions filled the global bound: {admitted:?}"
-    );
-    assert_eq!(f.active_ids().len(), 31);
-    for index in [0, 8] {
-        assert_eq!(receivers[index].try_recv().unwrap().status, "timed_out");
-    }
+    receivers.push(f.register("agent-after-forty").unwrap());
+    assert_eq!(f.active_ids().len(), 42);
     drop(receivers);
 }
 
@@ -315,16 +239,19 @@ async fn owner_task_decision_is_removed_when_its_task_is_missing() {
     f.state
         .owned
         .register_runtime_interaction(
-            &f.session,
-            RuntimeInteraction::for_kernel_operation(
-                id,
-                id,
-                "Agent needs your action",
-                "Continue?",
-                vec![RuntimeInteractionChoice::new(
-                    "cancel", "Cancel", "cancel", None,
-                )],
+            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                RuntimeInteraction::for_kernel_operation(
+                    id,
+                    id,
+                    "Agent needs your action",
+                    "Continue?",
+                    vec![RuntimeInteractionChoice::new(
+                        "cancel", "Cancel", "cancel", None,
+                    )],
+                ),
             ),
+            &f.session,
             sender,
             Some(DEFAULT_LOCAL_USER_ID),
             None,
@@ -354,7 +281,7 @@ async fn owner_task_decision_restores_its_reply_channel_after_reload() {
         .resolve_runtime_interaction(
             &f.session,
             &id,
-            "cancel",
+            "stop",
             None,
             Some(DEFAULT_LOCAL_USER_ID),
             false,

@@ -115,6 +115,10 @@ impl CommandRouter {
                     .set_agent_deadline(&command_caller_user_id(&command), request)
                     .await
             }),
+            LocalDaemonRequest::GetAgentSettings(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .read_agent_settings(&command_caller_user_id(&command), request)
+            }),
             LocalDaemonRequest::GetAgentDeadline(request) => boxed_handler(|| async move {
                 self.runtime_state
                     .read_agent_deadline(&command_caller_user_id(&command), request)
@@ -501,24 +505,29 @@ impl CommandRouter {
                         .read_agent_trigger_http_options(request, &caller)
                 })
             }
+            LocalDaemonRequest::OwnerView(request) => {
+                boxed_handler(
+                    || async move { self.runtime_state.owner_view_request(&command, request) },
+                )
+            }
             LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_person_inbox_request(
                     &self.runtime_state,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::SetInboxCardState(request) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_set_inbox_card_state(
                     &self.runtime_state,
                     request,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::SetInboxMute(request) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_set_inbox_mute(
                     &self.runtime_state,
                     request,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::ListNotificationSubscriptions(_) => boxed_handler(|| async move {
@@ -690,6 +699,15 @@ impl CommandRouter {
                 )
                 .await
             }),
+            request @ (LocalDaemonRequest::RelayIssuerStatus(_)
+            | LocalDaemonRequest::ConfigureRelayIssuer(_)
+            | LocalDaemonRequest::IssueRelayClientToken(_)) => boxed_handler(|| async move {
+                crate::runtime::relay_issuer::execute_relay_issuer_request(
+                    &self.config_projection.snapshot(),
+                    &command.caller,
+                    request,
+                )
+            }),
             request @ (LocalDaemonRequest::CreatePairingInvite(_)
             | LocalDaemonRequest::JoinPairingInvite(_)
             | LocalDaemonRequest::CreateTerminalPairingLink(_)
@@ -828,6 +846,7 @@ impl CommandRouter {
                             &request.session_id,
                             &command.caller,
                             &request.process_id,
+                            request.kernel.as_deref(),
                         )
                         .await?;
                     Ok(LocalDaemonResponse::SessionProcessRemoteStarted {

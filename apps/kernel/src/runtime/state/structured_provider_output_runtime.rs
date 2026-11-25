@@ -538,7 +538,7 @@ impl KernelRuntimeState {
         .await
     }
 
-    fn prepare_owned_structured_output_batch(
+    pub(super) fn prepare_owned_structured_output_batch(
         &self,
         session_id: &str,
         provider_run_id: &str,
@@ -666,7 +666,7 @@ impl KernelRuntimeState {
         Ok(poll_result)
     }
 
-    async fn apply_prepared_owned_structured_output_batch(
+    pub(super) async fn apply_prepared_owned_structured_output_batch(
         &self,
         session_id: &str,
         provider_run_id: &str,
@@ -674,6 +674,10 @@ impl KernelRuntimeState {
         mut poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
+        // The first output of a process the next dispatch started on new settings says that a
+        // change which waited for a background command took effect, whatever the turn does.
+        // Every batch of the production pump and of the test wrapper is applied here.
+        owned.announce_settings_taken_by_run(session_id, provider_run_id);
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
@@ -681,6 +685,9 @@ impl KernelRuntimeState {
             .follow_provider_own_turn(session_id, provider_run_id, &poll_result)
             .await?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if let Some(request) = poll_result.claude_notification_context.take() {
+            self.reply_to_claude_notification_context(session_id, &provider_run, &request)?;
+        }
         let active_prompt = if let Some(agent) = provider_run.agent_instance_id() {
             let session = owned.session_store.get_session(session_id)?;
             owned

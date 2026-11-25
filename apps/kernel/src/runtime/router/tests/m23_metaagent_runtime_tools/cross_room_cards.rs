@@ -80,6 +80,7 @@ async fn cards() {
         .router
         .runtime_state
         .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &world.other_room,
             card("xroom-perm", &world.ids["q"], false),
         )
@@ -115,7 +116,7 @@ async fn cards() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "7845b65f0c8245f0faef1f160d25dc0b4cb64cb3a9f0ad76bb8340df007ce62f"
+        "a41b0bf5a7c321d99bd21a1247bd454d991970bf0004adf390ff7c9dcecc10ae"
     );
 }
 
@@ -153,7 +154,12 @@ async fn kernel_decision_metadata() {
         .with_related_agent_id(asker.into());
         receivers.push(
             state
-                .create_kernel_operation_interaction("", card_owner, decision)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    "",
+                    card_owner,
+                    decision,
+                )
                 .await
                 .unwrap(),
         );
@@ -180,6 +186,7 @@ async fn answer() {
         .router
         .runtime_state
         .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &world.other_room,
             card("xroom-answer", &world.ids["q"], false),
         )
@@ -217,6 +224,7 @@ async fn secrets() {
         .router
         .runtime_state
         .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &world.other_room,
             card("xroom-secret", &world.ids["q"], true),
         )
@@ -304,7 +312,12 @@ async fn authority() {
         let mut answer = world
             .router
             .runtime_state
-            .create_kernel_operation_interaction(room, &owner, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                room,
+                &owner,
+                interaction,
+            )
             .await
             .unwrap();
         let result = room_command(
@@ -335,7 +348,11 @@ async fn authority() {
     let mut pending = world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.other_room, card("limited", &world.ids["q"], false))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.other_room,
+            card("limited", &world.ids["q"], false),
+        )
         .await
         .unwrap();
     let result = room_command(
@@ -379,7 +396,12 @@ async fn passkey() {
     let mut pending = world
         .router
         .runtime_state
-        .create_kernel_operation_interaction(&world.other_room, &owner, interaction)
+        .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.other_room,
+            &owner,
+            interaction,
+        )
         .await
         .unwrap();
     let result = room_command(
@@ -447,7 +469,11 @@ async fn competing_answers() {
     let mut answer = world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.other_room, card("race", &world.ids["q"], false))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.other_room,
+            card("race", &world.ids["q"], false),
+        )
         .await
         .unwrap();
     let command = format!("agent answer race allow --room {}", world.other_room);
@@ -511,7 +537,12 @@ async fn owner_identity() {
     let mut answer = world
         .router
         .runtime_state
-        .create_kernel_operation_interaction(&target, "xroom-owner", interaction)
+        .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &target,
+            "xroom-owner",
+            interaction,
+        )
         .await
         .unwrap();
     let result = room_command(

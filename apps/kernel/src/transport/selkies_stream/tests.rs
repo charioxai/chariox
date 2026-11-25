@@ -49,8 +49,13 @@ impl Desktop {
         };
         let image = std::env::var("CHARIOX_SELKIES_TEST_IMAGE")
             .expect("explicit packaged test image required");
+        let started = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let run = format!("io.chariox.drill.run={}", desktop.name);
+        let started = format!("io.chariox.drill.started={started}");
         desktop.checked(&[
             "run", "--rm", "--init", "--detach", "--name", &desktop.name,
+            "--label", &run, "--label", &started,
+            "--label", "io.chariox.drill.harness=selkies-transport-tests",
             "--user", "1000:1000", "--network", "none", "--cpus", "1",
             "--memory", "768m", "--memory-swap", "768m", "--pids-limit", "128",
             "--shm-size", "128m", "--env", "DISPLAY=:93", "--env", "OMP_NUM_THREADS=1",

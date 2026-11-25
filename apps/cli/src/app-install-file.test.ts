@@ -26,6 +26,15 @@ test("a start that outlives its budget says so instead of reporting a stop", () 
   assert.match(formatInstallFailure("app_lifecycle_deadline"), /30-second budget/)
   assert.match(formatInstallFailure("app_lifecycle_deadline"), /Start it again/)
 })
+test("a start that outlives its budget names the step it waited on", () => {
+  for (const step of ["claim", "prepare", "commit"]) {
+    const text = formatInstallFailure(`app_lifecycle_deadline_${step}`)
+    assert.match(text, /30-second budget/)
+    assert.match(text, /Start the App again|Start it again/)
+    assert.doesNotMatch(text, /app_lifecycle_deadline/)
+  }
+  assert.match(formatInstallFailure("app_lifecycle_deadline_commit"), /save the new version/)
+})
 test("an untrusted native App worker points at the installation, not the disk", () => {
   assert.match(formatInstallFailure("app_wasm_runtime"), /must belong to root, or be read-only to your user/)
   assert.doesNotMatch(formatInstallFailure("app_wasm_runtime"), /disk space/)

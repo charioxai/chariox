@@ -5,8 +5,8 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 use crate::local::{EventRefs, OutsideEventValue};
 use crate::runtime::process_resources::{
-    take_scope_kills, take_wait_events, ScopeKill, SessionProcessOwner, SessionProcessState,
-    WaitChange,
+    take_scope_kills, take_wait_events, ExhaustionStep, ScopeKill, SessionProcessOwner,
+    SessionProcessState, WaitChange,
 };
 
 impl KernelRuntimeState {
@@ -17,7 +17,10 @@ impl KernelRuntimeState {
 
     pub(super) fn deliver_process_waits_at(&self, now: std::time::Instant) {
         for event in take_wait_events() {
-            let Some((session_id, owner)) = self.process_owner(&event.keys) else {
+            let Some((session_id, owner)) = self
+                .process_owner(&event.keys)
+                .or_else(|| event.owner.clone())
+            else {
                 continue;
             };
             let (agent, terminal) = match owner {
@@ -37,7 +40,15 @@ impl KernelRuntimeState {
             }
             let (change, state) = (&event.change, &event.state);
             let (summary, waited_ms, ended) = match (change, state) {
-                (WaitChange::Stopped { reason }, _) => {
+                (WaitChange::Exhaustion { step, message }, _) => (
+                    message
+                        .trim_end()
+                        .trim_start_matches("chariox: ")
+                        .to_string(),
+                    None,
+                    matches!(step, ExhaustionStep::Stopped).then(|| message.trim_end().to_string()),
+                ),
+                (WaitChange::Stopped { reason, .. }, _) => {
                     ("stopped".to_string(), None, Some(reason.clone()))
                 }
                 (WaitChange::Resumed { waited_ms }, _) => {

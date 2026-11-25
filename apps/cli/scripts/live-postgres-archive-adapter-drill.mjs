@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { dockerLabels, drillOwner } from '../../../scripts/lib/drill-docker-owner.mjs'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -6,6 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
 
+const ownership = dockerLabels(drillOwner(import.meta.url))
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 
@@ -203,7 +205,7 @@ async function waitForHistoryMatch(client, query, filters, label, timeoutMs = 10
 
 async function createDockerNetwork() {
   const name = `chariox-archive-net-${process.pid}-${Date.now()}`
-  const created = await run('docker', ['network', 'create', name])
+  const created = await run('docker', ['network', 'create', ...ownership, name])
   if (created.code !== 0) {
     throw new Error(`failed to create Docker network. Start Docker/Colima first, then rerun the drill.\nstdout:\n${created.stdout}\nstderr:\n${created.stderr}`)
   }
@@ -218,6 +220,7 @@ async function startPostgres(network) {
   const name = `chariox-archive-pg-${process.pid}-${Date.now()}`
   const started = await run('docker', [
     'run',
+    ...ownership,
     '--name',
     name,
     '--network',
@@ -246,6 +249,7 @@ async function startMinio(network) {
   const mc = `chariox-archive-mc-${suffix}`
   const minioStarted = await run('docker', [
     'run',
+    ...ownership,
     '--name',
     minio,
     '--network',
@@ -260,7 +264,7 @@ async function startMinio(network) {
     '/data',
   ])
   if (minioStarted.code !== 0) throw new Error(`failed to start MinIO\nstdout:\n${minioStarted.stdout}\nstderr:\n${minioStarted.stderr}`)
-  const mcStarted = await run('docker', ['run', '--name', mc, '--network', network, '--entrypoint', 'sleep', '-d', 'minio/mc:latest', 'infinity'])
+  const mcStarted = await run('docker', ['run', ...ownership, '--name', mc, '--network', network, '--entrypoint', 'sleep', '-d', 'minio/mc:latest', 'infinity'])
   if (mcStarted.code !== 0) throw new Error(`failed to start MinIO client\nstdout:\n${mcStarted.stdout}\nstderr:\n${mcStarted.stderr}`)
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const alias = await run('docker', ['exec', mc, 'mc', 'alias', 'set', 'local', `http://${minio}:9000`, 'chariox', 'chariox-secret'])
@@ -274,12 +278,12 @@ async function startMinio(network) {
 }
 
 async function stopMinio(stack) {
-  if (stack?.mc) await run('docker', ['rm', '-f', stack.mc]).catch(() => {})
-  if (stack?.minio) await run('docker', ['rm', '-f', stack.minio]).catch(() => {})
+  if (stack?.mc) await run('docker', ['rm', '-f', '-v', stack.mc]).catch(() => {})
+  if (stack?.minio) await run('docker', ['rm', '-f', '-v', stack.minio]).catch(() => {})
 }
 
 async function stopPostgres(name) {
-  if (name) await run('docker', ['rm', '-f', name]).catch(() => {})
+  if (name) await run('docker', ['rm', '-f', '-v', name]).catch(() => {})
 }
 
 async function psql(container, sql, options = {}) {

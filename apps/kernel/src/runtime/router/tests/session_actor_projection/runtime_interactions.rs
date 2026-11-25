@@ -52,7 +52,11 @@ async fn get_session_state_reconciles_a_stale_projection_without_app_lock_access
     );
     let _resolution = router
         .runtime_state
-        .create_runtime_interaction(&session_id, interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session_id,
+            interaction,
+        )
         .await
         .expect("interaction should register");
     router.session_projection.update(session.clone());
@@ -144,7 +148,11 @@ async fn runtime_interaction_registration_and_resolution_wake_terminal_subscribe
     let before_terminal_session_sequence = router.terminal_session_change_sequence(&session_id);
     let receiver = router
         .runtime_state
-        .create_runtime_interaction(&session_id, interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session_id,
+            interaction,
+        )
         .await
         .expect("interaction should register");
 
@@ -206,7 +214,11 @@ async fn runtime_interaction_rejects_agent_outside_session() {
 
     let error = router
         .runtime_state
-        .create_runtime_interaction(&first_session_id, interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &first_session_id,
+            interaction,
+        )
         .await
         .expect_err("cross-session runtime interactions should be rejected");
 
@@ -279,7 +291,11 @@ async fn subscription_snapshot_includes_runtime_interaction_projection() {
     );
     let _resolution = router
         .runtime_state
-        .create_runtime_interaction(&session_id, interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session_id,
+            interaction,
+        )
         .await
         .expect("interaction should register");
     router

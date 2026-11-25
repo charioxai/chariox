@@ -1,0 +1,37 @@
+{
+  "local": 1015,
+  "requests": [
+    { "CloudAccountKernels": { "action": "list" } },
+    { "CloudAccountKernels": { "action": "unlink", "target_id": "target-offline" } }
+  ],
+  "responses": [
+    {
+      "AccountKernelsListed": {
+        "kernels": [
+          {
+            "target_id": "target-online",
+            "kernel_id": "kernel-online",
+            "name": "Home",
+            "status": "online",
+            "last_seen_at": "2026-11-21T09:00:00.000Z"
+          },
+          {
+            "target_id": "target-offline",
+            "kernel_id": "kernel-offline",
+            "name": "Build",
+            "status": "offline",
+            "last_seen_at": null
+          },
+          {
+            "target_id": "target-stale",
+            "kernel_id": "kernel-stale",
+            "name": null,
+            "status": "stale",
+            "last_seen_at": "2026-11-20T09:00:00.000Z"
+          }
+        ]
+      }
+    },
+    { "AccountKernelUnlinked": { "target_id": "target-offline" } }
+  ]
+}

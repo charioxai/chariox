@@ -56,10 +56,10 @@ impl Budget {
             units: Mutex::default(),
         });
         (|| -> std::io::Result<()> {
-            // Accounting and ownership only. Ancestor limits and the OS OOM
-            // killer remain authoritative; no private throttle or memory cap.
+            // Workload swap can keep physical headroom above the emergency
+            // margin while allocations stall in reclaim. Keep it off.
             std::fs::write(budget.path.join("cgroup.subtree_control"), "+memory")?;
-            Ok(())
+            std::fs::write(budget.path.join("memory.swap.max"), "0")
         })()
         .ok()?;
         weigh_cpu(parent, &budget.path);
@@ -199,6 +199,16 @@ impl Domain {
 
     pub fn terminate(&self) {
         let _ = std::fs::write(self.path.join("cgroup.kill"), "1");
+    }
+
+    /// Holds or continues every process of the domain at once; whether the
+    /// host took it.
+    pub fn freeze(&self, freeze: bool) -> bool {
+        std::fs::write(
+            self.path.join("cgroup.freeze"),
+            if freeze { "1" } else { "0" },
+        )
+        .is_ok()
     }
 }
 impl Drop for Domain {

@@ -1,4 +1,4 @@
-//! Structured prompt submission and the detached handoff preparation continuation.
+//! Structured prompt submission and the background handoff brief fold.
 use super::context_handoff::PendingAgentContextHandoff;
 use super::*;
 
@@ -12,68 +12,41 @@ pub(super) enum SteerReceipt {
 }
 
 impl KernelRuntimeState {
-    pub(super) fn spawn_handoff_brief_dispatch(
+    /// Brings the agent's handoff brief up to date in the background: the
+    /// turn already went out with the stored brief and the newest history, and
+    /// the next handoff carries the folded brief.
+    pub(super) fn spawn_handoff_brief_fold(
         &self,
-        dispatch: crate::app::KernelPromptDispatch,
+        dispatch: &crate::app::KernelPromptDispatch,
         provider_run: crate::provider::RuntimeProviderRun,
         handoff: PendingAgentContextHandoff,
-        hidden_system_context: String,
     ) {
-        self.owned.record_notice(
-            &dispatch.session_id,
-            Some(&dispatch.provider_run_id),
-            self.owned
-                .attachment_store
-                .list_session_attachment_ids(&dispatch.session_id),
-            "Preparing handoff brief…".to_string(),
-        );
+        let handoffs = &self.owned.pending_agent_context_handoffs;
+        if !handoffs.begin_brief_fold(&dispatch.session_id, &dispatch.agent_id) {
+            return;
+        }
         let state = self.clone();
+        let (session_id, agent_id, prompt_id) = (
+            dispatch.session_id.clone(),
+            dispatch.agent_id.clone(),
+            dispatch.prompt_id.clone(),
+        );
         tokio::spawn(async move {
-            if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
-                return;
-            }
-            let handoff = state
+            state
                 .with_current_handoff_brief(
                     &state.owned,
                     handoff,
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
+                    &session_id,
+                    &agent_id,
+                    &prompt_id,
                     &provider_run,
-                    || state.owned.handoff_brief_dispatch_is_current(&dispatch),
+                    || true,
                 )
                 .await;
-            // Order the final ownership/cancellation check and Submit with Abort.
-            // No lane is held while the brief utility runs.
-            let _permit = state
-                .provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
-                return;
-            }
-            match state
-                .submit_structured_prompt_with_handoff(
-                    &dispatch,
-                    &provider_run,
-                    Some(handoff),
-                    &hidden_system_context,
-                    SteerReceipt::Ignored,
-                )
-                .await
-            {
-                Ok(true) => state
-                    .owned
-                    .update_metaagent_event_prompt_delivery_for_prompt(
-                    &dispatch.prompt_id,
-                    crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
-                    None,
-                ),
-                Ok(false) => {}
-                Err(error) => {
-                    let _ = state.fail_prompt_dispatch(dispatch, error).await;
-                }
-            }
+            state
+                .owned
+                .pending_agent_context_handoffs
+                .end_brief_fold(&session_id, &agent_id);
         });
     }
 
@@ -103,25 +76,37 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
-        let prompt_with_handoff = match handoff {
-            Some(handoff) => {
-                let handoff = owned.revalidate_context_handoff(
+        let handoff = handoff
+            .map(|handoff| {
+                owned.revalidate_context_handoff(
                     handoff,
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
-                )?;
-                super::context_handoff::inject_protected_context_handoff(
-                    &dispatch.prompt,
-                    &handoff,
-                    |context| {
-                        owned
-                            .room_secret_observations
-                            .scrub(&dispatch.session_id, context)
-                    },
-                )?
-            }
+                )
+            })
+            .transpose()?;
+        let explicit_handoff = handoff.as_ref().filter(|handoff| !handoff.derived);
+        let prompt = match explicit_handoff {
+            Some(handoff) => super::context_handoff::inject_protected_context_handoff(
+                &dispatch.prompt,
+                handoff,
+                |context| {
+                    owned
+                        .room_secret_observations
+                        .scrub(&dispatch.session_id, context)
+                },
+            )?,
             None => dispatch.prompt.clone(),
+        };
+        let render_handoff = |room| {
+            let text = handoff
+                .as_ref()
+                .map(|handoff| handoff.render_switch(room))
+                .unwrap_or_default();
+            owned
+                .room_secret_observations
+                .scrub(&dispatch.session_id, text)
         };
         let hidden_system_context = hidden_system_context.to_string();
         // Preparation can outlive a Room policy change. Protect every retained
@@ -164,12 +149,16 @@ impl KernelRuntimeState {
                 .as_deref()
                 .unwrap_or(&dispatch.prompt_id),
             provider_run,
-            &prompt_with_handoff,
+            &prompt,
             &hidden_system_context,
             &attachments,
             mode.with_prompt_origin(dispatch.prompt_origin),
             private_assessment_evidence,
             dispatch.steering,
+            handoff
+                .as_ref()
+                .filter(|handoff| handoff.derived)
+                .map(|_| &render_handoff as &crate::provider::switch_turn::RenderHandoff<'_>),
         );
         let receipt = result?;
         // MP-08/MP-09/MP-10: a trigger's queued steer is recoverable until the
@@ -199,32 +188,5 @@ impl KernelRuntimeState {
             }
         }
         Ok(true)
-    }
-}
-
-impl KernelRuntimeOwnedState {
-    fn handoff_brief_dispatch_is_current(
-        &self,
-        dispatch: &crate::app::KernelPromptDispatch,
-    ) -> bool {
-        self.ensure_prompt_dispatch_matches_active_prompt(dispatch)
-            .unwrap_or(false)
-            && self
-                .session_store
-                .get_session(&dispatch.session_id)
-                .is_ok_and(|session| {
-                    self.prompt_state_owner
-                        .active_prompt_for_agent(&session, &dispatch.agent_id)
-                        .is_some_and(|prompt| {
-                            prompt.status() != crate::session::PromptStatus::Cancelling
-                        })
-                })
-            && self
-                .provider_store
-                .get_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
-                .is_some_and(|run| {
-                    run.id() == dispatch.provider_run_id
-                        && run.state() == crate::provider::ProviderRunState::Running
-                })
     }
 }

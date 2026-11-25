@@ -138,13 +138,18 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         // Event tools may wait at home for an owner decision.
-        let min_response_timeout =
-            if crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name).is_some()
-            {
-                OWNER_DECISION_FORWARD_TIMEOUT
-            } else {
-                Default::default()
-            };
+        let min_response_timeout = if tool_name == "chariox.jobs.run" {
+            OWNER_DECISION_FORWARD_TIMEOUT
+                + std::time::Duration::from_secs(
+                    arguments["wait_s"].as_u64().unwrap_or_default().min(600),
+                )
+        } else if crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            .is_some()
+        {
+            OWNER_DECISION_FORWARD_TIMEOUT
+        } else {
+            Default::default()
+        };
         self.forward_meta_runtime_tool(remote_context, tool_name, arguments, min_response_timeout)
             .await
             .map(Some)
@@ -592,15 +597,19 @@ impl KernelRuntimeState {
                 Box::pin(self.handle_skill_runtime_tool(&session, &agent, tool_name, arguments))
                     .await
             }
+            crate::transport::runtime_tools::OWNER_VIEW_TOOL => {
+                self.owner_view_runtime_tool(&session, &agent, arguments)
+            }
             // The stored session has no agents and no prompt state: the activity and
             // liveness these tools report are read from the projected room.
-            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok(self
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => self
                 .handle_list_session_agents_runtime_tool(
                     &self
                         .owned
                         .session_snapshot_without_projection_update(session_id)?,
                     &agent,
-                )),
+                    &arguments,
+                ),
             crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => Ok(self
                 .handle_get_session_agent_runtime_tool(
                     &self

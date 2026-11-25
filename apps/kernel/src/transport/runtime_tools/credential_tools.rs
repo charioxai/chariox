@@ -121,6 +121,8 @@ pub struct RequestPopupChoiceArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupCustomChoiceArgs {
     pub id: String,
+    /// The agent's own label for the free-text box; absent means a plain box with no label of ours.
+    #[serde(default)]
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
@@ -552,14 +554,14 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MANAGE_CREDENTIAL_VAULT_TOOL.to_string(),
-            description: "Check, lock, or request the Chariox Vault unlock/extend popup for the current session. Passphrases and secrets are never returned to the model.".to_string(),
+            description: "Check the Chariox Vault (unlocked until when), extend or lock it, change its passphrase, or ask the person to unlock it. Passphrases and secrets are never returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["status", "lock", "popup"],
-                        "description": "Defaults to popup. status returns locked/unlocked metadata; lock clears in-memory vault keys; popup asks the user to unlock, extend, lock, or dismiss."
+                        "enum": ["status", "extend", "extend_60m", "lock", "change_passphrase", "popup"],
+                        "description": "Defaults to popup. An unlocked Vault raises no card: popup and status return its state with the time it stays unlocked; extend (30 minutes) and extend_60m push that time out; lock clears in-memory vault keys; change_passphrase asks the person for the passphrases. A locked Vault asks the person to unlock it (popup)."
                     }
                 },
                 "additionalProperties": false
@@ -610,10 +612,10 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "custom_choice": {
                         "type": "object",
-                        "required": ["id", "label"],
+                        "required": ["id"],
                         "properties": {
                             "id": {"type": "string"},
-                            "label": {"type": "string"},
+                            "label": {"type": "string", "description": "Optional. The label of the free-text box on the card. Omit it for a plain box."},
                             "placeholder": {"type": "string"},
                             "min_length": {"type": "integer", "minimum": 1},
                             "max_length": {"type": "integer", "minimum": 1}

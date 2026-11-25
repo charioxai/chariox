@@ -7,32 +7,6 @@ use crate::transport::relay_peer::LeasedComputerGrant;
 use std::time::Duration;
 
 impl KernelRuntimeState {
-    pub(super) async fn revoke_user_leased_computer(
-        &self,
-        user: &str,
-        agent_id: Option<&str>,
-    ) -> Result<(), DaemonError> {
-        let home = self.owned.config_projection.snapshot().daemon_id;
-        let ids = self
-            .owned
-            .leased_computer_grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|(id, grant)| {
-                grant.home_kernel_id == home && agent_id.is_none_or(|agent| agent == id.as_str())
-            })
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        for id in ids {
-            let agent = self.owned.agent_store.get_agent(&id)?;
-            if self.provider_account_authority_owner_user_id(agent.owner_user_id()) == user {
-                self.revoke_leased_computer(user, &id).await?;
-            }
-        }
-        Ok(())
-    }
-
     pub(super) async fn grant_leased_computer(
         &self,
         user: &str,
@@ -46,7 +20,7 @@ impl KernelRuntimeState {
             || session.status() == crate::session::SessionStatus::Ended
         {
             return Err(host_error(
-                "MP-11: not_granted: desktop grant requires the agent owner".into(),
+                "MP-11: desktop grant requires the agent owner".into(),
             ));
         }
         let remote = agent
@@ -89,9 +63,11 @@ impl KernelRuntimeState {
                 .unwrap_or_else(|e| e.into_inner());
             grants.insert(agent_id.into(), grant.clone());
             drop(grants);
-            self.owned
-                .kernel_browser_host
-                .grant_desktop(user, agent_id, &grant.target.surface_id);
+            self.owned.kernel_browser_host.load_for(
+                user,
+                agent_id,
+                crate::runtime::kernel_browser_host::KernelBrowserCapability::Computer,
+            );
         }
         let response = self
             .send_worker_home_runtime_request(
@@ -109,7 +85,7 @@ impl KernelRuntimeState {
             response,
             Ok(RelayPeerResponse::LeasedComputerGrantUpdated {})
         ) {
-            self.retire_leased_computer_grant(user, agent_id, Some(&grant.epoch));
+            self.retire_leased_computer_grant(agent_id, Some(&grant.epoch));
             return Err(response
                 .err()
                 .unwrap_or_else(|| host_error("MP-11: desktop rejected the typed grant".into())));
@@ -123,9 +99,7 @@ impl KernelRuntimeState {
             .get(agent_id)
             != Some(&grant)
         {
-            return Err(host_error(
-                "MP-11: not_granted: desktop grant superseded".into(),
-            ));
+            return Err(host_error("MP-11: desktop grant superseded".into()));
         }
         if self
             .owned
@@ -141,12 +115,10 @@ impl KernelRuntimeState {
         {
             self.revoke_leased_computer_epoch(user, agent_id, Some(&grant.epoch))
                 .await?;
-            return Err(host_error(
-                "MP-11: not_granted: desktop grant superseded".into(),
-            ));
+            return Err(host_error("MP-11: desktop grant superseded".into()));
         }
         self.refresh_user_domain_grants();
-        self.room_computer_grant_snapshot(user, &config.daemon_id)
+        Ok(serde_json::json!({"agent_id": agent_id, "leased_computer": true}))
     }
 
     pub(super) async fn revoke_leased_computer(
@@ -162,7 +134,6 @@ impl KernelRuntimeState {
     // read that map. Serialize local changes separately, without any await.
     pub(super) fn retire_leased_computer_grant(
         &self,
-        user: &str,
         agent_id: &str,
         expected_epoch: Option<&str>,
     ) -> Option<LeasedComputerGrant> {
@@ -185,9 +156,7 @@ impl KernelRuntimeState {
             grants.remove(agent_id)
         };
         if grant.is_some() {
-            self.owned
-                .kernel_browser_host
-                .revoke_grants(user, Some(agent_id));
+            self.owned.kernel_browser_host.revoke_agent(agent_id);
         }
         grant
     }
@@ -201,10 +170,10 @@ impl KernelRuntimeState {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if self.provider_account_authority_owner_user_id(agent.owner_user_id()) != user {
             return Err(host_error(
-                "MP-11: not_granted: only the owner may revoke desktop access".into(),
+                "MP-11: only the owner may revoke desktop access".into(),
             ));
         }
-        let grant = self.retire_leased_computer_grant(user, agent_id, expected_epoch);
+        let grant = self.retire_leased_computer_grant(agent_id, expected_epoch);
         if let Some(grant) = grant {
             // HOME revocation is committed before transport; failed delivery cannot
             // authorize a subsequent call because the worker checks HOME each time.
@@ -284,9 +253,7 @@ impl KernelRuntimeState {
                 grants.remove(agent.id());
             }
             drop(grants);
-            self.owned
-                .kernel_browser_host
-                .revoke_grants(&user, Some(agent.id()));
+            self.owned.kernel_browser_host.revoke_agent(agent.id());
         }
         if let Some(grant) = grant {
             if grant.epoch.is_empty() || grant.epoch.len() > 128 {
@@ -321,14 +288,12 @@ impl KernelRuntimeState {
                     .get(agent.id())
                     .cloned();
                 if current.as_ref() != Some(&grant) {
-                    return Err(host_error(
-                        "MP-11: not_granted: desktop grant superseded".into(),
-                    ));
+                    return Err(host_error("MP-11: desktop grant superseded".into()));
                 }
-                self.owned.kernel_browser_host.grant_desktop(
+                self.owned.kernel_browser_host.load_for(
                     &user,
                     agent.id(),
-                    &grant.target.surface_id,
+                    crate::runtime::kernel_browser_host::KernelBrowserCapability::Computer,
                 );
             }
             self.refresh_user_domain_grants();
@@ -352,7 +317,7 @@ impl KernelRuntimeState {
             .unwrap_or_else(|e| e.into_inner())
             .get(agent.id())
             .cloned()
-            .ok_or_else(|| host_error("MP-11: not_granted: HOME desktop grant revoked".into()))?;
+            .ok_or_else(|| host_error("MP-11: HOME desktop grant revoked".into()))?;
         if grant.epoch != epoch
             || grant.home_kernel_id != context.home_kernel_id
             || grant.home_session_id != context.home_session_id
@@ -368,7 +333,7 @@ impl KernelRuntimeState {
             || session.status() == crate::session::SessionStatus::Ended
         {
             return Err(host_error(
-                "MP-11: not_granted: stale or ended HOME desktop grant".into(),
+                "MP-11: stale or ended HOME desktop grant".into(),
             ));
         }
         Ok(grant)
@@ -431,9 +396,9 @@ impl KernelRuntimeState {
             return Ok(None);
         }
         self.refresh_user_domain_grants();
-        let agent = self.kernel_computer_agent(run).ok_or_else(|| {
-            host_error("MP-11: not_granted: explicit leased desktop grant required".into())
-        })?;
+        let agent = self
+            .kernel_computer_agent(run)
+            .ok_or_else(|| host_error("MP-11: explicit leased desktop grant required".into()))?;
         let grant = self
             .owned
             .leased_computer_grants
@@ -441,24 +406,20 @@ impl KernelRuntimeState {
             .unwrap_or_else(|e| e.into_inner())
             .get(agent.id())
             .cloned()
-            .ok_or_else(|| host_error("MP-11: not_granted: desktop grant revoked".into()))?;
+            .ok_or_else(|| host_error("MP-11: desktop grant revoked".into()))?;
         let context = self
             .with_app_side_effect(|app| {
                 crate::app::RemoteLeaseRuntime::new(app)
                     .leased_extension_invocation_context_for_runtime_provider_run(run)
             })
             .await
-            .ok_or_else(|| {
-                host_error("MP-11: not_granted: live leased provider required".into())
-            })?;
+            .ok_or_else(|| host_error("MP-11: live leased provider required".into()))?;
         if grant.home_kernel_id != context.home_kernel_id
             || grant.home_session_id != context.home_session_id
             || grant.home_agent_id != context.home_agent_id
             || grant.leased_agent_id != context.leased_agent_id
         {
-            return Err(host_error(
-                "MP-11: not_granted: Computer lease binding changed".into(),
-            ));
+            return Err(host_error("MP-11: Computer lease binding changed".into()));
         }
         let config = self.owned.config_projection.snapshot();
         let checked = self
@@ -479,14 +440,10 @@ impl KernelRuntimeState {
                 Ok(Some(grant))
             }
             result => {
-                self.retire_leased_computer_grant(
-                    &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
-                    agent.id(),
-                    Some(&grant.epoch),
-                );
-                Err(result.err().unwrap_or_else(|| {
-                    host_error("MP-11: not_granted: HOME desktop authority changed".into())
-                }))
+                self.retire_leased_computer_grant(agent.id(), Some(&grant.epoch));
+                Err(result
+                    .err()
+                    .unwrap_or_else(|| host_error("MP-11: HOME desktop authority changed".into())))
             }
         }
     }

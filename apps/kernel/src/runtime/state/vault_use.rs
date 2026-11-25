@@ -58,7 +58,7 @@ fn vault_payment_asked(id: &str, registration: &str) -> DaemonError {
     ))
 }
 
-fn vault_use_destination(target: &VaultUseTarget) -> String {
+pub(super) fn vault_use_destination(target: &VaultUseTarget) -> String {
     match target {
         VaultUseTarget::Site { origin }
         | VaultUseTarget::CommandStdin { origin }
@@ -317,19 +317,33 @@ impl KernelRuntimeState {
         target: &VaultUseTarget,
         still_current: impl Fn() -> Result<(), DaemonError>,
     ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
-        self.preflight_workspace_vault_use(agent_id, id, target)?;
+        self.read_vault_value_for_use(
+            agent_id,
+            VaultUseAsk {
+                agent_id: Some(agent_id),
+                session_id: Some(session_id),
+                ..Default::default()
+            },
+            id,
+            target,
+            still_current,
+        )
+        .await
+    }
+
+    /// The Vault read for one named actor (an agent, or the owner's own client).
+    pub(super) async fn read_vault_value_for_use(
+        &self,
+        actor: &str,
+        ask: VaultUseAsk<'_>,
+        id: &str,
+        target: &VaultUseTarget,
+        still_current: impl Fn() -> Result<(), DaemonError>,
+    ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
+        self.preflight_workspace_vault_use(actor, id, target)?;
         let credential = self.home_runtime_secret_service()?.credential(id)?.clone();
         let approval = self
-            .authorize_vault_use(
-                agent_id,
-                &credential,
-                target,
-                VaultUseAsk {
-                    agent_id: Some(agent_id),
-                    session_id: Some(session_id),
-                    ..Default::default()
-                },
-            )
+            .authorize_vault_use(actor, &credential, target, ask)
             .await?;
         still_current()?;
         let service = self
@@ -338,7 +352,7 @@ impl KernelRuntimeState {
         let attempt = service.begin_vault_use(
             id,
             &format!(
-                "Use attempted at {} by {agent_id}",
+                "Use attempted at {} by {actor}",
                 vault_use_destination(target)
             ),
         )?;
@@ -346,7 +360,7 @@ impl KernelRuntimeState {
             service.workspace_secret_input_for_target(id, target)
         })?);
         attempt.finish(&format!(
-            "Used at {} by {agent_id}",
+            "Used at {} by {actor}",
             vault_use_destination(target)
         ))?;
         Ok(value)

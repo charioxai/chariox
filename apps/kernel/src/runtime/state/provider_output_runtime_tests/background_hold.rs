@@ -464,7 +464,6 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     sweep(&team).await;
@@ -479,7 +478,12 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
         .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
-    let events = child_finished(&team);
+    // The child was also warned of its limit, which is a short turn of its own: look at the task
+    // that held the call.
+    let events = child_finished(&team)
+        .into_iter()
+        .filter(|event| event.payload["child_task_id"] == team.task.task_id.as_str())
+        .collect::<Vec<_>>();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].payload["deadline_reached"], true);
     assert_eq!(events[0].payload["success"], false);
@@ -1458,7 +1462,8 @@ async fn a_pending_held_turn_is_released_when_the_provider_ends_without_its_own_
             .runtime
             .owned
             .prompt_state_owner
-            .provider_turn_running(&session, &team.child,),
+            .adopted_provider_turn(&session, &team.child, &team.child_run)
+            .is_some(),
         "the sweep cannot adopt the ended notification turn"
     );
     assert_eq!(finishes_of_task(&team).len(), 1);
@@ -1531,6 +1536,61 @@ async fn restart_interrupts_a_provider_started_held_notification_and_tells_its_p
     assert_eq!(
         events[0].payload["outcome"]["kind"],
         "interrupted_by_restart"
+    );
+    assert_eq!(events[0].payload["outcome"]["retryable"], true);
+    assert!(!events[0].payload["outcome"]["reason"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    sweep(&team).await;
+    assert_eq!(child_finished(&team).len(), 1);
+}
+
+// O4 (queue row 372): a child whose turn ended with a background call running is held in
+// memory. A restart or a hot reload drops the hold and the provider process, and no prompt is
+// active for recovery to end. The sweep that then ends the task must say what happened to it:
+// the kernel's program was replaced, not "cancelled" by anyone. The parent hears one
+// retryable `interrupted_by_restart` so it re-arms the work instead of waiting for a wake.
+#[tokio::test]
+async fn a_held_child_whose_hold_a_restart_dropped_is_reported_interrupted_by_restart() {
+    let mut team = child_with_a_call_running("background-hold-restart-idle").await;
+    assert!(working(&team));
+    let ended = team
+        .runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&team.room, &team.child_run)
+        .unwrap()
+        .into_run();
+    team.runtime.owned.provider_run_projection.update(ended);
+    team.runtime.owned.background_holds = Default::default();
+    // The new program's wake monitor starts after the task's last progress.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    team.runtime.owned.agent_wakes =
+        std::sync::Arc::new(crate::runtime::state::agent_wake_scheduler::AgentWakeMonitor::new());
+    team.runtime.recover_durable_runtime_after_restart().await;
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 2 * MINUTE_MS)
+        .await
+        .unwrap();
+    // The parent may learn of the end on a later sweep (its delegate obligation resolves then).
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 4 * MINUTE_MS)
+        .await
+        .unwrap();
+    assert!(
+        !working(&team),
+        "the lost hold must not leave the task Working"
+    );
+    let events = child_finished(&team);
+    assert_eq!(
+        events.len(),
+        1,
+        "the parent must receive one terminal result: {events:?}"
+    );
+    assert_eq!(
+        events[0].payload["outcome"]["kind"], "interrupted_by_restart",
+        "nobody cancelled this task: {events:?}"
     );
     assert_eq!(events[0].payload["outcome"]["retryable"], true);
     assert!(!events[0].payload["outcome"]["reason"]
@@ -1841,4 +1901,90 @@ async fn restart_recovers_the_receipt_after_the_held_task_completes() {
 #[tokio::test]
 async fn restart_recovers_the_receipt_after_the_held_task_is_cancelled() {
     restart_recovers_a_merged_notification_receipt(true, true).await;
+}
+
+/// The child's timer ran out and told it so in a wake turn; the turn never acknowledged the event.
+fn leave_a_timer_outcome_unacknowledged(team: &Team) {
+    use crate::durable_state::agent_lifecycle::{AgentWake, WakeEnd};
+    let now = crate::session::unix_epoch_ms();
+    let wake: AgentWake = serde_json::from_value(serde_json::json!({
+        "id": "stall-timer", "task_id": team.task.task_id, "room_id": team.room,
+        "agent_id": team.child, "registration_id": "completion-stall-timer",
+        "kind": "timer", "label": "90 min backstop", "state": "", "created_at_ms": now,
+        "verified_at_ms": null, "next_due_ms": now + 1, "interval_ms": null, "command": [],
+        "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+        "summary": "", "detail": null, "fire_count": 0, "missed_fires": 0,
+        "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
+        "last_delivered_at_ms": null, "last_acknowledged_at_ms": null, "alerted_sequence": null
+    }))
+    .expect("wake parses");
+    let store = &team.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::CreateWake {
+            task: team.task.task_id.clone(),
+            prompt: team.child_prompt.id().into(),
+            wake,
+        })
+        .expect("the wake registers");
+    store
+        .agent_lifecycle(Operation::WakeOccurred {
+            id: "stall-timer".into(),
+            occurrence: "stall-timer-ran-out".into(),
+            kind: "timer_elapsed".into(),
+            payload: serde_json::json!({}),
+            summary: None,
+            end: Some(WakeEnd::Succeeded),
+            now,
+        })
+        .expect("the timer ran out");
+    let task = store.agent_task(&team.task.task_id).unwrap().unwrap();
+    assert!(
+        task.obligations.iter().any(|o| o.status == "settling"),
+        "an outcome told to the agent and not acknowledged: {:?}",
+        task.obligations
+    );
+}
+
+/// Row 525: rebaser and p2findings started a `run_in_background` call in a turn that a timer's
+/// wake had started and ended it without acknowledging that wake. The unacknowledged outcome
+/// took the task out of the hold, it settled Done, and the call ran on with nobody told.
+#[tokio::test]
+async fn a_wake_turn_that_leaves_its_outcome_unacknowledged_is_still_held_for_its_call() {
+    let team = team_with("background-hold-unacknowledged", None, false).await;
+    leave_a_timer_outcome_unacknowledged(&team);
+    apply(
+        &team,
+        vec![
+            tool_chunk(&lifecycle("claude_background_launched")),
+            text_chunk("started the farm run"),
+        ],
+    )
+    .await;
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    let settlement = team
+        .runtime
+        .owned
+        .settle_agent_task(
+            &team.room,
+            &team.child,
+            &team.child_prompt,
+            &team.child_run,
+            false,
+        )
+        .unwrap();
+    assert!(
+        settlement.is_none(),
+        "the turn ended with a call running: {settlement:?}"
+    );
+    assert!(working(&team));
+    assert!(team
+        .runtime
+        .owned
+        .is_held_for_background_calls(&team.task.task_id));
+    sweep(&team).await;
+    assert!(working(&team));
+    assert!(child_finished(&team).is_empty());
 }

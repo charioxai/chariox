@@ -257,6 +257,24 @@ mod protected_retention_tests {
     }
 }
 
+pub(super) fn read_registered_kernel_id(
+    home: &Path,
+    host: &str,
+    port: u16,
+) -> Result<String, String> {
+    let path = home.join("kernels").join("registry.json");
+    let payload = super::read_user_config(&path)
+        .map_err(|error| format!("cannot read kernel registry {} ({error})", path.display()))?;
+    let registry = serde_json::from_str::<KernelRegistry>(&payload)
+        .map_err(|_| format!("kernel registry {} is invalid", path.display()))?;
+    registry.kernels.get(&kernel_identity_key(host, port))
+        .map(|record| record.kernel_id.clone())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| format!(
+            "kernel registry has no entry for {host}:{port}. Use the kernel's CHARIOX_KERNEL_HOST and CHARIOX_KERNEL_PORT",
+        ))
+}
+
 pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeIdentity {
     let machine_id = resolve_machine_id();
     let endpoint_key = kernel_identity_key(host, port);

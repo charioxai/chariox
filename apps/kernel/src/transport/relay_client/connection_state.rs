@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::time::timeout;
 
+use crate::local::RelayRegistrationRefusal;
 use crate::runtime::cloud_api_client::CLOUD_PRESENCE_REQUEST_TIMEOUT;
 use crate::runtime::router::CommandRouter;
 #[cfg(test)]
@@ -32,8 +33,12 @@ const MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS: u8 = 3;
 #[derive(Debug, Default)]
 pub struct RelayClientState {
     pub(super) connected: bool,
+    connected_since: Option<tokio::time::Instant>,
+    acknowledged_connections: u64,
     /// Wakes whoever publishes `connected` elsewhere as soon as it changes.
     connection_changes: watch::Sender<bool>,
+    registration_refused: Option<(String, RelayRegistrationRefusal)>,
+    reply_queue_closed_relay_url: Option<String>,
     pub(super) connected_relay_url: Option<String>,
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
@@ -136,13 +141,50 @@ impl RelayClientState {
         self.connected
     }
 
+    pub(crate) fn registration_refusal(
+        &self,
+        relay_url: Option<&str>,
+    ) -> Option<RelayRegistrationRefusal> {
+        self.registration_refused
+            .as_ref()
+            .and_then(|(url, refusal)| (Some(url.as_str()) == relay_url).then(|| refusal.clone()))
+    }
+
+    pub(super) fn set_registration_refusal(
+        &mut self,
+        relay_url: &str,
+        refusal: RelayRegistrationRefusal,
+    ) {
+        self.registration_refused = Some((relay_url.into(), refusal));
+    }
+
     pub(crate) fn connection_changes(&self) -> watch::Receiver<bool> {
         self.connection_changes.subscribe()
     }
 
+    pub(super) fn record_reply_queue_closed(&mut self, relay_url: &str) {
+        self.reply_queue_closed_relay_url = Some(relay_url.into());
+    }
+
+    pub(crate) fn reply_queue_closed(&self, relay_url: Option<&str>) -> bool {
+        self.reply_queue_closed_relay_url
+            .as_deref()
+            .is_some_and(|closed_url| relay_url == Some(closed_url))
+    }
+
     fn set_connection(&mut self, connected: bool) {
+        if connected && !self.connected {
+            self.acknowledged_connections = self.acknowledged_connections.saturating_add(1);
+            self.connected_since = Some(tokio::time::Instant::now());
+        } else if !connected {
+            self.connected_since = None;
+        }
         self.connected = connected;
         self.connection_changes.send_replace(connected);
+    }
+
+    pub(crate) fn startup_probe_connection(&self) -> (u64, Option<tokio::time::Instant>) {
+        (self.acknowledged_connections, self.connected_since)
     }
 
     pub(crate) fn outgoing_sender(&self) -> Option<RelayOutgoingSender> {
@@ -497,6 +539,11 @@ impl RelayClientState {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_mark_disconnected(&mut self) {
+        self.set_connection(false);
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_lose_next_leased_prompt_response(&mut self) {
         self.lose_next_peer_response_payload = Some(TestPeerResponseLoss {
             forget_action_receipts: false,
@@ -629,6 +676,8 @@ pub(super) async fn set_connected(
 ) -> Result<usize, String> {
     let registrations = {
         let mut guard = state.write().await;
+        guard.registration_refused = None;
+        guard.reply_queue_closed_relay_url = None;
         guard.set_connection(true);
         guard.connected_relay_url = Some(relay_url);
         guard.outgoing_tx = Some(outgoing_tx.clone());
@@ -666,11 +715,12 @@ pub(super) async fn publish_cloud_presence(
     router: &Arc<CommandRouter>,
     online: bool,
     reason: &str,
+    registration: Option<&chariox_relay::protocol::DaemonRegistration>,
 ) -> CloudPresencePublishOutcome {
     let publish_started = Instant::now();
     match timeout(
         CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT,
-        router.publish_cloud_kernel_presence(online),
+        router.publish_cloud_kernel_presence(online, registration),
     )
     .await
     {

@@ -115,6 +115,9 @@ pub struct RuntimeSession {
     status: SessionStatus,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     hidden: bool,
+    /// The agent that created this Room through its Room tools; only it, and the agents above it, may delete the Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created_by_agent_id: Option<String>,
     #[serde(default)]
     agent_defaults: SessionAgentDefaults,
     active_provider_run_id: Option<String>,
@@ -326,6 +329,7 @@ impl RuntimeSession {
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             hidden: false,
+            created_by_agent_id: None,
             agent_defaults: SessionAgentDefaults::default(),
             active_provider_run_id: None,
             focused_agent_id: None,
@@ -682,6 +686,14 @@ impl RuntimeSession {
 
     pub fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
+    }
+
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
+    }
+
+    pub(crate) fn set_created_by_agent_id(&mut self, agent_id: Option<String>) {
+        self.created_by_agent_id = agent_id;
     }
 
     pub fn agent_defaults(&self) -> &SessionAgentDefaults {
@@ -1104,9 +1116,10 @@ impl RuntimeSession {
             .collect()
     }
 
-    /// Names each agent's card by its asker as the session's agents name it now, so a client
-    /// shows who asks without a lookup.
-    pub(crate) fn name_interaction_askers(&mut self) {
+    /// Names the Room's cards by their askers and leaves dismissed cards in the Inbox.
+    pub(crate) fn project_room_interactions(&mut self) {
+        self.active_interactions
+            .retain(|card| !card.room_dismissed());
         self.active_interactions = self.named_active_interactions();
     }
 
@@ -1146,7 +1159,17 @@ impl RuntimeSession {
         }
     }
 
-    pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
+    /// Insert a card admitted by the kernel registry.
+    pub(crate) fn add_active_interaction(&mut self, card: crate::runtime::state::LiveRoomCard) {
+        self.insert_interaction(card.into_presentation());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_interaction_fixture(&mut self, interaction: RuntimeInteraction) {
+        self.insert_interaction(interaction);
+    }
+
+    fn insert_interaction(&mut self, interaction: RuntimeInteraction) {
         self.active_interactions.retain(|existing| {
             existing.id() != interaction.id()
                 && (existing.subject() != interaction.subject()
@@ -1158,16 +1181,27 @@ impl RuntimeSession {
             .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
     }
 
-    /// Swaps the content of an open card for a fresh question with the same id, in the same place.
-    pub(crate) fn replace_active_interaction(&mut self, interaction: RuntimeInteraction) -> bool {
+    /// Refresh an existing presentation without changing its admission identity.
+    pub(crate) fn update_active_interaction(
+        &mut self,
+        id: &str,
+        update: impl FnOnce(RuntimeInteraction) -> RuntimeInteraction,
+    ) -> bool {
         let Some(open) = self
             .active_interactions
             .iter_mut()
-            .find(|open| open.id() == interaction.id())
+            .find(|open| open.id() == id)
         else {
             return false;
         };
-        *open = interaction;
+        let refreshed = update(open.clone());
+        if refreshed.id() != open.id()
+            || refreshed.subject() != open.subject()
+            || refreshed.kind() != open.kind()
+        {
+            return false;
+        }
+        *open = refreshed;
         true
     }
 
@@ -1206,6 +1240,17 @@ impl RuntimeSession {
 
     pub fn workflows(&self) -> &[WorkflowDefinition] {
         &self.workflows
+    }
+
+    /// A Room state that was read without its workflow details, completed with the ones read apart.
+    pub(crate) fn with_room_workflow_details(
+        mut self,
+        workflows: Vec<WorkflowDefinition>,
+        workflow_runs: Vec<WorkflowRun>,
+    ) -> Self {
+        self.workflows = workflows;
+        self.workflow_runs = workflow_runs;
+        self
     }
 
     pub(crate) fn without_room_workflow_details(mut self) -> Self {

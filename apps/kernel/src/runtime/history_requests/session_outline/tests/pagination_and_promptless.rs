@@ -953,6 +953,7 @@ async fn outline_pages_past_internal_prompt_windows() {
                     session_id: "session-1".into(),
                     agent_ids: Some(vec!["agent-1".into()]),
                     latest_prompt_count: None,
+                    after_sequence: None,
                     include_prefetched_content: false,
                     cursor,
                 },

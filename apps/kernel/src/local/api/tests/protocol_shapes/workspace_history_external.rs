@@ -201,6 +201,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
             session_id: "session-1".to_string(),
+            after_sequence: None,
             include_prefetched_content: false,
             agent_ids: Some(vec!["agent-1".to_string(), "agent-2".to_string()]),
             latest_prompt_count: Some(4),
@@ -264,6 +265,8 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     blob_entry.entry.prompt_origin = Some(crate::session::PromptOrigin::External);
     let outline = LocalDaemonResponse::SessionHistoryOutline {
         agents: vec![crate::local::SessionHistoryOutlineAgent {
+            delta_cursor: None,
+            turn_deltas: None,
             agent_id: "agent-1".to_string(),
             prefetched_blobs: None,
             turns: vec![crate::local::SessionHistoryOutlineTurn {
@@ -283,6 +286,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 summary: Some(summary),
                 blobs: vec![crate::local::SessionHistoryOutlineBlob {
                     blob_id: "history:11:11".to_string(),
+                    revision: "blob-revision".into(),
                     steering: false,
                     kind: crate::history::SessionHistoryEntryKind::ProviderTool,
                     title: "bash · COMPLETED".to_string(),
@@ -434,7 +438,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "ffedac9dfef1bcafbd27d812d1c536e7c0c92772f4131fa1b242d3cbb2f0c582"
+        "09f6d1706995ec244579c8f958276419d30266d0dfa1e2712d4c56825a2908c4"
     );
 }
 
@@ -1245,6 +1249,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "3675eab1043ec4bd8742835c2c9b05ff7652b8792289d785d9d0afaab814c280"
+        "4c3c6ebd4d7e32b14fa79ae3312e0bb09f2e0a5fe975c1e16014dbfa6213c9ad"
     );
 }

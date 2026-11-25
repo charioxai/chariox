@@ -23,7 +23,7 @@ test('macOS release kernels stay featureless', () => {
 
 // MP-08/MP-10: exercise the actual ELF on a base image with no display stack.
 test('the Linux release job executes the bundled kernel on minimal Ubuntu', () => {
-  assert.match(workflow, /docker run --rm -v "\$PWD\/unsigned\/bin:\/bundle:ro" ubuntu:22\.04 \/bundle\/chariox-kernel --help/);
+  assert.match(workflow, /docker run --rm "\$\{labels\[@\]\}" -v "\$PWD\/unsigned\/bin:\/bundle:ro" ubuntu:22\.04 \/bundle\/chariox-kernel --help/);
 });
 
 // MP-08/MP-09: a release kernel opens the WASM App worker only beside itself, so each platform's kernel build also
@@ -37,6 +37,15 @@ test('the release build compiles the WASM App worker with the kernel and ships i
 
 test('the release build refuses a worker that does not report its identity', () => {
   assert.match(workflow, /unsigned\/bin\/chariox-app-wasm-worker identity/);
+});
+
+// The worker prints its identity as camelCase JSON (AotRuntimeIdentity, serde camelCase), which the kernel parses;
+// both worker checks must grep that field name, not a snake_case spelling the worker never prints.
+test('both worker identity checks look for the field the worker prints', () => {
+  const checks = workflow.split('\n').filter((line) => line.includes('chariox-app-wasm-worker') && line.includes(' identity | grep'));
+  assert.equal(checks.length, 2, 'one check after the build and one after macOS signing');
+  for (const line of checks) assert.match(line, /grep -q "\\"workerBuild\\""/, line);
+  assert.doesNotMatch(workflow, /worker_build/);
 });
 
 test('the macOS release job starts the signed worker under the hardened runtime', () => {

@@ -212,6 +212,8 @@ impl KernelRuntimeOwnedState {
         let Some(started) = started else {
             return Ok(None);
         };
+        let started = self.add_pending_wakes_to_notification(&session, agent_id, started)?;
+        let waiting = self.waits_before_promotion(session_id, agent_id, &started);
         let _ =
             self.record_started_user_prompt(session_id, started.source_attachment_id(), &started)?;
         let (active_prompt, queued_prompts) =
@@ -223,6 +225,7 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
+        self.close_waits_after_promotion(session_id, agent_id, &started, &waiting)?;
         let remote_dispatch = crate::app::KernelRemotePromptDispatch {
             session_id: session_id.to_string(),
             agent_id: agent_id.to_string(),
@@ -547,6 +550,14 @@ impl KernelRuntimeOwnedState {
                             agent_id,
                             Some(expected_next.id()),
                         )?;
+                    let active = active
+                        .map(|prompt| {
+                            self.add_pending_wakes_to_notification(&session, agent_id, prompt)
+                        })
+                        .transpose()?;
+                    let waiting = active.as_ref().map_or_else(Vec::new, |prompt| {
+                        self.waits_before_promotion(session_id, agent_id, prompt)
+                    });
                     if active.is_some() {
                         let (active_prompt, queued_prompts) =
                             self.prompt_state_owner.state_parts(&session, agent_id);
@@ -557,6 +568,9 @@ impl KernelRuntimeOwnedState {
                             queued_prompts,
                             activity_mutation,
                         )?;
+                    }
+                    if let Some(prompt) = active.as_ref() {
+                        self.close_waits_after_promotion(session_id, agent_id, prompt, &waiting)?;
                     }
                     if let Some(active_prompt) = active.as_ref() {
                         let _ = self.record_started_user_prompt(
@@ -894,8 +908,7 @@ mod tests {
     /// A session whose agent runs on this kernel, with no lease, and its running
     /// structured Claude provider run.
     pub(super) async fn local_claude_fixture(
-        config: crate::DaemonConfig,
-        worktree: Option<&crate::test_support::TestWorktree>,
+        worktree: &crate::test_support::TestWorktree,
     ) -> (
         KernelRuntimeState,
         String,
@@ -903,12 +916,9 @@ mod tests {
         String,
         crate::provider::RuntimeProviderRun,
     ) {
-        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(worktree.map_or_else(
-                || CreateSessionRequest::new("local-home", "local-home"),
-                |worktree| worktree.session_request(),
-            ))
+            .create_session(worktree.session_request())
             .unwrap();
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -934,17 +944,13 @@ mod tests {
                 pty_target: None,
                 pty_program: None,
                 pty_args: Vec::new(),
-                pty_env: worktree
-                    .map(|root| {
-                        [(
-                            "CLAUDE_CONFIG_DIR".into(),
-                            root.path().join("claude-config").display().to_string(),
-                        )]
-                        .into()
-                    })
-                    .unwrap_or_default(),
+                pty_env: [(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    worktree.path().join("claude-config").display().to_string(),
+                )]
+                .into(),
                 pty_env_remove: Vec::new(),
-                working_directory: worktree.map(|root| root.path().to_path_buf()),
+                working_directory: Some(worktree.path().to_path_buf()),
                 structured_endpoint: None,
             },
         );

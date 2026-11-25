@@ -6,6 +6,8 @@ pub(crate) mod attachment_artifacts;
 mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
+mod state_check;
+pub use state_check::check_state;
 mod external_provider_session_discovery;
 #[cfg(test)]
 mod restored_agent_names_tests;
@@ -97,10 +99,12 @@ pub(crate) use provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 pub(crate) use provider_output_claude_native::{
     claude_headless_owner_decision_pending, claude_headless_prompt_queued_behind_running_turn,
     claude_headless_prompt_written, claude_headless_stuck_screen_line,
-    claude_native_first_run_notice, claude_native_pending_prompt_cancel_input,
-    claude_native_recent_terminal_failure, claude_permission_title,
-    claude_workspace_trust_declined, format_claude_permission_message, ClaudeNativeDispatchAttempt,
-    ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    claude_native_trust_dialog_update, claude_native_trust_interaction_id,
+    claude_native_trust_keys, claude_permission_title, claude_workspace_trust_declined,
+    format_claude_permission_message, write_claude_hook_context_response,
+    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome, ClaudeTrustDialog, ClaudeTrustKeys,
+    NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{
     background_calls, ended_background_call_ids, ended_background_provider_tool_rows,
@@ -192,7 +196,6 @@ pub struct DaemonApp {
     pub(crate) dictation: Arc<crate::dictation::DictationService>,
     pub(crate) private_assessment_dispatch:
         Option<crate::runtime::state::PrivateAssessmentDispatch>,
-    pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
@@ -327,6 +330,7 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open_kernel_owned(&config)?;
+        crate::agent_temp::clear_after_restart();
         let worker_prompt_receipts =
             crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore::restore(
                 durable_state.clone(),
@@ -434,7 +438,6 @@ impl DaemonApp {
             dictation: crate::dictation::DictationService::new(
                 config.private_runtime_state_root().join("dictation"),
             ),
-            room_computer_revoked: Default::default(),
             private_assessment_dispatch: None,
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
@@ -530,6 +533,8 @@ impl DaemonApp {
             .set_agent_move_admission(app.agent_moves.clone());
         app.prompt_state_owner
             .set_agent_move_admission(app.agent_moves.clone());
+        app.prompt_state_owner
+            .set_agent_profile_admission(app.agents.clone());
         app.prompt_state_owner
             .set_room_setup(app.room_setup.clone());
         let restore_started = Instant::now();
@@ -705,6 +710,7 @@ impl DaemonApp {
     }
 
     pub(crate) fn update_session_projection(&self, mut session: RuntimeSession) {
+        session.project_room_interactions();
         session.set_sudo_windows(
             self.sudo_window_projection
                 .windows_for_session(session.id()),

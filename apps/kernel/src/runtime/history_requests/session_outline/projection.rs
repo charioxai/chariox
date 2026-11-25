@@ -19,7 +19,7 @@ pub(super) fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
     match event.kind {
         HistoryEventKind::ProviderOutput => true,
         HistoryEventKind::ProviderStatus => event_provider_status_projects_as_outline_entry(event),
-        HistoryEventKind::Notice => true,
+        HistoryEventKind::Notice | HistoryEventKind::ContextCompacted => true,
         HistoryEventKind::UserPrompt => {
             is_steering_prompt_event(event) && !event.is_internal_prompt_echo()
         }
@@ -45,6 +45,7 @@ fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
         event.kind,
         HistoryEventKind::ProviderOutput
             | HistoryEventKind::ProviderStatus
+            | HistoryEventKind::ContextCompacted
             | HistoryEventKind::Notice
     )
 }
@@ -69,6 +70,7 @@ fn outline_blob_from_event(event: &HistoryEvent) -> Option<SessionHistoryOutline
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
+        revision: super::delta::blob_revision(&[event]),
         steering: is_steering_prompt_event(event),
         kind: entry.kind,
         title: blob_title(entry.kind),
@@ -214,6 +216,7 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
         .unwrap_or(first_event.timestamp_ms);
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(sequence_start, sequence_end),
+        revision: super::delta::blob_revision(events),
         steering: is_steering_prompt_event(first_event),
         kind: first_entry.kind,
         title: grouped_blob_title(
@@ -409,6 +412,7 @@ fn grouped_blob_title(kind: SessionHistoryEntryKind, entry_count: usize) -> Stri
         SessionHistoryEntryKind::ProviderReasoning => "thinking".to_string(),
         SessionHistoryEntryKind::ProviderError => "error".to_string(),
         SessionHistoryEntryKind::ProviderStatus => "status".to_string(),
+        SessionHistoryEntryKind::ContextCompacted => "context compacted".to_string(),
         SessionHistoryEntryKind::Notice => "note".to_string(),
         SessionHistoryEntryKind::ProviderOutput => "assistant output".to_string(),
         SessionHistoryEntryKind::UserPrompt => "prompt".to_string(),
@@ -530,6 +534,7 @@ fn blob_title(kind: SessionHistoryEntryKind) -> String {
         SessionHistoryEntryKind::ProviderReasoning => "thinking".to_string(),
         SessionHistoryEntryKind::ProviderError => "error".to_string(),
         SessionHistoryEntryKind::ProviderStatus => "status".to_string(),
+        SessionHistoryEntryKind::ContextCompacted => "context compacted".to_string(),
         SessionHistoryEntryKind::Notice => "note".to_string(),
         SessionHistoryEntryKind::ProviderOutput => "assistant".to_string(),
         SessionHistoryEntryKind::UserPrompt => "prompt".to_string(),
@@ -544,7 +549,9 @@ fn blob_summary(kind: SessionHistoryEntryKind, text: &str) -> String {
     }
     if matches!(
         kind,
-        SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::ProviderError
+        SessionHistoryEntryKind::ProviderStatus
+            | SessionHistoryEntryKind::ContextCompacted
+            | SessionHistoryEntryKind::ProviderError
     ) {
         return compact_blob_summary(text);
     }

@@ -1,0 +1,27 @@
+{
+  "protocol_version": 1015,
+  "relay_peer_protocol_version": 452,
+  "inline": {
+    "KernelTerminal": {
+      "operation": {
+        "operation": "open",
+        "cols": 200,
+        "rows": 50,
+        "command": ["bash", "-s"],
+        "stdin": { "kind": "inline", "data_base64": "ZWNobyBoaQo=" }
+      }
+    }
+  },
+  "file": {
+    "KernelTerminal": {
+      "directory": "/home/owner",
+      "operation": {
+        "operation": "open",
+        "cols": 200,
+        "rows": 50,
+        "command": ["bash", "-s"],
+        "stdin": { "kind": "file", "path": "/home/owner/cleanup.sh" }
+      }
+    }
+  }
+}

@@ -9,9 +9,17 @@ const frameBytes=frame=>JSON.stringify(frame.encoded??{}).length+(frame.encoded?
 const motionHeight=raw=>Number.isSafeInteger(raw.motion_height)&&raw.motion_height>=0&&raw.motion_height<=raw.height?raw.motion_height:raw.height;
 const denseNative=raw=>raw?.nativeEncode&&!raw[displayMaskRegions]?.length&&Array.isArray(raw.damage)&&raw.damage.length===4&&
  (raw.damage[2]-raw.damage[0])*(raw.damage[3]-raw.damage[1])>raw.width*raw.height/2&&motionHeight(raw)>=raw.height*.75;
+// TR-06 (row 332): a whole-page video asks only for the rate its picture needs: ~3 Mbit/s for a 1020x622 picture at DPR1,
+// scaled by device-pixel area, never above the negotiated ceiling (the viewer's cap and credit pressure) nor below 0.5 Mbit/s.
+// The area is each frame's, so a resized page re-targets with its next frame; the encoders re-rate their session in place.
+const AREA_BITS_PER_PIXEL=3_000_000/(1020*622);
+export function areaBitrate(ceiling,width,height){
+ const area=width*height;
+ return Number.isFinite(area)&&area>0?Math.min(ceiling,Math.max(Math.min(ceiling,500_000),Math.round(area*AREA_BITS_PER_PIXEL))):ceiling;
+}
 export class MotionEncoder {
- constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,bootstrapExact=false,latest=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
-  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,bootstrapExact,latest,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
+ constructor(source,encoder,{bitrate,codec,areaRate=false,independent=false,stripes=false,bootstrapExact=false,latest=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
+  Object.assign(this,{source,encoder,bitrate,codec,areaRate,independent,stripes,bootstrapExact,latest,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
   this.off=source.subscribe(sample=>this.offer(sample));this.offer(source.sample());
  }
  wakeReady(){for(const wake of [...this.readyWaiters])wake();}
@@ -51,8 +59,8 @@ export class MotionEncoder {
      this.key=true;this.wakeReady();continue;
     }
    }
-   let encoded;
-   try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);}
+   let encoded;const bitrate=this.areaRate?areaBitrate(this.rate.bitrate,sample.raw?.width??sample.width,sample.raw?.height??sample.height):this.rate.bitrate;
+   try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,bitrate,key,this.codec,sample[displayMaskRegions]??[],sample.crop?{crop:sample.crop}:{});}
    // MP-11: an overlapping exact encode (busy) or one refused protected frame
    // skips this sample; the next one starts an independent reference chain.
    catch(error){if(!error?.busy&&!error?.refused)throw error;this.keyed(error.busy?'busy':'refused');continue;}

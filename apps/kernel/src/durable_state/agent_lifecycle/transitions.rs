@@ -75,15 +75,39 @@ fn end_registration(
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let question = matches!(&op, Operation::BlockForQuestion { .. });
+    let question_reply = match &op {
+        Operation::BlockForQuestion { reply, .. } => reply.clone(),
+        _ => None,
+    };
     let interrupted = matches!(&op, Operation::BlockInterrupted { .. });
     match op {
+        Operation::DismissTaskCard {
+            room,
+            task,
+            blocked_revision,
+        } => {
+            let current = load(tx, &task)?;
+            if current.room_id != room
+                || current.state != ExecutionState::Blocked
+                || current.blocked_revision != blocked_revision
+            {
+                return Err(error(
+                    "The task no longer waits on this card. Read the Room again.",
+                ));
+            }
+            tx.execute(
+                "UPDATE agent_tasks SET dismissed_card_revision=?2 WHERE task_id=?1",
+                params![task, sql_integer(blocked_revision)?],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
         Operation::SetDeadline {
             room,
             agent,
             deadline,
-            inherited,
-        } => super::deadlines::set(tx, room, agent, deadline, inherited),
+        } => super::deadlines::set(tx, room, agent, deadline),
         Operation::BeatDeadlineClock { now } => {
             super::deadline_clock::beat(tx, now)?;
             Ok(Outcome::Saved)
@@ -534,7 +558,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
             if t.wait.is_some() {
-                return Err(error("Wait already accepted. End this provider turn now without more tools; the kernel delivers the next source or deadline turn."));
+                return Err(accepted_wait_error(&t.reason));
             }
             if ids.is_empty() && t.obligations.iter().all(|o| !o.requires_resolution()) {
                 return Err(error(
@@ -594,6 +618,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             task,
             prompt,
             reason,
+            ..
         }
         | Operation::BlockInterrupted {
             task,
@@ -620,9 +645,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             } else {
                 None
             };
+            let question_reply =
+                question_reply.filter(|reply| reply.label.is_some() || reply.placeholder.is_some());
             if t.state == ExecutionState::Blocked
                 && t.reason == reason
                 && t.owner_action == owner_action
+                // A question asked again with another label or hint is a change the card must show.
+                && (!question || t.question_reply == question_reply)
                 && super::supervision::is_interrupted_block(tx, &t)? == interrupted
             {
                 return Ok(Outcome::Task(t));
@@ -634,6 +663,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             t.state = ExecutionState::Blocked;
             t.owner_action = owner_action;
+            t.question_reply = question_reply;
             t.reason = reason;
             t.revision += 1;
             if let Some(goal) = &t.goal {
@@ -721,16 +751,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .filter(|_| !cancelled && t.state != ExecutionState::Blocked)
             {
                 let regs = registrations(tx, &t.task_id)?;
-                let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
-                // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
-                // at admission. A late native boundary commits that same
-                // wait; the normal sweep delivers its elapsed deadline.
+                // Admission checked the deadline and sources. An inbox acknowledgement
+                // can handle a source that ended before the provider finished its turn.
                 w.deadline_ms
                     .is_none_or(|deadline| deadline > w.started_at_ms)
                     && !w.registration_ids.is_empty()
                     && w.registration_ids
                         .iter()
-                        .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
+                        .all(|id| regs.iter().any(|r| &r.id == id))
             } else {
                 false
             };
@@ -758,9 +786,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let by_agent = t.reason == super::supervision::AGENT_CANCELLED_REASON;
                 super::supervision::cancel_intent(tx, &mut t, by_agent)?;
             } else if t.state != ExecutionState::Blocked {
-                if !valid_wait && super::wakes::drop_unwaited_timers(tx, &t, now)? {
-                    t = load(tx, &t.task_id)?;
-                }
                 let open = t
                     .obligations
                     .iter()
@@ -779,6 +804,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.reason.clear();
                 } else if valid_wait {
                     t.state = ExecutionState::Waiting;
+                    super::settled_waits::finish(tx, &mut t, now)?;
                 } else if !t.correction_used {
                     t.correction_used = true;
                     correction = true;
@@ -808,7 +834,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.provider_run_id = Some(run);
             t.revision += 1;
             save(tx, &t)?;
-            super::settled_waits::finish_agent_waits(tx, &t.room_id, &t.agent_id)?;
+            super::settled_waits::finish_agent_waits(tx, &t.room_id, &t.agent_id, now)?;
             Ok(Outcome::Settled {
                 task: t,
                 correction,
@@ -824,6 +850,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelQueuedMessage { .. }
         | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
+        | Operation::StartFailed { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
         | Operation::WorkerResultReturned { .. }
@@ -835,6 +862,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelTaskByAgent { .. }
         | Operation::NoteTurnCancel { .. }
         | Operation::RetireRestartFailure { .. }
+        | Operation::AnswerTaskQuestion { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }
         | Operation::ArmWake { .. }

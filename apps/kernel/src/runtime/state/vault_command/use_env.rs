@@ -66,7 +66,7 @@ impl KernelRuntimeState {
                 "`{name}` is not an environment variable name"
             )));
         }
-        let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
+        let argv = super::super::agent_process_watch::command_argv(&args.argv, true)?;
         let timeout = command_timeout(args.timeout_seconds)?;
         let cwd =
             super::super::agent_process_watch::workspace_cwd(&context.run, args.cwd.as_deref())?;

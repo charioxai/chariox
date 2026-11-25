@@ -27,6 +27,7 @@ export class BrowserResponseBodies {
       if (url(address) && entry.urls.size < 8) entry.urls.add(address);
       if (typeof p.frameId === 'string') entry.frameId = p.frameId;
       if (typeof p.loaderId === 'string') entry.loaderId = p.loaderId;
+      if (typeof p.type === 'string') entry.type = p.type;
       this.requests.delete(id); this.requests.set(id, entry);
       if (this.requests.size > MAX) this.requests.delete(this.requests.keys().next().value);
     } else if (method === 'Network.loadingFinished') {
@@ -38,6 +39,19 @@ export class BrowserResponseBodies {
         if (this.loaded.size > MAX) this.loaded.delete(this.loaded.keys().next().value);
       }
     } else if (method === 'Network.loadingFailed') this.requests.delete(id);
+  }
+  // Row 342 F3: the stylesheets this document has finished loading, known from Network events (the browser's, not the
+  // page's: a page busy with its own load does not delay the list), so their bodies can be read before the snapshot names them.
+  stylesheets(world, limit = 16) {
+    const documentId = world.documentId ?? world.frame?.loaderId, out = [];
+    if (!documentId || typeof world.frame?.id !== 'string') return out;
+    for (const [lookup, entry] of this.loaded) {
+      if (entry.type !== 'Stylesheet' || entry.sessionId !== world.sessionId || entry.frameId !== world.frame.id || entry.loaderId !== documentId) continue;
+      const address = JSON.parse(lookup)[3];
+      if (!out.includes(address)) out.push(address);
+      if (out.length >= limit) break;
+    }
+    return out;
   }
   async read(world, address, maxBytes = MAX_RESPONSE_BODY_BYTES) {
     const documentId = world.documentId ?? world.frame?.loaderId;

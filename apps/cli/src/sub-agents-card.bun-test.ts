@@ -21,7 +21,7 @@ test("AO-UI-02 rows indent under their parent at every depth, one state word eac
   const lines = visibleSubAgentRows(subAgentRows(tree), new Set())
   const rows = subAgentsCardRows(lines, 1, new Set(), 60)
   assert.deepEqual(rows.map(row => row.text.indexOf(row.text.trim().split(" ").find(part => /^[a-z]/.test(part))!)), [2, 4, 6, 2], "two columns of indent per depth, then the twisty")
-  assert.deepEqual(rows.map(row => row.text.split(" ").filter(Boolean).slice(-1).concat(row.text.includes("needs you") ? ["needs you"] : [])[0]), ["running", "running", "you", "done"])
+  assert.deepEqual(rows.map(row => row.text.split(" ").filter(Boolean).slice(-1).concat(row.text.includes("needs you") ? ["needs you"] : [])[0]), ["running", "running", "you", "ended"])
   assert.deepEqual(rows.map(row => row.text.trimStart()[0]), ["▾", "▾", "c", "w"])
   assert.deepEqual(rows.map(row => [row.tone, row.focused]), [["text", false], ["text", true], ["warning", false], ["muted", false]])
   assert.ok(rows.every(row => row.text.length === 60), "the state word is aligned to the right edge")
@@ -45,7 +45,29 @@ for (const width of [80, 140]) test(`AO-UI-02 the card is the dialog popup at ${
     renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "sub-agents", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], subAgentsRows: rows })
     await harness.renderOnce()
     const frame = harness.captureCharFrame()
-    for (const text of ["researcher", "reader", "checker", "needs you", "writer", "done"]) assert.ok(frame.includes(text), `${text}\n${frame}`)
+    for (const text of ["researcher", "reader", "checker", "needs you", "writer", "ended"]) assert.ok(frame.includes(text), `${text}\n${frame}`)
     assert.ok(!/Esc|close|error/i.test(frame), "no title, hint or error text")
   } finally { harness.renderer.destroy() }
+})
+
+// Row 524 W1-W7: the card's right edge says what a node waits on and for how long, not one word.
+test("row 524 a node's wait reason and age sit at the right edge, a long one leaves the name its columns", () => {
+  const now = Date.parse("2026-11-24T05:00:00Z")
+  const waiting = (id: string, n: number, liveness: AgentTreeNode["liveness"], state: AgentTreeState = "waiting", needs = false): AgentTreeNode => ({ ...node(id, "room", state, n, needs), ...(liveness ? { liveness } : {}) })
+  const event = (kind: "background_command" | "timer" | "source" | "card", label: string, since: number) => ({ waiting_on: { kind, detail: label, since_ms: since }, waiting_events: [{ id: label, kind, label, since_ms: since, task_id: "t", wait_started_at_ms: since }] })
+  const t: AgentTree = { root: "room", rev: 1, totals: { live: 5, running: 1, needs_user: 1 }, nodes: [
+    waiting("builder", 1, event("background_command", "command cargo test", now - 12 * 60_000)),
+    waiting("lead", 2, event("source", "sub-agent builder", now - 5 * 60_000)),
+    waiting("asker", 3, event("card", "your answer on 'Value for the Vault'", now - 2 * 60_000), "waiting", true),
+    waiting("hung", 4, { stalled: true, last_activity_at_ms: now - 90 * 60_000 }, "running"),
+    waiting("rest", 5, undefined, "idle"),
+  ] }
+  const rows = subAgentsCardRows(visibleSubAgentRows(subAgentRows(t, now), new Set()), 0, new Set(), 80)
+  assert.deepEqual(rows.map(row => row.text.slice(row.text.search(/ (waiting|stalled|idle)/) + 1)), [
+    "waiting: cargo test (12 min)", "waiting: sub-agent builder (5 min)", "waiting: your answer on 'Value for the Vault' (2 min)",
+    "stalled: no provider activity for 1 h 30 min", "idle",
+  ])
+  assert.ok(rows.every(row => row.text.length === 80))
+  const narrow = subAgentsCardRows(visibleSubAgentRows(subAgentRows(t, now), new Set()), 0, new Set(), 40)
+  assert.ok(narrow[2]!.text.startsWith("  asker") && narrow[2]!.text.length === 40 && narrow[2]!.text.includes("…"), narrow[2]!.text)
 })

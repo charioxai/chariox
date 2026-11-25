@@ -38,6 +38,7 @@ pub(super) async fn send_relay_envelope_frame<S>(
     envelope: RelayEnvelope,
     lane: &'static str,
     binary_events: bool,
+    binary_peer: bool,
     closing: &AtomicBool,
     notes: &ReplyNotes,
     uploads: Option<(&mut Uploads, UploadLane)>,
@@ -51,13 +52,22 @@ where
         return true;
     }
     let kind = relay_envelope_kind(&envelope);
-    let frame = if binary_events {
-        match chariox_relay::binary_response::from_envelope(&envelope).and_then(|response| {
-            match response {
+    // A peer request or reply is a binary frame only on a connection that negotiated binary
+    // peer messages; every other envelope follows the binary events offer.
+    let peer_envelope = matches!(
+        envelope,
+        RelayEnvelope::DaemonPeerRequest { .. } | RelayEnvelope::DaemonIncomingPeerResponse { .. }
+    );
+    let frame = if (binary_events && !peer_envelope) || (binary_peer && peer_envelope) {
+        match chariox_relay::binary_response::from_envelope(&envelope)
+            .and_then(|response| match response {
+                Some(bytes) => Ok(Some(bytes)),
+                None => chariox_relay::binary_request::from_envelope(&envelope),
+            })
+            .and_then(|binary| match binary {
                 Some(bytes) => Ok(Some(bytes)),
                 None => chariox_relay::binary_event::from_envelope(&envelope),
-            }
-        }) {
+            }) {
             Ok(Some(bytes)) => Message::Binary(bytes.into()),
             Ok(None) => match serde_json::to_string(&envelope) {
                 Ok(text) => Message::Text(text.into()),
@@ -152,6 +162,7 @@ pub(super) async fn run_relay_writer<S>(
     mut upload_receipt_rx: Option<tokio::sync::mpsc::Receiver<(u32, u32)>>,
     binary_events: bool,
     binary_requests: bool,
+    binary_peer: bool,
     closing: std::sync::Arc<AtomicBool>,
     notes: std::sync::Arc<ReplyNotes>,
 ) where
@@ -195,7 +206,7 @@ pub(super) async fn run_relay_writer<S>(
             }
             envelope = priority_outgoing_rx.recv(), if take_priority => {
                 match envelope {
-                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &closing, &notes, chunked.then_some((&mut uploads, UploadLane::Priority))).await { break; },
+                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, binary_peer, &closing, &notes, chunked.then_some((&mut uploads, UploadLane::Priority))).await { break; },
                     None => priority_open = false,
                 }
             }
@@ -205,7 +216,7 @@ pub(super) async fn run_relay_writer<S>(
             }
             envelope = event_outgoing_rx.recv(), if take_event => {
                 match envelope {
-                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &closing, &notes, chunked.then_some((&mut uploads, UploadLane::Event))).await { break; },
+                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, binary_peer, &closing, &notes, chunked.then_some((&mut uploads, UploadLane::Event))).await { break; },
                     None => event_open = false,
                 }
             }
@@ -276,6 +287,7 @@ mod tests {
                 None,
                 false,
                 false,
+                false,
                 Arc::new(AtomicBool::new(false)),
                 Arc::default(),
             );
@@ -333,6 +345,7 @@ mod tests {
             pong_rx,
             receipt_rx,
             Some(upload_receipt_rx),
+            false,
             false,
             false,
             Arc::new(AtomicBool::new(false)),
@@ -434,6 +447,7 @@ mod tests {
             Some(upload_receipt_rx),
             false,
             false,
+            false,
             Arc::new(AtomicBool::new(false)),
             Arc::default(),
         ));
@@ -488,6 +502,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             Arc::new(AtomicBool::new(false)),
             Arc::default(),
         ));
@@ -524,6 +539,7 @@ mod tests {
                 &mut sink,
                 reply,
                 "event",
+                false,
                 false,
                 &AtomicBool::new(false),
                 &notes,

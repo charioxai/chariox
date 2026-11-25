@@ -1,6 +1,7 @@
 // What the sub-agents stripe, list card and sub-view show, selected from the kernel's `AgentTree`: plain counts,
 // one state word per agent, the hierarchy in creation order. Status only; a decision is never read here.
 import type { AgentTree, AgentTreeNode } from "./kernel-types-runtime.js"
+import { agentStatusLine } from "./wait-reason.js"
 
 export type SubAgentWord = "running" | "waiting" | "needs you" | "done"
 
@@ -11,6 +12,8 @@ export interface SubAgentRow {
   readonly roomName?: string
   readonly startedBy?: string
   readonly word: SubAgentWord
+  /** What the row shows at its right edge: the wait reason and its age, "stalled: …", or the state in a word ("idle"). */
+  readonly status: string
   /** Finished: shown dimmed until the parent's task ends and the kernel drops it. */
   readonly dimmed: boolean
   readonly depth: number
@@ -33,11 +36,17 @@ const wordOf = (node: AgentTreeNode): Exclude<SubAgentWord, "needs you"> => {
   }
 }
 
+/** A node held on the user's decision with no named card still reads "needs you". */
+const statusOf = (node: AgentTreeNode, now: number): string => {
+  const line = agentStatusLine(node, now)
+  return node.needs_user === true && node.state === "waiting" && line === "waiting" ? "needs you" : line
+}
+
 const byCreation = (a: AgentTreeNode, b: AgentTreeNode) =>
   a.created_at_ms - b.created_at_ms || (a.agent_id < b.agent_id ? -1 : a.agent_id > b.agent_id ? 1 : 0)
 
 /** The hierarchy under the room agent, in creation order at every level. */
-export function subAgentRows(tree: AgentTree): readonly SubAgentRow[] {
+export function subAgentRows(tree: AgentTree, now: number = Date.now()): readonly SubAgentRow[] {
   const nodes = [...tree.nodes].sort(byCreation)
   const ids = new Set(nodes.map(node => node.agent_id))
   const seen = new Set<string>()
@@ -50,6 +59,7 @@ export function subAgentRows(tree: AgentTree): readonly SubAgentRow[] {
       ...(node.room_id ? { roomId: node.room_id, roomName: node.room_alias } : {}),
       ...(node.started_by ? { startedBy: node.started_by } : {}),
       word: base === "waiting" && node.needs_user === true ? "needs you" : base,
+      status: statusOf(node, now),
       dimmed: base === "done",
       depth,
       children: nodes.filter(child => child.parent_agent_id === node.agent_id && !seen.has(child.agent_id)).map(child => build(child, depth + 1)),
@@ -67,9 +77,9 @@ export function visibleSubAgentRows(rows: readonly SubAgentRow[], collapsed: Rea
 }
 
 /** The sub-view's panels: every sub-agent once, in card order. A held decision reads "waiting" there. */
-export function subAgentPanels(tree: AgentTree): SubAgentPanel[] {
+export function subAgentPanels(tree: AgentTree, now: number = Date.now()): SubAgentPanel[] {
   const all = (rows: readonly SubAgentRow[]): SubAgentRow[] => rows.flatMap(row => [row, ...all(row.children)])
-  return all(subAgentRows(tree)).map(({ children: _children, word, ...row }) => ({ ...row, word: word === "needs you" ? "waiting" : word }))
+  return all(subAgentRows(tree, now)).map(({ children: _children, word, status, ...row }) => ({ ...row, word: word === "needs you" ? "waiting" : word, status: status === "needs you" ? "waiting" : status }))
 }
 
 /** "6 sub-agents running"; with waits, "1 sub-agent needs you · 2 running · 1 waiting · 1 done". */

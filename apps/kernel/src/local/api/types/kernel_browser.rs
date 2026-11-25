@@ -4,6 +4,22 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    /// A person's navigation or input originating in a Room.
+    Room {
+        session_id: String,
+        command: Box<KernelBrowserCommand>,
+    },
+    DownloadsWait {
+        session_id: String,
+        #[serde(default)]
+        after: String,
+        wait_ms: u32,
+    },
+    RevealDownload {
+        session_id: String,
+        download_id: String,
+    },
+
     /// Protocol 941: a person fills the focused page field by Vault handle.
     PasteSecret {
         credential_id: String,
@@ -21,13 +37,9 @@ pub enum KernelBrowserCommand {
     Computer {
         command: KernelComputerCommand,
     },
-    /// MP-08 / MP-11 (local 461): explicit `null` restores every owned agent after
-    /// "revoke all"; the field is required so an omitted agent cannot restore everyone.
-    GrantRoomComputer {
-        #[serde(deserialize_with = "Option::deserialize")]
-        agent_id: Option<String>,
-    },
-    ListGrants,
+    /// Row 548 (protocol 1015): restart the user's browser: its controller process stops and starts again, and the Tabs come
+    /// back at their URLs with their opener links. Unlike `Stop` the browser is up again when this answers.
+    Restart,
     /// Protocol 556: `State` that waits (<= 2000 ms) until the browser state differs from the one
     /// `after` names (the `revision` of the caller's last read; empty reads at once). Replaces a poll.
     StateWait {
@@ -37,13 +49,6 @@ pub enum KernelBrowserCommand {
         /// Protocol 1012: the `favicon_hash` values whose PNG the viewer holds (<= 128); such an icon is named, not sent.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         known_favicons: Vec<String>,
-    },
-    SubscribeGrants {
-        after: u64,
-        wait_ms: u32,
-    },
-    RevokeGrants {
-        agent_id: Option<String>,
     },
     /// MP-08/MP-10: protocol 482 `wire: 2` selects the author-CSS snapshot
     /// plus delta mirror; absent keeps the 443 computed-style packets.
@@ -71,6 +76,11 @@ pub enum KernelBrowserCommand {
         /// `href`, which the viewer draws `:visited` (needs `wire: 2`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         visited_links: Option<bool>,
+        /// MP-08/MP-10: protocol 1015: the viewer re-lays out its copy at a new page size itself, so a complete
+        /// snapshot follows the size by an ordinary delta whose header carries `css_width`/`css_height` instead of a
+        /// layout reset (needs `wire: 2`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout_delta: Option<bool>,
         /// Protocol 560/168: the person's display in CSS px; the Tab lays out at this size.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layout_width: Option<u32>,
@@ -145,6 +155,10 @@ pub enum KernelBrowserCommand {
         /// follow each committed document of the Tab; the viewer parks it while the DOM mirror paints.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         tab_display: bool,
+        /// MP-08/MP-11 allocated 1015 (row 341): the viewer accepts a region display's exact still at its own
+        /// `device_scale_factor` when that is above the page's; the whole-page video at rest is then sharp at DPR2.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        viewer_density_stills: bool,
     },
     DisplayNext {
         subscription_id: String,
@@ -364,7 +378,19 @@ pub enum KernelBrowserMirrorAction {
         x: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         y: Option<f64>,
+        /// B4: a right click reaches the page (mousedown 2, contextmenu, mouseup); absent means the primary button.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<KernelBrowserButton>,
     },
+    /// B3: the pointer over the page with no button held (hover menus, tooltips, mouseenter/leave). A move the
+    /// kernel cannot place (a node off its viewport, a changed target) is dropped: it has no outcome to report.
+    Move {
+        node_id: String,
+        x: f64,
+        y: f64,
+    },
+    /// B3: the viewer's pointer left the page: the kernel's mouse leaves it too (mouseout/leave, :hover ends).
+    Leave {},
     Focus {
         node_id: String,
     },

@@ -1466,6 +1466,7 @@ mod tests {
                 task: task.task_id.clone(),
                 prompt: task.prompt_id.clone(),
                 reason: "Which branch should I release from?".into(),
+                reply: None,
             })
             .unwrap()
         else {
@@ -1543,7 +1544,12 @@ mod tests {
         );
         let answer = fixture
             .runtime
-            .create_runtime_interaction_with_forwarding(&fixture.session_id, interaction, None)
+            .create_runtime_interaction_with_forwarding(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &fixture.session_id,
+                interaction,
+                None,
+            )
             .await
             .unwrap()
             .await
@@ -1607,7 +1613,12 @@ mod tests {
         );
         let _pending = fixture
             .runtime
-            .create_runtime_interaction_with_forwarding(&fixture.session_id, interaction, None)
+            .create_runtime_interaction_with_forwarding(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &fixture.session_id,
+                interaction,
+                None,
+            )
             .await
             .unwrap();
         let session = fixture
@@ -1698,6 +1709,7 @@ mod tests {
                 prompt: task.prompt_id.clone(),
                 task: task.task_id,
                 reason: "resend the diff".into(),
+                reply: None,
             })
             .unwrap()
         else {

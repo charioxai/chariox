@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod account_kernels;
 mod account_transfer;
 mod agent_deadline;
 mod agent_lifecycle;
@@ -43,11 +44,14 @@ mod notes;
 mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod owner_view;
+mod pane_feed;
 mod person_inbox;
 mod project_environment;
 mod prompt_control;
 mod prompt_settings;
 mod provider_control;
+mod relay_issuer;
 mod remote_access;
 mod remote_jobs;
 mod request;
@@ -63,13 +67,13 @@ mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
-mod user_domain_access;
 mod vault_secret;
 mod watcher;
 mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use account_kernels::*;
 pub use account_transfer::*;
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
@@ -103,11 +107,14 @@ pub use notes::*;
 pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use owner_view::*;
+pub use pane_feed::*;
 pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
+pub use relay_issuer::*;
 pub use remote_access::*;
 pub use remote_jobs::*;
 pub use request::*;
@@ -123,7 +130,6 @@ pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
-pub use user_domain_access::*;
 pub use vault_secret::*;
 pub use watcher::*;
 pub use workflow::*;
@@ -392,6 +398,8 @@ pub use workspace::*;
 /// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
 /// Recipient account offers and kernel-owned copy consent.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
+/// MP-08/MP-11: allocated 1015 adds display_subscribe `viewer_density_stills` (row 341: the whole-page video at rest is
+/// sharp for a viewer above the page's density).
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
 /// docs/BROWSER_LATENCY_GAP_PLAN.md).
 /// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
@@ -627,4 +635,60 @@ pub use workspace::*;
 /// 1013 links a folded notification outcome to its answering turn.
 /// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
 /// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;
+/// Local 1014 (relay peer 451), the Landing 13 union: a workflow run waiting on a workspace claim names the holding run;
+/// machine status carries kernel diagnostics and the machine-only job scope; the local direct grant answers
+/// `LocalBrowserConnectIssued`/`LocalTerminalConnectIssued` and `LocalBrowserLeaseRenewed`/`LocalTerminalLeaseRenewed` carry
+/// `expires_in_ms`, how long the grant lasts from the kernel's answer, so a client whose clock is off still renews a grant
+/// its identity shortened; mirror hover moves and right clicks reach the kernel page (KernelBrowser input), and the mirror
+/// v2 header carries `page_wheel`, whether the page's own script takes the wheel (a non-passive wheel listener on window,
+/// document, html or body), so the viewer sends it every wheel step.
+/// Machine status includes a readable relay failure reason (#1632).
+/// Local 1014 (relay peer 451): opening a terminal with a `command` takes `stdin`, inline up to
+/// 64 KiB or a file on the kernel, which the program reads as its standard input (docs/PROTOCOL.md, "Kernel terminals").
+/// Local 1014 (relay peer 451): the owner's agents need no grant for the kernel browser, Computer or
+/// App views. `UserDomainGrant`, `UserDomainNotice`, `UserDomainResource` and `UserDomainWindowAccess` are gone; the
+/// `user_domain_grants_changed` snapshot carries only `cursor` and `room_computer`; browser and App view results no
+/// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
+/// take no arguments and `chariox.kernel_browser_share` is removed.
+/// 1014 adds revision-based latest Room history outline reads.
+/// Provisional 1015 (relay peer 452): a kernel issues its own client relay tokens: `RelayIssuerStatus`,
+/// `ConfigureRelayIssuer` and `IssueRelayClientToken`; terminal pairing links carry a pairing-only kernel-signed token.
+/// Local 1015 (relay peer 452): the agent pane feed. `GetPaneFeed` answers `PaneFeed`, the one kernel read model of what an
+/// agent's pane shows; `ReportPaneSettings` carries the settings a provider terminal changed (docs/PROTOCOL.md 3.3.2.1).
+/// Local 1015 (relay peer 452, provisional): the owner's limits for machines agents acquire without asking are user config keys (`agents.offload_classes`, `agents.offload_max_machines`, `agents.offload_daily_cap_micros`).
+/// A Claude compaction is the history kind `context_compacted` (its text is the summary, empty when Claude wrote none), not a user prompt.
+/// Local 1015 (relay peer 452, provisional): a Claude compaction is one `context_compacted` terminal output row (running, done or failed), never a user prompt.
+/// 1015 (provisional, relay peer 452): `ListWorkflows` takes `include_archived`; a workflow definition
+/// carries `archived_at_ms` and `WorkflowDesignOp::WorkflowArchive` archives or unarchives it.
+/// Local 1015: an agent's kernel access request can carry a reason for the owner's card (`RequestKernelAccess.reason`).
+/// Local 1015 (relay peer 452): a Room decision's choices and reply carry an optional `description`; Dismiss on a task
+/// card hides it from the Room while the task keeps waiting, and Stop ends the task.
+/// Local 1015 (provisional; the landing renumbers): the owner's agents list the account's linked kernels and unlink one
+/// (`CloudAccountKernels` `list` / `unlink` → `AccountKernelsListed` / `AccountKernelUnlinked`); a kernel's rows carry
+/// `target_id`, `kernel_id`, `name`, `status` and `last_seen_at`.
+/// 1015 (provisional, relay peer 452): explicit turn-end profile updates and the current/pending
+/// settings read.
+/// Local 1015 (relay peer 452, provisional): `SetProjectEnvironmentSecret` takes a `source` (a typed value, a Vault entry id, or
+/// `unlink`).
+/// Provisional 1015 (relay peer 452): a machine acquire request may carry `timeout_s`, the rental's hard stop in seconds;
+/// the connected service stops the machine then. Absent keeps the machine until it is released.
+/// Local 1015 (relay peer 452): file slices between kernels travel as bytes (`data_base64` lifted out of the
+/// peer plaintext), and peer requests and replies are binary relay frames between kernels that offer them.
+/// Local 1015 (provisional; the relay peer is unchanged): the owner's agents need no per-agent Room Computer switch.
+/// `grant_room_computer`, `revoke_grants`, `list_grants` and `subscribe_grants` are gone, and so is the
+/// `user_domain_grants_changed` snapshot; `grant_leased_computer` and `revoke_leased_computer` answer
+/// `{agent_id, leased_computer}`. A person-card restart recovery starts the browser with `unless_stopped`, which an
+/// explicit stop refuses.
+/// Local 1015: the mirror v2 header carries `media_playing`, whether a mirrored video or audio element plays (muted or
+/// not), so the viewer never evicts that Tab (row 486); absent means nothing plays.
+/// Local 1015 (relay peer unchanged): a mirror v2 subscription may ask for `layout_delta`; its complete snapshot then
+/// follows a page size change by an ordinary delta whose header carries `css_width`/`css_height`, not a layout reset.
+/// Local 1015 (relay peer 451, provisional until the Landing 14 union renumbers): `ExtensionGrant.app_grant` (the App
+/// binding's lifetime and delegation) is removed.
+/// 1015 adds `origin` (`agent` or `kernel`) to an Inbox notice: only an agent's `chariox.notify_person` is a requested
+/// notification (a pane card and a badge count); the kernel's own notices are person actions that stay in the center.
+/// 1015 (provisional): an `AgentTreeNode` carries `liveness` (what the node waits on, and a stall), a wait names its
+/// card by title (`AgentWaitKind::card`) and a timer its due time (`due_at_ms`) on `waiting_on` and `waiting_events`.
+/// Local 1015 (relay peer 452): `KernelBrowser { op: "restart" }` restarts the user's browser (its controller process, Chrome and display) and
+/// answers with the restored browser state; Tabs come back with their `opener_tab_id`. `chariox kernels restart --browser` sends it.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

@@ -240,7 +240,25 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// 450 carries the lean Room state and independently read Room history and machine samples.
 /// Peer 450 carries native background notification receipts on leased completions.
 /// Peer 450 carries the local 1013 mirror v2 header `focus_visible`.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
+/// Peer 451 (local 1014, the Landing 13 union) carries the holding run of a workspace-claim wait in the workflow run
+/// outcome and the mirror v2 header's `page_wheel`, and requires the relay's registration acknowledgment before reporting
+/// the kernel online.
+/// Peer 451 carries the local 1014 terminal `stdin` of a program.
+/// Provisional peer 452 (local 1015): the relay issuer requests of a self-hosted kernel.
+/// Peer 452 (local 1015) carries the agent pane feed in the embedded local request and response unions.
+/// Peer 452 (local 1015) carries the owner's limits for machines acquired without asking: three `agents.*` user config keys.
+/// Peer 452 (local 1015) carries the Claude compaction row: terminal output kind `context_compacted`, a running, done or failed summary.
+/// Peer 452 (provisional, local 1015) follows the local workflow archive shapes.
+/// Peer 452 (local 1015) carries Room-scoped browser commands, the Room download wait and the download reveal.
+/// Peer 452 carries the non-secret provider account ID in native account transfer metadata.
+/// Peer 452 carries the local 1015 task card choice descriptions.
+/// Peer 452 (provisional, local 1015) pairs with the local turn-end profile shapes.
+/// Peer 452 accompanies local 1015: the Environment Secret request carries its `source`.
+/// Provisional peer 452 (local 1015): the control-plane acquire request carries an optional `timeout_s`.
+/// Peer 452 carries file slices as bytes: the `content` of `FileSliceRead`, `WriteLeasedAgentFile` and
+/// `ProjectEnvironmentFilePulled` is `data_base64` in the peer plaintext, which is lifted out of the JSON, and a
+/// kernel that offers `x-chariox-relay-peer-binary: v1` sends and takes peer requests and replies as `CXR3`/`CXR2` frames.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -251,6 +269,12 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 /// The worker refused a leased prompt before admission because the selected
 /// account cannot start work there; repeating the prompt cannot repair it.
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
+/// The worker no longer holds the account the home believes it installed there,
+/// for example after the worker's state was restored. Nothing was admitted, and
+/// handing the account over again repairs it.
+pub const REMOTE_PROVIDER_ACCOUNT_MISSING_CODE: &str = "provider_account_missing";
+pub(crate) const REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION: &str =
+    "leased provider account missing";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
 pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote provider account";
 /// The worker refused a completion because the prompt it names is not the leased
@@ -274,6 +298,8 @@ pub enum LeasedWatchedProcessAction {
         wake: crate::durable_state::agent_lifecycle::AgentWake,
         binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
         cwd: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        job: Option<Box<crate::local::RunJobRequest>>,
     },
     Query {
         wake_id: String,
@@ -675,6 +701,21 @@ impl RemoteFileBytes {
             .ok()
             .map(zeroize::Zeroizing::new)
     }
+}
+
+/// The plaintext of a peer request or response: its `data_base64` file bytes travel as bytes,
+/// not as base64 text, so a file slice costs its own size on the wire (see `framed_plaintext`).
+pub(crate) fn seal_peer_plaintext<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(value)
+        .map(|json| crate::transport::framed_plaintext::frame_bytes_only(&json))
+}
+
+/// The value inside a peer request or response plaintext.
+pub(crate) fn open_peer_plaintext<T: serde::de::DeserializeOwned>(
+    plaintext: &[u8],
+) -> Result<T, String> {
+    let (json, _) = crate::transport::framed_plaintext::open(plaintext).map_err(str::to_owned)?;
+    serde_json::from_slice(&json).map_err(|error| error.to_string())
 }
 
 /// An MCP registration or a skill inside an encrypted kernel-to-kernel response; an MCP may carry literal settings.
@@ -1176,6 +1217,7 @@ pub enum RelayPeerRequest {
         total_size: u64,
         sha256: String,
         overwrite: bool,
+        #[serde(rename = "data_base64")]
         content: RemoteFileBytes,
     },
     /// Native file interests leased by a home kernel; renewals do no filesystem I/O.
@@ -1599,6 +1641,7 @@ pub enum RelayPeerResponse {
         /// the file is not there.
         sha256: Option<String>,
         /// The slice at the requested offset; absent when the file is not there.
+        #[serde(rename = "data_base64")]
         content: Option<RemoteFileBytes>,
     },
     AgentMove {
@@ -1745,6 +1788,7 @@ pub enum RelayPeerResponse {
         /// Changes whenever the file is written or replaced; every slice of one copy carries the
         /// same one.
         revision: String,
+        #[serde(rename = "data_base64")]
         content: RemoteFileBytes,
     },
     LeasedAgentFileWritten {

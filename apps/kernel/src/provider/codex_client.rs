@@ -157,8 +157,13 @@ impl CodexClient {
         self
     }
 
+    /// Keys under `chariox.` are Chariox's own marks on the run, not Codex configuration.
     pub fn with_provider_config_overrides(mut self, overrides: &BTreeMap<String, Value>) -> Self {
-        self.provider_config_overrides = overrides.clone();
+        self.provider_config_overrides = overrides
+            .iter()
+            .filter(|(key, _)| !key.starts_with("chariox."))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
         self
     }
 
@@ -804,6 +809,26 @@ mod tests {
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
         assert_eq!(overrides.get("tui.mode"), Some(&json!("plan")));
+        assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn thread_config_overrides_leave_out_the_marks_chariox_keeps_on_a_run() {
+        let mut provider_overrides = std::collections::BTreeMap::new();
+        provider_overrides.insert("chariox.sub_agent".to_string(), json!(true));
+        provider_overrides.insert("features.multi_agent".to_string(), json!(false));
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_provider_config_overrides(&provider_overrides);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let overrides = client.thread_config_overrides(&policy).unwrap();
+
+        assert!(overrides.keys().all(|key| !key.starts_with("chariox.")));
         assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
     }
 

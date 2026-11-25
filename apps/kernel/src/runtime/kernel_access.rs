@@ -122,7 +122,7 @@ pub(crate) struct AccessState {
     pub(crate) revoked_reach_runs: HashSet<String>,
     /// Admission wakes the idle pump so it can watch the new holder's exit.
     pub(crate) holder_changed: Arc<tokio::sync::Notify>,
-    pub(crate) pending: BTreeMap<(u32, u64, String), KernelAccessGrant>,
+    pub(crate) pending: BTreeMap<(u32, u64, String), PendingGrant>,
     pub(crate) generation: u64,
     /// The kernel has begun to stop: event waits end their poll.
     pub(crate) stopping: bool,
@@ -219,6 +219,13 @@ pub(crate) fn error(message: impl Into<String>) -> crate::error::DaemonError {
     }
 }
 
+pub(crate) struct PendingGrant {
+    pub(crate) summary: KernelAccessGrant,
+    /// Who the owner's decision binds to: a revoked request records its end under this identity.
+    pub(crate) holder: ProcessIdentity,
+    pub(crate) deadline_ms: u64,
+}
+
 /// Why an external Unix peer's request was refused. Each reason has its own wire
 /// code and one plain sentence for the person reading the agent's output; never
 /// a PID, path or grant id.
@@ -256,8 +263,8 @@ pub(crate) enum Refusal {
     CoverLimit,
     /// A status request named a pid that is neither the caller nor one of its OS ancestors.
     HolderOutside,
-    /// The caller is a process the kernel launched, a sub-agent: only its parent agent can ask.
-    SubAgent,
+    /// A kernel-launched process must belong to one dedicated, owner-owned agent.
+    AgentUnavailable,
     /// The kernel cannot pick which program holds the grant: the caller has no running
     /// grandparent to hold it and no installed Codex, Claude Code or OpenCode above it.
     HolderUnavailable,
@@ -282,7 +289,7 @@ impl Refusal {
         Self::CoverLimit,
         Self::HolderOutside,
         Self::HolderUnavailable,
-        Self::SubAgent,
+        Self::AgentUnavailable,
     ];
 
     pub(crate) fn code(self) -> &'static str {
@@ -305,7 +312,7 @@ impl Refusal {
             // Same answer as for an uncovered caller: nothing about another process leaks.
             Self::HolderOutside => "kernel_access_not_covered",
             Self::HolderUnavailable => "kernel_access_holder_unavailable",
-            Self::SubAgent => "kernel_access_sub_agent",
+            Self::AgentUnavailable => "kernel_access_agent_unavailable",
         }
     }
 
@@ -313,12 +320,12 @@ impl Refusal {
         match self {
             Self::HumanOnly => "Only the person can do this, in a Chariox terminal: payments and secrets stay with them. Ask them.",
             Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered. To cover a background process you started, run `chariox access cover --pid <its pid>` right after starting it; to get access for a new agent, run `chariox access request --until-exit`.",
-            Self::Ended => "Access ended. Ask for new access if you still need it.",
-            Self::EndedExpired => "Access ended because its time ran out. Ask for new access to continue.",
-            Self::EndedHolderExited => "Access ended because the program that held it exited. Ask for new access from the program you are running now.",
-            Self::EndedRevoked => "Access was revoked. Ask for new access if you still need it.",
-            Self::EndedPasskeyChanged => "Access ended because the passkey changed. Ask for new access.",
-            Self::EndedKernelStopped => "Access ended because the kernel stopped. Ask for new access.",
+            Self::Ended => "Access ended. Run `chariox access request --no-wait` if you still need access.",
+            Self::EndedExpired => "Access expired. Run `chariox access request --no-wait` to continue.",
+            Self::EndedHolderExited => "Access ended when its program exited. Run `chariox access request --no-wait` from the current program.",
+            Self::EndedRevoked => "Access was revoked. Run `chariox access request --no-wait` if you still need access.",
+            Self::EndedPasskeyChanged => "Access ended because the passkey changed. Run `chariox access request --no-wait` to continue.",
+            Self::EndedKernelStopped => "Access ended when the kernel stopped. Run `chariox access request --no-wait` to continue.",
             Self::Unconfirmed => "The kernel could not confirm this process just now; access has not changed. Retry in a few seconds.",
             Self::AlreadyGranted => "This process already has access.",
             Self::CoverGone => "That process is not running. Only a running process can be covered.",
@@ -327,7 +334,7 @@ impl Refusal {
             Self::CoverOutside => "Only a process your access already reaches can be covered: the agent you approved, the programs it starts, and processes it covered before.",
             Self::CoverLimit => "Access already covers as many background processes as it may. Stop one first.",
             Self::HolderOutside => "That pid is not this process or one of its OS ancestors: `chariox access status` reports only your own access. Run it without --holder-pid.",
-            Self::SubAgent => "An agent cannot ask for kernel access. Only the person can grant it, in a Chariox terminal.",
+            Self::AgentUnavailable => "This process is outside a dedicated agent run of the kernel owner. Run `chariox access request --no-wait` from that agent’s shell.",
             Self::HolderUnavailable => "The kernel cannot tell which program should hold access: this program has no running parent to hold it, or it runs in a sandbox with no installed Codex, Claude Code or OpenCode. Start it from a shell or agent that keeps running, or pass --holder-pid with the host pid of the program that should hold access.",
         }
     }

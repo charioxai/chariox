@@ -181,14 +181,14 @@ async fn mdnotes_two_local_connections_child() {
         let caller_a = caller(
             runtime
                 .command_result_cache
-                .completed_browser_caller("MD-N5-a-open")
+                .completed_browser_caller("local:MD-N5-a-open")
                 .await
                 .unwrap(),
         );
         let caller_b = caller(
             runtime
                 .command_result_cache
-                .completed_browser_caller("MD-N5-b-state")
+                .completed_browser_caller("local:MD-N5-b-state")
                 .await
                 .unwrap(),
         );
@@ -200,7 +200,7 @@ async fn mdnotes_two_local_connections_child() {
             caller_a.caller,
             runtime
                 .command_result_cache
-                .completed_browser_caller("MD-N5-a-state")
+                .completed_browser_caller("local:MD-N5-a-state")
                 .await
                 .unwrap(),
             "MD-N5: caller stable within a connection"
@@ -257,6 +257,7 @@ async fn mdnotes_two_local_connections_child() {
                     font_absent: None,
                     viewport_first: None,
                     visited_links: None,
+                    layout_delta: None,
                     layout_width: None,
                     layout_height: None,
                 },
@@ -371,6 +372,7 @@ async fn mdnotes_two_local_connections_child() {
                     font_absent: None,
                     viewport_first: None,
                     visited_links: None,
+                    layout_delta: None,
                     layout_width: None,
                     layout_height: None,
                 },

@@ -1,126 +1,60 @@
-# MP-08 / MP-10 / MP-11: user-domain access
+# User-domain access: the owner's agents need no grant
 
-MP-08/MP-10/MP-11: the main-based round-2 successor uses local443 / relay86.
-See `MULTIDOMAIN_ROUND2_ON_MAIN.md` for the exact imported source heads and
-validation limits; earlier allocations below describe their branch history.
+Owner decision, 2026-11-21 (repeated): agents never need a grant for the owner's
+kernel browser, Computer or installed Apps. There is no grant object, no epoch,
+no focus gating and no lifetime. This replaces the grant contract of local 432 and
+the 2026-11-18 "load grants it" rule.
 
-Owner decision, 2026-10-05. Local protocol **432**, relay peer **78**. This
-contract supersedes the focus-revocation text in earlier multidomain receipts.
-The kernel owns it equally on ordinary and managed placements.
+## What an agent gets
 
-Owner decision, 2026-11-18: every local agent has the kernel browser and the
-Computer, like Apps. `chariox.load_kernel_browser` grants and loads them at
-once, for any agent at any depth and in any turn (owner prompt, wake, message
-or workflow), with no card, no focus and no owner approval. Each grant holds
-the resources the agent touched; claiming the owner's existing tabs, opening,
-starting and stopping need nothing more, and every agent lists every tab.
-Focus from a human terminal still grants the focused agent at once. A grant
-ends by idle, lifetime, revoke or session end; the agent then loads the
-browser again itself. Generation, document, owner and provider-run checks
-still apply. Leased and remote agents keep their Room Browser/Computer route.
+Every local agent of the owner, at any depth and in any turn, uses the owner's
+kernel browser (every tab), Computer and App views as soon as the call is made.
+`chariox.load_kernel_browser` and `chariox.load_kernel_computer` only list the
+tools in the agent's catalog; they take no arguments, grant nothing and ask nobody.
+A call is never refused for an expired, revoked, unfocused or stale grant, and
+there is no delegation step between parents and children.
 
-The kernel reads its existing active turns, prompt ownership/backlog, scheduled
-agent prompts, interactions and pending MCP/provider continuations. A provider
-turn includes waits on harness subprocesses, tools and subagents. Those waits
-retain access. A live but idle provider process does not retain access forever.
-Only a fully idle agent starts the expiry window. The default is 30 minutes;
-`CHARIOX_USER_DOMAIN_IDLE_TIMEOUT_SECONDS` accepts a positive integer override.
-Idle duration uses a monotonic clock. Session end, agent destruction, placement
-retirement and explicit revoke invalidate admission immediately. Kernel restart
-does not restore runtime authority from browser profiles.
+## What stays
 
-Authenticated terminals use `KernelBrowser` commands `list_grants`,
-`subscribe_grants { after, wait_ms }` (maximum 25 seconds) and
-`revoke_grants { agent_id }` (`null` revokes all of that owner's holders).
-These commands do not need a healthy browser or unlocked Vault and bypass
-cached observations. Their `user_domain_grants_changed` snapshot includes a
-cursor, agent/session/kernel, resources, grant time, focus and expiry rule.
-Non-focused resource use advances the cursor and publishes a value-free notice.
-Clients keep the last cursor and resubscribe; responses never include resource
-contents, credential values or another owner's grants.
+- **Foreign owners.** A caller that is not the owner (or whose agent belongs to
+  another owner) is refused; a foreign and a missing id look the same
+  (`foreign_owner`).
+- **Run fence.** The kernel keeps one cancellation fence per running agent. When
+  the agent, its Room or its run ends, in-flight browser calls, App calls and
+  subscriptions of that agent are cancelled. This is not a grant: it never refuses
+  a live agent and carries no lifetime.
+- **Secrets and money.** Vault-filled fields stay masked in what the model sees
+  (frames, accessibility and DOM text). Payments, sudo, passkeys and person-presence
+  steps keep their own cards.
+- **Stale pages.** A document generation or page reference the caller holds can be
+  out of date (`stale_epoch`, `stale_reference`); the caller observes again.
+- **Person-only operations.** Human takeover, human-terminal display and similar
+  operations refuse agent callers (`not_granted` is the code the controller uses
+  for such a refused operation).
 
-Revocation cancels the admission epoch first, retires actor presence and
-refuses in-flight results/commits at the next authority check. The same epoch
-fences idle subscriptions; an internal controller cleanup closes their streams.
-It cannot undo physical input already delivered. Vault fills still require
-focus or the existing human approval path. Protected fields/regions,
-observation masking, sensitive-action approvals and App validation/passkeys
-apply equally to focused and retained agents. Browser input cannot impersonate
-a human App frontend or answer approvals.
+## Person cards with a live page
 
-MP-08 / MP-11: ordinary text and text-producing key events use the same
-Vault-only protected-target check, including password/OTP fields, focused
-frames and open nested shadow fields, for both focused and retained holders.
-Successful browser results are bound to the exact admission epoch under the
-grant lock before resource/subscription registration or inventory projection;
-revocation followed by refocus cannot adopt an old call's result into a fresh
-grant. A final live cancellation/provider-run check fences returned results.
+A card that shows a live browser page needs no grant to keep observing it, so a
+kernel restart (hot reload or cold) keeps the same card; the watcher resumes at
+recovery and the person finishes it as before. The restart ends the kernel's
+browser; the watcher starts it again, the Tab comes back with a new document, and
+a plain card (no awaited text, no verification) is bound again to the whole page of
+that Tab, so the person sees the page fresh. A card that waits for page text or a
+verification keeps closing when its document changes, because its proof belongs to
+one document.
 
-MP-11: the 16:35 owner decision supersedes review rounds 2–4. There is no
-retained-input classifier, listener inspection or keyboard allow-list based on
-focus. Every physical event checks its document and grant/run cancellation.
-A focus change preserves in-flight ordinary input; explicit revoke, idle lapse
-and human takeover still cancel it at the next authority check. Vault requests
-retain their additional live-focus authority.
+## No per-agent switches
 
-Observation reads, including state, never start/recover a controller or
-Chromium, for any caller. A stopped/unavailable browser returns
-`browser_unavailable`; explicitly start/open it to recover. This applies after
-human stop, controller loss and Chromium loss with a live controller. Explicit
-start/open uses the same grant authority while focused or retained, with no
-grant mutex held across startup I/O. Profiles do not restore expired grants.
+The person has no per-agent switch for the owner's kernel browser, Computer or Apps.
+The Room Computer switches (`grant_room_computer`, `revoke_grants`, `subscribe_grants`,
+`list_grants`) and the `user_domain_grants_changed` snapshot were removed in local
+1015. What stays: the explicit leased desktop grant (`grant_leased_computer`,
+`revoke_leased_computer`), foreign-owner isolation, Vault masking and the stale-page
+codes. A browser the person stops on purpose stays stopped: a person card's restart
+recovery (`card_recovery`) starts only a browser the kernel's restart ended.
 
-MP-08 / MP-11: #882 refusal mapping: `not_granted` for absent, expired or
-revoked grants (load the browser again); `sensitive_requires_focus` stays for
-native input the person's own input owner refuses. Browser unavailability is a lifecycle error, not a
-focus refusal. String/MCP errors keep the existing transport envelopes.
-Protocol remains 432/78; this correction changes no public serialized shape.
+## Clients
 
-There is no cross-kernel control. Browser windows expose `kernel_id`,
-`kernel_name`, `focused_agent_kernel_id` and `reachable_by_focused_agent`; App
-views expose the same fields under `access`. A remote/leased runtime MCP call
-fails with the execution/window kernels and asks the agent to request focus on
-the window's kernel. Shared client `userDomainWindowBadge` supplies:
-"Your focused agent can't control this window — focus an agent on kernel <name>".
-Only clients consuming these new commands/projections need minimum 432; existing
-browser/App/notes/capture behavior keeps minimum 427.
-
-App and capture IDs have explicit resource kinds in the shared grant contract.
-Browser-hosted App observations use the browser authority; browser mutations
-still cannot impersonate a human App channel. The separately proposed App-agent
-MCP adapter remains unimplemented in this source. Visible-region capture remains
-human-only and becomes ordinary prompt input only when the user sends it. This
-change creates no agent capture API, approval-answer path or cross-kernel bridge.
-
-MP-10 evidence must distinguish unit/fixture checks, native Linux browser
-execution, official-provider subagent waits, clients, and fresh-machine parity.
-None alone closes an MP item.
-
-MP-08 / MP-10 / MP-11 PR #880 regressions: the opt-in
-`kernel-browser-input.browser-test.mjs` compares retained and focused native
-keys, typing and activation through element/document/window/root handlers.
-It also exercises wheel scrolling, paired cancellation and state reads after
-human stop. Opt-in Rust `runtime::kernel_browser_host::native_input_tests`
-covers kernel grant boundaries, explicit recovery and immediate revoke/idle
-lapse. The two-agent held-turn drill covers task/wake retention, resource scope,
-notices and idle subscription revocation. These credential-free checks do not
-establish official-provider, client, hosted or fresh-machine acceptance.
-
-## Client consumers (mdgrants)
-
-The owner TUI provides `/access` (or `/access list`) and
-`/access revoke <agent-id>|all`, through the ordinary owner-terminal
-`KernelBrowser` path. Its live grant feed prints a compact retained-use notice.
-The web Access view lives inside the existing Browser dialog; no new rail item
-is added. It lists holder, session, kernel, touched resource IDs, observed
-retained-use time and the kernel idle deadline, with per-holder and all-holder
-revocation. Both consumers share the cursor projection and notice formatting.
-Only these grant consumers and cross-kernel badges require 432; existing
-multidomain browser/App/notes/capture minima remain 427.
-
-Protocol 432 does not expose a per-holder last-use timestamp. Clients label the
-latest notice they observed as **last observed retained use**, show **Not
-observed** otherwise, and do not infer use from grant creation, idle transitions
-or focus. The live snapshot carries only the latest owner notice, so this is
-not a complete activity audit. A complete last-use projection requires a future
-coordinator-allocated protocol change and updated wire snapshots.
+The owner terminal's `/access` lists the kernel browser's tabs and gives or takes back a leased desktop; the web client has no Access view. The browser window and
+App view projections no longer carry `kernel_id`, `kernel_name`,
+`focused_agent_kernel_id` or `reachable_by_focused_agent`.

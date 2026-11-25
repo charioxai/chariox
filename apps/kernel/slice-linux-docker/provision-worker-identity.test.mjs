@@ -19,6 +19,18 @@ function isolatedEnvironment(root) {
 test("production docker exec forwards canonical ID separately from the friendly alias", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-slice-worker-identity-"));
   try {
+    // Mocked overlay copies need no process-group settling. Guard every other command normally.
+    await writeFile(join(root, "python3"), `#!/bin/sh
+case "$1" in
+  */slice-command-guard.py)
+    if [ "$2" = run ] && [ "$4" = -- ] && [ "$5" = "\${0%/*}/docker" ] && [ "$6" = cp ]; then
+      exit 0
+    fi
+    ;;
+esac
+real_python=$(PATH="\${PATH#*:}" command -v python3)
+exec "$real_python" "$@"
+`, { mode: 0o700 });
     await writeFile(join(root, "docker"), `#!/usr/bin/env node
 const { writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);

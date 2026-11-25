@@ -20,6 +20,9 @@ mod delivery_failure_tests;
 mod leased_processes;
 #[cfg(test)]
 mod live_wait_tests;
+#[cfg(test)]
+mod start_failure_tests;
+pub(crate) mod start_failures;
 pub(crate) use deadline_clock::WorkerHeldDeadline;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
@@ -28,7 +31,7 @@ mod inbox_lookup_tests;
 mod unread_steer_tests;
 mod unread_steers;
 mod worker_stops;
-pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+pub use leased_processes::{LeasedJobStatus, LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 mod audit;
 #[cfg(test)]
@@ -93,7 +96,8 @@ use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
 pub use types::{
-    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, TaskOwnerAction,
+    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, QuestionReply,
+    TaskOwnerAction,
 };
 mod wake_receipts;
 pub(crate) use types::{
@@ -115,6 +119,11 @@ pub(crate) fn error(message: impl Into<String>) -> DaemonError {
         operation: "agent.lifecycle",
         message: message.into(),
     }
+}
+pub(crate) fn accepted_wait_error(reason: &str) -> DaemonError {
+    error(format!(
+        "This turn already accepted the wait `{reason}`. End the turn so the kernel can deliver its wake."
+    ))
 }
 fn sql(e: rusqlite::Error) -> DaemonError {
     super::storage_full::observe(&e);
@@ -140,6 +149,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_start_failures(sequence INTEGER PRIMARY KEY,attempts INTEGER NOT NULL,last_error TEXT NOT NULL,retry_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_promotions(prompt_id TEXT PRIMARY KEY) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
@@ -241,11 +252,60 @@ impl DurableKernelStateStore {
             [room],
         )
     }
+    pub(crate) fn room_agent_task_page(
+        &self,
+        room: &str,
+        before: Option<i64>,
+        include_history: bool,
+        limit: u32,
+    ) -> Result<Vec<(i64, AgentTaskExecution)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.room_task_page")?;
+        let mut query = db
+            .prepare_cached(
+                "SELECT rowid,task_id,agent_id,prompt_id,payload FROM agent_tasks
+             WHERE room_id=?1 AND rowid < coalesce(?2, 9223372036854775807)
+             AND (?3 OR state IS NULL OR state NOT IN ('done','cancelled'))
+             ORDER BY rowid DESC LIMIT ?4",
+            )
+            .map_err(sql)?;
+        let rows = query
+            .query_map(params![room, before, include_history, limit], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (cursor, id, agent, prompt, payload) = row.map_err(sql)?;
+            let task = decode_task(&id, room, &agent, &prompt, &payload)
+                .unwrap_or_else(|_| quarantine::task(id, room.into(), agent, prompt));
+            Ok((cursor, task))
+        })
+        .collect()
+    }
+
     /// One task by its immutable identity, without reading its agent's history.
     pub(crate) fn agent_task(&self, task: &str) -> Result<Option<AgentTaskExecution>, DaemonError> {
         Ok(self
             .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
             .pop())
+    }
+    pub(crate) fn task_card_is_dismissed(
+        &self,
+        task: &str,
+        revision: u64,
+    ) -> Result<bool, DaemonError> {
+        self.lock_connection("agent.lifecycle.task_card_is_dismissed")?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE task_id=?1 AND dismissed_card_revision=?2)",
+                params![task, sql_integer(revision)?],
+                |row| row.get(0),
+            )
+            .map_err(sql)
     }
     /// A blocking waiter took the result. Its receipt is independent of whether the parent's
     /// delegate source was bound before the worker finished.
@@ -596,22 +656,53 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
     }
-    /// The live registrations an agent holds in its tasks other than `task`: a follow or a
-    /// delegate's completion outlives the turn that made it.
+    pub(crate) fn agent_registration_page(
+        &self,
+        recipient: (&str, &str),
+        task: &str,
+        before: Option<i64>,
+        other_tasks: bool,
+        include_history: bool,
+        limit: u32,
+    ) -> Result<Vec<(i64, Registration)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.registration_page")?;
+        let mut query = db.prepare_cached(
+            "SELECT r.rowid,r.payload FROM agent_tasks t JOIN agent_registrations r ON r.task_id=t.task_id
+             WHERE t.room_id=?1 AND t.agent_id=?2 AND (t.task_id<>?3)=?5
+             AND r.rowid < coalesce(?4, 9223372036854775807)
+             AND ((?6 AND NOT ?5) OR (json_valid(r.payload) AND json_extract(r.payload,'$.live')=1))
+             ORDER BY r.rowid DESC LIMIT ?7",
+        ).map_err(sql)?;
+        let rows = query
+            .query_map(
+                params![
+                    recipient.0,
+                    recipient.1,
+                    task,
+                    before,
+                    other_tasks,
+                    include_history,
+                    limit
+                ],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (cursor, payload) = row.map_err(sql)?;
+            Ok((cursor, decode(&payload)?))
+        })
+        .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn agent_registrations_of_other_tasks(
         &self,
         room: &str,
         agent: &str,
         task: &str,
     ) -> Result<Vec<Registration>, DaemonError> {
-        let db = self.lock_connection("agent.lifecycle.subscriptions")?;
-        let mut q = db
-            .prepare("SELECT r.payload FROM agent_registrations r JOIN agent_tasks t ON t.task_id=r.task_id WHERE t.room_id=?1 AND t.agent_id=?2 AND t.task_id<>?3 AND json_valid(r.payload) AND COALESCE(json_extract(r.payload,'$.live'),0)=1 ORDER BY r.rowid")
-            .map_err(sql)?;
-        let rows = q
-            .query_map(params![room, agent, task], |r| r.get::<_, String>(0))
-            .map_err(sql)?;
-        rows.map(|row| decode(&row.map_err(sql)?)).collect()
+        self.agent_registration_page((room, agent), task, None, true, false, 64)
+            .map(|rows| rows.into_iter().rev().map(|(_, row)| row).collect())
     }
     pub(crate) fn agent_delivery_front(
         &self,
@@ -682,6 +773,15 @@ impl DurableKernelStateStore {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
+    }
+    /// What failed starts of this delivery left: the attempt, the error and the next try.
+    pub(crate) fn agent_start_failure(
+        &self,
+        sequence: u64,
+    ) -> Result<Option<start_failures::StartFailure>, DaemonError> {
+        let mut db = self.lock_connection("agent.lifecycle.start_failure")?;
+        let tx = db.transaction().map_err(sql)?;
+        start_failures::get(&tx, sequence)
     }
     /// Pending inbox rows, rather than task existence, own periodic delivery retries.
     pub(crate) fn agent_pending_inbox_recipients(
@@ -1055,6 +1155,36 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
+
+/// The wake rows and their promoted prompt become durable in the same transaction.
+pub(super) fn record_prompt_state_in(
+    tx: &Transaction<'_>,
+    state: &crate::durable_prompt_state::DurablePromptStateEventPayload,
+) -> rusqlite::Result<()> {
+    let Some(prompt) = state
+        .active_prompt
+        .as_ref()
+        .filter(|prompt| !prompt.inbox_wakes().is_empty())
+    else {
+        return Ok(());
+    };
+    if tx.execute(
+        "INSERT OR IGNORE INTO agent_inbox_promotions(prompt_id) VALUES(?1)",
+        [prompt.id()],
+    )? == 0
+    {
+        return Ok(());
+    }
+    delivery::admit_promoted_wakes(
+        tx,
+        &state.session_id,
+        &state.agent_id,
+        prompt.id(),
+        prompt.inbox_wakes(),
+    )
+    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
 pub(super) fn execute(
     db: &mut Connection,
     request: Request,
@@ -1327,6 +1457,13 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
         )
         .map_err(sql)?;
     }
+    if !columns
+        .iter()
+        .any(|column| column == "dismissed_card_revision")
+    {
+        db.execute_batch("ALTER TABLE agent_tasks ADD COLUMN dismissed_card_revision INTEGER")
+            .map_err(sql)?;
+    }
     let registration_columns: Vec<String> = db
         .prepare("PRAGMA table_xinfo(agent_registrations)")
         .map_err(sql)?
@@ -1583,6 +1720,7 @@ fn new_task(
         state: ExecutionState::Working,
         reason: String::new(),
         owner_action: None,
+        question_reply: None,
         obligations: vec![],
         wait: None,
         last_progress_at_ms: now,
@@ -1665,6 +1803,7 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     }
     tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).map_err(sql)?;
     e.sequence = tx.last_insert_rowid() as u64;
+    e.arrived_at_ms = Some(crate::session::unix_epoch_ms());
     save_event(tx, &e)?;
     if let Some(task) = e.occurrence_id.strip_prefix("child-finished-") {
         tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.state')='pending'", params![room, agent, format!("task-terminal-{task}")]).map_err(sql)?;
@@ -1710,6 +1849,7 @@ fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
             [sql_integer(e.sequence)?],
         )
         .map_err(sql)?;
+        start_failures::clear(tx, e.sequence)?;
     }
     Ok(())
 }
@@ -1807,6 +1947,7 @@ pub(crate) fn occurrence(
         prompt_id: None,
         target_prompt_id: None,
         provider_run_id: None,
+        arrived_at_ms: None,
         attempted_at_ms: None,
         submit_epoch: None,
         resumed_at_ms: None,

@@ -24,6 +24,12 @@ impl CommandRouter {
         command: &str,
         tokens: &[String],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        if let Some(identity) = self
+            .kernel_identity_command(provider_run, session, caller, command, tokens)
+            .await
+        {
+            return Ok(Some(identity));
+        }
         if let Some(listed) = self.reach_list_result(session, caller, command, tokens) {
             return Ok(Some(listed));
         }
@@ -38,6 +44,31 @@ impl CommandRouter {
         }
         let args = tokens.get(2..).unwrap_or_default();
         Ok(match tokens.get(1).map(String::as_str) {
+            Some("settings") if args.first().is_none_or(|arg| arg != "set") => {
+                let result = match args {
+                    [] | [_] => super::settings_args::settings_target(
+                        caller,
+                        &self.runtime_state.list_agents(),
+                        args.first().map(String::as_str),
+                    )
+                    .map(|agent| {
+                        serde_json::json!({
+                            "type": "AgentSettings",
+                            "agent": super::summary::summarize_meta_agent(agent),
+                            "settings": super::result::agent_settings_details(agent),
+                            "pending": agent.pending_profile(),
+                        })
+                    }),
+                    _ => Err(meta_command_error("usage: agent settings [<agent>]")),
+                };
+                Some(match result {
+                    Ok(response) => RuntimeToolResult {
+                        ok: true,
+                        payload: serde_json::json!({ "command": command, "response": response }),
+                    },
+                    Err(error) => meta_command_failure_result(command, error),
+                })
+            }
             Some("deadline") if args.iter().any(|arg| arg == "--room") => {
                 let result = async {
                     // A read names no time; a set names the new one or `none`.
@@ -214,6 +245,32 @@ impl CommandRouter {
                     Err(error) => meta_command_failure_result(command, error),
                 })
             }
+            // Any other agent of the owner's Room: the owner's own delete, with the subtree listed.
+            Some("delete" | "destroy" | "remove")
+                if args.len() == 1
+                    && self.runtime_state.room_agent_tools_enabled()
+                    && self
+                        .runtime_state
+                        .session_agents(session.id())
+                        .iter()
+                        .any(|agent| {
+                            (agent.id() == args[0]
+                                || agent.agent_ref() == args[0]
+                                || agent.alias() == Some(args[0].as_str()))
+                                && agent.parent_agent_id() != Some(caller.id())
+                        }) =>
+            {
+                Some(
+                    self.dispatch_meta_agent_delete_command(
+                        provider_run,
+                        session,
+                        caller,
+                        command,
+                        &args[0],
+                    )
+                    .await,
+                )
+            }
             Some("delete" | "destroy" | "remove")
                 if args.len() == 1 && self.runtime_state.room_agent_tools_enabled() =>
             {
@@ -255,29 +312,17 @@ impl CommandRouter {
         })
     }
 
-    /// Sets the child's deadline to `after` from now, never later than the
-    /// parent's own. A child that cannot be bounded is not left running.
+    /// Sets the child's own deadline to `after` from now. The parent's limit does not bound it.
+    /// A child that cannot be bounded is not left running.
     pub(super) async fn arm_child_deadline(
         &self,
         provider_run: Option<&crate::provider::RuntimeProviderRun>,
-        session: &crate::session::RuntimeSession,
         parent: &crate::agent::AgentInstance,
         child: &crate::agent::AgentInstance,
         after: std::time::Duration,
     ) -> Result<(), DaemonError> {
-        let mut deadline_ms = crate::session::unix_epoch_ms()
+        let deadline_ms = crate::session::unix_epoch_ms()
             .saturating_add(u64::try_from(after.as_millis()).unwrap_or(u64::MAX));
-        if let LocalDaemonResponse::AgentDeadline {
-            deadline: Some(parent_deadline),
-        } = self
-            .runtime_state
-            .get_agent_deadline(crate::local::GetAgentDeadlineRequest {
-                session_id: session.id().to_string(),
-                agent_id: parent.id().to_string(),
-            })?
-        {
-            deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
-        }
         // A retried spawn finds its child already bounded; keep the earlier limit on a spawn retry.
         if let LocalDaemonResponse::AgentDeadline {
             deadline: Some(current),
@@ -312,6 +357,70 @@ impl CommandRouter {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// `agent delete <agent>` for an agent that is not the caller's own child: the owner's delete.
+    /// The agent goes with everything below it, running or not, and the result lists all of them.
+    async fn dispatch_meta_agent_delete_command(
+        &self,
+        provider_run: Option<&crate::provider::RuntimeProviderRun>,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        command: &str,
+        reference: &str,
+    ) -> RuntimeToolResult {
+        let result = async {
+            let agents = self.runtime_state.session_agents(session.id());
+            let target = crate::runtime::room_tool_admission::resolve_agent(
+                &agents,
+                session.id(),
+                reference,
+            )?;
+            self.runtime_state.authorize_delete_scope(caller, target)?;
+            // Read before the delete: afterwards the subtree is gone.
+            let everyone = self.runtime_state.list_agents();
+            let subtree = std::iter::once(target.clone())
+                .chain(
+                    crate::agent::authority_limit::descendants(target.id(), &everyone)
+                        .into_iter()
+                        .cloned(),
+                )
+                .collect::<Vec<_>>();
+            let request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                session_id: session.id().into(),
+                agent_id: target.id().into(),
+            });
+            let response = Box::pin(
+                self.dispatch(meta_kernel_command(provider_run, caller, &request), request),
+            )
+            .await?;
+            let goes = subtree
+                .iter()
+                .map(|agent| {
+                    let mut summary = super::summary::summarize_meta_agent(agent);
+                    summary["running"] = serde_json::json!(
+                        agent.state() == crate::agent::AgentState::Working
+                            || session.active_prompt_for_agent(agent.id()).is_some()
+                    );
+                    summary
+                })
+                .collect::<Vec<_>>();
+            Ok::<_, DaemonError>((response, goes))
+        }
+        .await;
+        match result {
+            Ok((response, deleted)) => {
+                let mut result = super::result::meta_command_success_result(
+                    command,
+                    &response,
+                    caller,
+                    self.runtime_state.room_agent_tools_enabled(),
+                );
+                result.payload["response"]["deleted"] = serde_json::json!(deleted);
+                result
+            }
+            Err(error) => meta_command_failure_result(command, error),
+        }
     }
 
     /// `agent cancel <agent>` stops the active turn of an agent below the caller and keeps the agent.
@@ -564,25 +673,36 @@ impl CommandRouter {
                     Ok(status) => status,
                     Err(error) => return meta_command_failure_result(command, error),
                 };
-                listed.push(serde_json::json!({
+                // One compact row: only what is set is listed; `agent get <agent>` has the rest.
+                let row_activity = activity.get(agent.id());
+                let mut row = serde_json::json!({
                     "id": agent.id(),
-                    "agent_ref": agent.agent_ref(),
                     "alias": agent.alias(),
-                    "parent": parent_id,
-                    "room": agent.session_id(),
-                    "depth": depth,
                     "state": state,
-                    "failure": failure,
-                    "is_processing": agent.is_processing(),
-                    "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
-                    "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
-                    "deadline": deadline,
-                    "grants": if self.runtime_state.holds_watched_process_grant(agent.id()) {
-                        vec![WATCHED_PROCESS_GRANT]
-                    } else {
-                        Vec::new()
-                    },
-                }));
+                });
+                if parent_id != root.id() {
+                    row["parent"] = parent_id.clone().into();
+                }
+                if let Some(failure) = failure {
+                    row["failure"] = serde_json::json!(failure);
+                }
+                if row_activity.is_some_and(|activity| activity.busy) {
+                    row["busy"] = true.into();
+                }
+                if let Some(deadline) = deadline {
+                    row["deadline"] = serde_json::json!({
+                        "state": deadline.state,
+                        "ms": deadline.deadline_ms,
+                    });
+                }
+                if let Some(wait) = row_activity.and_then(|activity| activity.liveness.wait_line())
+                {
+                    row["wait"] = wait.into();
+                }
+                if self.runtime_state.holds_watched_process_grant(agent.id()) {
+                    row["grants"] = serde_json::json!([WATCHED_PROCESS_GRANT]);
+                }
+                listed.push(row);
                 frontier.push((agent.id().to_string(), depth + 1));
             }
         }

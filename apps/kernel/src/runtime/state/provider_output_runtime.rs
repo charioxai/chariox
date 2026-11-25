@@ -8,6 +8,60 @@ use super::*;
 const PTY_PROMPT_SETTLE_QUIET_FOR: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl KernelRuntimeState {
+    /// The last pump of an ended run. Its actor may have queued closing output while terminating
+    /// (a compaction the run was cut off in is settled as failed): that output is applied to
+    /// history like any live batch before the run stops being polled. Only its chunks are applied;
+    /// a finished prompt or failure of an ended run is settled elsewhere.
+    async fn close_ended_provider_run_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        let owned = &self.owned;
+        let mut records = Vec::new();
+        for finished in owned
+            .provider_store
+            .drain_finished_structured_output_poll_jobs_for_run(provider_run_id)
+        {
+            let Ok(Some(batch)) = finished.result else {
+                continue;
+            };
+            if batch.chunks.is_empty() {
+                continue;
+            }
+            let closing = crate::provider::ProviderPromptSignalBatch {
+                chunks: batch.chunks,
+                ..Default::default()
+            };
+            let run_session_id = owned
+                .provider_store
+                .get_run(provider_run_id)
+                .map(|run| run.session_id().to_string())
+                .unwrap_or_else(|_| session_id.to_string());
+            let prepared = self.prepare_owned_structured_output_batch(
+                &run_session_id,
+                provider_run_id,
+                closing,
+            )?;
+            records.extend(
+                self.apply_prepared_owned_structured_output_batch(
+                    &run_session_id,
+                    provider_run_id,
+                    recipient_attachment_ids.clone(),
+                    prepared,
+                )
+                .await?,
+            );
+        }
+        records.extend(
+            owned
+                .structured_output_records
+                .take_and_stop_polling(provider_run_id),
+        );
+        Ok(records)
+    }
+
     pub(super) async fn pump_owned_provider_output(
         &self,
         session_id: &str,
@@ -26,14 +80,22 @@ impl KernelRuntimeState {
                 .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                 .await?
         {
-            return Ok(owned
-                .structured_output_records
-                .take_and_stop_polling(provider_run_id));
+            return self
+                .close_ended_provider_run_output(
+                    session_id,
+                    provider_run_id,
+                    recipient_attachment_ids,
+                )
+                .await;
         }
         if provider_run.state() == crate::provider::ProviderRunState::Ended {
-            return Ok(owned
-                .structured_output_records
-                .take_and_stop_polling(provider_run_id));
+            return self
+                .close_ended_provider_run_output(
+                    session_id,
+                    provider_run_id,
+                    recipient_attachment_ids,
+                )
+                .await;
         }
         if provider_run.state() == crate::provider::ProviderRunState::Parked {
             if !owned.provider_run_has_active_prompt(session_id, &provider_run)?
@@ -172,10 +234,11 @@ impl KernelRuntimeState {
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>();
-            if let Some(notice) =
-                crate::app::claude_native_first_run_notice(&provider_run, &rendered)
+            if let Some(update) =
+                crate::app::claude_native_trust_dialog_update(&provider_run, &rendered)
             {
-                owned.record_notice(session_id, Some(provider_run_id), Vec::new(), notice);
+                self.follow_claude_trust_dialog(session_id, &provider_run, update)
+                    .await;
             }
             if !rendered.is_empty() {
                 let provider_run = provider_run.clone();
@@ -473,7 +536,12 @@ fn provider_run_uses_transient_native_terminal(
 pub(super) fn provider_run_allows_quiet_pty_settlement(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> bool {
-    !provider_run_uses_structured_output_pump(provider_run)
+    // The private MCP fixture writes a terminal answer for each request in
+    // the same turn. Silence between those answers cannot end the turn.
+    let private_mcp_fixture =
+        provider_run.adapter_key() == "dev-stub" && provider_run.model() == "runtime-mcp-fixture";
+    !private_mcp_fixture
+        && !provider_run_uses_structured_output_pump(provider_run)
         && !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
 }
 

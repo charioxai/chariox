@@ -151,10 +151,13 @@ impl KernelRuntimeState {
                     // A poll an actor still runs took output from its provider;
                     // its result must be there to apply below.
                     self.wait_for_provider_output_polls().await;
-                    // Apply the polls those passes started.
-                    for run in self.owned.provider_store.list_runs() {
-                        self.pump_ready_provider_output_run(run.id()).await;
-                    }
+                    // Apply the polls those passes started. Each run keeps its
+                    // own lane, so an unrelated run does not delay its drain.
+                    futures_util::stream::iter(self.owned.provider_store.list_runs())
+                        .for_each_concurrent(MAX_PROVIDER_OUTPUT_PUMPS, |run| async move {
+                            self.pump_ready_provider_output_run(run.id()).await;
+                        })
+                        .await;
                     return;
                 }
                 Some(run_id) = jobs.next(), if has_jobs => { in_flight.remove(&run_id); }

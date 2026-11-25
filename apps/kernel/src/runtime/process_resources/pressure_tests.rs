@@ -16,7 +16,7 @@ pub(super) fn writer_command() -> String {
     )
 }
 
-const ALLOC: &str = "import ctypes,sys,time
+pub(super) const ALLOC: &str = "import ctypes,sys,time
 if sys.platform == \"linux\": ctypes.CDLL(None).prctl(1,9)
 start,rate,top=map(int,sys.argv[1:4])
 b=[bytearray(start*1048576)] if start else []
@@ -1224,7 +1224,7 @@ fn resset_accounting_cgroup_does_not_limit_a_healthy_host() {
         Arc::new(pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false)));
     let (mut a, mut b, mut c, pool) = pressure_in(pool, true, 300, 48, 10);
     let budget = pool.budget().unwrap();
-    for name in ["memory.max", "memory.high", "memory.swap.max"] {
+    for name in ["memory.max", "memory.high"] {
         assert_eq!(
             std::fs::read_to_string(budget.path().join(name))
                 .unwrap()
@@ -1232,6 +1232,12 @@ fn resset_accounting_cgroup_does_not_limit_a_healthy_host() {
             "max"
         );
     }
+    assert_eq!(
+        std::fs::read_to_string(budget.path().join("memory.swap.max"))
+            .unwrap()
+            .trim(),
+        "0"
+    );
     assert_eq!(
         std::fs::read_to_string(budget.path().join("cpu.weight"))
             .unwrap()

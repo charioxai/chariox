@@ -85,6 +85,7 @@ impl KernelRuntimeOwnedState {
                 },
                 &Default::default(),
                 &active_turns,
+                crate::session::unix_epoch_ms(),
                 None,
                 |agent| {
                     self.completed_git_turn_snapshots

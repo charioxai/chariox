@@ -184,10 +184,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
                     | crate::local::KernelBrowserCommand::DisplayResume { .. }
                     | crate::local::KernelBrowserCommand::DisplayPark { .. }
                     | crate::local::KernelBrowserCommand::DisplayAck { .. }
-                    | crate::local::KernelBrowserCommand::ListGrants
-                    | crate::local::KernelBrowserCommand::SubscribeGrants { .. }
-                    | crate::local::KernelBrowserCommand::GrantRoomComputer { .. }
-                    | crate::local::KernelBrowserCommand::RevokeGrants { .. }
+                    | crate::local::KernelBrowserCommand::DownloadsWait { .. }
                     | crate::local::KernelBrowserCommand::MirrorNext { .. }
             })
     ) {
@@ -544,6 +541,18 @@ impl CommandResultCache {
                 );
                 CommandReservation::Dispatch
             }
+        }
+    }
+
+    /// A reserved command that was cancelled before it began: nothing ran, so nothing is kept. A later attempt with the
+    /// same id dispatches afresh; one that waited on this reservation is told the result is unavailable and retries.
+    pub(crate) async fn release_unstarted(&self, command_id: &str) {
+        let mut results = self.results.lock().await;
+        if matches!(
+            results.get(command_id),
+            Some(CommandResultEntry::Pending { .. })
+        ) {
+            results.remove(command_id);
         }
     }
 

@@ -199,8 +199,9 @@ Remote-agent note:
 
 - a home kernel remains the only session authority even when some agents execute on remote machines
 - worker kernels host leased execution for those remote agents but do not become session authorities
-- remote jobs (`chariox.jobs.run` placed on a rented worker machine) are off unless the kernel starts with `CHARIOX_REMOTE_JOBS=1`; off, every job runs on the local queue and recovery ends a leftover remote job record without touching its worker
-- a job may name a machine the agent already holds (`machine` on `chariox.jobs.run`, the `allocation_ref` of `chariox.machines.acquire`): it runs through that machine's own kernel, never allocates or releases a machine, and removes its uploaded workspace once its files are home; a machine that is not held, released or unreachable is refused up front; it does not need `CHARIOX_REMOTE_JOBS`, which governs only placing jobs on worker machines; the kernel saves where the workspace goes before uploading and the job's result before removing it, and a restart or a later `chariox.jobs.status` finishes a removal that did not complete
+- remote jobs (`chariox.jobs.run` placed on a worker machine) are always available: the Room's Remote jobs option chooses local or remote placement, with no kernel setting. Placing a job on a machine the owner already has needs no decision; renting a new machine is one ordinary pending decision that the person or another agent answers (`agent answer <id> approve`; `agent answer <id> approve --room <room>` for an agent in another Room of the same owner), after which the requesting agent runs the rental itself. An agent never approves its own request or one its sub-agents raised: the kernel compares the answering agent's identity with the requester's. The kernel keeps no cap on pending decisions; a second decision for the same subject is refused as already pending, so one answer cannot settle two requests
+- a job may name a machine the agent already holds (`machine` on `chariox.jobs.run`, the `allocation_ref` of `chariox.machines.acquire`): it runs through that machine's own kernel, never allocates or releases a machine, and removes its uploaded workspace once its files are home; a machine that is not held, released or unreachable is refused up front; the kernel saves where the workspace goes before uploading and the job's result before removing it, and a restart or a later `chariox.jobs.status` finishes a removal that did not complete
+- an agent that starts a kernel which must join its owner's account asks with `chariox.kernels.enroll {user_code}`: the owner's own signed-in kernel reads the waiting login from Cloud, raises one owner card (`kernel-enrollment-*`, Approve/Deny, answerable from any owner client or by a delegated external agent, never by the asking agent), and applies the owner's answer through Cloud's `/v1/kernel-device-approvals` with its own kernel credential, so no browser device page or owner web session is needed. A call waits at most a minute (`waiting_for_owner`); asking again with the same code reads the answer and never raises a second card; an unanswered card is withdrawn when the code expires
 - from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
 - home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for worker-local targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled. Computer credential calls forward only the credential handle to home; home admits the redacted Room Action and sends the one-operation secret input through the existing encrypted Room controller route. An unattended remote Claude launch is the narrow provider-launch exception: home resolves the selected profile's vaulted setup token only when the worker needs a run, sends it in the encrypted lease request, and the worker moves it directly into a zeroizing `CLAUDE_CODE_OAUTH_TOKEN` launch environment. Neither kernel persists it, and no `.credentials.json` replica is created.
 
@@ -267,6 +268,9 @@ Detailed target-kernel implementation model, workflow model, workflow messaging,
 
 ### 3.3.2 Hot reload
 
+Before replacing a kernel binary, run the
+[state replay preflight](KERNEL_BINARY_UPGRADE.md) with the candidate binary.
+
 A hot reload (SIGUSR2) replaces the kernel program in place and keeps its PID. It is a program
 update, not the end of the kernel: **everything that lives "until the kernel stops" survives it.**
 Only a real stop or restart ends it. This covers:
@@ -283,7 +287,18 @@ Only a real stop or restart ends it. This covers:
 
 Not carried, as after any restart: processes the kernel does not own (idle provider processes),
 live watched-process wakes (`chariox.events.process` ends with `process_lost`; the owner re-arms).
-A handover whose program prints another `--handover-format` is refused and nothing changes.
+A handover whose program prints a `--handover-format` other than this program's number or the next
+one is refused and nothing changes.
+
+The handover document is read part by part. A running agent turn, terminal, attachment or job whose
+part cannot be read ends as after a restart, with its reason in the log, and every other part is
+handed on: one agent's damaged part never costs the others their turns. A change to a handover
+shape that the previous release cannot read bumps `HANDOVER_FORMAT` by one and the release that
+bumps it keeps reading the previous format (`PREVIOUS_HANDOVER_FORMAT`); a field added with a serde
+default needs no bump. The fixtures in `apps/kernel/tests/fixtures/hot_reload/` are documents the
+previous release's kernel wrote with a Claude turn and a Codex turn running; a unit test reads them
+whole, so a required field added without a default fails the build. At each release, replace them
+with the release's own (`apps/kernel/tests/fixtures/hot_reload/README.md`).
 A change that would end something at a reload that a restart keeps alive is a bug in the handover.
 
 ### 3.4 Relay Server
@@ -1244,7 +1259,7 @@ Result:
 
 ### MP-08 / MP-10 / MP-11: Room Computer access (local 461, peer 92)
 
-Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission.
+Room membership grants Computer control by default, and the owner has no per-agent switch for it: the owner's agents use the owner's Computer with no grant. The kernel checks only that the agent is not archived at input admission; workers retain the existing authenticated Room peer binding.
 
 Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
 

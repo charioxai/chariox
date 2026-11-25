@@ -2,7 +2,7 @@
 
 Supplementary regression services for FA01-FA10 (never acceptance, see
 `docs/AGENT_MODEL_OVERHAUL_PLAN.md`, "variant A"). Project `amunblock-fa`,
-loopback only, base port `FA_PORT_BASE` (default 18100):
+overridable via `COMPOSE_PROJECT_NAME`, loopback only, base port `FA_PORT_BASE` (default 18100):
 
 | Port | Service |
 | --- | --- |

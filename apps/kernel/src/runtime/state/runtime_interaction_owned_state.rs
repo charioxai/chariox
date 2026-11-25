@@ -1,6 +1,9 @@
 use super::*;
 
 mod agent_lifetime;
+mod card_registry;
+pub(super) use card_registry::CardRequest;
+pub(crate) use card_registry::{CardKind, LiveRoomCard};
 mod kernel_wide;
 mod maintenance;
 mod registration;
@@ -11,7 +14,6 @@ mod user_domain;
 /// Refusals that clear once the pending decision is answered.
 pub(crate) const INTERACTION_ALREADY_PENDING: &str =
     "Interaction subject or identity is already pending";
-pub(crate) const KERNEL_DECISION_LIMIT: &str = "Kernel decision limit reached";
 
 /// Whether registering an interaction was refused only until a pending one is
 /// answered.
@@ -19,7 +21,7 @@ pub(crate) fn interaction_waits(error: &DaemonError) -> bool {
     matches!(
         error,
         DaemonError::LocalTransport { operation: "runtime interaction", message }
-            if message == INTERACTION_ALREADY_PENDING || message.starts_with(KERNEL_DECISION_LIMIT)
+            if message == INTERACTION_ALREADY_PENDING
     )
 }
 
@@ -73,7 +75,7 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// A blocked task's Resume or Cancel is bound to whoever owned the room when it was raised, who
+    /// A blocked task's decision is bound to whoever owned the room when it was raised, who
     /// may be gone by the time anyone answers (a restart left it open). The room's current owner and
     /// the blocked agent's owner can always answer it, so the card never stays open with nobody
     /// allowed to close it.
@@ -192,10 +194,11 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?;
-        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+        if !session.update_active_interaction(interaction_id, |interaction| {
+            interaction.with_provider_login(login)
+        }) {
             return Ok(());
-        };
-        session.add_active_interaction(interaction.with_provider_login(login));
+        }
         sessions.restore_session(session);
         drop(sessions);
         activity_mutation.record();
@@ -401,10 +404,11 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
-        // The parent that holds a blocked task's card answers it for the owner; the holder was
-        // checked above and its authority is checked again below.
+        // The parent that holds a blocked task's card or a machine acquisition decision answers it for the owner;
+        // the holder was checked above and its authority is checked again below.
         let task_owner_answer = (as_holder.is_some()
-            && super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id))
+            && (super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id)
+                || super::machine_acquisition::is_machine_acquisition_decision(interaction_id)))
             || self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
         if pending
             .kernel_operation_owner
@@ -546,6 +550,24 @@ impl KernelRuntimeOwnedState {
                 "Only the owner's Chariox terminal can answer this review",
             ));
         }
+        // Accepting an App's offer, choosing its files and saving its file each hand the payload to
+        // one client by their own request; a reply never does it. An agent's own question may use
+        // any choice id it likes: only the App offers reserve these.
+        if !take_host
+            && matches!(
+                choice_id,
+                "accept_host_action" | "choose_files" | "save_file"
+            )
+            && interaction.kernel_operation_id().is_some_and(|operation| {
+                ["host_action:", "file_pick:", "file_export:"]
+                    .iter()
+                    .any(|prefix| operation.starts_with(prefix))
+            })
+        {
+            return Err(interaction_error(
+                "App host actions use the dedicated terminal acceptance path",
+            ));
+        }
         if take_host
             && (!pending
                 .kernel_operation_owner
@@ -665,6 +687,24 @@ impl KernelRuntimeOwnedState {
                 message: format!("interaction {interaction_id} does not define choice {choice_id}"),
             });
         };
+        if super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id)
+            && choice_id == super::agent_task_owner_interactions::DISMISS_BLOCKED_TASK_CARD
+        {
+            let mut room = session
+                .take()
+                .ok_or_else(|| interaction_error("Task card has no Room"))?;
+            if !interaction.room_dismissed() {
+                self.dismiss_blocked_task_card(session_id, interaction_id)?;
+                room.replace_active_interaction(interaction.with_room_dismissed(true));
+                sessions.restore_session(room);
+            }
+            drop(sessions);
+            activity_mutation.record();
+            self.session_snapshot(session_id)?;
+            self.terminal_stream
+                .notify_terminal_projection_change(session_id);
+            return Ok(());
+        }
         // A Vault passphrase is checked while its card stays on screen: the waiter
         // closes the card when the Vault is open, or shows the refusal in it.
         let holds_card = pending.terminal_credential_owner.is_some()
@@ -688,6 +728,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        self.record_task_question_answer(session_id, &interaction, choice_id, &resolved_reply)?;
         self.record_async_question_resolution(
             &interaction,
             &super::PendingInteractionResolution {
@@ -832,7 +873,8 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
-        if !session.replace_active_interaction(refreshed) {
+        let id = refreshed.id().to_owned();
+        if !session.update_active_interaction(&id, |_| refreshed) {
             return Err(interaction_error("interaction is not active"));
         }
         self.persist_session_activity(&mut session, crate::session::unix_epoch_ms())?;

@@ -44,7 +44,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "outside_steer_events_v1",
             "framed_plaintext_v1",
             "provider_account_copy_v1",
-            "provider_account_copy_pull_v1"
+            "provider_account_copy_pull_v1",
+            "viewer_density_stills_v1"
         ])
     );
     assert_eq!(
@@ -52,7 +53,38 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "992631bf1ec07ab29133df83f6853144cfe394c346e4eee97eb49d4c5500d13d"
+        "c652fecb353e41d4809de159c7e09f4c59fe33d810b7165bd8ceeac190d20861"
+    );
+}
+
+#[test]
+fn relay_registration_refusal_is_versioned_and_hashed() {
+    let expected = serde_json::json!({
+        "RelayStatus": {
+            "status": {
+                "local_daemon_protocol_version": 1013,
+                "configured": true, "connected": false, "capabilities": [],
+                "relay_url": "ws://127.0.0.1:43210", "relay_token_configured": true,
+                "daemon_id": "kernel-1", "machine_id": "machine-1", "machine_alias": null,
+                "registration_refused": {
+                    "reason": "upgrade required: protocol 1011 < minimum 1012",
+                    "next_step": "update this kernel",
+                    "since_ms": 1000,
+                    "next_retry_at_ms": 61000
+                }
+            }
+        }
+    });
+    let allocation = expected["RelayStatus"]["status"]["local_daemon_protocol_version"]
+        .as_u64()
+        .unwrap();
+    assert!(u64::from(LOCAL_DAEMON_PROTOCOL_VERSION) >= allocation);
+    let response: LocalDaemonResponse = serde_json::from_value(expected.clone()).unwrap();
+    let encoded = serde_json::to_value(response).unwrap();
+    assert_eq!(encoded, expected);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(encoded.to_string().as_bytes())),
+        "de7f9f1cbaacd943c453691f1b494777e3d14660fd82f4c46c9c101fd6275346"
     );
 }
 

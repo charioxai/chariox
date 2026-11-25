@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 
+use crate::config::CloudKernelRemoval;
 use crate::error::DaemonError;
 use crate::local::{
     CloudRelayProfile, CloudRelayRuntimeToken, ConnectCloudRelayRequest,
@@ -17,13 +18,13 @@ use crate::runtime::cloud_api_client::{
 };
 use crate::runtime::cloud_machine_rebind::rebind_machine_if_moved;
 use crate::runtime::cloud_relay_control::{
-    cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
-    cloud_runtime_token_subject, relay_token_expiry_ms, relay_token_payload,
-    CLOUD_RELAY_CLIENT_TOKEN_TTL_MS,
+    cloud_kernel_removal_error, cloud_relay_profile_has_runtime_credentials,
+    cloud_relay_runtime_token_is_fresh, cloud_runtime_token_subject, relay_token_expiry_ms,
+    relay_token_payload, CLOUD_RELAY_CLIENT_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
     clear_cloud_profile_if_stale, migrate_legacy_kernel_profile, persist_cloud_profile,
-    required_cloud_relay_profile,
+    record_cloud_kernel_removal, required_cloud_relay_profile,
 };
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
@@ -80,6 +81,12 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(());
     };
+    if profile.kernel_unlinked {
+        return Err(cloud_kernel_removal_error(
+            "renew Cloud relay connection",
+            CloudKernelRemoval::Permanent,
+        ));
+    }
     if !cloud_relay_profile_has_runtime_credentials(&profile) {
         return Ok(());
     }
@@ -90,6 +97,12 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
         return Ok(());
     }
 
+    let progress = crate::runtime::stall_watchdog::progress_watch(
+        "daemon.relay_client",
+        "cloud_relay_token_refresh",
+        Duration::from_secs(2),
+    );
+    progress.stage("request token from Cloud", Duration::from_secs(2));
     let token_subject = cloud_runtime_token_subject(&config, &profile);
     let public_key_thumbprint =
         crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
@@ -107,20 +120,25 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     {
         Ok(issued) => issued,
         Err(error) => {
-            clear_cloud_profile_if_stale(runtime_state, &error).await?;
+            if let Some(removal) =
+                record_cloud_kernel_removal(runtime_state, &profile, &error).await?
+            {
+                return Err(cloud_kernel_removal_error(
+                    "renew Cloud relay connection",
+                    removal,
+                ));
+            }
+            clear_cloud_profile_if_stale(runtime_state, profile, &error).await?;
             return Err(error);
         }
     };
     let mut updated_profile = profile.clone();
+    updated_profile.kernel_removal_pending = false;
     // MP-08 / MP-09 / MP-10 / MP-11: the issuer may shorten the requested TTL.
     updated_profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
+    progress.stage("persist renewed token", Duration::from_secs(2));
     runtime_state
-        .configure_relay_with_cloud_profile(
-            Some(profile.relay_url),
-            Some(issued.token),
-            Some(updated_profile),
-            false,
-        )
+        .finish_cloud_relay_renewal(profile, Some((updated_profile, issued.token)))
         .await?;
     Ok(())
 }
@@ -135,6 +153,12 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     rebind_machine_if_moved(runtime_state, config_projection).await?;
     let mut profile = required_cloud_relay_profile(config_projection)?;
+    if profile.kernel_unlinked {
+        return Err(cloud_kernel_removal_error(
+            "connect Cloud relay",
+            CloudKernelRemoval::Permanent,
+        ));
+    }
     let config = config_projection.snapshot();
     let token_subject = cloud_runtime_token_subject(&config, &profile);
     let public_key_thumbprint =
@@ -149,15 +173,23 @@ pub(crate) async fn execute_connect_cloud_relay_request(
             ..CloudRuntimeTokenRequestOptions::default()
         },
     )
-    .await?;
+    .await;
+    let issued = match issued {
+        Ok(issued) => issued,
+        Err(error) => {
+            if let Some(removal) =
+                record_cloud_kernel_removal(runtime_state, &profile, &error).await?
+            {
+                return Err(cloud_kernel_removal_error("connect Cloud relay", removal));
+            }
+            return Err(error);
+        }
+    };
+    let expected = profile.clone();
+    profile.kernel_removal_pending = false;
     profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
-    let saved = persist_cloud_profile(runtime_state, profile.clone()).await?;
     runtime_state
-        .configure_relay(
-            Some(profile.relay_url.clone()),
-            Some(issued.token.clone()),
-            true,
-        )
+        .connect_cloud_relay(expected, profile.clone(), issued.token)
         .await?;
     provider_catalog_projection.invalidate();
     Ok(LocalDaemonResponse::CloudRelayConnected {
@@ -167,7 +199,7 @@ pub(crate) async fn execute_connect_cloud_relay_request(
             runtime_state.control_capabilities(),
         )
         .await,
-        profile: cloud_profile_from_persisted(&saved),
+        profile: cloud_profile_from_persisted(&profile),
     })
 }
 

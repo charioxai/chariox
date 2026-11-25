@@ -78,3 +78,62 @@ fn machine_options_1011_shapes_and_hash() {
     )
     .is_err());
 }
+
+#[test]
+fn rental_kernel_diagnostics_are_part_of_machine_status() {
+    let shape = serde_json::json!({
+        "ControlPlane": {
+            "result": {
+                "kind": "machine",
+                "allocation_ref": "allocation",
+                "revision": 2,
+                "available_actions": [
+                    "release"
+                ],
+                "state": "reconnecting",
+                "access_state": "pending",
+                "access_reason": "kernel_offline",
+                "kernel_target": null,
+                "kernel_diagnostics": {
+                    "kernel_version": "0.1.0",
+                    "kernel_protocol": 1014,
+                    "last_relay_refusal": null,
+                    "relay_error": "The relay closed the connection because its reply queue filled."
+                }
+            }
+        }
+    });
+    let parsed: LocalDaemonResponse = serde_json::from_value(shape.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), shape);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "23b3a48818d406b92d7d9a0971a0c2bbe92415ab5e306bf86664977fad967a2b",
+    );
+}
+
+/// Provisional local 1015: an acquire request may carry `timeout_s`, the rental's hard stop in seconds.
+#[test]
+fn machine_hard_stop_1015_shapes_and_hash() {
+    let snapshot = serde_json::json!({
+        "requests": [
+            {"ControlPlane": {"action": "acquire", "capability_revision": "revision", "request_id": "one", "class_id": "small", "region": "auto", "timeout_s": 300}}
+        ]
+    });
+    for shape in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(shape.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *shape);
+    }
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "b26d2c8d980fd7803c9d4521660503546df57478acdae7312b52b62e66b94c49"
+    );
+    for bad in [serde_json::json!(-1), serde_json::json!("300")] {
+        assert!(serde_json::from_value::<LocalDaemonRequest>(
+            serde_json::json!({"ControlPlane":{"action":"acquire","capability_revision":"r","request_id":"i","timeout_s":bad}})
+        )
+        .is_err());
+    }
+}

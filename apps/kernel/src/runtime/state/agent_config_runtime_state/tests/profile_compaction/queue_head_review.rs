@@ -142,8 +142,10 @@ async fn readiness_while_the_starting_promoter_exits(complete_launch: bool) {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "readiness-test".into(),
             pty_target: None,
-            pty_program: Some("/bin/cat".into()),
-            pty_args: vec![],
+            // A provider that stays up while idle: #1677 ends a run whose idle
+            // process exited before it dispatches to it.
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "exec cat >/dev/null".into(), "provider".into()],
             pty_env: Default::default(),
             pty_env_remove: vec![],
             working_directory: None,

@@ -22,6 +22,7 @@ export type WorkflowRunOutcome =
         | "provider_profile_usage_exhausted"
         | "blocked_on_workspace_claim"
       node_id: string
+      detail?: string
     }
 
 export type WorkflowDefinition = {
@@ -41,6 +42,8 @@ export type WorkflowDefinition = {
     created_at_ms: number
   }
   created_at_ms?: number
+  /** Set while the workflow is archived: hidden from lists, refused for new runs. */
+  archived_at_ms?: number | null
   revision?: number
   code_source?: WorkflowCodeSourceBinding | null
   flush_agent_context_before_run?: boolean
@@ -695,6 +698,7 @@ export type WorkflowDesignOp =
   | { kind: "workflow_create"; workflow: WorkflowDesignWorkflow }
   | { kind: "workflow_update"; workflow_id: string; patch: WorkflowDesignWorkflowPatch }
   | { kind: "workflow_remove"; workflow_id: string }
+  | { kind: "workflow_archive"; workflow_id: string; archived: boolean }
   | { kind: "schema_add"; workflow_id: string; schema: WorkflowSchemaDefinition }
   | { kind: "schema_update"; workflow_id: string; schema_id: string; patch: WorkflowDesignSchemaPatch }
   | { kind: "schema_remove"; workflow_id: string; schema_id: string }
@@ -1021,6 +1025,7 @@ export type WorkflowNodeRun = {
   agent_id: string
   iteration_index?: number
   status: string
+  workspace_claim_holding_run_id?: string
   waiting_reason?: "provider_profile_unavailable" | "provider_profile_unverified" | "provider_profile_unauthenticated" | "provider_profile_usage_exhausted"
   summary: string | null
   completion?: {
@@ -1153,6 +1158,8 @@ export type RoomWorkflowInventory = {
   home_kernel_id: string
   revision: string
   workflow_count: number
+  /** Archived workflows are left out of `workflows`. */
+  archived_count?: number
   workflows: RoomWorkflowSummary[]
 }
 export type RoomWorkflowSummary = {

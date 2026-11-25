@@ -18,6 +18,62 @@ enum WakeDisposition {
     Hold,
     Deliver,
 }
+/// What the states of the tasks an event names say about its wake: the
+/// source occurrence and a finished or blocked task keep their outcome,
+/// so the automatic wake is retired; a proven startup refusal keeps its
+/// answer for an explicit Resume.
+fn wake_disposition(
+    event: &ledger::InboxEvent,
+    tasks: &[ledger::AgentTaskExecution],
+) -> WakeDisposition {
+    // A peer event names the turn that created its persistent follow,
+    // not unfinished work whose wake expires when that turn ends. Work the ended turn left
+    // running reports its end to the agent, not to the turn.
+    if event.kind == "peer_event" || event.payload["after_turn"] == true {
+        return WakeDisposition::Deliver;
+    }
+    let mut ids = Vec::new();
+    if let Some(id) = event.payload["task_id"].as_str() {
+        ids.push(id);
+    }
+    if let Some(more) = event.payload["task_ids"].as_array() {
+        ids.extend(more.iter().filter_map(|v| v.as_str()));
+    }
+    if !ids.is_empty()
+        && ids.iter().all(|id| {
+            tasks
+                .iter()
+                .find(|t| t.task_id == *id)
+                .is_none_or(|t| matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled))
+        })
+    {
+        return WakeDisposition::Retire;
+    }
+    let waiting = |id: &&str| {
+        tasks
+            .iter()
+            .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
+    };
+    if ids.iter().any(|id| {
+        tasks
+            .iter()
+            .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
+    }) && !ids.iter().any(waiting)
+    {
+        if event.attempted_at_ms.is_some()
+            && event.submit_epoch.is_none()
+            && tasks.iter().any(|task| {
+                task.state == ExecutionState::Blocked
+                    && task.wait.is_some()
+                    && ids.contains(&task.task_id.as_str())
+            })
+        {
+            return WakeDisposition::Hold;
+        }
+        return WakeDisposition::Retire;
+    }
+    WakeDisposition::Deliver
+}
 impl KernelRuntimeState {
     pub(super) fn agent_inbox_waits_for_vault(&self, room: &str, agent: &str) -> bool {
         if !self
@@ -110,6 +166,15 @@ impl KernelRuntimeState {
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
+        if active.is_none()
+            && self
+                .owned
+                .prompt_state_owner
+                .peek_next_queued_prompt(&session, agent)
+                .is_some()
+        {
+            return Ok(());
+        }
         // Checks use a separate tool-free conversation. Keep ordinary work in
         // the inbox until its agent can handle it in a work turn.
         if active.as_ref().is_some_and(|prompt| {
@@ -143,7 +208,7 @@ impl KernelRuntimeState {
                 return Ok(());
             };
             if event.state == "pending" && event.kind != "message" {
-                match self.wake_disposition(&event, &tasks) {
+                match wake_disposition(&event, &tasks) {
                     WakeDisposition::Retire => {
                         self.owned
                             .durable_state_store
@@ -170,6 +235,16 @@ impl KernelRuntimeState {
             break event;
         };
         if event.state != "pending" {
+            return Ok(());
+        }
+        // A start that failed is tried again at the time its failure named, not at every sweep.
+        if active.is_none()
+            && self
+                .owned
+                .durable_state_store
+                .agent_start_failure(event.sequence)?
+                .is_some_and(|failure| failure.retry_at_ms > crate::session::unix_epoch_ms())
+        {
             return Ok(());
         }
         // An explicitly stopped agent stays stopped: messages, urgent ones too,
@@ -206,6 +281,43 @@ impl KernelRuntimeState {
             }
             return Ok(());
         }
+        let target = self.owned.agent_store.get_agent(agent)?;
+        let leased = target.remote_execution().is_some();
+        // Take the provider lane before choosing the batch. Other arrivals while
+        // the turn holds the lane remain pending until the same delivery opportunity.
+        let steer_lane = if let Some(active) = active.as_ref().filter(|_| !leased) {
+            let Some(run) = self.owned.provider_store.get_run_for_agent(room, agent) else {
+                self.defer_inbox_steer(room, agent, event.sequence)?;
+                return Ok(());
+            };
+            let Ok(lane) = tokio::time::timeout(
+                STEER_LANE_WAIT,
+                self.provider_runtime_lanes.acquire(run.id()),
+            )
+            .await
+            else {
+                self.schedule_agent_lifecycle_sweep();
+                return Ok(());
+            };
+            let session = self.owned.session_store.get_session(room)?;
+            let same_turn = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent)
+                .is_some_and(|current| current.id() == active.id());
+            let still_first = self
+                .owned
+                .durable_state_store
+                .agent_urgent_delivery_front(room, agent)?
+                .is_some_and(|front| front.sequence == event.sequence && front.state == "pending");
+            if !same_turn || !still_first {
+                self.schedule_agent_lifecycle_sweep();
+                return Ok(());
+            }
+            Some((run.id().to_owned(), lane))
+        } else {
+            None
+        };
         let batch = self.delivery_batch(
             room,
             agent,
@@ -216,8 +328,6 @@ impl KernelRuntimeState {
             work.as_deref(),
         )?;
         let through = batch.last().map_or(event.sequence, |last| last.sequence);
-        let target = self.owned.agent_store.get_agent(agent)?;
-        let leased = target.remote_execution().is_some();
         let attachment = self.ensure_agent_message_attachment(room, &target)?;
         let workflow = match tasks.iter().find(|t| {
             t.state == ExecutionState::Waiting
@@ -286,18 +396,11 @@ impl KernelRuntimeState {
                 )
                 .await;
         }
-        let steer = if active.is_some() {
+        let steer = if let Some((run, _lane)) = &steer_lane {
             match self.prepare_local_active_prompt_steer_dispatch(room, &prompt) {
-                Ok(Some(dispatch)) => Some(dispatch),
-                Ok(None) | Err(_) => {
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::Defer {
-                            room: room.into(),
-                            agent: agent.into(),
-                            sequence: event.sequence,
-                            now: crate::session::unix_epoch_ms(),
-                        })?;
+                Ok(Some(dispatch)) if &dispatch.provider_run_id == run => Some(dispatch),
+                _ => {
+                    self.defer_inbox_steer(room, agent, event.sequence)?;
                     return Ok(());
                 }
             }
@@ -329,19 +432,6 @@ impl KernelRuntimeState {
         self.owned.record_woken_waits(&waiting, &attempt);
         self.mark_prompt_events_shown(room, agent, &shown)?;
         if let Some(dispatch) = steer {
-            // A turn that is settling holds its lane until it ends. The steer then
-            // sent nothing: the row waits for the idle wake instead of the lane.
-            let Ok(_permit) = tokio::time::timeout(
-                STEER_LANE_WAIT,
-                self.provider_runtime_lanes
-                    .acquire(&dispatch.provider_run_id),
-            )
-            .await
-            else {
-                self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
-                self.schedule_agent_lifecycle_sweep();
-                return Ok(());
-            };
             if !self
                 .owned
                 .prompt_dispatch_matches_active_prompt(&dispatch)
@@ -451,9 +541,32 @@ impl KernelRuntimeState {
                             &e,
                         )?;
                     }
-                    let state = ledger::delivery_receipt_state(None, false);
-                    self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-                    if !crate::error::is_agent_deadline_refusal(&e) {
+                    // A start that will be tried again has not failed for whoever waits on it:
+                    // a reply request or a delegate obligation ends only when the attempts are
+                    // spent (or the refusal is final), not at the first refused start.
+                    let mut start_will_be_retried = false;
+                    // Refusals that waiting cannot change are final at once: a deadline that has
+                    // ended, a declined Vault unlock, and a provider account that is not signed
+                    // in. A usage limit is not final: it resets.
+                    if crate::error::is_agent_deadline_refusal(&e)
+                        || matches!(
+                            &e,
+                            DaemonError::VaultUnlock {
+                                code: "vault_unlock_declined",
+                                ..
+                            } | DaemonError::ProviderProfileRefused {
+                                reason: crate::error::ProviderProfileRefusal::Unauthenticated,
+                                ..
+                            }
+                        )
+                    {
+                        let state = ledger::delivery_receipt_state(None, false);
+                        self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
+                    } else {
+                        start_will_be_retried =
+                            self.record_agent_start_failure(room, agent, event.sequence, &e)?;
+                    }
+                    if !crate::error::is_agent_deadline_refusal(&e) && !start_will_be_retried {
                         self.owned
                             .settle_failed_delegate_start(room, agent, &e.to_string())?;
                     }
@@ -503,6 +616,18 @@ impl KernelRuntimeState {
             }),
         );
         self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence);
+    }
+
+    fn defer_inbox_steer(&self, room: &str, agent: &str, sequence: u64) -> Result<(), DaemonError> {
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Defer {
+                room: room.into(),
+                agent: agent.into(),
+                sequence,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        Ok(())
     }
 
     /// The caller holds the dispatch's run lane.
@@ -567,7 +692,7 @@ impl KernelRuntimeState {
                     break;
                 }
             } else {
-                match self.wake_disposition(&next, tasks) {
+                match wake_disposition(&next, tasks) {
                     WakeDisposition::Retire => {
                         self.owned
                             .durable_state_store
@@ -596,62 +721,6 @@ impl KernelRuntimeState {
             batch.push(next);
         }
         Ok(batch)
-    }
-    /// What the states of the tasks an event names say about its wake: the
-    /// source occurrence and a finished or blocked task keep their outcome,
-    /// so the automatic wake is retired; a proven startup refusal keeps its
-    /// answer for an explicit Resume.
-    fn wake_disposition(
-        &self,
-        event: &ledger::InboxEvent,
-        tasks: &[ledger::AgentTaskExecution],
-    ) -> WakeDisposition {
-        // A peer event names the turn that created its persistent follow,
-        // not unfinished work whose wake expires when that turn ends. Work the ended turn left
-        // running reports its end to the agent, not to the turn.
-        if event.kind == "peer_event" || event.payload["after_turn"] == true {
-            return WakeDisposition::Deliver;
-        }
-        let mut ids = Vec::new();
-        if let Some(id) = event.payload["task_id"].as_str() {
-            ids.push(id);
-        }
-        if let Some(more) = event.payload["task_ids"].as_array() {
-            ids.extend(more.iter().filter_map(|v| v.as_str()));
-        }
-        if !ids.is_empty()
-            && ids.iter().all(|id| {
-                tasks.iter().find(|t| t.task_id == *id).is_none_or(|t| {
-                    matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
-                })
-            })
-        {
-            return WakeDisposition::Retire;
-        }
-        let waiting = |id: &&str| {
-            tasks
-                .iter()
-                .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
-        };
-        if ids.iter().any(|id| {
-            tasks
-                .iter()
-                .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
-        }) && !ids.iter().any(waiting)
-        {
-            if event.attempted_at_ms.is_some()
-                && event.submit_epoch.is_none()
-                && tasks.iter().any(|task| {
-                    task.state == ExecutionState::Blocked
-                        && task.wait.is_some()
-                        && ids.contains(&task.task_id.as_str())
-                })
-            {
-                return WakeDisposition::Hold;
-            }
-            return WakeDisposition::Retire;
-        }
-        WakeDisposition::Deliver
     }
     /// What the sender is told when message `sequence` waits for the owner's next prompt to
     /// `agent`, which the owner stopped: no turn is coming, so it must not wait for an answer.
@@ -704,10 +773,7 @@ impl KernelRuntimeState {
             .filter(|urgent| {
                 urgent.state == "pending"
                     && (urgent.kind == "message"
-                        || matches!(
-                            self.wake_disposition(urgent, tasks),
-                            WakeDisposition::Deliver
-                        ))
+                        || matches!(wake_disposition(urgent, tasks), WakeDisposition::Deliver))
             })
         else {
             return Ok(None);
@@ -887,6 +953,66 @@ impl KernelRuntimeState {
             );
         }
     }
+    /// The agent could not start for this delivery: it stays pending, says when it tries again,
+    /// and the sweep ends it only after the attempts are spent.
+    /// Returns whether the delivery will be tried again: attempts remain, or the start waits on
+    /// the owner. Only a spent budget lets the sweep end it.
+    pub(super) fn record_agent_start_failure(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+        error: &DaemonError,
+    ) -> Result<bool, DaemonError> {
+        // A locked Vault waits for the person, whose unlock card is open and was announced in the
+        // pane when it opened: no attempt is spent and nothing more is said per retry.
+        let waits_on_owner = super::runtime_vault_unlock_state::is_vault_unlock_card_open(error)
+            || matches!(
+                error,
+                DaemonError::VaultUnlock {
+                    code: "vault_locked",
+                    ..
+                }
+            );
+        let Outcome::Event(event) =
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::StartFailed {
+                    room: room.into(),
+                    agent: agent.into(),
+                    sequence,
+                    error: error.to_string(),
+                    waits_on_owner,
+                    now: crate::session::unix_epoch_ms(),
+                })?
+        else {
+            unreachable!()
+        };
+        self.owned.record_wake_refused(&event);
+        let failure = self
+            .owned
+            .durable_state_store
+            .agent_start_failure(sequence)?;
+        let retried = waits_on_owner
+            || failure.as_ref().is_some_and(|failure| {
+                failure.attempts
+                    < crate::durable_state::agent_lifecycle::start_failures::START_ATTEMPTS
+            });
+        // The open unlock card was announced when it opened: a retry against the same card says
+        // nothing more, or an owner who is away fills the pane with notices.
+        if let Some(failure) = failure.filter(|_| !waits_on_owner) {
+            self.owned.record_notice_for_agent(
+                room,
+                None,
+                Some(agent),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(room),
+                crate::durable_state::agent_lifecycle::start_failures::retry_notice(&failure),
+            );
+        }
+        Ok(retried)
+    }
     pub(super) fn record_agent_delivery_receipt(
         &self,
         room: &str,
@@ -977,6 +1103,122 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// The queued notification owns this delivery opportunity. Ordinary rows
+    /// still pending beside it join when the prompt is promoted, and the
+    /// durable prompt commit reserves their receipts before provider I/O.
+    pub(super) fn add_pending_wakes_to_notification(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+        started: crate::session::PromptQueueItem,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        let notifications = started.queued_notifications();
+        // A person edited this prompt's text while it waited: their words go to the provider as
+        // written, and the wakes stay pending for a turn of their own.
+        if !notifications
+            .first()
+            .is_some_and(|notification| notification.batch_instruction.is_some())
+            || started.queued_text_edited()
+            || self.sudo_work_task(session.id(), agent).is_some()
+        {
+            return Ok(started);
+        }
+
+        let room = session.id();
+        let store = &self.durable_state_store;
+        let tasks = store.agent_tasks(Some(room), Some(agent))?;
+        let can_resume_task = tasks
+            .iter()
+            .find(|task| task.prompt_id == started.id())
+            .is_none_or(ledger::AgentTaskExecution::is_unstarted_prompt_task);
+        let mut protected = Vec::new();
+        for task in &tasks {
+            if task.pending_prompt_id.is_some()
+                || (task.state == ExecutionState::Waiting
+                    && store.agent_task_workflow(&task.task_id)?.is_some())
+            {
+                protected.push(task.task_id.as_str());
+            }
+        }
+        let eligible = |event: &ledger::InboxEvent| {
+            event.state == "pending"
+                && event.kind != "message"
+                && !event.reply_requested
+                && matches!(wake_disposition(event, &tasks), WakeDisposition::Deliver)
+                && !protected.iter().any(|task| names_task(event, task))
+                && (can_resume_task
+                    || !tasks.iter().any(|task| {
+                        task.state == ExecutionState::Waiting && names_task(event, &task.task_id)
+                    }))
+        };
+        let Some(lead) = store.agent_delivery_front(room, agent)?.filter(eligible) else {
+            return Ok(started);
+        };
+        let following = store.agent_delivery_batch(&lead, false, None)?;
+        let batch = std::iter::once(lead)
+            .chain(
+                following
+                    .into_iter()
+                    .take_while(eligible)
+                    .take(MAX_WAKE_BATCH),
+            )
+            .collect::<Vec<_>>();
+
+        let mut combined = started.clone();
+        combined.set_prompt(super::agent_inbox_wake_text::notification_batch(
+            notifications,
+            &batch,
+        ));
+        let combined =
+            combined.with_inbox_wakes(batch.iter().map(|event| event.sequence).collect());
+        if self.prompt_state_owner.replace_active_prompt_if_matches(
+            session,
+            agent,
+            &started,
+            combined.clone(),
+        ) {
+            Ok(combined)
+        } else {
+            Ok(started)
+        }
+    }
+
+    /// The tasks waiting before a promotion's durable commit resumes them: read after the wakes joined
+    /// the promoted prompt and before that prompt is mirrored, and empty when no wake joined.
+    pub(super) fn waits_before_promotion(
+        &self,
+        room: &str,
+        agent: &str,
+        started: &crate::session::PromptQueueItem,
+    ) -> Vec<ledger::AgentTaskExecution> {
+        if started.inbox_wakes().is_empty() {
+            Vec::new()
+        } else {
+            self.waiting_tasks(room, agent)
+        }
+    }
+
+    /// Ends the wait rows of the tasks that promotion's commit resumed. Every path that promotes a queued
+    /// notification with wakes (local or remote, on a dispatch or on a completion) does this after its commit.
+    pub(super) fn close_waits_after_promotion(
+        &self,
+        room: &str,
+        agent: &str,
+        started: &crate::session::PromptQueueItem,
+        waiting: &[ledger::AgentTaskExecution],
+    ) -> Result<(), DaemonError> {
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        if let Some(lead) =
+            self.durable_state_store
+                .agent_event_for_prompt(room, agent, started.id())?
+        {
+            self.record_woken_waits(waiting, &lead);
+        }
+        Ok(())
+    }
+
     /// Bind only after dispatch admission and immediately before provider I/O.
     pub(super) fn bind_agent_event_submission(
         &self,

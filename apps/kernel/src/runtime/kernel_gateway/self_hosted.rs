@@ -88,6 +88,14 @@ impl KernelGateway {
         if let Some(target) = self.job_targets.get(name) {
             return Ok(target);
         }
+        self.resolve_enrolled(name).await
+    }
+
+    /// Resolves a machine in the owner's directory, excluding private offload workers.
+    pub(crate) async fn resolve_enrolled(
+        &self,
+        name: &str,
+    ) -> Result<RelayKernelPresence, GatewayError> {
         if !self.is_self_hosted() {
             return self.directory.resolve(name).await;
         }

@@ -188,6 +188,10 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name.starts_with("chariox.environment.")
                 || spec.name == "chariox_kernel_request"
                 || spec.name == "chariox.vault.generate"
+                || spec.name == "chariox.whats_new"
+                || spec.name == "chariox.owner_view"
+                || spec.name == "chariox.load_kernel_browser"
+                || spec.name == "chariox.load_kernel_computer"
                 || spec.name == "chariox.vault.capture_command"
                 || spec.name == "chariox.vault.use_env"
                 || spec.name == "chariox.vault.copy_for_use"
@@ -322,7 +326,9 @@ mod person_inbox_notify;
 mod reach_lists;
 mod remote_spawn_deadline;
 mod room_admission;
+mod room_create;
 mod room_prompt_dispatch;
+mod room_workflow_archive;
 mod self_settings;
 mod subtree;
 

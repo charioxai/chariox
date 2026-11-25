@@ -104,6 +104,7 @@ async fn register(
     };
     f.runtime
         .create_runtime_interaction_with_forwarding(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &f.session,
             native_approval(f, Some(origin)),
             Some(&context(f, prompt)),
@@ -510,6 +511,7 @@ async fn register_idle_review(
     }));
     f.runtime
         .create_runtime_interaction_with_forwarding(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &f.session,
             interaction,
             Some(&context(f, false)),
@@ -586,6 +588,7 @@ async fn mp08_mp10_mp11_active_worker_choice_retains_dispatch_pre_ack_allowance(
     let mut receiver = f
         .runtime
         .create_runtime_interaction_with_forwarding(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &f.session,
             interaction,
             Some(&context(&f, true)),

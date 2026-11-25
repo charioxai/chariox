@@ -462,3 +462,402 @@ async fn a_continuation_the_new_process_refuses_fails_the_turn_on_that_process()
 
     turn.assert_turn_failed();
 }
+
+#[tokio::test]
+async fn agent_profile_turn_end_holds_the_active_process_and_updates_the_next_turn() {
+    let turn = running_turn().await;
+    let mut context = super::super::SettingsContext::person();
+    context.at_turn_end = true;
+    let (agent, applies) = turn
+        .runtime
+        .update_agent_profile_as(
+            &turn.session_id,
+            &turn.agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some(NEXT_MODEL.into()),
+            None,
+            context.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applies, crate::local::SettingsApplies::AtTurnEnd);
+    assert_eq!(agent.model(), Some("primary-model"));
+    assert_eq!(
+        agent.pending_profile().unwrap().model.as_deref(),
+        Some(NEXT_MODEL)
+    );
+
+    let saved = turn
+        .runtime
+        .owned
+        .durable_state_store
+        .load_events_after(0)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.kind == "agent.updated")
+        .unwrap();
+    let restored: crate::agent::AgentInstance =
+        serde_json::from_value(saved.payload["agent"].clone()).unwrap();
+    assert_eq!(restored.pending_profile(), agent.pending_profile());
+    assert!(!turn
+        .runtime
+        .swap_turn_process_at_step_boundary(&turn.session_id, &turn.failed_run_id)
+        .await
+        .unwrap());
+    assert_eq!(turn.live_run().unwrap().id(), turn.failed_run_id);
+
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+        .await
+        .expect("the original turn completes");
+    assert!(turn.active_prompt().is_none());
+    let agent = turn
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&turn.agent_id)
+        .unwrap();
+    assert_eq!(agent.model(), Some(NEXT_MODEL));
+    assert!(agent.pending_profile().is_none());
+
+    let next = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the next turn launches");
+    assert_ne!(next, turn.failed_run_id);
+    assert_eq!(turn.live_run().unwrap().model(), NEXT_MODEL);
+
+    let (idle, applies) = turn
+        .runtime
+        .update_agent_profile_as(
+            &turn.session_id,
+            &turn.agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some("idle-model".into()),
+            None,
+            context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(applies, crate::local::SettingsApplies::Now);
+    assert_eq!(idle.model(), Some("idle-model"));
+    assert!(idle.pending_profile().is_none());
+}
+
+#[tokio::test]
+async fn agent_profile_turn_end_survives_reopening_the_kernel() {
+    let config = crate::config::DaemonConfig::for_tests();
+    let (app, runtime, session_id, agent_id) =
+        super::agent_config_runtime_with_config(config.clone()).await;
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            owner,
+            Some("dev-stub".into()),
+            None,
+            Some("primary-model".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    {
+        let mut app = app.lock().await;
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "restart-test",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        app.prompt_owner_submit_prepared_prompt(
+            &session_id,
+            crate::session::PromptQueueItem::new(
+                "restart-turn",
+                attachment.id(),
+                &agent_id,
+                "finish this turn",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    }
+    let mut context = super::super::SettingsContext::person();
+    context.at_turn_end = true;
+    let (_, timing) = runtime
+        .update_agent_profile_as(
+            &session_id,
+            &agent_id,
+            owner,
+            None,
+            None,
+            Some(NEXT_MODEL.into()),
+            None,
+            context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(timing, crate::local::SettingsApplies::AtTurnEnd);
+    drop(runtime);
+    drop(app);
+
+    let app = super::Arc::new(super::Mutex::new(
+        super::DaemonApp::bootstrap(config).expect("reopen the durable kernel"),
+    ));
+    let runtime = super::owned_runtime_state(&app).await;
+    let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    assert_eq!(agent.model(), Some("primary-model"));
+    assert_eq!(
+        agent.pending_profile().unwrap().model.as_deref(),
+        Some(NEXT_MODEL)
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    assert!(!runtime
+        .owned
+        .apply_agent_profile_after_turn(&session, &agent_id)
+        .unwrap());
+
+    let completion = runtime
+        .owned
+        .complete_local_prompt_without_advance(&session_id, &agent_id, None)
+        .expect("the recovered turn settles");
+    assert!(completion.is_some());
+    let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    assert_eq!(agent.model(), Some(NEXT_MODEL));
+    assert!(agent.pending_profile().is_none());
+}
+
+/// The provider's own `run_in_background` call: a child of the process, running.
+fn background_launch_batch() -> crate::provider::ProviderPromptSignalBatch {
+    crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderTool,
+            merge_key: Some("toolu_bg".into()),
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "id": "toolu_bg", "tool": "Bash", "status": "completed",
+                "started_at_ms": 1, "background": true, "finished_at_ms": null,
+                "input": {"command": "sleep 600", "run_in_background": true}
+            }))
+            .unwrap(),
+        }],
+        ..Default::default()
+    }
+}
+
+async fn launch_background_call(turn: &FailingTurn) {
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            background_launch_batch(),
+        )
+        .await
+        .expect("the background call starts");
+    turn.runtime
+        .flush_provider_history(&turn.failed_run_id)
+        .await
+        .expect("its row is stored");
+}
+
+/// MP-08 stall RCA (row 525): a settings switch between turns ended the process that still ran
+/// the agent's background command, and with it the command and the provider's notification.
+#[tokio::test]
+async fn a_stale_process_that_still_runs_a_background_call_is_kept_when_the_next_turn_starts() {
+    let turn = running_turn().await;
+    track_activity(&turn);
+    launch_background_call(&turn).await;
+    change_model(&turn, NEXT_MODEL).await;
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+        .await
+        .expect("the turn completes");
+
+    let next = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the next turn launches");
+
+    assert_eq!(
+        next, turn.failed_run_id,
+        "the process that runs the command is not replaced while it runs"
+    );
+}
+
+#[tokio::test]
+async fn a_process_that_runs_a_background_call_is_not_swapped_at_a_step_boundary() {
+    let turn = running_turn().await;
+    track_activity(&turn);
+    change_model(&turn, NEXT_MODEL).await;
+    launch_background_call(&turn).await;
+
+    let swapped = turn
+        .runtime
+        .swap_turn_process_at_step_boundary(&turn.session_id, &turn.failed_run_id)
+        .await
+        .unwrap();
+
+    assert!(!swapped);
+    assert_eq!(turn.live_run().unwrap().id(), turn.failed_run_id);
+}
+
+/// Row 525, found by the live drill: a model switch of an agent between turns ended its provider
+/// process at once, and the background command that process ran with it (and the notification).
+#[tokio::test]
+async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_call() {
+    let turn = running_turn().await;
+    track_activity(&turn);
+    launch_background_call(&turn).await;
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+        .await
+        .expect("the turn completes");
+    assert!(turn.active_prompt().is_none());
+
+    let (_, applies) = turn
+        .runtime
+        .update_agent_profile_as(
+            &turn.session_id,
+            &turn.agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some(NEXT_MODEL.into()),
+            None,
+            crate::runtime::state::agent_settings_change::SettingsContext::person(),
+        )
+        .await
+        .expect("the switch is accepted");
+
+    let run = turn.live_run().expect("the agent still has its run");
+    assert_eq!(run.id(), turn.failed_run_id);
+    assert_ne!(
+        run.state(),
+        ProviderRunState::Ended,
+        "the process that runs the command is not ended by the switch"
+    );
+    // The person is told it waits, not that it applied.
+    assert_eq!(applies, crate::local::SettingsApplies::AtTurnEnd);
+    let notices = settings_notices(&turn);
+    assert!(
+        notices.iter().any(|notice| notice.contains(NEXT_MODEL)
+            && notice.contains("changes to")
+            && notice.contains("background command ends")),
+        "{notices:?}"
+    );
+    assert!(
+        notices.iter().all(|notice| !notice.contains("changed to")),
+        "{notices:?}"
+    );
+    // A follow-up while the command runs executes on that process, on the old model.
+    let follow_up = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the follow-up launches");
+    assert_eq!(follow_up, turn.failed_run_id);
+    assert_ne!(
+        turn.runtime
+            .owned
+            .provider_store
+            .get_run(&follow_up)
+            .unwrap()
+            .model(),
+        NEXT_MODEL
+    );
+
+    // The command ends; the next turn starts the new process, whose first finished step says the
+    // change took effect.
+    let ended = crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderTool,
+            merge_key: Some("toolu_bg".into()),
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "id": "toolu_bg", "tool": "Bash", "status": "completed",
+                "started_at_ms": 1, "background": true, "finished_at_ms": 2,
+                "input": {"command": "sleep 600", "run_in_background": true}
+            }))
+            .unwrap(),
+        }],
+        ..Default::default()
+    };
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            ended,
+        )
+        .await
+        .expect("the command ends");
+    turn.runtime
+        .flush_provider_history(&turn.failed_run_id)
+        .await
+        .expect("its end is stored");
+    let replaced = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the next turn launches");
+    assert_ne!(replaced, turn.failed_run_id, "the new process starts");
+    assert_eq!(
+        turn.runtime
+            .owned
+            .provider_store
+            .get_run(&replaced)
+            .unwrap()
+            .model(),
+        NEXT_MODEL
+    );
+    // The replacement turn only returns text: no tool call, no step boundary.
+    let reply = crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: None,
+            bytes: b"done".to_vec(),
+        }],
+        ..Default::default()
+    };
+    // The production pump prepares and applies each batch itself; the test wrapper is not on that path.
+    let prepared = turn
+        .runtime
+        .prepare_owned_structured_output_batch(&turn.session_id, &replaced, reply)
+        .expect("the batch is prepared");
+    let _ = turn
+        .runtime
+        .apply_prepared_owned_structured_output_batch(
+            &turn.session_id,
+            &replaced,
+            Vec::new(),
+            prepared,
+        )
+        .await;
+    let notices = settings_notices(&turn);
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("changed to") && notice.contains(NEXT_MODEL)),
+        "{notices:?}"
+    );
+}

@@ -199,7 +199,7 @@ desktop on that agent's bound ordinary Linux worker. The typed grant binds
 home/session/agent/lease/worker, desktop generation and a revocable epoch.
 The worker checks HOME's live lease/run and grant on every Computer invocation,
 then uses the existing desktop mutation admission and human takeover service.
-`/access revoke-computer <agent-id>` and ordinary Access revoke retire that
+`/access revoke-computer <agent-id>` retires that
 authority; stale epochs cannot revive queued input. Browser and Vault retain
 their existing local authority guards. No arbitrary desktop target or Room
 browser forwarding authority is accepted:

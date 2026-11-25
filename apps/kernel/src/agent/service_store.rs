@@ -36,6 +36,10 @@ impl AgentServiceStore {
         }
     }
 
+    pub(crate) fn has_pending_profile(&self, agent_id: &str) -> bool {
+        self.read().has_pending_profile(agent_id)
+    }
+
     pub fn read(&self) -> MutexGuard<'_, AgentService> {
         self.inner.lock().expect("agent service mutex poisoned")
     }

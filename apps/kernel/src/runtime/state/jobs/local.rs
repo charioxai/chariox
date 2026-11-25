@@ -1,9 +1,6 @@
-use super::execute::{command_input, note_failed_end, result_from_exit, Output, OutputCheckpoint};
+use super::execute::{command_input, note_failed_end, result_from_exit, Output};
+use super::handover::{ActiveJob, JobProgress, Shutdown};
 use super::*;
-use crate::room_exec::{JobExecBuffer, JobExecHandover};
-use serde::{Deserialize, Serialize};
-use std::os::fd::{FromRawFd as _, OwnedFd};
-use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
 impl KernelRuntimeState {
@@ -14,7 +11,7 @@ impl KernelRuntimeState {
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
     ) -> Result<JobResult, DaemonError> {
-        let active = self.track_local_job().await;
+        let active = self.track_job().await;
         record.placement = JobPlacement::Local;
         let session = self.owned.session_store.get_session(&record.room_id)?;
         let execs = &self.owned.room_execs;
@@ -48,7 +45,7 @@ impl KernelRuntimeState {
             cancelled,
             owned,
             active,
-            LocalProgress::default(),
+            JobProgress::default(),
         )
         .await
     }
@@ -58,8 +55,8 @@ impl KernelRuntimeState {
         record: &mut Record,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
-        active: ActiveLocalJob,
-        progress: LocalProgress,
+        active: ActiveJob,
+        progress: JobProgress,
     ) -> Result<JobResult, DaemonError> {
         let owned = LocalExec {
             service: self.owned.room_execs.clone(),
@@ -76,8 +73,8 @@ impl KernelRuntimeState {
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
         owned: LocalExec,
-        mut active: ActiveLocalJob,
-        mut progress: LocalProgress,
+        mut active: ActiveJob,
+        mut progress: JobProgress,
     ) -> Result<JobResult, DaemonError> {
         let execs = &owned.service;
         let exec_id = &owned.id;
@@ -128,11 +125,16 @@ impl KernelRuntimeState {
                 biased;
                 shutdown = active.shutdown() => {
                     if matches!(shutdown, Shutdown::Reload) {
-                        if let Err(error) = self.freeze_local_job(record, output, progress, exec_id).await {
+                        let result = async {
+                            let exec = execs.freeze_job(&record.room_id, exec_id).await?;
+                            self.freeze_job(record, output, progress, Some(exec))
+                        }
+                        .await;
+                        if let Err(error) = result {
                             tracing::warn!(%error, "local job ownership could not be transferred");
                         }
-                    } else {
-                        execs.settle_job_for_restart(&record.room_id, exec_id).await;
+                    } else if let Err(error) = owned.drain_for_restart(self, output, progress.cursor).await {
+                        tracing::warn!(%error, "some local job output could not be saved before shutdown");
                     }
                     drop(owned);
                     drop(active);
@@ -147,10 +149,10 @@ impl KernelRuntimeState {
                 execs.close(&record.room_id, exec_id)?;
                 if self.job_wake_driver.as_ref().is_some_and(|driver| {
                     driver
-                        .remote_requested
+                        .remote_moves
                         .lock()
-                        .expect("job move")
-                        .remove(&record.job_id)
+                        .expect("job moves")
+                        .contains_key(&record.job_id)
                 }) {
                     record.exec_id = None;
                     return Err(DaemonError::MachineRequest {
@@ -163,66 +165,6 @@ impl KernelRuntimeState {
             }
         }
     }
-
-    async fn track_local_job(&self) -> ActiveLocalJob {
-        let local = &self
-            .job_wake_driver
-            .as_ref()
-            .expect("a local job has a driver")
-            .local;
-        match local.enter() {
-            Some(active) => active,
-            None => std::future::pending().await,
-        }
-    }
-
-    async fn freeze_local_job(
-        &self,
-        record: &Record,
-        output: &mut Output,
-        progress: LocalProgress,
-        exec_id: &str,
-    ) -> Result<(), DaemonError> {
-        let frozen = self
-            .owned
-            .room_execs
-            .freeze_job(&record.room_id, exec_id)
-            .await?;
-        let log = output
-            .keep_log()
-            .map_err(|failure| ledger::error(failure.to_string()))?;
-        let state = zeroize::Zeroizing::new(
-            serde_json::to_vec(&LocalJobState {
-                reader: output.take_checkpoint(),
-                buffer: frozen.buffer,
-                progress,
-            })
-            .map_err(|failure| ledger::error(failure.to_string()))?,
-        );
-        crate::hot_reload::hand_over_local_job(
-            record.job_id.clone(),
-            record.wake_id.clone(),
-            frozen.handover,
-            frozen.pipes,
-            frozen.guard,
-            log,
-            &state,
-        )
-        .map_err(|failure| ledger::error(failure.to_string()))
-    }
-
-    pub(in crate::runtime::state) async fn shutdown_local_jobs(&self, reload: bool) {
-        if let Some(driver) = &self.job_wake_driver {
-            driver
-                .local
-                .shutdown(if reload {
-                    Shutdown::Reload
-                } else {
-                    Shutdown::Restart
-                })
-                .await;
-        }
-    }
 }
 
 /// An output or persistence failure must not abandon the command's physical ownership.
@@ -231,192 +173,59 @@ struct LocalExec {
     room: String,
     id: String,
 }
+impl LocalExec {
+    async fn drain_for_restart(
+        &self,
+        state: &KernelRuntimeState,
+        output: &mut Output,
+        mut cursor: u64,
+    ) -> Result<(), DaemonError> {
+        self.service.cancel(&self.room, &self.id)?;
+        loop {
+            let page = self
+                .service
+                .read(&self.room, &self.id, cursor, Duration::from_millis(250))
+                .await?;
+            output.page(state, &self.room, &page)?;
+            if page.outcome.is_some() {
+                return Ok(());
+            }
+            cursor = page.next_cursor;
+        }
+    }
+}
+
 impl Drop for LocalExec {
     fn drop(&mut self) {
         let _ = self.service.close(&self.room, &self.id);
     }
 }
 
-#[derive(Clone, Copy, Default)]
-enum Shutdown {
-    #[default]
-    Running,
-    Restart,
-    Reload,
-}
+pub(super) const RESTART_REASON: &str = "The kernel restart interrupted this local job. No command exit status is available. Check the recorded output and any side effects. Rerun only after confirming the previous command has stopped and repeating its work is safe. Otherwise, continue from the last verified step after reconciling partial work.";
 
-#[derive(Default)]
-pub(super) struct LocalJobs {
-    active: std::sync::Mutex<usize>,
-    shutdown: watch::Sender<Shutdown>,
-    drained: Notify,
-}
-
-impl LocalJobs {
-    pub(super) fn enter(self: &Arc<Self>) -> Option<ActiveLocalJob> {
-        let mut active = self.active.lock().expect("active local jobs");
-        let shutdown = self.shutdown.subscribe();
-        if !matches!(*shutdown.borrow(), Shutdown::Running) {
-            return None;
-        }
-        *active += 1;
-        Some(ActiveLocalJob {
-            jobs: Arc::clone(self),
-            shutdown,
-        })
-    }
-
-    async fn shutdown(&self, kind: Shutdown) {
-        {
-            let _active = self.active.lock().expect("active local jobs");
-            self.shutdown.send_replace(kind);
-        }
-        let wait = async {
-            loop {
-                let drained = self.drained.notified();
-                tokio::pin!(drained);
-                drained.as_mut().enable();
-                if *self.active.lock().expect("active local jobs") == 0 {
-                    return;
-                }
-                drained.await;
+pub(super) fn restart_output(state: &KernelRuntimeState, record: &Record) -> (String, String) {
+    const HEADING: &str = "\n\nSaved output tail (step completions are reported by the command):\n";
+    let path = Output::path(state, record);
+    let mut text = RESTART_REASON.to_owned();
+    let log = match Output::saved_tail(&path, TAIL_BYTES - RESTART_REASON.len() - HEADING.len()) {
+        Ok(tail) => {
+            if tail.is_empty() {
+                text.push_str(" The command saved no output.");
+            } else {
+                text.push_str(HEADING);
+                text.push_str(&tail);
             }
-        };
-        if tokio::time::timeout(Duration::from_secs(2), wait)
-            .await
-            .is_err()
-        {
-            tracing::warn!("local job supervisors did not stop before kernel shutdown");
+            path.to_string_lossy().into_owned()
         }
-    }
-}
-
-pub(super) struct ActiveLocalJob {
-    jobs: Arc<LocalJobs>,
-    shutdown: watch::Receiver<Shutdown>,
-}
-
-impl ActiveLocalJob {
-    async fn shutdown(&mut self) -> Shutdown {
-        *self
-            .shutdown
-            .wait_for(|kind| !matches!(kind, Shutdown::Running))
-            .await
-            .expect("the registered job's driver holds its shutdown channel")
-    }
-}
-
-impl Drop for ActiveLocalJob {
-    fn drop(&mut self) {
-        let mut active = self.jobs.active.lock().expect("active local jobs");
-        *active -= 1;
-        if *active == 0 {
-            self.jobs.drained.notify_waiters();
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            text.push_str(" No job log was saved.");
+            String::new()
         }
-    }
-}
-
-#[derive(Default, Serialize, Deserialize)]
-pub(super) struct LocalProgress {
-    cursor: u64,
-    stopped: Option<JobOutcome>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct LocalJobState {
-    reader: OutputCheckpoint,
-    buffer: JobExecBuffer,
-    progress: LocalProgress,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct LocalJobHandover {
-    job: String,
-    wake: String,
-    exec: JobExecHandover,
-    state_fd: i32,
-    log_fd: i32,
-}
-
-impl LocalJobHandover {
-    pub(crate) fn new(
-        job: String,
-        wake: String,
-        exec: JobExecHandover,
-        state_fd: i32,
-        log_fd: i32,
-    ) -> Self {
-        Self {
-            job,
-            wake,
-            exec,
-            state_fd,
-            log_fd,
+        Err(error) => {
+            use std::fmt::Write as _;
+            let _ = write!(text, " The saved output could not be read: {error}.");
+            path.to_string_lossy().into_owned()
         }
-    }
-
-    pub(crate) fn id(&self) -> &str {
-        &self.job
-    }
-
-    pub(crate) fn wake_id(&self) -> &str {
-        &self.wake
-    }
-
-    pub(crate) fn pid(&self) -> Option<u32> {
-        self.exec.pid()
-    }
-
-    pub(crate) fn fds(&self) -> impl Iterator<Item = i32> + '_ {
-        [self.state_fd, self.log_fd]
-            .into_iter()
-            .chain(self.exec.fds())
-    }
-
-    pub(crate) fn discard(self) {
-        // The previous program named both sets of descriptors for this job alone.
-        drop(unsafe { OwnedFd::from_raw_fd(self.state_fd) });
-        drop(unsafe { OwnedFd::from_raw_fd(self.log_fd) });
-        self.exec.discard();
-    }
-
-    pub(super) fn restore(
-        self,
-        runtime: &KernelRuntimeState,
-        record: &Record,
-    ) -> Result<(Output, LocalProgress), DaemonError> {
-        if !self
-            .exec
-            .matches(&record.room_id, record.exec_id.as_deref())
-        {
-            self.discard();
-            return Err(ledger::error(
-                "the local job receipt does not match its handover",
-            ));
-        }
-        let state = crate::hot_reload::read_local_job_state(self.state_fd)
-            .and_then(|bytes| {
-                serde_json::from_slice::<LocalJobState>(&bytes).map_err(std::io::Error::other)
-            })
-            .map_err(|failure| {
-                ledger::error(format!("cannot restore local job output: {failure}"))
-            });
-        // The log descriptor is shared with the outgoing reader at its last write offset.
-        let log = unsafe { std::fs::File::from_raw_fd(self.log_fd) };
-        let state = match state {
-            Ok(state) => state,
-            Err(error) => {
-                self.exec.discard();
-                return Err(error);
-            }
-        };
-        runtime
-            .owned
-            .room_execs
-            .restore_job(self.exec, state.buffer)?;
-        Ok((
-            Output::reopen(runtime, record, state.reader, log),
-            state.progress,
-        ))
-    }
+    };
+    (text, log)
 }

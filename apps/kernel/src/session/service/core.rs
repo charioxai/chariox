@@ -13,15 +13,25 @@ impl SessionService {
         #[cfg(not(test))]
         let prompt_id_allocator =
             PromptIdAllocator::persistent(config.kernel_prompt_counter_path());
+        let mut service = Self::for_durable_replay(&config.daemon_id);
+        service.host_machine_id.clone_from(&config.host_machine_id);
+        service.prompt_id_allocator = prompt_id_allocator;
+        service.max_workflow_queues_per_workflow = config.max_workflow_queues_per_workflow();
+        service.workflow_default_max_concurrent =
+            config.workflow_code_limits().max_concurrent.max(1);
+        service
+    }
+
+    pub(crate) fn for_durable_replay(daemon_id: &str) -> Self {
         Self {
             store: SessionStore::new(),
             room_environments: RoomEnvironmentRegistry::new(),
             durable_state: None,
             projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
-            host_machine_id: config.host_machine_id.clone(),
-            host_daemon_id: config.daemon_id.clone(),
-            prompt_id_allocator,
+            host_machine_id: String::new(),
+            host_daemon_id: daemon_id.to_owned(),
+            prompt_id_allocator: PromptIdAllocator::default(),
             next_workflow_number: 0,
             next_workflow_schema_number: 0,
             next_workflow_endpoint_number: 0,
@@ -33,8 +43,9 @@ impl SessionService {
             next_workflow_prompt_queue_number: 0,
             next_workflow_queued_prompt_number: 0,
             next_agent_trigger_number: 0,
-            max_workflow_queues_per_workflow: config.max_workflow_queues_per_workflow(),
-            workflow_default_max_concurrent: config.workflow_code_limits().max_concurrent.max(1),
+            max_workflow_queues_per_workflow: crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES
+                as usize,
+            workflow_default_max_concurrent: crate::session::DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT,
             next_workspace_link_number: 0,
         }
     }
@@ -87,6 +98,7 @@ impl SessionService {
         );
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
+        session.set_created_by_agent_id(request.created_by_agent_id);
         if let Some(agent_defaults) = request.agent_defaults {
             session.set_agent_defaults(agent_defaults);
         }
@@ -1418,6 +1430,33 @@ impl SessionService {
                     workflow_id: workflow_id.to_string(),
                 })?;
         workflow.set_alias(Some(alias));
+        Ok(workflow.clone())
+    }
+
+    pub fn set_workflow_archived(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        archived: bool,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        workflow.set_archived(archived);
         Ok(workflow.clone())
     }
 

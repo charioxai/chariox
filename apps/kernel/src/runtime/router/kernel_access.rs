@@ -29,7 +29,8 @@ impl CommandRouter {
                 && command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent))
             && matches!(
                 request,
-                LocalDaemonRequest::KernelBrowser(_)
+                LocalDaemonRequest::OwnerView(_)
+                    | LocalDaemonRequest::KernelBrowser(_)
                     | LocalDaemonRequest::RespondToHandoff(_)
                     | LocalDaemonRequest::Notes(_)
                     | LocalDaemonRequest::Dictation(_)

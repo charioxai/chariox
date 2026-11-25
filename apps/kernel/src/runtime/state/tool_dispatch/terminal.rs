@@ -302,7 +302,11 @@ impl KernelRuntimeState {
         );
         let interaction_id = interaction.id().to_string();
         let resolution = self
-            .create_runtime_interaction(session_id, interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::RuntimeGrant,
+                session_id,
+                interaction,
+            )
             .await?
             .await
             .map_err(|error| {
@@ -383,6 +387,7 @@ impl TerminalCall {
                         rows: args.rows.unwrap_or(DEFAULT_ROWS),
                         title: args.title,
                         command: args.command,
+                        stdin: None,
                     },
                 }
             }

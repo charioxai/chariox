@@ -127,7 +127,7 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   its arrival (below the client's 8 s request timeout).
 - **Compact wire (489).** A reset packet carries the binding and header
   (`subscription_id`, `tab_id`, `generation`, `document_id`, `css_width`,
-  `css_height`, `device_scale_factor`, `scroll`, `focused`, `focus_visible`,
+  `css_height`, `device_scale_factor`, `scroll`, `focused`, `focus_visible`, `page_wheel`, `media_playing` (1015),
   `selection`, `fragment` (492)). A
   delta carries `wire`, `sequence`, its ops, and only the header fields that
   differ from its base (an explicit `null` replaces); its base is
@@ -217,7 +217,16 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   header `focused: null` blurs the viewer's control. `focus_visible` is whether
   the page's focused element matches `:focus-visible` (a key moved or followed
   the focus, not a mouse press); the viewer focuses its copy with the same
-  `focusVisible`, so it draws the focus ring only where the page does. The caret (a collapsed
+  `focusVisible`, so it draws the focus ring only where the page does. `page_wheel`
+  (1014) is whether the page's own script takes the wheel: a non-passive `wheel`/
+  `mousewheel` listener on window, document, html or body (a smooth-scroll or
+  full-page library), read with DevTools from the page's main world on a snapshot
+  and, at most once a second, after the page changed its DOM. With it the viewer
+  sends every wheel over the document to the kernel's page as `scroll` (steps
+  waiting behind a reply add up) and never scrolls its copy itself; the copy
+  follows the page's positions. Without it the viewer scrolls its copy. `media_playing` (1015) is whether a mirrored
+  video or audio element plays, muted or not; the page's capture listeners for `playing`, `pause`, `ended` and
+  `emptied` send a change at once, and the viewer keeps such a Tab warm. The caret (a collapsed
   selection) travels inside editable content only. A press's focus/selection
   waits up to 50 ms for the rest of its click, so a menu the page renders a
   frame later shares the packet; after an acknowledged viewer focus, packets

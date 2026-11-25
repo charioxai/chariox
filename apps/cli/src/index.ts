@@ -4,12 +4,17 @@
 // imports Solid, then start the CLI.
 import { readFile } from "node:fs/promises"
 
+import { topLevelHelpText } from "./agent-command-table.js"
 import { AGENT_VERB_NAMES, runAgentVerb } from "./agent-verbs.js"
 import { parseArgs } from "./cli-options.js"
 
 // Admit ordinary TUI arguments before loading rendering, logging or runtime
 // modules. Subcommands own their parsers and validate before runtime actions.
 const argv = process.argv.slice(2)
+if (argv.length === 1 && ["--help", "-h", "help"].includes(argv[0]!)) {
+  process.stdout.write(topLevelHelpText())
+  process.exit(0)
+}
 if (!["context", ...AGENT_VERB_NAMES, "sudo", "app", "logs", "codex", "claude", "opencode", "publication", "deployments", "deployed", "cloud", "login", "setup"].includes(argv[0] ?? "")) {
   try {
     parseArgs(argv)

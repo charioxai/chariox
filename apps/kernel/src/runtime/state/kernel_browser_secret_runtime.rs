@@ -59,7 +59,8 @@ impl KernelRuntimeState {
         method: &str,
         params: Value,
     ) -> Result<Value, DaemonError> {
-        // Stop must remain available even when observation storage is fenced.
+        // Stop must remain available even when observation storage is fenced. A restart ends with a start, which needs the
+        // protection policy the fence guards, so it takes the ordinary path.
         if method == "host.browser" && params["op"] == "stop" {
             return self
                 .kernel_browser_bound_operation(user, admission.as_ref(), method, params, false)
@@ -115,6 +116,7 @@ impl KernelRuntimeState {
                         params["op"].as_str(),
                         Some(
                             "stop"
+                                | "restart"
                                 | "close"
                                 | "navigate"
                                 | "resize"
@@ -199,6 +201,7 @@ impl KernelRuntimeState {
                         | "cancel_download"
                         | "wait"
                         | "stop"
+                        | "restart"
                 )
             );
         let input =
@@ -612,7 +615,7 @@ impl KernelRuntimeState {
         }
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
         if admission.is_agent() {
-            self.claim_app_view_tab(user, admission, &mut params)?;
+            self.mark_app_view_tab(user, &mut params)?;
         }
         if let Some(actor) = context.actor {
             params["observed_by"] = json!(actor);

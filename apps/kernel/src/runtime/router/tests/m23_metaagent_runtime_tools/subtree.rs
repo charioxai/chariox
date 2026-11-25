@@ -4,6 +4,8 @@ use super::*;
 use crate::transport::runtime_tools::RuntimeToolResult;
 
 mod destructive_children;
+mod owner_delete;
+mod reply_size;
 mod waiting_children;
 
 pub(super) struct World {
@@ -427,7 +429,7 @@ async fn command_id() {
 }
 
 #[test]
-fn a_spawn_deadline_is_armed_and_never_later_than_the_parents() {
+fn a_spawn_deadline_is_armed_and_not_capped_by_the_parents() {
     run_large_stack_async_test("subtree-spawn-deadline", spawn_deadline);
 }
 
@@ -447,7 +449,7 @@ async fn spawn_deadline() {
         .unwrap();
     let in_half_an_hour = crate::session::unix_epoch_ms() + 30 * 60_000;
     assert!(deadline.abs_diff(in_half_an_hour) < 60_000, "{deadline}");
-    // The parent itself ends in ten minutes: a two-hour child ends with it.
+    // The parent itself ends in ten minutes: its two-hour child keeps its own limit.
     world
         .router
         .runtime_state
@@ -474,7 +476,7 @@ async fn spawn_deadline() {
         .as_u64()
         .unwrap();
     assert!(
-        child <= crate::session::unix_epoch_ms() + 10 * 60_000 + 1_000,
+        child >= crate::session::unix_epoch_ms() + 2 * 60 * 60_000 - 60_000,
         "{child}"
     );
 }
@@ -889,7 +891,7 @@ async fn remote_refusal() {
 }
 
 #[test]
-fn deadline_edits_recompute_inheritance_and_bound_peer_authority() {
+fn deadline_edits_keep_each_limit_and_bound_peer_authority() {
     run_large_stack_async_test("deadline-edit-authority", deadline_edit_authority);
 }
 
@@ -923,8 +925,8 @@ async fn deadline_edit_authority() {
         read("d").await["deadline_ms"].is_u64(),
         "child's independent limit survives"
     );
-    let inherited = room_command(&world, "a", "agent deadline s 20m").await;
-    assert!(inherited.ok, "{inherited:?}");
+    let sibling = room_command(&world, "a", "agent deadline s 20m").await;
+    assert!(sibling.ok, "{sibling:?}");
     let peer = room_command(
         &world,
         "peer",

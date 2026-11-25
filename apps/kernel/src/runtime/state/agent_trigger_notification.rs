@@ -560,8 +560,10 @@ impl KernelRuntimeState {
         else {
             return;
         };
+        let mut parked = BTreeSet::new();
         for (subscription, envelope) in candidates {
-            if subscription.target_kind != WorkflowNotificationTargetKind::Agent
+            if parked.contains(&subscription.subscription_id)
+                || subscription.target_kind != WorkflowNotificationTargetKind::Agent
                 || !subscriptions
                     .iter()
                     .any(|s| s.subscription_id == subscription.subscription_id)
@@ -590,7 +592,20 @@ impl KernelRuntimeState {
             {
                 continue;
             }
-            if let Err(error) = self.queue_agent_notification(&subscription, envelope).await {
+            if let Err(error) = self
+                .queue_agent_notification(&subscription, &envelope)
+                .await
+            {
+                if crate::error::is_agent_deadline_refusal(&error) {
+                    self.park_agent_notification(
+                        &subscription.subscription_id,
+                        &envelope.occurrence_id,
+                        store::subscription_settings::title_of(&envelope),
+                        error.to_string(),
+                    );
+                    parked.insert(subscription.subscription_id);
+                    continue;
+                }
                 crate::logging::error_with_fields(
                     "daemon.agent_notification",
                     "an accepted notification could not be queued",
@@ -603,25 +618,64 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(super) fn park_agent_notification(
+        &self,
+        subscription_id: &str,
+        occurrence_id: &str,
+        title: String,
+        reason: String,
+    ) {
+        match self
+            .owned
+            .durable_state_store
+            .notify(NotificationOperation::ParkAgent {
+                subscription_id: subscription_id.to_owned(),
+                occurrence_id: occurrence_id.to_owned(),
+                title,
+                reason: reason.clone(),
+                now: crate::session::unix_epoch_ms(),
+            }) {
+            Ok(NotificationOutcome::Parked(true)) => {
+                self.record_person_inbox_change();
+                crate::logging::warn_with_fields(
+                    "daemon.agent_notification",
+                    "notification subscription parked",
+                    serde_json::json!({"subscription_id": subscription_id, "reason": reason}),
+                );
+            }
+            Ok(NotificationOutcome::Parked(false)) => {}
+            result => {
+                let error = result
+                    .err()
+                    .unwrap_or_else(|| store::error("unexpected notification response"));
+                crate::logging::error_with_fields(
+                    "daemon.agent_notification",
+                    "notification suspension could not be saved",
+                    serde_json::json!({"subscription_id": subscription_id, "error": error.to_string()}),
+                );
+            }
+        }
+    }
+
     async fn queue_agent_notification(
         &self,
         subscription: &WorkflowNotificationSubscription,
-        envelope: crate::local::WorkflowNotificationEnvelope,
+        envelope: &crate::local::WorkflowNotificationEnvelope,
     ) -> Result<(), DaemonError> {
         let session_id = &subscription.session_id;
         let trigger_id = subscription
             .trigger_id
             .as_deref()
             .ok_or_else(|| store::error("notification identifier invalid"))?;
-        let payload = serde_json::to_value(&envelope)
+        let payload = serde_json::to_value(envelope)
             .map_err(|_| store::error("notification encoding failed"))?;
         let receipt =
-            crate::durable_state::workflow_notifications::receipt_id(subscription, &envelope)?;
+            crate::durable_state::workflow_notifications::receipt_id(subscription, envelope)?;
         let hold = NotificationHold {
             subscription_id: &subscription.subscription_id,
             occurrence_id: &envelope.occurrence_id,
             title: crate::durable_state::workflow_notifications::subscription_settings::title_of(
-                &envelope,
+                envelope,
             ),
             source: envelope.display_name.clone(),
         };
@@ -629,7 +683,7 @@ impl KernelRuntimeState {
             .queue_agent_notification_input(session_id, trigger_id, &receipt, payload, hold)
             .await?
         {
-            if self.settle_agent_notification(subscription, &envelope, &prompt_id)? {
+            if self.settle_agent_notification(subscription, envelope, &prompt_id)? {
                 self.end_spent_notification_trigger(session_id, trigger_id)
                     .await?;
             }
@@ -681,11 +735,13 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
+        self.owned
+            .ensure_agent_before_deadline(session_id, agent_id)?;
         let operation_id =
             crate::durable_state::workflow_notifications::agent_lineage::operation_id(
                 trigger_id, &payload,
             )?;
-        let notification = self.record_notification_occurrence(
+        let mut notification = self.record_notification_occurrence(
             session_id,
             agent_id,
             &hold,
@@ -698,7 +754,7 @@ impl KernelRuntimeState {
             .durable_state_store
             .reserve_agent_notification_lineage(receipt_id, &operation_id)?;
         // Several occurrences behind a busy agent cost one turn: this one joins the
-        // trigger's prompt that already waits. The caller settles its receipt with that
+        // notification prompt that already waits. The caller settles its receipt with that
         // prompt, so the occurrence keeps its own inbox row and acknowledgement.
         if let Some((prompt_id, joined)) = self.owned.join_queued_agent_notification(
             session_id,
@@ -728,11 +784,10 @@ impl KernelRuntimeState {
             // Off, or mid-firing: the accepted occurrence waits for the next pass.
             return Ok(None);
         };
-        let notice = super::agent_inbox_wake_text::notification_notice(
-            &notification.title,
-            &notification.source,
-            notification.sequence,
-        );
+        if dispatch.busy_policy == AgentTriggerBusyPolicy::Queue && !dispatch.responsible {
+            notification.batch_instruction = Some(dispatch.prompt.clone());
+        }
+        let notice = super::agent_inbox_wake_text::notification_notice(&notification);
         dispatch.prompt = format!("{}\n\n{notice}", dispatch.prompt);
         dispatch.notification = Some(notification);
         let now = crate::session::unix_epoch_ms();
@@ -809,6 +864,8 @@ impl KernelRuntimeState {
             title: hold.title.clone(),
             source: hold.source.clone(),
             sequence: event.sequence,
+            arrived_at_ms: event.arrived_at_ms,
+            batch_instruction: None,
             operation_id: operation_id.to_string(),
         })
     }

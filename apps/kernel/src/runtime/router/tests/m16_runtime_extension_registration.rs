@@ -383,6 +383,7 @@ async fn extension_audit_keeps_old_events_behind_newer_unrelated_ones() {
 
 #[tokio::test]
 async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_session() {
+    crate::test_support::isolated_env_test!();
     let env = TestCapabilityEnv::new("yolo-mcp");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -630,6 +631,7 @@ operations:
 
 #[tokio::test]
 async fn register_mcp_can_grant_to_current_agent_in_one_runtime_call() {
+    crate::test_support::isolated_env_test!();
     let env = TestCapabilityEnv::new("register-grant-mcp");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");

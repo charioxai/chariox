@@ -53,16 +53,12 @@ done
         policy.clone(),
     )
     .unwrap();
-    host.set_focus("alice", Some("agent"));
-    host.load("alice", "agent").unwrap();
+    host.load_for(
+        "alice",
+        "agent",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit("alice", "agent").unwrap();
-    host.claim_resource(
-        Some(&admission),
-        UserDomainResource::BrowserTab {
-            tab_id: "host-tab-a".into(),
-        },
-    )
-    .unwrap();
     let viewer = host.lease_terminal("alice", "terminal:human");
     host.request_takeover(
         "alice",
@@ -238,16 +234,12 @@ done
     )
     .unwrap();
 
-    host.set_focus("alice", Some("agent"));
-    host.load("alice", "agent").unwrap();
+    host.load_for(
+        "alice",
+        "agent",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit("alice", "agent").unwrap();
-    host.claim_resource(
-        Some(&admission),
-        UserDomainResource::BrowserTab {
-            tab_id: "host-tab-a".into(),
-        },
-    )
-    .unwrap();
     host.request_takeover(
         "alice",
         EnvironmentActor::new("terminal:human", EnvironmentActorKind::Human, "Human"),

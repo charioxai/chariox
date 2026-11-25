@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::durable_state::{DurableStateSnapshot, DurableWriteOperation};
+use crate::durable_state::{DurableStateSnapshot, DurableWriteOperation, ReplayFailure};
 
 const RECEIPT: &str = "retired_sessions_backfill";
 
@@ -19,7 +19,7 @@ impl DurableKernelStateStore {
         &self,
         owner: &str,
         snapshot: Option<&DurableStateSnapshot>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<(), ReplayFailure> {
         let mut records = BTreeMap::new();
         let latest_sequence = self
             .latest_event_sequence()?
@@ -63,7 +63,7 @@ impl DurableKernelStateStore {
             verified_sequence.is_some_and(|sequence| snapshot.sequence <= sequence)
         });
         loop {
-            let events = self.load_events_after_batch(cursor, 512)?;
+            let events = self.load_replay_events_after_batch(cursor, 512)?;
             if events.is_empty() {
                 break;
             }
@@ -71,12 +71,14 @@ impl DurableKernelStateStore {
                 if !checkpoint_applied
                     && snapshot.is_some_and(|snapshot| event.sequence > snapshot.sequence)
                 {
-                    apply_checkpoint(&mut records, owner, snapshot.expect("checkpoint exists"))?;
+                    let snapshot = snapshot.expect("checkpoint exists");
+                    apply_checkpoint(&mut records, owner, snapshot)
+                        .map_err(|error| ReplayFailure::at_snapshot(snapshot.sequence, error))?;
                     checkpoint_applied = true;
                 }
                 cursor = event.sequence;
                 event.discard_queued_message_projections();
-                if matches!(
+                let result = if matches!(
                     event.kind.as_str(),
                     "session.created" | "session.updated" | "session.ended" | "session.deleted"
                 ) {
@@ -86,23 +88,30 @@ impl DurableKernelStateStore {
                             owner,
                             payload,
                             event.kind == "session.deleted",
-                        )?;
+                        )
+                    } else {
+                        Ok(())
                     }
                 } else if event.kind == "sessions.updated" {
-                    for payload in event
+                    event
                         .payload
                         .get("sessions")
                         .and_then(serde_json::Value::as_array)
                         .into_iter()
                         .flatten()
-                    {
-                        apply_session(&mut records, owner, payload, false)?;
-                    }
-                }
+                        .try_for_each(|payload| apply_session(&mut records, owner, payload, false))
+                } else {
+                    Ok(())
+                };
+                result.map_err(|error| {
+                    ReplayFailure::at_event(event.kind, event.event_id, event.sequence, error)
+                })?;
             }
         }
         if !checkpoint_applied {
-            apply_checkpoint(&mut records, owner, snapshot.expect("checkpoint exists"))?;
+            let snapshot = snapshot.expect("checkpoint exists");
+            apply_checkpoint(&mut records, owner, snapshot)
+                .map_err(|error| ReplayFailure::at_snapshot(snapshot.sequence, error))?;
         }
         let records = records
             .into_values()
@@ -230,5 +239,82 @@ mod tests {
         assert!(stored_room.get("queued_agent_messages").is_none());
         let retired = store.retired_session("home", "room").unwrap().unwrap();
         assert_eq!(retired.status(), SessionStatus::Ended);
+    }
+
+    /// L11 indexed an ended Room's whole session, with its queued-message projection in the
+    /// predecessor shape (`prompt`, no `preview`). Later kernels must still read that row.
+    #[test]
+    fn backfill_reads_a_predecessor_index_row_without_a_preview() {
+        let root = crate::test_support::TestWorktree::new("l11-retired-room-row");
+        let path = root.path().join("state.sqlite");
+        let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
+        let room = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "tree",
+            "machine",
+            "home",
+        );
+        let mut stored = serde_json::to_value(&room).unwrap();
+        stored["status"] = serde_json::to_value(SessionStatus::Ended).unwrap();
+        stored["queued_agent_messages"] = serde_json::json!([{
+            "id": "agent-message-1", "agent_id": "agent", "sender": "peer",
+            "prompt": "fixture message",
+        }]);
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO retired_sessions(owner_id,session_id,project_id,payload)
+                 VALUES ('home','room',?1,?2)",
+                params![room.project_id().to_string(), stored.to_string()],
+            )
+            .unwrap();
+
+        store.backfill_retired_sessions("home", None).unwrap();
+        let retired = store.retired_session("home", "room").unwrap().unwrap();
+        assert_eq!(retired.status(), SessionStatus::Ended);
+    }
+
+    /// Release gate: the backfill accepts a COPY of a previous release's live kernel database.
+    /// `CHARIOX_BACKFILL_STATE_COPY=/scratch/kernel.db cargo test -p chariox-kernel --lib
+    /// backfill_accepts_a_copy_of_live_state -- --ignored` (it writes to the copy).
+    #[test]
+    #[ignore = "needs CHARIOX_BACKFILL_STATE_COPY, a copy of a previous release's kernel.db"]
+    fn backfill_accepts_a_copy_of_live_state() {
+        let path = std::env::var_os("CHARIOX_BACKFILL_STATE_COPY")
+            .map(std::path::PathBuf::from)
+            .expect("CHARIOX_BACKFILL_STATE_COPY names a copy of a kernel.db");
+        let store = DurableKernelStateStore::open_owned(path).unwrap();
+        let owner = match std::env::var("CHARIOX_BACKFILL_OWNER") {
+            Ok(owner) => owner,
+            Err(_) => store
+                .lock_connection("test.backfill_owner")
+                .unwrap()
+                .query_row(
+                    "SELECT owner_id FROM durable_state_owner_checkpoint_manifest
+                     ORDER BY sequence DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+        };
+        let snapshot = store.latest_snapshot_for_owner(&owner).unwrap();
+        store
+            .backfill_retired_sessions(&owner, snapshot.as_ref())
+            .unwrap();
+        let receipt: String = store
+            .lock_connection("test.backfill_receipt")
+            .unwrap()
+            .query_row(
+                "SELECT metadata_value FROM durable_state_metadata
+                 WHERE owner_id=?1 AND metadata_key=?2",
+                params![owner, RECEIPT],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt, store.latest_event_sequence().unwrap().to_string());
+        eprintln!("backfill ok owner={owner} receipt={receipt}");
     }
 }

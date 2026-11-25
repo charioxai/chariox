@@ -248,6 +248,34 @@ fn parse_claude_status_value(value: &Value) -> Option<SliceProviderAuthSummary> 
     })
 }
 
+/// OAuth account identity belongs to the login; userID belongs to the installation.
+pub(crate) fn claude_oauth_account_id(contents: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Settings {
+        oauth_account: Option<OAuthAccount>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OAuthAccount {
+        account_uuid: Option<String>,
+    }
+
+    let settings: Settings = serde_json::from_slice(contents).ok()?;
+    normalize_claude_oauth_account_id(settings.oauth_account?.account_uuid.as_deref()?)
+}
+
+pub(crate) fn normalize_claude_oauth_account_id(id: &str) -> Option<String> {
+    (id.len() == 36
+        && id.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+        && id != "00000000-0000-0000-0000-000000000000")
+        .then(|| id.to_ascii_lowercase())
+}
+
 pub fn parse_claude_settings_json(text: &str) -> Option<SliceProviderAuthSummary> {
     let value: Value = serde_json::from_str(text).ok()?;
     let oauth = value.get("oauthAccount");

@@ -190,20 +190,14 @@ fn shares_parent_repository(
     session: &RuntimeSession,
     directory: &Path,
 ) -> bool {
+    use crate::runtime::workspace_git_common::git_common_directory;
+
     let parent_directory = parent
         .worktree_id()
         .unwrap_or_else(|| session.worktree_id());
     git_common_directory(Path::new(parent_directory))
         .zip(git_common_directory(directory))
         .is_some_and(|(parent, child)| parent == child)
-}
-
-fn git_common_directory(directory: &Path) -> Option<std::path::PathBuf> {
-    let common = crate::runtime::workspace_git_common::git_command_output(
-        directory.to_str()?,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    Path::new(&common).canonicalize().ok()
 }
 
 /// Test hook: runs once between a spawn's check and its effect, so a test can change the

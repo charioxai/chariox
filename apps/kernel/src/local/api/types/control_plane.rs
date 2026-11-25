@@ -14,6 +14,9 @@ pub enum ControlPlaneRequest {
         class_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<String>,
+        /// The rental's hard stop in seconds; the service stops the machine then. Absent keeps it until released.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_s: Option<u64>,
     },
     AcquireJob {
         capability_revision: String,
@@ -93,6 +96,8 @@ pub enum ControlPlaneResponse {
         access_state: String,
         access_reason: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel_diagnostics: Option<MachineKernelDiagnostics>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine_label: Option<String>,
@@ -100,6 +105,17 @@ pub enum ControlPlaneResponse {
         address: Option<String>,
     },
 }
+/// Diagnostics last reported by the machine's enrolled kernel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineKernelDiagnostics {
+    pub kernel_version: Option<String>,
+    pub kernel_protocol: Option<u32>,
+    pub last_relay_refusal: Option<super::RelayRegistrationRefusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineAllocationCapability {

@@ -87,3 +87,75 @@ fn an_agent_read_starts_a_never_started_browser_once_and_a_stop_stays_stopped() 
         })
     });
 }
+
+// A person card that shows a live page restarts the browser after a kernel restart, but never
+// undoes a stop: the host answers the same `browser_unavailable` for both, so the watcher asks
+// to start "unless stopped".
+#[test]
+fn a_card_watcher_restarts_a_browser_the_kernel_restart_ended_but_never_one_that_was_stopped() {
+    run_test(|| {
+        Box::pin(async {
+            let workspace = crate::test_support::TestWorktree::new("card-restart-stop");
+            let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(workspace.session_request())
+                .unwrap();
+            let run = launch_test_provider(
+                &mut app,
+                session.id(),
+                agent.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+            );
+            let token = run.runtime_mcp_auth_token().unwrap();
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-card-restart-stop-{:032x}",
+                rand::random::<u128>()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            let state = router.runtime_state();
+            state.install_unstarted_kernel_browser_fixture(agent.owner_user_id(), &root);
+            focus(&router, session.id(), agent.id()).await;
+            router
+                .dispatch_authenticated_runtime_tool_call(
+                    token,
+                    "chariox.load_kernel_browser",
+                    json!({}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(starts(&root), 0);
+
+            // The kernel restarted and the controller is not running: the card brings it back.
+            state
+                .start_card_browser(agent.id())
+                .await
+                .expect("a browser nobody stopped is started for the card");
+            assert_eq!(starts(&root), 1);
+
+            // Someone stops it: the card's next observation must not start it again.
+            tool(&router, token, json!({"command":{"op":"stop"}}))
+                .await
+                .unwrap();
+            for _ in 0..2 {
+                let error = state
+                    .start_card_browser(agent.id())
+                    .await
+                    .expect_err("a stopped browser stays stopped for a card")
+                    .to_string();
+                assert!(error.contains("browser_unavailable"), "{error}");
+            }
+            assert_eq!(starts(&root), 1, "the card never undid the stop");
+
+            // The person starts it again themselves: the card works with it as before.
+            tool(&router, token, json!({"command":{"op":"start"}}))
+                .await
+                .unwrap();
+            assert_eq!(starts(&root), 2);
+            state.shutdown_cleanup().await.unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+        })
+    });
+}

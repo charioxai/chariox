@@ -464,7 +464,21 @@ impl PtyProcess {
     /// detached stay the agent's, under the same limit. A process that still
     /// runs takes the commands it is running with it. Stopping or deleting
     /// the agent ends the jobs.
+    fn live_jobs_leader(&self) -> Option<i32> {
+        self.agent.as_ref()?;
+        if self.resources.memory_limit_bytes().is_some() {
+            return None;
+        }
+        self.child
+            .process_id()
+            .and_then(|pid| i32::try_from(pid).ok())
+    }
+
     fn hand_jobs_to_agent(&mut self, running: bool) {
+        if let Some(leader) = running.then(|| self.live_jobs_leader()).flatten() {
+            crate::runtime::process_resources::SessionSweep::capture(leader)
+                .stop_with_descendants();
+        }
         let Some(agent) = self
             .agent
             .take()
@@ -472,22 +486,92 @@ impl PtyProcess {
         else {
             return;
         };
-        if let Some(leader) = running
-            .then(|| {
-                self.child
-                    .process_id()
-                    .and_then(|pid| i32::try_from(pid).ok())
-            })
-            .flatten()
-        {
-            crate::runtime::process_resources::SessionSweep::capture(leader)
-                .stop_with_descendants();
-        }
         self.resources.release(
             &agent.session_id,
             crate::runtime::process_resources::SessionProcessOwner::Agent(agent.agent_id),
             None,
         );
+    }
+}
+
+struct PendingReap {
+    provider_run_id: String,
+    process: PtyProcess,
+}
+
+impl PendingReap {
+    fn signal(&mut self) -> Result<(), DaemonError> {
+        terminate_pty_process_group(self.process.master.as_ref(), self.process.process_group);
+        self.process.child.kill().map_err(|error| self.error(error))
+    }
+
+    fn error(&self, error: impl ToString) -> DaemonError {
+        DaemonError::PtyCleanup {
+            provider_run_id: self.provider_run_id.clone(),
+            message: error.to_string(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PtyShutdownReaps {
+    pending: Vec<PendingReap>,
+    state_dirs: Vec<PathBuf>,
+}
+
+impl PtyShutdownReaps {
+    pub(crate) fn remove_state_dir_after_reap(&mut self, path: PathBuf) {
+        self.state_dirs.push(path);
+    }
+
+    pub(crate) fn finish(mut self) -> Result<(), DaemonError> {
+        use crate::runtime::process_resources::SessionSweep;
+        let live_leaders = self
+            .pending
+            .iter()
+            .filter_map(|reap| reap.process.live_jobs_leader())
+            .collect();
+        SessionSweep::stop_many_with_descendants(live_leaders);
+        let mut first_error = None;
+        for reap in &mut self.pending {
+            reap.process.hand_jobs_to_agent(false);
+            if let Err(error) = reap.signal() {
+                first_error.get_or_insert(error);
+            }
+        }
+
+        let deadline = std::time::Instant::now() + crate::runtime::bounded_process::REAP_LIMIT;
+        while !self.pending.is_empty() {
+            self.pending
+                .retain_mut(|reap| match reap.process.child.try_wait() {
+                    Ok(status) => status.is_none(),
+                    Err(error) => {
+                        first_error.get_or_insert_with(|| reap.error(error));
+                        false
+                    }
+                });
+            if self.pending.is_empty() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                for reap in &mut self.pending {
+                    let _ = reap.signal();
+                }
+                first_error.get_or_insert_with(|| {
+                    self.pending[0]
+                        .error("provider PTYs exceeded the shared shutdown reap deadline")
+                });
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        for path in self.state_dirs {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(())
     }
 }
 
@@ -656,7 +740,7 @@ impl PtyManager {
             message: "provider run does not define a managed PTY program".to_string(),
         })?;
 
-        let mut env = run.pty_env().clone();
+        let mut env = run.process_environment();
         crate::provider::apply_opencode_discovery_environment(run, &mut env)?;
         if run.read_only_discovery() {
             for name in crate::provider::managed_provider_parent_credential_env_remove() {
@@ -1576,6 +1660,14 @@ impl PtyManager {
     }
 
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        self.remove_process_with_reaps(provider_run_id, None)
+    }
+
+    pub(crate) fn remove_process_with_reaps(
+        &mut self,
+        provider_run_id: &str,
+        reaps: Option<&mut PtyShutdownReaps>,
+    ) -> Result<bool, DaemonError> {
         let Some(process_key) = self.process_aliases.remove(provider_run_id) else {
             return Ok(false);
         };
@@ -1585,13 +1677,22 @@ impl PtyManager {
             process.resources.unbind_key(provider_run_id);
         }
 
-        self.remove_process_by_key(&process_key, Some(provider_run_id))
+        self.remove_process_by_key_with_reaps(&process_key, Some(provider_run_id), reaps)
     }
 
     pub fn remove_process_by_key(
         &mut self,
         process_key: &str,
         provider_run_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        self.remove_process_by_key_with_reaps(process_key, provider_run_id, None)
+    }
+
+    fn remove_process_by_key_with_reaps(
+        &mut self,
+        process_key: &str,
+        provider_run_id: Option<&str>,
+        reaps: Option<&mut PtyShutdownReaps>,
     ) -> Result<bool, DaemonError> {
         let Some(process) = self.processes.get_mut(process_key) else {
             return Ok(false);
@@ -1622,23 +1723,23 @@ impl PtyManager {
             })?
         };
 
-        process.hand_jobs_to_agent(status.is_none());
-        if status.is_none() {
-            terminate_pty_process_group(process.master.as_ref(), process.process_group);
-            process
-                .child
-                .kill()
-                .map_err(|error| DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                    message: error.to_string(),
-                })?;
-            process
-                .child
-                .bounded_wait()
-                .map_err(|error| DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                    message: error.to_string(),
-                })?;
+        if status.is_some() {
+            process.hand_jobs_to_agent(false);
+        } else {
+            let mut reap = PendingReap {
+                provider_run_id: provider_run_id.unwrap_or(process_key).to_owned(),
+                process,
+            };
+            if let Some(reaps) = reaps {
+                reaps.pending.push(reap);
+            } else {
+                reap.process.hand_jobs_to_agent(true);
+                reap.signal()?;
+                reap.process
+                    .child
+                    .bounded_wait()
+                    .map_err(|error| reap.error(error))?;
+            }
         }
 
         Ok(true)

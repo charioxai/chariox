@@ -38,6 +38,41 @@ process itself, or a job it left running. It is killed at once, without a grace
 period in which a runaway keeps growing, and no second command is stopped for
 the same cause within one second. The owner keeps running.
 
+A full disk is the same last resort, for the volume a command writes to.
+A volume is short when its free space is below half its floor (1% of the
+volume, 64–512 MiB) or when it is within the fill horizon of full at the rate
+its free space is losing room (observed from the free space itself, over the
+last two seconds, from the moment a command is known to work there). Below
+half the floor the kernel stops ONE agent command writing there: a command
+writing 128 MiB/s or more (a runaway) first, the fastest of them; otherwise
+the one that wrote the most. Within the fill horizon only a runaway is
+stopped, the fastest of them, and no slower writer is. The kernel asks for no
+proof that the runaway allocates: an agent command that rewrites a file it
+already holds at 128 MiB/s or more is stopped too when the volume is that close
+to full, an accepted cost in a real emergency (Miguel, 2026-11-24). A person's
+own terminal command is never chosen. A command's writes are what it adds to
+the files it holds open; a command whose output files (not its standard
+streams, which often go to a log) are on one volume only, shared with no other
+command, has all its write rate counted there, and that volume stands until it
+is seen sending output elsewhere, so a copy of many short-lived files is seen
+like one large file. A command's rate is what it wrote over the last two
+seconds (a younger command counts the time before it as idle), so a writer
+that writes in bursts is judged by its pace, not by one burst. After a stop the
+next writer is judged two seconds later. The stopped command reads the reason on
+its error stream, for example `chariox: stopped this command: the disk has
+3 GB free, full in about 2 s at the rate it fills, and this command was
+filling it, writing 1.5 GB/s (40 GB written so far).`; its agent gets the
+same reason in its inbox (`resource_notice`, state `ended`), the Room gets
+the process `stopped` event, and the kernel logs
+`process_resources.disk_stop`. A steady writer on a volume that is not losing room is
+never stopped.
+
+The fill horizon is 5 s and the runaway write rate is the memory runaway
+rate, 128 MiB/s (owner decisions, 2026-11-22 and 2026-11-24). A copy at about
+1.9 GB/s is stopped with up to 9 GB still free once the volume is seen losing
+room at that rate; a writer under 128 MiB/s is stopped only below half the
+floor, and a volume that loses no room stops nobody within the horizon.
+
 A command that admission paused (it grew toward a full pool) continues when its
 room frees. Its growth estimate is the median of samples over the last 60 s
 before the pause, so a short burst does not require room for repeated bursts.
@@ -65,9 +100,10 @@ way. Unset, no cap applies.
 
 On Linux, when the existing cgroup-v2 hierarchy permits delegation, the kernel
 creates an accounting cgroup `chariox-<pid>-<id>` beside its own, an owner
-`unit-*` below it, and a `process-*` leaf per workload. These groups impose no
-`memory.max`, `memory.high`, swap prohibition, CPU weighting or per-owner memory
-reservation. Ancestor limits and OS OOM handling remain authoritative. Explicit
+`unit-*` below it, and a `process-*` leaf per workload. Miguel's 2026-11-21 decision disables
+swap for this workload cgroup (`memory.swap.max=0`). The budget leaves
+`memory.max` and `memory.high` unset. Ancestor limits and OS OOM handling
+remain authoritative. Explicit
 owner caps use the same monitor as the portable watchdog. Workload children clear
 inherited OOM protection; the kernel stays outside workload cgroups. Empty owned
 cgroups are removed after their workloads end.
@@ -84,7 +120,8 @@ A stopped command learns why: the kernel writes one line to its error stream
 (when that is a pipe or terminal it can write to), for example
 `chariox: stopped this command under memory pressure: 3100 MiB resident, 3300 MiB
 for its owner, fair share 1400 MiB of the 8600 MiB shared ceiling`, so the agent
-reads the reason in its tool output; the kernel logs the same record
+reads the reason in its tool output and, at once, in its inbox (a
+`resource_notice` that starts no turn); the kernel logs the same record
 (`process_resources.memory_stop`).
 When the command is the workload's own process (a terminal command, a watched
 process, the provider process itself), the workload ends with the typed

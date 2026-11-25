@@ -53,6 +53,10 @@ impl KernelRuntimeState {
     ) -> Option<(AgentTree, u64)> {
         let store = &self.owned.durable_state_store;
         let held_by_agent = self.owned.decisions_held_by_agents(session.id());
+        let room_activity = std::cell::RefCell::new(std::collections::HashMap::<
+            String,
+            std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+        >::new());
         let mut tree = project_agent_tree(
             session,
             agents,
@@ -97,6 +101,22 @@ impl KernelRuntimeState {
                         })
                         .map(|task| self.owned.finished_task_outcome(task, None).kind),
                 })
+            },
+            &|agent| {
+                // One read of a Room's agent activity serves every node in it.
+                let mut rooms = room_activity.borrow_mut();
+                let activity = rooms
+                    .entry(agent.session_id().to_owned())
+                    .or_insert_with(|| {
+                        // The stored Room has no agents of its own: sub-agents live in the agent store.
+                        self.session_with_agents(agent.session_id())
+                            .ok()
+                            .map(|room| self.agent_activity_for_tree(&room))
+                            .unwrap_or_default()
+                    });
+                activity
+                    .get(agent.id())
+                    .map(|activity| activity.liveness.clone())
             },
             &|room| self.owned.session_store.get_session(room).ok(),
         )?;

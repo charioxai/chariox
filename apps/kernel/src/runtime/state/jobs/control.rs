@@ -6,12 +6,8 @@ impl KernelRuntimeState {
         session_id: &str,
         caller: &crate::runtime::command::KernelCaller,
         process_id: &str,
+        kernel: Option<&str>,
     ) -> Result<String, DaemonError> {
-        if !self.remote_jobs_enabled() {
-            return Err(ledger::error(
-                "Remote jobs are switched off on this kernel; the queued job keeps waiting locally",
-            ));
-        }
         let session = self.owned.session_store.get_session(session_id)?;
         let driver = self
             .job_wake_driver
@@ -43,19 +39,27 @@ impl KernelRuntimeState {
             .exec_id
             .as_deref()
             .ok_or_else(|| ledger::error("This job is not queued yet; wait for its queued row"))?;
+        let destination = if let Some(kernel) = kernel {
+            self.check_enrolled_job_agent(&record.agent_id, kernel)?;
+            let machine = self
+                .enrolled_job_machine(kernel, &placer.origin.harness)
+                .await?;
+            RemoteMove::Enrolled {
+                kernel: machine.kernel_id,
+            }
+        } else {
+            RemoteMove::Allocate(placer.origin)
+        };
+        self.authorize_current_external_command()?;
         self.owned
             .room_execs
             .cancel_queued(session_id, exec_id, || {
-                driver
-                    .remote_origins
-                    .lock()
-                    .expect("job move origins")
-                    .insert(record.job_id.clone(), placer.origin);
-                driver
-                    .remote_requested
-                    .lock()
-                    .expect("job move")
-                    .insert(record.job_id.clone());
+                let mut moves = driver.remote_moves.lock().expect("job moves");
+                if moves.contains_key(&record.job_id) {
+                    return Err(ledger::error("The job is already moving."));
+                }
+                moves.insert(record.job_id.clone(), destination);
+                Ok(())
             })?;
         Ok(record.job_id)
     }
@@ -127,6 +131,31 @@ impl KernelRuntimeState {
         Ok(Some(record))
     }
 
+    /// A reached time limit is about to cancel `agent`'s unfinished jobs: saves the limit as the
+    /// cause of each that was not already cancelled for another reason.
+    pub(crate) fn mark_jobs_cancelled_by_limit(&self, room: &str, agent: &str, deadline_ms: u64) {
+        let Some(driver) = self.job_wake_driver.as_ref() else {
+            return;
+        };
+        for job in self
+            .session_jobs(room)
+            .into_iter()
+            .filter(|job| job.agent_id == agent)
+        {
+            if driver
+                .read(&job.job_id)
+                .is_ok_and(|record| record.result.is_none())
+            {
+                driver
+                    .cancel_causes
+                    .lock()
+                    .expect("job cancel causes")
+                    .entry(job.job_id)
+                    .or_insert(CancelCause::Limit { deadline_ms });
+            }
+        }
+    }
+
     pub(crate) fn cancel_session_job(
         &self,
         room: &str,
@@ -138,6 +167,27 @@ impl KernelRuntimeState {
         };
         let driver = self.job_wake_driver.as_ref().expect("job driver");
         if record.result.is_none() {
+            let store = &self.owned.durable_state_store;
+            if store.leased_wake_binding(&record.wake_id)?.is_some() {
+                let owner = self
+                    .owned
+                    .session_store
+                    .get_session(room)?
+                    .owner_user_id()
+                    .to_owned();
+                let ledger::Outcome::Wakes(wakes) =
+                    store.agent_lifecycle(ledger::Operation::CancelOwnerWake {
+                        id: record.wake_id,
+                        room: room.into(),
+                        owner,
+                    })?
+                else {
+                    unreachable!()
+                };
+                self.ensure_leased_process_poll(&wakes[0]);
+                self.refresh_wake_projection(room);
+                return Ok(true);
+            }
             driver
                 .owner_stops
                 .lock()
@@ -173,6 +223,14 @@ impl KernelRuntimeState {
         &self,
         job_id: &str,
     ) -> Result<(String, String, String), DaemonError> {
+        self.live_job_subject(job_id, true)
+    }
+
+    pub(super) fn live_job_subject(
+        &self,
+        job_id: &str,
+        require_active_turn: bool,
+    ) -> Result<(String, String, String), DaemonError> {
         let driver = self
             .job_wake_driver
             .as_ref()
@@ -201,10 +259,9 @@ impl KernelRuntimeState {
             .durable_state_store
             .agent_task(&wake.task_id)?
             .ok_or_else(|| ledger::error("Job task missing"))?;
-        if matches!(
-            task.state,
-            ledger::ExecutionState::Cancelled | ledger::ExecutionState::Done
-        ) {
+        if task.state == ledger::ExecutionState::Cancelled
+            || (require_active_turn && task.state == ledger::ExecutionState::Done)
+        {
             return Err(ledger::error("This job's task ended"));
         }
         let agent = self.owned.agent_store.get_agent(&record.agent_id)?;

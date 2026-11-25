@@ -1,15 +1,16 @@
 // MP-07 / MP-08 / MP-11: mocked release server + actual shared target install filesystem.
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
-import { generateKeyPairSync } from "node:crypto"
+import { execFileSync } from "node:child_process"
+import { createHash, generateKeyPairSync } from "node:crypto"
 import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
 import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
-import { runMachine } from "./machine/remote.mjs"
+import { command, runMachine, requireUserManager } from "./machine/remote.mjs"
 const extractorSource = await readFile(new URL("../../deploy/runtime-release/extract-release.py", import.meta.url), "utf8")
 const state = await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir())
 async function harness(t, overrides = {}) {
@@ -246,4 +247,133 @@ for (const platform of ["linux-x64", "darwin-arm64"]) {
 
 test("OSS boundary: Setup names no default connected service; the build supplies it", async () => {
   await assert.rejects(installLocal({ version: "0.1.0", publicKeyHex: "a".repeat(64), platform: "linux-x64" }), /control plane URL is required/)
+})
+
+async function providerHarness(t) {
+  const h = await harness(t)
+  const notices = []
+  const localBin = join(h.home, ".local/bin")
+  const systemBin = join(h.dir, "usr/local/bin")
+  const base = h.options.releaseBase
+  const paths = {
+    claude: ["package/claude"],
+    codex: ["package/vendor/x86_64-unknown-linux-musl/bin/codex",
+      "package/vendor/x86_64-unknown-linux-musl/bin/codex-code-mode-host",
+      "package/vendor/x86_64-unknown-linux-musl/codex-path/rg",
+      "package/vendor/x86_64-unknown-linux-musl/codex-resources/bwrap"],
+    opencode: ["package/bin/opencode"],
+  }
+  const providerArtifacts = {}
+  const writeExecutable = async (file, version) => {
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, '#!/bin/sh\nprintf "%s\\n" "' + version + '"\n', { mode: 0o755 })
+  }
+  for (const [provider, files] of Object.entries(paths)) {
+    const dir = join(h.dir, provider)
+    for (const file of files) await writeExecutable(join(dir, file), "2.1.2")
+    const archive = join(h.dir, provider + ".tgz")
+    execFileSync("tar", ["-czf", archive, "-C", dir, "package"])
+    const bytes = await readFile(archive)
+    h.responses.set("/" + provider + ".tgz", bytes)
+    providerArtifacts[provider] = { version: "2.1.2", url: base + "/" + provider + ".tgz",
+      integrity: "sha512-" + createHash("sha512").update(bytes).digest("base64") }
+  }
+  Object.assign(h.options, { providerArtifacts, providerSystemBins: [systemBin], providerEnv: { HOME: h.home, PATH: localBin + ":" + systemBin }, notice: m => notices.push(m) })
+  return { ...h, localBin, systemBin, writeExecutable, notices, paths,
+    providerRoot: join(h.home, ".local/share/chariox/providers"),
+    unit: join(h.home, ".config/systemd/user/chariox-machine-local.service") }
+}
+
+test("PC1 Setup installs missing providers with their native helpers before publishing the service", async t => {
+  const h = await providerHarness(t)
+  await installLocal(h.options)
+  const unit = await readFile(h.unit, "utf8")
+  for (const [provider, paths] of Object.entries(h.paths)) {
+    for (const path of paths) await lstat(join(h.providerRoot, provider, path))
+    assert.ok(unit.includes(join(h.providerRoot, provider, paths[0])))
+  }
+  assert.deepEqual(h.requests.filter(p => p.endsWith(".tgz")), ["/claude.tgz", "/codex.tgz", "/opencode.tgz"])
+})
+
+test("PC2 and PC4 Setup preserves provider installs and profile bytes, shows the PATH winner, and pins it in the service", async t => {
+  const h = await providerHarness(t)
+  const first = join(h.systemBin, "claude")
+  const other = join(h.localBin, "claude")
+  const codex = join(h.localBin, "codex")
+  for (const file of [first, other, codex]) await h.writeExecutable(file, "3.0.0")
+  const profile = join(h.home, ".codex/config.toml")
+  await mkdir(dirname(profile)); await writeFile(profile, "provider configuration")
+  const before = await Promise.all([first, other, codex, profile].map(file => readFile(file)))
+  h.options.providerEnv.PATH = h.systemBin + ":" + h.localBin
+  await installLocal(h.options)
+  const unit = await readFile(h.unit, "utf8")
+  assert.ok(unit.includes("CHARIOX_CLAUDE_BIN=" + first))
+  assert.ok(unit.includes("CHARIOX_CODEX_BIN=" + codex))
+  assert.ok(h.notices.some(line => line.includes(first) && line.includes("3.0.0")))
+  assert.deepEqual(await Promise.all([first, other, codex, profile].map(file => readFile(file))), before)
+  assert.deepEqual(h.requests.filter(p => p.endsWith(".tgz")), ["/opencode.tgz"])
+})
+
+test("PC3 Setup offers the vendor update for an old install and leaves it in place", async t => {
+  const h = await providerHarness(t)
+  const old = join(h.localBin, "claude")
+  await h.writeExecutable(old, "2.1.1")
+  const before = await readFile(old)
+  await installLocal(h.options)
+  assert.ok(h.notices.some(line => line.includes(old) && line.includes("2.1.1") && line.includes("2.1.2") && /update/i.test(line)))
+  assert.deepEqual(await readFile(old), before)
+  assert.ok(!h.requests.includes("/claude.tgz"))
+})
+
+test("PC2 Setup detects a pnpm provider install even when its bin directory is absent from PATH", async t => {
+  const h = await providerHarness(t)
+  const codex = join(h.home, ".local/share/pnpm/codex")
+  await h.writeExecutable(codex, "2.1.2")
+  await installLocal(h.options)
+  assert.ok((await readFile(h.unit, "utf8")).includes("CHARIOX_CODEX_BIN=" + codex))
+  assert.ok(!h.requests.includes("/codex.tgz"))
+})
+
+test("PC1 Setup refuses to select a managed Codex missing its bundled helpers", async t => {
+  const h = await providerHarness(t)
+  const codex = join(h.providerRoot, "codex", h.paths.codex[0])
+  await h.writeExecutable(codex, "2.1.2")
+  await assert.rejects(installLocal(h.options), /Codex CLI has an incomplete install/)
+  await assert.rejects(lstat(h.unit), { code: "ENOENT" })
+  assert.ok(!h.requests.includes("/codex.tgz"))
+})
+
+test("MP-07 a user without a systemd user session is refused in plain words before anything is created", async t => {
+  for (const action of ["install", "repair", "upgrade", "remove"]) {
+    const h = await harness(t)
+    const asked = []
+    const { serviceManager, ...options } = h.options
+    const refusal = () => requireUserManager(async (program, args) => { asked.push([program, args]); throw new Error("no bus") }, 1234, "rented", async () => false)
+    await assert.rejects(installLocal({ ...options, action, userManager: refusal }), error => {
+      assert.match(error.message, /rented has no systemd user session \(\/run\/user\/1234 does not exist\) and lingering is off/)
+      assert.match(error.message, /Nothing was changed\. Log in through a session that has a user manager/)
+      assert.match(error.message, /loginctl enable-linger rented/)
+      assert.doesNotMatch(error.message, /target install command failed/)
+      return true
+    })
+    assert.deepEqual(await readdir(h.home), [], `${action} left files behind`)
+    assert.deepEqual(h.requests, [], `${action} downloaded before checking`)
+    assert.equal(h.calls.length, 0)
+    assert.deepEqual(asked.map(([program, args]) => `${program} ${args[0]}`), ["systemctl --user"], "only looks; never enables lingering itself")
+  }
+})
+test("MP-07 a healthy user manager with a large environment passes the preflight", async () => {
+  // `systemctl --user show-environment` prints the whole manager environment. Only its exit status
+  // matters, so output beyond the capture limit must not read as an unreachable manager.
+  const manager = (program, args, capture) => command("sh", ["-c", "head -c 20000 /dev/zero | tr '\\0' x"], capture)
+  await requireUserManager(manager, 1000, "u", async () => true)
+  const bytes = []
+  await requireUserManager(async (program, args, capture) => { bytes.push(capture); return "" }, 1000, "u", async () => true)
+  assert.deepEqual(bytes, [false], "the probe does not capture the manager's output")
+})
+test("MP-07 requireUserManager proceeds with a live manager and names a manager it cannot reach", async () => {
+  const live = []
+  await requireUserManager(async program => { live.push(program); return "" }, 1000, "u", async () => true)
+  assert.deepEqual(live, ["systemctl"])
+  await assert.rejects(requireUserManager(async () => { throw new Error("down") }, 1000, "u", async () => true), /exists, but this shell cannot reach the user manager there.*Nothing was changed/)
 })

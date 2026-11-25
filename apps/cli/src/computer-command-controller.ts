@@ -1,6 +1,5 @@
 // MP-08 / MP-11: human desktop commands share kernel authority and transport.
-import type { UserDomainAccessClient } from "@chariox/kernel-client/user-domain-access"
-type ComputerClient = Pick<UserDomainAccessClient, "send">
+type ComputerClient = { send<T>(request: unknown): Promise<T> }
 type Transport = ComputerClient & { currentClient?(): ComputerClient }
 export function createComputerCommandController(deps: {client: Transport; appendNotice(message: string): void}) {
   return {async handle(args: string[]): Promise<void> {

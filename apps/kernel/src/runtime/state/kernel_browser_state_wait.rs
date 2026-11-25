@@ -129,14 +129,6 @@ impl KernelRuntimeState {
                 .and_then(|object| object.remove("_control"))
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .ok_or_else(|| host_error("MP-08: state read carries no control digest".into()))?;
-            if let Some(object) = state.as_object_mut() {
-                object.extend(
-                    self.user_domain_window_projection(&user)
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                );
-            }
             let current = revision(&state, signal, &control);
             let changed = known
                 .as_ref()

@@ -22,6 +22,7 @@ fn local_daemon_protocol_slice_logs_shape_is_versioned() {
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headless,

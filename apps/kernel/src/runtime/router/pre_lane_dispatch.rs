@@ -44,6 +44,15 @@ impl CommandRouter {
                 .await
                 .map(Some);
         }
+        if let LocalDaemonRequest::GetPaneFeed(request) = request {
+            return self.get_pane_feed(command, request.clone()).await.map(Some);
+        }
+        if let LocalDaemonRequest::ReportPaneSettings(request) = request {
+            return self
+                .report_pane_settings(command, request.clone())
+                .await
+                .map(Some);
+        }
         if let Some(response) = self
             .dispatch_app_pre_lane(command, request, caller_user_id)
             .await?
@@ -87,6 +96,7 @@ impl CommandRouter {
                 .event_connection_lanes
                 .lock(&event_user_id, &removal.connection_id)
                 .await;
+            crate::runtime::start_gate::begin_current()?;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
                 &self.config_projection,
@@ -123,6 +133,7 @@ impl CommandRouter {
                 .event_connection_lanes
                 .lock(&event_user_id, &connection_id)
                 .await;
+            crate::runtime::start_gate::begin_current()?;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
                 &self.config_projection,

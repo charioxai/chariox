@@ -513,6 +513,9 @@ struct CachedProviderCatalogProjection {
     cached_at: Instant,
     generation: u64,
     catalog: OpenCodeProviderCatalog,
+    /// The kernel's own warm-up copy: it answers from memory but is never fresh,
+    /// so the first client read revalidates it.
+    provisional: bool,
 }
 
 impl ProviderCatalogProjectionStore {
@@ -546,7 +549,10 @@ impl ProviderCatalogProjectionStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(cache_key)
             .cloned()?;
-        if cached.generation == self.invalidation_generation() && cached.cached_at.elapsed() < ttl {
+        if !cached.provisional
+            && cached.generation == self.invalidation_generation()
+            && cached.cached_at.elapsed() < ttl
+        {
             Some(cached.catalog)
         } else {
             None
@@ -598,6 +604,7 @@ impl ProviderCatalogProjectionStore {
                     cached_at: Instant::now(),
                     generation: self.invalidation_generation(),
                     catalog,
+                    provisional: false,
                 },
             );
             changed
@@ -652,6 +659,57 @@ impl ProviderCatalogProjectionStore {
                 cached_at: Instant::now(),
                 generation,
                 catalog,
+                provisional: false,
+            },
+        );
+        drop(cached);
+        if changed {
+            self.changed();
+        }
+        true
+    }
+
+    /// The kernel's startup warm-up result for a scope. It leaves out what only a
+    /// client read may start (an account-free provider's server), so it is kept
+    /// as an answer from memory that is never fresh: the first client read serves
+    /// it, revalidates in the background, and a change event follows if that read
+    /// finds more. A fresher copy, or one offering a provider this one lacks, is never replaced.
+    pub(crate) fn update_scoped_provisional_if_generation(
+        &self,
+        cache_key: &str,
+        catalog: OpenCodeProviderCatalog,
+        generation: u64,
+    ) -> bool {
+        let mut cached = self
+            .catalogs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
+            return false;
+        }
+        // Never replace a copy with one that offers less: a client-loaded copy
+        // (even a stale one after an account change) may list a provider the
+        // warm-up left out, and the warm-up must not take it away.
+        if cached.get(cache_key).is_some_and(|previous| {
+            (!previous.provisional && previous.generation == generation)
+                || previous
+                    .catalog
+                    .all
+                    .iter()
+                    .any(|kept| !catalog.all.iter().any(|offered| offered.id == kept.id))
+        }) {
+            return true;
+        }
+        let changed = cached
+            .get(cache_key)
+            .is_none_or(|previous| previous.catalog != catalog);
+        cached.insert(
+            cache_key.to_string(),
+            CachedProviderCatalogProjection {
+                cached_at: Instant::now(),
+                generation,
+                catalog,
+                provisional: true,
             },
         );
         drop(cached);
@@ -682,6 +740,7 @@ impl ProviderCatalogProjectionStore {
                 cached_at: Instant::now(),
                 generation,
                 catalog,
+                provisional: false,
             },
         );
         drop(cached);
@@ -790,6 +849,75 @@ mod provider_catalog_projection_tests {
         assert!(
             store.cached_scoped("owner-b:claude:work:local").is_none(),
             "stale data stays in its owner/profile/location scope"
+        );
+    }
+
+    #[test]
+    fn a_warm_up_copy_answers_from_memory_but_is_never_fresh() {
+        let store = ProviderCatalogProjectionStore::default();
+        let generation = store.invalidation_generation();
+
+        assert!(store.update_scoped_provisional_if_generation(
+            "scope",
+            catalog("claude"),
+            generation
+        ));
+
+        assert!(
+            store
+                .get_scoped("scope", Duration::from_secs(3600))
+                .is_none(),
+            "a client read must revalidate the warm-up copy"
+        );
+        assert_eq!(
+            store
+                .cached_scoped("scope")
+                .expect("the warm-up copy still answers from memory")
+                .connected,
+            vec!["claude"]
+        );
+        // The client's own load replaces it with a fresh copy that the warm-up
+        // never takes away, even when that copy offers a provider the warm-up lacks.
+        assert!(store.update_scoped_if_generation("scope", catalog("opencode"), generation));
+        assert!(store
+            .get_scoped("scope", Duration::from_secs(3600))
+            .is_some());
+        assert!(store.update_scoped_provisional_if_generation(
+            "scope",
+            catalog("claude"),
+            generation
+        ));
+        assert_eq!(
+            store.cached_scoped("scope").unwrap().connected,
+            vec!["opencode"]
+        );
+        assert!(store
+            .get_scoped("scope", Duration::from_secs(3600))
+            .is_some());
+    }
+
+    #[test]
+    fn a_warm_up_copy_never_replaces_a_stale_copy_that_offers_more() {
+        let store = ProviderCatalogProjectionStore::default();
+        store.update_scoped("scope", catalog("opencode"));
+        store.invalidate();
+        let generation = store.invalidation_generation();
+
+        assert!(store.update_scoped_provisional_if_generation(
+            "scope",
+            catalog("claude"),
+            generation
+        ));
+
+        assert_eq!(
+            store.cached_scoped("scope").unwrap().connected,
+            vec!["opencode"],
+            "the warm-up left a provider out that the stale copy still lists"
+        );
+        store.invalidate();
+        assert!(
+            !store.update_scoped_provisional_if_generation("scope", catalog("claude"), generation),
+            "a warm-up an invalidation overtook is dropped"
         );
     }
 

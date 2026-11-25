@@ -2,38 +2,6 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 impl KernelRuntimeState {
-    pub(super) fn handle_list_session_agents_runtime_tool(
-        &self,
-        session: &crate::session::RuntimeSession,
-        requester: &crate::agent::AgentInstance,
-    ) -> crate::transport::runtime_tools::RuntimeToolResult {
-        let mut agents = self.session_agents(session.id());
-        agents.sort_by(|left, right| {
-            left.created_at_ms()
-                .cmp(&right.created_at_ms())
-                .then_with(|| left.id().cmp(right.id()))
-        });
-        let activity = self.agent_activity_for_session(session);
-        let descriptions = agents
-            .iter()
-            .map(|agent| {
-                self.session_agent_description(session, requester, agent, activity.get(agent.id()))
-            })
-            .collect::<Result<Vec<_>, _>>();
-        match descriptions {
-            Ok(agents) => crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "session_id": session.id(),
-                    "focused_agent_id": session.focused_agent_id(),
-                    "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
-                    "agents": agents,
-                }),
-            },
-            Err(error) => agent_message_failure(error.to_string()),
-        }
-    }
-
     pub(super) fn handle_get_session_agent_runtime_tool(
         &self,
         session: &crate::session::RuntimeSession,
@@ -58,15 +26,30 @@ impl KernelRuntimeState {
             Err(message) => return agent_message_failure(message),
         };
         match self.session_agent_description(session, requester, agent, activity.get(agent.id())) {
-            Ok(agent) => crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"session_id": session.id(), "agent": agent}),
-            },
+            Ok(mut description) => {
+                if agent.id() == requester.id()
+                    || (agent.parent_agent_id() == Some(requester.id())
+                        && agent.owner_user_id() == requester.owner_user_id())
+                {
+                    description["jobs"] = serde_json::json!(self
+                        .session_jobs(session.id())
+                        .into_iter()
+                        .filter(|job| job.agent_id == agent.id())
+                        .collect::<Vec<_>>());
+                }
+                crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "session_id": session.id(),
+                        "agent": description,
+                    }),
+                }
+            }
             Err(error) => agent_message_failure(error.to_string()),
         }
     }
 
-    fn session_agent_description(
+    pub(super) fn session_agent_description(
         &self,
         session: &crate::session::RuntimeSession,
         requester: &crate::agent::AgentInstance,
@@ -163,7 +146,13 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         match result {
             Err(error) if crate::error::is_agent_deadline_refusal(&error) => {
-                let message = error.to_string();
+                let mut message = error.to_string();
+                // A sub-agent whose parent ended is told who hears it now.
+                if let Ok(sender) = self.owned.agent_store.get_agent(sender) {
+                    if self.parent_limit_ended(&sender) {
+                        message = format!("{message} {}", self.receiver_line(&sender));
+                    }
+                }
                 let mut notice =
                     crate::history::SessionHistoryEntry::notice(room, None, Some(sender), &message);
                 notice.notice_reason =
@@ -592,7 +581,7 @@ pub(in crate::runtime::state) fn resolve_session_agent<'a>(
     Ok(target)
 }
 
-fn session_agent_description(
+pub(super) fn session_agent_description(
     session: &crate::session::RuntimeSession,
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,

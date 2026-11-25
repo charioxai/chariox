@@ -18,6 +18,9 @@ async fn cold_remote_model_refresh_never_acknowledges_a_removed_lease() {
 #[cfg(unix)]
 async fn assert_cold_remote_model_refresh_responsive(remove_lease: bool) {
     crate::test_support::isolated_env_test!();
+    if !crate::test_support::has_user_namespaces() {
+        return;
+    }
     use std::os::unix::fs::PermissionsExt;
     let root = crate::test_support::TestWorktree::new("slow-model-refresh");
     let root = root.path();
@@ -71,6 +74,7 @@ exit 2
     };
     let materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "owner-a".into(),
             provider: "opencode".into(),
             profile_id: "slow".into(),

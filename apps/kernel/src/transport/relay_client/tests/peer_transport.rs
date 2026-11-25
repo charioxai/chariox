@@ -191,6 +191,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "user-1".to_string(),
             provider: "codex".to_string(),
             profile_id: "work".to_string(),
@@ -767,7 +768,7 @@ impl ControlledWorkspaceLiveSyncWorker {
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,
-            local_protocol: None,
+            local_protocol: Some(chariox_relay::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
         };
         let actions = Arc::new(Mutex::new(actions.into_iter().collect::<VecDeque<_>>()));
         let request_count = Arc::new(AtomicUsize::new(0));
@@ -1400,6 +1401,7 @@ async fn execution_leases_are_managed_through_peer_transport() {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),

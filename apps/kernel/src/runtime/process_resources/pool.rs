@@ -32,12 +32,29 @@ pub(super) struct Pool {
     /// bytes is not pressure (shared and file-backed pages count once per
     /// process), so on the kernel's pool nothing yields to it alone.
     machine_pressure: Box<dyn Fn() -> bool + Send + Sync>,
+    /// The machine's memory pressure and pool use for real exhaustion; none
+    /// where the host reports neither.
+    gauge: Box<dyn Fn() -> Option<exhaustion::Gauge> + Send + Sync>,
+    exhaustion: Mutex<exhaustion::Exhaustion>,
+    /// The unit whose `memory.high` the throttle lowered, to lift it again.
+    throttled: Mutex<Option<std::path::PathBuf>>,
+    /// When the kernel's own memory protection was last compared to its need.
+    protection_checked: Mutex<Option<Instant>>,
+    /// When the machine's pressure was last logged, at most every 10 s.
+    gauge_logged: Mutex<Option<Instant>>,
+    /// A hot reload is replacing the program: nothing new is held.
+    handing_over: std::sync::atomic::AtomicBool,
+    /// Holds and the handover's release exclude each other (see `hold_gate`).
+    hold_gate: Mutex<()>,
     #[cfg(target_os = "linux")]
     budget: Mutex<Weak<cgroup::Budget>>,
     members: Mutex<Vec<Weak<Mutex<Observation>>>>,
     stopped_at: Mutex<BTreeMap<String, Instant>>,
     pub(super) ledger: Mutex<admission::Ledger>,
     pub(super) launches: Mutex<BTreeMap<String, super::launch::Reservation>>,
+    /// Launches whose hold was logged: one line when it begins, one when it
+    /// starts, however often the queue asks again.
+    pub(super) launch_waiting: Mutex<std::collections::BTreeSet<String>>,
     pub(super) launch_generation: std::sync::atomic::AtomicU64,
     pub(super) volume: Box<admission::Volume>,
 }
@@ -59,7 +76,11 @@ pub(super) struct CommandUse {
     /// pause is sized by, since one spike says little of how it goes on.
     pub steady_growth: u64,
     pub writes: u64,
+    /// Its latest write rate, held and halved per sample: says it writes now.
     pub write_growth: u64,
+    /// What it wrote per second over the last two seconds: how fast it fills a
+    /// volume, since one sample of a writer that writes in bursts says little.
+    pub write_rate: u64,
     /// The process it runs past wrapping shells: what admission recognises.
     pub effective: u32,
     /// Part of the harness (the workload's own process and the launcher
@@ -124,12 +145,23 @@ impl Pool {
             margin,
             host,
             machine_pressure: Box::new(move || host_short(margin)),
+            #[cfg(not(test))]
+            gauge: Box::new(host_gauge),
+            #[cfg(test)]
+            gauge: Box::new(|| None),
+            exhaustion: Mutex::default(),
+            throttled: Mutex::new(None),
+            gauge_logged: Mutex::new(None),
+            handing_over: std::sync::atomic::AtomicBool::new(false),
+            hold_gate: Mutex::new(()),
+            protection_checked: Mutex::new(None),
             #[cfg(target_os = "linux")]
             budget: Mutex::new(Weak::new()),
             members: Mutex::default(),
             stopped_at: Mutex::default(),
             ledger: Mutex::new(admission::Ledger::new(peaks)),
             launches: Mutex::default(),
+            launch_waiting: Mutex::default(),
             launch_generation: std::sync::atomic::AtomicU64::new(0),
             volume,
         }
@@ -145,6 +177,16 @@ impl Pool {
         self
     }
 
+    /// The machine's memory pressure and pool use are the test's to set.
+    #[cfg(test)]
+    pub(super) fn with_gauge(
+        mut self,
+        gauge: Box<dyn Fn() -> Option<exhaustion::Gauge> + Send + Sync>,
+    ) -> Self {
+        self.gauge = gauge;
+        self
+    }
+
     /// A pool whose volumes report `volume` (free, size) bytes.
     #[cfg(test)]
     pub(super) fn with_volume(ceiling: u64, volume: Box<admission::Volume>) -> Self {
@@ -157,8 +199,10 @@ impl Pool {
         static SHARED: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
         SHARED
             .get_or_init(|| {
+                // The machine less what the kernel holds and the OS reserve
+                // (Miguel 11-23): one agent may use nearly all the rest.
                 let ceiling = machine_memory()
-                    .and_then(|total| total.checked_sub((total / 10).max(512 * MIB)))
+                    .map(|total| exhaustion::pool_bytes(total, exhaustion::kernel_use()))
                     .unwrap_or(u64::MAX);
                 Arc::new(Self::with(
                     ceiling,
@@ -251,6 +295,7 @@ impl Pool {
     pub(super) fn enforce(&self, current: &Arc<Mutex<Observation>>, unit_charged: Option<u64>) {
         let protection = self.protection();
         let members = self.members();
+        self.exhaust(&members, current, protection.memory);
         let light = admission::light(self.ceiling);
         let mut ledger = self.ledger.lock().unwrap_or_else(|e| e.into_inner());
         ledger.register(current, light);
@@ -319,8 +364,397 @@ impl Pool {
         drop(launches);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
-        if protection.memory && may_stop && growing > 0 && self.pressed(&members) {
-            self.stop_one(&members, None, Cause::Pressure);
+        if protection.memory && may_stop && growing > 0 {
+            self.stop_under_pressure(&members);
+        }
+    }
+
+    /// Real memory exhaustion: when the machine's memory pressure holds and the
+    /// pool is nearly full, the command that grew most is throttled, paused
+    /// and stopped, and its agent told each step.
+    fn exhaust(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        current: &Arc<Mutex<Observation>>,
+        protected: bool,
+    ) {
+        {
+            let mut checked = self
+                .protection_checked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
+                *checked = Some(Instant::now());
+                drop(checked);
+                super::check_kernel_protection();
+            }
+        }
+        if self.handing_over.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let candidates = admission::exhaustion_candidates(members);
+        let gauge = if protected { (self.gauge)() } else { None };
+        let Some(gauge) = gauge else {
+            // Protection off, or nothing to read: nothing stays held by it.
+            let mut machine = self.exhaustion.lock().unwrap_or_else(|e| e.into_inner());
+            let actions = machine.release_all();
+            drop(machine);
+            for pid in actions {
+                if let Some(found) = candidates.iter().find(|found| found.pid == pid) {
+                    self.carry_release(found, current);
+                }
+            }
+            self.lift_throttle();
+            return;
+        };
+        let commands = candidates
+            .iter()
+            .map(|found| (found.pid, found.resident))
+            .collect::<Vec<_>>();
+        if gauge.psi >= exhaustion::PSI_CLEAR_PERCENT
+            || gauge.pool_percent() >= exhaustion::POOL_TRIGGER_PERCENT
+        {
+            let mut logged = self.gauge_logged.lock().unwrap_or_else(|e| e.into_inner());
+            if logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(10)) {
+                *logged = Some(Instant::now());
+                let growers = self
+                    .exhaustion
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .growths(Instant::now(), &commands);
+                crate::logging::info_with_fields(
+                    "process_resources.exhaustion_gauge",
+                    "memory pressure or pool use is high",
+                    serde_json::json!({
+                        "psi_some_avg10": gauge.psi,
+                        "pool_percent": gauge.pool_percent(),
+                        "pool_bytes": gauge.pool_bytes,
+                        "pool_used_bytes": gauge.pool_used,
+                        "candidates": candidates.len(),
+                        "top_growers": growers.iter().map(|(pid, resident, grew)| serde_json::json!({"pid": pid, "resident": resident, "grew_over_window": grew, "root": candidates.iter().find(|c| c.pid == *pid).is_some_and(|c| c.root)})).collect::<Vec<_>>(),
+                    }),
+                );
+            }
+        }
+        let actions = self
+            .exhaustion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tick(Instant::now(), gauge, &commands);
+        for action in actions {
+            let Some(found) = candidates.iter().find(|found| found.pid == action.pid) else {
+                if action.step == exhaustion::Step::Release {
+                    self.lift_throttle();
+                }
+                continue;
+            };
+            let member = &found.member;
+            let command = member
+                .lock()
+                .map(|observation| admission::command_text(&observation, action.pid))
+                .unwrap_or_default();
+            crate::logging::warn_with_fields(
+                "process_resources.exhaustion",
+                match action.step {
+                    exhaustion::Step::Throttle => "memory exhaustion: throttled the top grower",
+                    exhaustion::Step::Pause => "memory exhaustion: paused the top grower",
+                    exhaustion::Step::Stop => "memory exhaustion: stopped the top grower",
+                    exhaustion::Step::Release => "memory exhaustion ended: released the command",
+                },
+                serde_json::json!({
+                    "pid": action.pid,
+                    "command": command,
+                    "grew_bytes": action.grew,
+                    "resident_bytes": action.resident,
+                    "psi_some_avg10": action.gauge.psi,
+                    "pool_percent": action.gauge.pool_percent(),
+                    "pool_bytes": action.gauge.pool_bytes,
+                    "repeat": action.repeat,
+                }),
+            );
+            match action.step {
+                exhaustion::Step::Throttle => self.carry_throttle(&command, &action, member),
+                exhaustion::Step::Pause if found.root => {
+                    // The workload itself (a job, a provider): its whole domain holds.
+                    Self::freeze(
+                        member,
+                        action.pid,
+                        true,
+                        &command,
+                        exhaustion::paused_line(&command, &action),
+                    );
+                }
+                exhaustion::Step::Pause => {
+                    let note = admission::ExhaustionNote {
+                        paused: exhaustion::paused_line(&command, &action),
+                        resumed: exhaustion::resumed_line(&command),
+                    };
+                    // Under the gate: a handover that has begun holds nothing more.
+                    let gate = self.hold_gate();
+                    let paused = !self.handing_over()
+                        && admission::exhaustion_pause(member, action.pid, note);
+                    drop(gate);
+                    if paused && !Arc::ptr_eq(member, current) {
+                        Self::apply(member);
+                    }
+                }
+                exhaustion::Step::Stop => self.carry_stop(&command, &action, found),
+                exhaustion::Step::Release => {
+                    self.lift_throttle();
+                    self.carry_release_with(found, current, &command);
+                }
+            }
+        }
+    }
+
+    fn apply(member: &Arc<Mutex<Observation>>) {
+        let control = member
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .control
+            .clone();
+        if let Some(control) = control {
+            let _ = control.send(WatchCommand::Apply);
+        }
+    }
+
+    fn carry_release(&self, found: &admission::Candidate, current: &Arc<Mutex<Observation>>) {
+        self.carry_release_with(found, current, "");
+    }
+
+    fn carry_release_with(
+        &self,
+        found: &admission::Candidate,
+        current: &Arc<Mutex<Observation>>,
+        command: &str,
+    ) {
+        if found.root {
+            Self::freeze(
+                &found.member,
+                found.pid,
+                false,
+                command,
+                exhaustion::resumed_line(command),
+            );
+            return;
+        }
+        admission::exhaustion_release(&found.member, found.pid);
+        if !Arc::ptr_eq(&found.member, current) {
+            Self::apply(&found.member);
+        }
+    }
+
+    fn freeze(
+        member: &Arc<Mutex<Observation>>,
+        pid: u32,
+        freeze: bool,
+        command: &str,
+        message: String,
+    ) {
+        let control = member
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .control
+            .clone();
+        if let Some(control) = control {
+            let _ = control.send(WatchCommand::ExhaustFreeze {
+                pid,
+                freeze,
+                command: command.to_string(),
+                message,
+            });
+        }
+    }
+
+    /// Taken around every hold or release of a workload and around the whole
+    /// handover release: one at a time, so a hold in flight finishes (and is
+    /// recorded) before the release looks, and later ones see the handover.
+    pub(super) fn hold_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.hold_gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether a hot reload is replacing the program: nothing new is held.
+    pub(super) fn handing_over(&self) -> bool {
+        self.handing_over.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The program is being replaced (hot reload): what memory exhaustion holds
+    /// is let go and nothing new is held, so no process stays frozen under a
+    /// program that does not know it (the next one judges the machine afresh).
+    pub(super) fn release_for_handover(&self) {
+        // Held to the end: no hold can start or finish in the middle of the release.
+        let _gate = self.hold_gate();
+        self.handing_over
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        for member in self.members() {
+            let (domain, pids) = {
+                let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+                if observation.frozen.is_empty() {
+                    continue;
+                }
+                observation.frozen.clear();
+                (
+                    observation.cgroup.clone(),
+                    observation
+                        .samples
+                        .iter()
+                        .map(|sample| sample.pid)
+                        .collect::<Vec<_>>(),
+                )
+            };
+            #[cfg(target_os = "linux")]
+            if let Some(domain) = domain {
+                let _ = std::fs::write(domain.join("cgroup.freeze"), "0");
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = domain;
+            // Without a cgroup the freeze was a stop signal to each process.
+            #[cfg(unix)]
+            for pid in pids {
+                if pid > 1 && pid <= i32::MAX as u32 {
+                    // SAFETY: a positive pid of a process this watch sampled a moment ago.
+                    unsafe { libc::kill(pid as i32, libc::SIGCONT) };
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = pids;
+        }
+        self.lift_throttle();
+    }
+
+    /// Slows the owner's memory growth: its unit may not grow past what it holds.
+    /// A workload without a cgroup has no such control; it is paused later.
+    fn carry_throttle(
+        &self,
+        command: &str,
+        action: &exhaustion::Action,
+        member: &Arc<Mutex<Observation>>,
+    ) {
+        #[cfg(target_os = "linux")]
+        {
+            // Under the gate: the handover lifts the throttle and nothing is lowered after it.
+            let _gate = self.hold_gate();
+            if self.handing_over() {
+                return;
+            }
+            let unit = member
+                .lock()
+                .ok()
+                .and_then(|observation| observation.cgroup.clone())
+                .and_then(|domain| domain.parent().map(std::path::Path::to_path_buf));
+            if let Some(unit) = unit {
+                let held = std::fs::read_to_string(unit.join("memory.current"))
+                    .ok()
+                    .and_then(|text| text.trim().parse::<u64>().ok());
+                if let Some(held) = held {
+                    if std::fs::write(unit.join("memory.high"), held.max(64 * MIB).to_string())
+                        .is_ok()
+                    {
+                        *self.throttled.lock().unwrap_or_else(|e| e.into_inner()) = Some(unit);
+                    }
+                }
+            }
+        }
+        let message = exhaustion::throttled_line(command, action);
+        Self::tell(
+            member,
+            action.pid,
+            message,
+            waits::ExhaustionStep::Throttled,
+        );
+    }
+
+    fn lift_throttle(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(unit) = self
+            .throttled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            let _ = std::fs::write(unit.join("memory.high"), "max");
+        }
+    }
+
+    fn carry_stop(&self, command: &str, action: &exhaustion::Action, found: &admission::Candidate) {
+        let member = &found.member;
+        let notice = exhaustion::stopped_line(command, action);
+        if found.root {
+            // The workload itself ends with its typed outcome; the agent and
+            // the pane hear the stop here.
+            Self::tell(
+                member,
+                action.pid,
+                notice.clone(),
+                waits::ExhaustionStep::Stopped,
+            );
+        } else {
+            admission::exhaustion_mark(
+                member,
+                action.pid,
+                admission::ExhaustionNote {
+                    paused: String::new(),
+                    resumed: String::new(),
+                },
+            );
+        }
+        let control = member
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .control
+            .clone();
+        if let Some(control) = control {
+            let _ = control.send(WatchCommand::MemoryStop {
+                pid: action.pid,
+                limit_bytes: action.gauge.pool_bytes,
+                notice,
+            });
+        }
+        self.lift_throttle();
+    }
+
+    /// Tells the command's own error stream, its agent and its pane.
+    pub(super) fn tell(
+        member: &Arc<Mutex<Observation>>,
+        pid: u32,
+        message: String,
+        step: waits::ExhaustionStep,
+    ) {
+        announce(pid, &message);
+        let process_id = member
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .samples
+            .iter()
+            .find(|sample| sample.pid == pid)
+            .map(|sample| sample.process_id.clone());
+        // A frozen workload reads as paused, as in the process list.
+        let state = member
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frozen
+            .get(&pid)
+            .filter(|_| step == waits::ExhaustionStep::Paused)
+            .map_or(SessionProcessState::Running, |(since_ms, command)| {
+                super::projection::frozen_state(command, *since_ms)
+            });
+        if let Some(process_id) = process_id {
+            waits::push(waits::WaitEvent {
+                keys: keys_of(member),
+                process_id,
+                change: waits::WaitChange::Exhaustion {
+                    step,
+                    message: message.trim_end().to_string(),
+                },
+                state,
+                owner: super::listed_owner(member),
+            });
+        }
+    }
+
+    fn stop_under_pressure(&self, members: &[Arc<Mutex<Observation>>]) {
+        if self.pressed(members) {
+            self.stop_one(members, None, Cause::Pressure);
         }
     }
 
@@ -697,6 +1131,41 @@ impl Pool {
     }
 }
 
+/// Memory pressure and pool use of the machine the workloads run on: the
+/// tightest limited cgroup above them when there is one (a small machine is
+/// emulated that way), else the host.
+#[cfg(target_os = "linux")]
+fn host_gauge() -> Option<exhaustion::Gauge> {
+    let total = machine_memory()?;
+    let available = host_room(0)?;
+    let limited = cgroup::bounding()
+        .into_iter()
+        .filter_map(|dir| {
+            let limit = std::fs::read_to_string(dir.join("memory.max"))
+                .ok()?
+                .trim()
+                .parse::<u64>()
+                .ok()?;
+            Some((limit, dir))
+        })
+        .min_by_key(|(limit, _)| *limit)
+        .and_then(|(_, dir)| std::fs::read_to_string(dir.join("memory.pressure")).ok());
+    let pressure = limited
+        .or_else(|| std::fs::read_to_string("/proc/pressure/memory").ok())
+        .and_then(|text| exhaustion::psi_some_avg10(&text))?;
+    let kernel = exhaustion::kernel_use();
+    Some(exhaustion::Gauge {
+        psi: pressure,
+        pool_bytes: exhaustion::pool_bytes(total, kernel),
+        pool_used: total.saturating_sub(available).saturating_sub(kernel),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn host_gauge() -> Option<exhaustion::Gauge> {
+    None
+}
+
 #[cfg(target_os = "linux")]
 fn machine_memory() -> Option<u64> {
     let memory = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -739,16 +1208,86 @@ fn host_short(margin: u64) -> bool {
     let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
         return false;
     };
-    let available = text
-        .lines()
-        .find_map(|line| line.strip_prefix("MemAvailable:"))
-        .and_then(|line| line.split_whitespace().next())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|kib| kib.saturating_mul(1024));
-    available.is_some_and(|bytes| bytes < margin)
+    meminfo_below_margin(&text, margin)
         || cgroup::bounding()
             .iter()
             .any(|limited| cgroup::headroom(limited).is_some_and(|bytes| bytes < margin))
+}
+
+#[cfg(target_os = "linux")]
+fn meminfo_below_margin(text: &str, margin: u64) -> bool {
+    text.lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|kib| kib.saturating_mul(1024) < margin)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn sysstat_headroom_gates_the_typed_runaway_stop() {
+    let (control, stopped) = std::sync::mpsc::channel();
+    let command = |pid, resident, growth| CommandUse {
+        pid,
+        deleted_open: 0,
+        group: None,
+        resident,
+        growth,
+        measured_growth: growth,
+        steady_growth: growth,
+        writes: 0,
+        write_growth: 0,
+        effective: pid,
+        root: true,
+    };
+    let members = [
+        ("healthy", command(2, 80 * 1024 * MIB, 0)),
+        (
+            "runaway",
+            command(3, 20 * 1024 * MIB, RUNAWAY_BYTES_PER_SECOND),
+        ),
+    ]
+    .map(|(unit, command)| {
+        Arc::new(Mutex::new(Observation {
+            unit: unit.into(),
+            commands: vec![command],
+            control: Some(control.clone()),
+            ..Observation::default()
+        }))
+    });
+    let pool_for = |meminfo: &'static str| {
+        Pool::new(112 * 1024 * MIB, true)
+            .with_machine_pressure(Box::new(move || meminfo_below_margin(meminfo, 512 * MIB)))
+    };
+    // Extremes of the six b3 sysstat samples during the outage. High PSI
+    // and swap occupancy do not enter the host-headroom decision.
+    for meminfo in [
+        "MemAvailable: 1266836 kB\nSwapTotal: 17825780 kB\nSwapFree: 56 kB\n",
+        "MemAvailable: 1532584 kB\nSwapTotal: 17825780 kB\nSwapFree: 116 kB\n",
+    ] {
+        pool_for(meminfo).stop_under_pressure(&members);
+        assert!(stopped.try_recv().is_err());
+    }
+
+    // Synthetic no-swap control below the existing margin, with the same work.
+    pool_for("MemAvailable: 524287 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
+        .stop_under_pressure(&members);
+    match stopped
+        .try_recv()
+        .expect("the controller should stop a command")
+    {
+        WatchCommand::MemoryStop {
+            pid,
+            limit_bytes,
+            notice,
+        } => {
+            assert_eq!(pid, 3);
+            assert_eq!(limit_bytes, 56 * 1024 * MIB);
+            assert!(notice.contains("under memory pressure"));
+        }
+        _ => panic!("expected the typed memory stop command"),
+    }
+    assert!(stopped.try_recv().is_err());
 }
 
 /// Memory the host itself has left above `margin`: the user's apps or other

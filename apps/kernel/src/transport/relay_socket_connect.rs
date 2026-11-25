@@ -68,6 +68,15 @@ pub(crate) fn binary_requests_accepted(handshake: &Response) -> bool {
         .is_some_and(|value| value == chariox_relay::binary_request::OFFER)
 }
 
+/// True when the relay answered the binary peer offer: this kernel's peer requests and replies
+/// then travel as `CXR3` and `CXR2` frames too.
+pub(crate) fn binary_peer_accepted(handshake: &Response) -> bool {
+    handshake
+        .headers()
+        .get(chariox_relay::binary_request::PEER_HEADER)
+        .is_some_and(|value| value == chariox_relay::binary_request::PEER_OFFER)
+}
+
 /// True when the relay answered the upload offer in its handshake.
 pub(crate) fn upload_chunks_accepted(handshake: &Response) -> bool {
     handshake
@@ -124,6 +133,35 @@ where
     .await
 }
 
+/// A stand-in relay accepts the test kernel only after reading its registration.
+#[cfg(test)]
+pub(crate) async fn acknowledge_test_registration<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(message, Message::Text(text) if matches!(
+        serde_json::from_str(&text),
+        Ok(RelayEnvelope::DaemonRegister { .. })
+    )));
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegistered)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+}
+
 /// A registration for a test that stands in for a kernel on a real relay: `registration` is the
 /// wire JSON without a public key, which a fresh identity key fills in and signs.
 #[cfg(test)]
@@ -133,6 +171,8 @@ pub(crate) fn stand_in_kernel_register(
     mut registration: serde_json::Value,
 ) -> String {
     let private_key = relay_crypto::generate_private_key_base64();
+    registration["local_protocol"] =
+        chariox_relay::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL.into();
     registration["public_key"] = relay_crypto::public_key_from_private_key_base64(&private_key)
         .unwrap()
         .into();

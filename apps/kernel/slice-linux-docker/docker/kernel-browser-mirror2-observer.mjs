@@ -99,6 +99,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
   // state }. 'pending' until the field first holds the fill (registered before the insertion: masked), 'filled'
   // while it holds it, 'retired' once it no longer does (an edit): a plain field until a refill (new revision).
   const fills = new WeakMap();
+  // F5: the @font-face rules of the faces the page made by script (browser-page-fonts.mjs), set by the kernel with the serial
+  // of that state; every instance adds them to the top document as its last adopted sheet.
+  let scriptFonts = { serial: 0, css: '' };
   globalThis.__charioxMirror2 = Object.freeze({
     get: id => {
       let instance = instances.get(id);
@@ -110,6 +113,12 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     drop: id => { instances.get(id)?.dispose(); instances.delete(id); return true; },
     // CDP CSS events (kernel-browser-mirror2-css.mjs): a changed sheet's owner node, 'adopted' or 'imports'.
     sheetChanged: owner => { for (const instance of instances.values()) instance.sheetChanged(owner); return true; },
+    scriptFonts: (serial, css) => {
+      if (serial <= scriptFonts.serial) return true;
+      scriptFonts = { serial, css };
+      for (const instance of instances.values()) instance.sheetChanged('adopted');
+      return true;
+    },
   });
   return true;
   // SHA-256 hex of a string's UTF-8 bytes (synchronous: the drain is; crypto.subtle needs a secure context).
@@ -227,15 +236,27 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // as changes of that value at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
     const valueNames = new Set();
     let valueStale = [];
-    const sheetCss = (text, base, doc) => {
-      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
-      for (const name of ['href', 'src']) if (!valueNames.has(name) && new RegExp(`\\[\\s*chariox-${name}\\s*[~|^$*]?=`, 'i').test(out)) {
+    const valuesSelected = names => {
+      for (const name of names) if (!valueNames.has(name)) {
         valueNames.add(name);
         for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute(name)) valueStale.push([node, name === 'href' ? 'href' : 'chariox-src']);
         if (valueStale.length) wake();
       }
+    };
+    const sheetCss = (text, base, doc) => {
+      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
+      valuesSelected(['href', 'src'].filter(name => new RegExp(`\\[\\s*chariox-${name}\\s*[~|^$*]?=`, 'i').test(out)));
       return out;
     };
+    // A cross-origin sheet the kernel sanitized itself (the same sanitizeMirrorCss, on its cached copy): each part's url()
+    // occurrences register here in the sanitizer's own order, so the keys, this registry and its side effects are those of
+    // sheetCss. Only the occurrences, the part's image-set() text (occurrence numbers `mr:r<n>`) and its href/src selectors come in.
+    const sheetKeys = parts => parts.map(({ urls, imageSets, values }) => {
+      const keys = urls.map(([value, base, kind]) => resource(String(value), String(base), String(kind)));
+      if (imageSets) loadViewerOptions(String(imageSets).replace(/url\("mr:r(\d+)"\)/g, (_, n) => keys[n - 1] ? `url("mr:${keys[n - 1]}")` : 'none'), document);
+      valuesSelected(values.filter(name => name === 'href' || name === 'src'));
+      return keys;
+    });
     const markValuesStale = () => {
       for (const [node, name] of valueStale) if (mirrored(node)) { if (!dirty.attrs.has(node)) dirty.attrs.set(node, new Set()); dirty.attrs.get(node).add(name); }
       valueStale = [];
@@ -356,6 +377,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const hostBox = node => viewportHost(node) ? [0, 0, 0, 0] : box(node);
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
+    // Row 489: a document's body with no box of its own whose closed root paints (Chromium's PDF document: a 0-high body, its
+    // viewer iframe absolute in the root) is laid out in the viewer at what it paints: a 0-high tile never gets a region there.
+    // Only the body: any other host keeps its layout size (its painted overflow must not push the content after it).
+    const tileSize = node => { const size = layoutSize(node); if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node) || node !== node.ownerDocument.body) return size; const own = box(node), ink = closedInk(node, own); return ink && ink[0] === own[0] && ink[1] === own[1] ? [Math.round(ink[2]), Math.round(ink[3])] : size; };
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
@@ -385,6 +410,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (root.nodeType === 9) for (const type of ['loading', 'loadingdone', 'loadingerror']) root.fonts.addEventListener(type, wake, { signal: listening.signal });
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         if (root.nodeType === 9) listen('readystatechange', wake);
+        // Row 486: media events do not bubble; the capture listener sees play, pause and end of every mirrored element.
+        for (const type of ['playing', 'pause', 'ended', 'emptied']) listen(type, wake);
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // A fragment navigation moves `:target` (the header, or a frame document's fragment op).
         if (root.nodeType === 9) root.defaultView?.addEventListener('hashchange', wake, { passive: true, signal: listening.signal });
@@ -556,7 +583,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const densityOp = (id, attrs, ops) => { const value = attrs['chariox-density'] ?? null; if (value === (densityOf.get(id) ?? null)) return; if (value) densityOf.set(id, value); else densityOf.delete(id); ops.push({ op: 'attr', id, name: 'chariox-density', value }); };
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
-      const [width, height] = layoutSize(node);
+      const [width, height] = tileSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
       record.tag = node.namespaceURI === HTML && !['object', 'embed', 'applet', 'frame', 'frameset', 'portal', 'fencedframe'].includes(node.localName) ? node.localName : 'div';
       shapes.set(record.id, { size: record.size, display: null });
@@ -654,8 +681,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sheetCss(media ? `@media ${media}{${text}}` : text, base, root.ownerDocument ?? root)); } catch { sheets.push(''); } } return sheets; };
-    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sheetCss(media ? `@media ${media}{${text}}` : text, base, root.ownerDocument ?? root)); } catch { sheets.push(''); } }
+      if (root === document && scriptFonts.css) sheets.push(sheetCss(scriptFonts.css, document.baseURI, document));
+      return sheets; };
+    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',') + (root === document && scriptFonts.css ? `,fonts:${scriptFonts.serial}` : '');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
       for (const [id, root] of roots) for (const sheet of root.adoptedStyleSheets ?? []) {
@@ -742,7 +771,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       // A built-in host's closed root leaves its light DOM empty (a consent manager's banner, for one): the kernel checks those once.
-      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.firstChild && !node.shadowRoot) closedTodo.add(node);
+      // Row 489: empty includes whitespace text only (Chromium's PDF document is such a body, its viewer iframe in the closed root).
+      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.shadowRoot && !node.firstElementChild && !/\S/.test(node.textContent)) closedTodo.add(node);
       if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
       walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
     };
@@ -969,6 +999,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
     };
     let reportedFonts = '[]';
+    // Row 486: whether a mirrored video or audio element is playing (not paused or ended, with data to play, muted or not).
+    // The viewer keeps such a Tab warm. A video or audio is an opaque tile, so only those are looked at.
+    let reportedPlaying = false;
+    const mediaPlaying = () => { for (const id of opaque) { const node = nodes.get(id); if (node?.isConnected && node.namespaceURI === HTML && (node.localName === 'video' || node.localName === 'audio') && !node.paused && !node.ended && node.readyState > 2) return true; } return false; };
     const reportedRequirements = new Map(), absentKeys = new Map(), absentOf = new Map(), installedFamilies = new Map();
     const fontOps = (ops, force = false) => {
       const due = stacksDue();
@@ -988,8 +1022,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
       const { focused, focus_visible, selection, range } = focusState(); reported = JSON.stringify([focused, focus_visible, selection, range]);
-      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, focus_visible, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures); reportedPlaying = mediaPlaying();
+      return { title: document.title, snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, focus_visible, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size, media_playing: reportedPlaying };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
@@ -1191,7 +1225,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // records (a Vault-filled field toggling display, a canvas resized by CSS); a new display re-serializes.
       for (const id of shapes.keys()) {
         const node = nodes.get(id), kind = kindOf.get(id); if (!node?.isConnected) continue;
-        const size = layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
+        const size = kind === 'tile' ? tileSize(node) : layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
         if (last && display !== last.display) { const parent = nodes.get(parentOf.get(id)); replaceNode(node); if (parent) childList(parent, out, ops); continue; }
         if (last && (last.size[0] !== size[0] || last.size[1] !== size[1])) ops.push({ op: 'size', id, size });
         shapes.set(id, { size, display });
@@ -1273,7 +1307,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const node = live(id), kind = kindOf.get(id);
       if (kind !== 'tile' && !(kind === 'frame' && foreign.has(id))) throw new Error('mirror2 region required');
       const intersect = (a,b) => { const x=Math.max(a[0],b[0]),y=Math.max(a[1],b[1]);return [x,y,Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-x),Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-y)]; };
-      let bounds=box(node),clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
+      // Row 489: a closed root's content can paint outside its host's box (Chromium's PDF body is 0 high, its viewer
+      // iframe absolute in the root): the region covers that ink, as opaqueBoxes reports it.
+      // The host's own box stays the origin (element offset, input); only the captured area grows to the root's ink.
+      let bounds=box(node),clip=intersect(closedInk(node,bounds)??bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
         // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.
@@ -1344,7 +1381,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // overlays and sticky headers above it stay mirrored DOM, never baked in. Null when tainted
     // (cross-origin pixels never leave this way), blank (WebGL without preserveDrawingBuffer), without a
     // frame yet, or another kind (plugins, closed roots, frames: masked screenshots).
-    // The still keeps its CSS box: past the packet's byte budget it travels at half the pixel density, again until it fits.
+    // The still keeps its CSS box: past the packet's byte budget it travels at a lower pixel density, the one its measured size
+    // predicts (side x 0.9 x sqrt(budget / bytes), drawn again from the full-size pixels), again until it fits. Halving left a
+    // video frame that missed the budget by 1% at a quarter of its density (subvysion, T3).
+    const drawnCanvases = new WeakSet();
     const elementPixels = async (id, scale, budget) => {
       const node = nodes.get(id);
       if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML || !['canvas', 'video'].includes(node.localName) || node.localName === 'video' && node.readyState < 2) return null;
@@ -1356,24 +1396,132 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const fit = style.objectFit, k = fit === 'fill' ? null : fit === 'cover' ? Math.max(W / sw, H / sh) : Math.min(W / sw, H / sh);
       const [dw, dh] = k ? [sw * k, sh * k] : [W, H];
       try {
-        g.drawImage(node, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        // T3: the frame is read once, at its source size when that is within COVER_PROBE_PIXELS, and the still is drawn from that
+        // copy: `opaque` (every source pixel's alpha, as coveredBy proves it) is then the opacity of exactly the frame that goes
+        // out, even while a video plays on. A larger source is drawn directly and proves nothing.
+        let source = node, opaque = false;
+        if (sw * sh <= COVER_PROBE_PIXELS) {
+          const copy = new OffscreenCanvas(sw, sh), c = copy.getContext('2d'); c.drawImage(node, 0, 0);
+          const data = c.getImageData(0, 0, sw, sh).data; let all = true;
+          for (let i = 3; i < data.length && all; i += 4) all = data[i] === 255;
+          source = copy; opaque = all;
+        }
+        g.drawImage(source, (W - dw) / 2, (H - dh) / 2, dw, dh);
         // WebGL's cleared buffer reads as all transparent, or all opaque black with alpha:false (three.js's default).
         // All black is the page's own pixels only on a 2D canvas (getContext('2d') returns its context, null for WebGL;
         // a canvas without a context read transparent above, so this creates none).
         if (!video) {
           const data = g.getImageData(0, 0, W, H).data; let clear = true, black = true;
           for (let i = 0; i < data.length && (clear || black); i += 4) { clear &&= !data[i + 3]; black &&= !data[i] && !data[i + 1] && !data[i + 2] && data[i + 3] === 255; }
-          if (clear) return null;
+          // Nothing drawn (or cleared to transparent): the page shows through, as natively. The kernel decides the still.
+          // A composited WebGL buffer (preserveDrawingBuffer false) reads clear too, while the page still shows its frame:
+          // a canvas that once read real pixels has a context, so asking for '2d' creates none and names a 2D one; any
+          // other context keeps the still it has.
+          // `flat`: proven a 2D canvas the page cleared (only asked of a canvas with a context): the kernel may then replace a real
+          // still with a clear one; otherwise it keeps whatever real still it has (one from the rendered page included).
+          if (clear) { if (drawnCanvases.has(node)) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} return flat ? { clear: true, flat: true } : null; } return { clear: true }; }
+          drawnCanvases.add(node);
           if (black) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; }
         }
         for (let still = canvas; ;) {
           const bytes = new Uint8Array(await (await still.convertToBlob({ type: 'image/png' })).arrayBuffer());
-          if (4 * Math.ceil(bytes.length / 3) <= budget) { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768)); return { x, y, width, height, data_base64: btoa(binary) }; }
+          const encoded = 4 * Math.ceil(bytes.length / 3);
+          if (encoded <= budget) { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768)); return { x, y, width, height, data_base64: btoa(binary), opaque }; }
           if (still.width === 1 && still.height === 1) return null;
-          const half = new OffscreenCanvas(Math.ceil(still.width / 2), Math.ceil(still.height / 2));
-          half.getContext('2d').drawImage(still, 0, 0, half.width, half.height); still = half;
+          const ratio = 0.9 * Math.sqrt(Math.max(0, budget) / encoded);
+          const smaller = new OffscreenCanvas(Math.max(1, Math.min(still.width - 1, Math.floor(still.width * ratio))), Math.max(1, Math.min(still.height - 1, Math.floor(still.height * ratio))));
+          smaller.getContext('2d').drawImage(canvas, 0, 0, smaller.width, smaller.height); still = smaller;
         }
       } catch { return null; }
+    };
+    // T3 (subvysion): a region whose still would never show, because another region's opaque still covers all of it from above
+    // (a page's hidden <video> under the canvas that paints its frames), names that cover; the kernel then spends the packet's
+    // still budget on the cover alone. Only what is proven counts: the cover contains the box, is above it at its centre and four
+    // inset corners, is fully opaque (a video frame or canvas bitmap filling its box, the canvas's readback opaque everywhere),
+    // and it and its own wrappers draw without transparency (opacity, blending, alpha filters, clip, mask) or a rotation.
+    // Anything else (unreadable pixels, a hole, a cover below) names no cover.
+    // 4 MP: a 2560x1600 canvas (a full DPR2 viewport) is read whole; larger ones keep both stills.
+    const COVER_PROBE_PIXELS = 4 * 1024 * 1024;
+    const coveredBy = list => {
+      const out = {};
+      // Compositing that keeps every pixel's alpha: colour-only filter functions, no clip or mask, full opacity, normal blending.
+      const alphaKept = style => style.opacity === '1' && style.mixBlendMode === 'normal' && style.clipPath === 'none' && (style.maskImage ?? style.webkitMaskImage ?? 'none') === 'none'
+        && (style.filter === 'none' || /^(?:\s*(?:brightness|contrast|grayscale|hue-rotate|invert|saturate|sepia)\([^)]*\))+\s*$/.test(style.filter));
+      // The cover's pixels fill its whole box: no padding or border around them, and a bitmap that object-fit stretches or
+      // crops over the box (contain only when the bitmap has the box's own aspect ratio).
+      const fillsBox = (node, style, w, h) => {
+        if (['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom', 'borderLeftWidth', 'borderRightWidth', 'borderTopWidth', 'borderBottomWidth'].some(name => parseFloat(style[name]) > 0)) return false;
+        if (['fill', 'cover'].includes(style.objectFit)) return true;
+        return style.objectFit === 'contain' && w > 0 && h > 0 && node.clientWidth > 0 && node.clientHeight > 0 && Math.abs(w / h - node.clientWidth / node.clientHeight) < 0.005 * (w / h);
+      };
+      // Every ancestor of the cover below the one it shares with the covered region composites it the same way: a half-transparent
+      // or filtered wrapper of the cover alone lets the covered region show through.
+      const composedOpaque = (cover, below) => {
+        const up = e => e.parentElement ?? (e.parentNode instanceof ShadowRoot ? e.parentNode.host : null), shared = new Set();
+        for (let at = below; at; at = up(at)) shared.add(at);
+        for (let at = up(cover); at && !shared.has(at); at = up(at)) if (!alphaKept(getComputedStyle(at))) return false;
+        return true;
+      };
+      const opaque = new Map(), isOpaque = (id, node) => {
+        if (opaque.has(id)) return opaque.get(id);
+        let yes = false;
+        try {
+          const style = getComputedStyle(node);
+          // An axis-aligned transform (subvysion's canvas has matrix(1, 0, 0, 1, 0, 0)) paints exactly its bounding box.
+          const m = /^matrix\(([^)]*)\)$/.exec(style.transform)?.[1].split(',').map(Number), aligned = style.transform === 'none' || m?.length === 6 && m[1] === 0 && m[2] === 0;
+          if (alphaKept(style) && aligned && style.visibility === 'visible') {
+            // A video can carry transparency (VP9 with alpha): its current frame's alpha is proven like a canvas bitmap's.
+            if (node.localName === 'video') {
+              if (node.readyState >= 2 && ['fill', 'cover'].includes(style.objectFit) && fillsBox(node, style, node.videoWidth, node.videoHeight)) {
+                if (node.videoWidth * node.videoHeight > COVER_PROBE_PIXELS) throw Error('cover too large to prove');
+                const probe = new OffscreenCanvas(node.videoWidth, node.videoHeight), g = probe.getContext('2d');
+                g.drawImage(node, 0, 0); const data = g.getImageData(0, 0, node.videoWidth, node.videoHeight).data; let all = true;
+                for (let i = 3; i < data.length && all; i += 4) all = data[i] === 255;
+                yes = all;
+              }
+            }
+            else if (node.localName === 'canvas' && node.width > 0 && node.height > 0 && fillsBox(node, style, node.width, node.height)) {
+              // Every source pixel's alpha, never a resized probe (a narrow transparent strip can fall between its samples); a bitmap
+              // too large to read whole within COVER_PROBE_PIXELS proves nothing and covers nothing.
+              if (node.width * node.height > COVER_PROBE_PIXELS) throw Error('cover too large to prove');
+              const w = node.width, h = node.height, probe = new OffscreenCanvas(w, h), g = probe.getContext('2d');
+              g.drawImage(node, 0, 0); const data = g.getImageData(0, 0, w, h).data; let all = true, black = true;
+              for (let i = 0; i < data.length && all; i += 4) { all = data[i + 3] === 255; black &&= !data[i] && !data[i + 1] && !data[i + 2]; }
+              // An all-black readback of a WebGL canvas is its cleared buffer, not what it shows (as elementPixels).
+              yes = all && !(black && !(() => { try { return !!node.getContext('2d'); } catch { return false; } })());
+            }
+          }
+        } catch { yes = false; }
+        opaque.set(id, yes); return yes;
+      };
+      // A region hit testing cannot see (pointer-events: none) is ordered by CSS painting order in one provable case: it paints at a
+      // negative z-index directly in the root stacking context (no ancestor makes one), so anything whose root-level painter is
+      // in flow or at z-index >= 0 paints above it (subvysion's fixed z-index -1 video under its z-index 4 canvas).
+      const makesContext = e => {
+        if (e === e.ownerDocument.documentElement) return true;
+        const st = getComputedStyle(e), parent = e.parentElement && getComputedStyle(e.parentElement).display;
+        return st.position === 'fixed' || st.position === 'sticky' || st.zIndex !== 'auto' && (st.position !== 'static' || /flex|grid/.test(parent ?? '')) || st.opacity !== '1' || st.transform !== 'none' || st.filter !== 'none' || st.backdropFilter !== 'none' || st.mixBlendMode !== 'normal' || st.isolation === 'isolate' || st.clipPath !== 'none' || st.maskImage !== 'none' || st.perspective !== 'none' || /paint|layout|strict|content/.test(st.contain) || /transform|opacity|filter|z-index|position/.test(st.willChange);
+      };
+      const rootPainter = e => { let out = e; for (let at = e.parentElement; at && at !== e.ownerDocument.documentElement; at = at.parentElement) if (makesContext(at)) out = at; return out; };
+      const belowAll = node => { const st = getComputedStyle(node); return st.position !== 'static' && parseInt(st.zIndex, 10) < 0 && rootPainter(node) === node; };
+      const notBelow = e => { const p = rootPainter(e), st = getComputedStyle(p); return st.position === 'static' && !makesContext(p) || st.zIndex === 'auto' || parseInt(st.zIndex, 10) >= 0; };
+      for (const id of list) {
+        const node = nodes.get(id);
+        if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML) continue;
+        const r = node.getBoundingClientRect(), doc = node.ownerDocument, view = doc.defaultView;
+        if (!(r.width > 2 && r.height > 2)) continue;
+        const left = Math.max(r.left + 1, 0), top = Math.max(r.top + 1, 0), right = Math.min(r.right - 1, view.innerWidth - 1), bottom = Math.min(r.bottom - 1, view.innerHeight - 1);
+        if (right <= left || bottom <= top) continue;
+        let cover = null;
+        for (const [x, y] of [[(left + right) / 2, (top + bottom) / 2], [left, top], [right, top], [left, bottom], [right, bottom]]) {
+          const stack = doc.elementsFromPoint(x, y), at = stack.indexOf(node), hidden = at < 0 && belowAll(node);
+          const above = at > 0 || hidden ? stack.slice(0, hidden ? stack.length : at).find(e => { if (hidden && !notBelow(e)) return false; const eid = mirrored(e); if (!eid || eid === id || kindOf.get(eid) !== 'tile' || e.namespaceURI !== HTML) return false; const b = e.getBoundingClientRect(); return b.left <= r.left + 0.5 && b.top <= r.top + 0.5 && b.right >= r.right - 0.5 && b.bottom >= r.bottom - 0.5 && isOpaque(eid, e); }) : null;
+          if (!above || cover && above !== cover) { cover = null; break; }
+          cover = above;
+        }
+        if (cover && composedOpaque(cover, node)) out[id] = mirrored(cover);
+      }
+      return out;
     };
     // MP-08 / MP-11: input follows live geometry; Vault protection applies to model observations.
     const live = id => {
@@ -1455,6 +1603,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (![pt.x, pt.y].every(Number.isFinite) || pt.x < 0 || pt.y < 0 || pt.x >= innerWidth || pt.y >= innerHeight) throw new Error('mirror2 offscreen node');
       return true;
     };
+    // B4: Chrome's own context menu would open in the kernel's window: the right click's contextmenu is cancelled in the
+    // window of the document it fires in (a frame's contextmenu never reaches its parent), after the page's listeners.
+    const menuOff = id => {
+      const view = live(id).ownerDocument?.defaultView; if (!view) return false;
+      const off = event => event.preventDefault();
+      view.addEventListener('contextmenu', off, { once: true }); setTimeout(() => view.removeEventListener('contextmenu', off), 1000);
+      return true;
+    };
     const activeTarget = (editable = true) => {
       let node = document.activeElement;
       for (let depth = 0; depth < 128; depth++) { let nested = node?.shadowRoot?.activeElement; try { nested ??= node?.localName === 'iframe' ? node.contentDocument?.activeElement : null; } catch {} if (!nested) break; node = nested; }
@@ -1497,14 +1653,17 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for (const [id, node] of nodes) if (node.ownerDocument === a.ownerDocument && kindOf.get(id) === 'mask' && range.intersectsNode(node)) throw new Error('mirror2 selection intersects protected content');
       a.ownerDocument.getSelection().setBaseAndExtent(a, request.anchor_offset, b, request.focus_offset); return true;
     };
-    // MP-08/MP-10 local scroll (viewer-owned): the kernel follows the viewer.
+    // MP-08/MP-10 local scroll (viewer-owned): the kernel follows the viewer. Y3-R1 (6thsense, tensr): at once, whatever
+    // scroll-behavior the page asks for. The viewer already moved its copy the page's way; a smooth kernel scroll lagged
+    // behind it and its start position came back to the viewer as where the page stood.
+    const at = (x, y) => ({ left: x, top: y, behavior: 'instant' });
     const scrollTo = request => {
-      if (!request.node_id) { window.scrollTo(request.x, request.y); return [scrollX, scrollY]; }
+      if (!request.node_id) { window.scrollTo(at(request.x, request.y)); return [scrollX, scrollY]; }
       const node = nodes.get(request.node_id);
       // A document id scrolls that document's window (same-origin frames too).
-      if (node?.nodeType === 9 && node.defaultView) { node.defaultView.scrollTo(request.x, request.y); return [node.defaultView.scrollX, node.defaultView.scrollY]; }
+      if (node?.nodeType === 9 && node.defaultView) { node.defaultView.scrollTo(at(request.x, request.y)); return [node.defaultView.scrollX, node.defaultView.scrollY]; }
       const element = live(request.node_id); if (element.nodeType !== 1) throw new Error('mirror2 element required');
-      element.scrollTo(request.x, request.y); return [element.scrollLeft, element.scrollTop];
+      element.scrollTo(at(request.x, request.y)); return [element.scrollLeft, element.scrollTop];
     };
     // Trusted-side (DOM.resolveNode): the mirror id of a frame owner element.
     const idOfNode = function () { return this && mirrored(this) || null; };
@@ -1601,7 +1760,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || valueStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || stacksDue() || mediaPlaying() !== reportedPlaying || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || valueStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
@@ -1622,12 +1781,25 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
       return out;
     };
+    // The same check from a cross-origin sheet's selector list (the kernel holds the sheet and keeps the rules): '1' where
+    // a selector is in use, '0' where not, as usedCss would keep or drop its rule. Null where usedCss answers null.
+    const usedSelectors = (id, selectors) => {
+      const root = nodes.get(id)?.getRootNode?.();
+      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return null;
+      const keep = usedBy(root); let out = ''; for (const selector of selectors) out += keep(String(selector)) ? '1' : '0';
+      return out;
+    };
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
     const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
     const resourceEntries = () => [...resourceDocuments()].flatMap(doc => { try { return doc.defaultView?.performance.getEntriesByType('resource') ?? []; } catch { return []; } });
     const resourceImages = () => imageNodes.values();
-    const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) { names.add(img.currentSrc); try { names.add(new URL(imageSource(img), img.baseURI).href); } catch {} } return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
+    // W0-T1: a file loads once whatever fragments name it (an SVG stack's icons): each fragment's key counts as loaded with it.
+    const unhashed = url => { const at = url.indexOf('#'); return at < 0 ? url : url.slice(0, at); };
+    const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) { names.add(img.currentSrc); try { names.add(new URL(imageSource(img), img.baseURI).href); } catch {} }
+      const files = new Set([...names].map(unhashed)), keys = [];
+      for (const [slot, entry] of urlKeys) if (files.has(unhashed(slot.startsWith('sprite:') ? slot.slice(7) : slot))) keys.push(entry.key);
+      return keys; };
     // Changes when the page loads something (an image may complete without a new entry).
     const loadedCount = () => { let complete = 0; for (const img of resourceImages()) if (img.complete) complete++; return timed.size + resourceEntries().length + complete; };
     // MP-10 wheel bytes: images (by element) near the viewport, with their CSS
@@ -1683,6 +1855,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, sheetKeys, usedCss, usedSelectors, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, coveredBy, point, hitCheck, menuOff, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

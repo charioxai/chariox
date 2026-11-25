@@ -1,6 +1,7 @@
 use thiserror::Error;
 mod actionable_refusals;
 mod provider_profile_refusal;
+pub(crate) mod runtime_tool;
 mod user_domain_refusal;
 pub(crate) use actionable_refusals::{
     message as actionable_refusal_message, PROVIDER_DEV_STUB_DISABLED_CODE,
@@ -22,7 +23,7 @@ pub(crate) fn agent_deadline_refusal(deadline_ms: u64) -> DaemonError {
             || external_request_failure_message(AGENT_DEADLINE_REACHED).into(),
             |deadline| {
                 let time = deadline.format("%Y-%m-%d %H:%M:%S UTC");
-                format!("This agent’s time limit ended at {time}. Start a new agent for new work.")
+                format!("This agent’s time limit ended at {time}. The owner, or its parent, can extend or clear it with `agent deadline <agent> <duration|none>` and then prompt it again; the same agent continues with its context. Or start a new agent for new work.")
             },
         );
     DaemonError::MachineRequest {
@@ -65,6 +66,8 @@ pub enum DaemonError {
     ProviderLoginCodeIncomplete,
     #[error("The code could not be read. Copy the whole code and try again.")]
     ProviderLoginCodeInvalid,
+    #[error("This Vault entry is no longer available. Choose another entry or add one in Vault.")]
+    ProviderLoginVaultEntryUnavailable,
     #[error("{provider} account `{account_name}`: {}", .reason.local_message())]
     ProviderProfileRefused {
         reason: ProviderProfileRefusal,
@@ -312,6 +315,7 @@ pub enum DaemonError {
         worktree_id: String,
         existing_session_id: String,
         existing_operation: Box<String>,
+        existing_workflow_run_id: Option<Box<String>>,
         requested_session_id: String,
         requested_operation: Box<String>,
     },
@@ -380,6 +384,11 @@ pub enum DaemonError {
         owner_user_id: String,
         resource: String,
         operation: &'static str,
+    },
+    #[error("{source}. {action}")]
+    WorkflowStartRefused {
+        source: Box<DaemonError>,
+        action: &'static str,
     },
     #[error("session-scoped request `{operation}` requires authenticated user identity")]
     MissingSessionCallerIdentity { operation: String },
@@ -564,6 +573,16 @@ pub enum DaemonError {
 }
 
 impl DaemonError {
+    pub(crate) fn workspace_claim_holding_run_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkspaceClaimConflict {
+                existing_workflow_run_id,
+                ..
+            } => existing_workflow_run_id.as_deref().map(String::as_str),
+            _ => None,
+        }
+    }
+
     pub(crate) fn steer_not_submitted(self, steering: bool) -> Self {
         if steering {
             Self::ProviderPromptSteerRejected {

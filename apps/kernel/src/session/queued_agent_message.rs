@@ -14,9 +14,12 @@ pub struct QueuedAgentMessage {
     pub agent_id: String,
     /// The sender as the person knows it: its alias or reference.
     pub sender: String,
-    /// The start of the message, secrets redacted.
+    /// The start of the message, secrets redacted. A predecessor's stored projection may lack it:
+    /// the projection is rebuilt from the inbox, so an empty one only stands in until then.
+    #[serde(default)]
     pub preview: String,
     /// The message is longer than its preview.
+    #[serde(default)]
     pub truncated: bool,
 }
 

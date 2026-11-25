@@ -38,6 +38,7 @@ fn an_idle_kernel_sends_a_bare_heartbeat_once_per_six_ticks() {
         let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
             .await
             .unwrap();
+        crate::transport::relay_socket_connect::acknowledge_test_registration(&mut socket).await;
         let mut heartbeats = 0;
         let deadline = tokio::time::Instant::now() + OBSERVED;
         while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
@@ -142,8 +143,10 @@ fn presence_refreshes_share_one_cloud_connection() {
             INTERACTIVE_COMMAND_QUEUE_LIMIT,
         ));
 
+        let registration = router.relay_registration().await;
         for round in 0..3 {
-            let outcome = publish_cloud_presence(&router, true, "idle drill").await;
+            let outcome =
+                publish_cloud_presence(&router, true, "idle drill", Some(&registration)).await;
             assert_eq!(outcome, CloudPresencePublishOutcome::Published, "{round}");
         }
 
@@ -177,7 +180,8 @@ fn a_payload_waiting_for_state_does_not_stop_relay_heartbeats() {
         let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
             .await
             .unwrap();
-        // Drain registration and the immediate heartbeat before blocking a payload's write.
+        crate::transport::relay_socket_connect::acknowledge_test_registration(&mut socket).await;
+        // Drain the immediate heartbeat before blocking a payload's write.
         loop {
             let message = timeout(Duration::from_secs(5), socket.next())
                 .await

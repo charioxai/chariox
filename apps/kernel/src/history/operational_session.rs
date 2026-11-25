@@ -252,6 +252,8 @@ impl OperationalHistoryStore {
         sequence_end: u64,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
+        #[cfg(test)]
+        self.count_agent_history_load();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
@@ -446,6 +448,10 @@ impl OperationalHistoryStore {
         agent_id: Option<&str>,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
+        #[cfg(test)]
+        if agent_id.is_some() {
+            self.count_agent_history_load();
+        }
         let connection = self.lock_read_connection(Some(session_id))?;
         let sql = if agent_id.is_some() {
             "SELECT event_json FROM history_events WHERE session_id = ?1 AND agent_id = ?2 ORDER BY sequence ASC"
@@ -471,6 +477,62 @@ impl OperationalHistoryStore {
             message: error.to_string(),
         })?;
         read_history_events_from_rows(session_id, &mut rows)
+    }
+
+    /// The agent's newest events, oldest first, up to about `max_bytes` of
+    /// stored event data, and whether older events were left out. The read
+    /// walks the agent's index from the newest row and stops at the budget,
+    /// so it costs the same for any history length.
+    pub(crate) fn load_newest_agent_events(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        max_bytes: usize,
+    ) -> Result<(Vec<HistoryEvent>, bool), DaemonError> {
+        self.delay_read_if_configured();
+        #[cfg(test)]
+        self.count_agent_history_load();
+        let failed = |operation: &'static str| {
+            move |error: rusqlite::Error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation,
+                message: error.to_string(),
+            }
+        };
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_json FROM history_events
+                 WHERE session_id = ?1 AND agent_id = ?2
+                 ORDER BY sequence DESC",
+            )
+            .map_err(failed("prepare newest operational history load"))?;
+        let mut rows = statement
+            .query(params![session_id, agent_id])
+            .map_err(failed("load newest operational history events"))?;
+        let (mut events, mut bytes) = (Vec::new(), 0);
+        while let Some(row) = rows
+            .next()
+            .map_err(failed("read operational history event"))?
+        {
+            if bytes >= max_bytes {
+                return Ok((events.into_iter().rev().collect(), true));
+            }
+            let event_json = row
+                .get::<_, String>(0)
+                .map_err(failed("read operational history event"))?;
+            bytes += event_json.len();
+            events.push(
+                serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
+                    DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode operational history event",
+                        message: error.to_string(),
+                    }
+                })?,
+            );
+        }
+        Ok((events.into_iter().rev().collect(), false))
     }
 
     /// The tool rows one provider run wrote, oldest first.
@@ -957,6 +1019,7 @@ fn session_history_kind_from_key(kind: &str) -> Option<SessionHistoryEntryKind> 
         "provider_tool" => Some(SessionHistoryEntryKind::ProviderTool),
         "provider_error" => Some(SessionHistoryEntryKind::ProviderError),
         "provider_status" => Some(SessionHistoryEntryKind::ProviderStatus),
+        "context_compacted" => Some(SessionHistoryEntryKind::ContextCompacted),
         "notice" => Some(SessionHistoryEntryKind::Notice),
         _ => None,
     }

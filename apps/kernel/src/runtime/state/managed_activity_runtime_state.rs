@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn managed_activity_counts_unresolved_interactions() {
         let mut session = session();
-        session.add_active_interaction(RuntimeInteraction::new(
+        session.add_interaction_fixture(RuntimeInteraction::new(
             "interaction-1",
             "agent-1",
             RuntimeInteractionKind::Permission,

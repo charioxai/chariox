@@ -9,6 +9,10 @@ pub(super) fn meta_command_requires_task_plan(tokens: &[String]) -> bool {
             tokens.get(1).map(String::as_str),
             Some("new")
                 | Some("alias")
+                | Some("archive")
+                | Some("unarchive")
+                | Some("delete")
+                | Some("remove")
                 | Some("node")
                 | Some("endpoint")
                 | Some("edge")
@@ -45,13 +49,13 @@ pub(super) fn meta_command_error(message: impl Into<String>) -> DaemonError {
 
 pub(super) fn meta_command_failure_result(
     command: &str,
-    error: impl std::fmt::Display,
+    error: impl std::borrow::Borrow<DaemonError>,
 ) -> RuntimeToolResult {
     RuntimeToolResult {
         ok: false,
         payload: serde_json::json!({
             "command": redacted_meta_command_for_payload(command),
-            "error": error.to_string(),
+            "error": crate::error::runtime_tool::message(error.borrow()),
         }),
     }
 }
@@ -90,6 +94,18 @@ pub(super) fn redacted_meta_command_for_payload(command: &str) -> String {
     }
 }
 
+pub(super) fn agent_settings_details(agent: &crate::agent::AgentInstance) -> serde_json::Value {
+    serde_json::json!({
+        "provider": agent.provider(),
+        "model": agent.model(),
+        "effort": agent.effort(),
+        "account_profile": agent.provider_account_profile(),
+        "mode": agent.execution_mode_override(),
+        "permission": agent.permission_level_override(),
+        "directory": agent.worktree_id(),
+    })
+}
+
 fn summarize_meta_command_response(
     response: &LocalDaemonResponse,
     metaagent: &crate::agent::AgentInstance,
@@ -108,20 +124,22 @@ fn summarize_meta_command_response(
         | LocalDaemonResponse::AgentConfigUpdated { agent, applies, .. } => serde_json::json!({
             "type": "AgentSettingsChanged",
             "agent": summarize_meta_agent(agent),
-            "settings": {
-                "provider": agent.provider(),
-                "model": agent.model(),
-                "effort": agent.effort(),
-                "account_profile": agent.provider_account_profile(),
-                "mode": agent.execution_mode_override(),
-                "permission": agent.permission_level_override(),
-                "directory": agent.worktree_id(),
-            },
+            "settings": agent_settings_details(agent),
+            "pending": agent.pending_profile(),
             "status": match applies {
                 crate::local::SettingsApplies::Now => "applied",
                 crate::local::SettingsApplies::AtStepBoundary => "applied, continuing",
+                crate::local::SettingsApplies::AtTurnEnd if agent.pending_profile().is_some() => "pending until this turn ends",
                 crate::local::SettingsApplies::AtTurnEnd => "applied when this turn ends",
             },
+        }),
+        LocalDaemonResponse::SessionCreated { session, .. } => serde_json::json!({
+            "type": "RoomCreated",
+            "room": {"id": session.id(), "name": session.alias(), "project_id": session.project_id()},
+        }),
+        LocalDaemonResponse::SessionDeleted { session } => serde_json::json!({
+            "type": "RoomDeleted",
+            "room": {"id": session.id(), "name": session.alias()},
         }),
         LocalDaemonResponse::AgentDestroyed { agent } => serde_json::json!({
             "type": "AgentDestroyed",
@@ -130,6 +148,14 @@ fn summarize_meta_command_response(
         LocalDaemonResponse::AgentFocused { agent } => serde_json::json!({
             "type": "AgentFocused",
             "agent": summarize_meta_agent(agent),
+        }),
+        LocalDaemonResponse::AccountKernelsListed { kernels } => serde_json::json!({
+            "type": "AccountKernelsListed",
+            "kernels": kernels,
+        }),
+        LocalDaemonResponse::AccountKernelUnlinked { target_id } => serde_json::json!({
+            "type": "AccountKernelUnlinked",
+            "target_id": target_id,
         }),
         LocalDaemonResponse::AgentsListed { agents } => serde_json::json!({
             "type": "AgentsListed",
@@ -307,6 +333,10 @@ fn summarize_meta_command_response(
         LocalDaemonResponse::AgentTriggerDeleted { trigger, .. } => serde_json::json!({
             "type": "AgentTriggerDeleted",
             "trigger_id": trigger.id(),
+        }),
+        LocalDaemonResponse::WorkflowDesignOpAccepted { event, .. } => serde_json::json!({
+            "type": "WorkflowDesignOpAccepted",
+            "op": &event.op,
         }),
         _ => serde_json::json!({
             "type": "CommandAccepted",

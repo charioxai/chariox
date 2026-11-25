@@ -155,6 +155,9 @@ def answer(conn, request):
         status = {"type": "active", "activeFlags": []} if turn["status"] == "inProgress" else {"type": "idle"}
         turns = [turn_view()] if turn["status"] else []
         result = {"thread": {"id": THREAD, "status": status, "turns": turns}, "model": model, "cwd": params.get("cwd")}
+    elif method == "skills/list":
+        # A kernel with installed Skills (a copy of a live kernel's state) asks for its inventory.
+        result = {"data": [{"cwd": cwd, "skills": [], "errors": []} for cwd in params.get("cwds") or []]}
     elif method == "turn/start":
         note("prompts", "prompt 1")
         turn["status"] = "inProgress"

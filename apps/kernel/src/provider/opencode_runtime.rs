@@ -3,6 +3,8 @@ mod cancellation_tests;
 mod drain;
 #[cfg(test)]
 mod finalized_snapshot_tests;
+#[cfg(test)]
+mod free_limit_tests;
 mod parts;
 mod permission;
 #[cfg(test)]
@@ -16,6 +18,9 @@ mod transcript;
 pub(in crate::provider) use drain::drain_opencode_events;
 pub(crate) use state::OpenCodeRuntimeState;
 pub use state::{OpenCodeAssistantCompletion, OpenCodeOutputChunk};
+
+pub(super) const NATIVE_PERMISSION_DENIED: &str =
+    "The user rejected permission to use this specific tool call.";
 
 #[cfg(test)]
 use transcript::ToolTranscriptUpdate;
@@ -1138,7 +1143,8 @@ mod tests {
         super::snapshot::record_snapshot_message_metadata(&mut state, &messages);
 
         assert_eq!(
-            opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user")).as_deref(),
+            opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user"), false)
+                .as_deref(),
             Some("OpenCode error [other]: Provider finish_reason: network_error")
         );
     }
@@ -1170,7 +1176,8 @@ mod tests {
         state.note_prompt_submitted("msg_user".to_string());
 
         assert_eq!(
-            opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user")).as_deref(),
+            opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user"), false)
+                .as_deref(),
             Some("OpenCode error [other]: Provider finish_reason: network_error")
         );
     }

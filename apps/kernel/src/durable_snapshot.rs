@@ -29,9 +29,6 @@ pub(crate) struct DurableKernelSnapshotPayload {
     #[serde(default)]
     pub(crate) prompt_private_states: Vec<DurablePromptPrivateState>,
     pub(crate) agents: Vec<AgentInstance>,
-    // MP-11: default-allow Computer denials are durable, unlike loaded grants.
-    #[serde(default)]
-    pub(crate) room_computer_revoked: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub(crate) slices: Vec<SliceRecord>,
     #[serde(default)]
@@ -55,7 +52,6 @@ impl DurableKernelSnapshotPayload {
         agents: &AgentServiceStore,
         slices: &SliceStore,
         metaagent_events: &MetaagentEventStore,
-        room_computer_revoked: &Mutex<std::collections::BTreeSet<String>>,
     ) -> Self {
         let projects = sessions.read().durable_projects();
         let durable_sessions = sessions.read().durable_sessions();
@@ -72,17 +68,6 @@ impl DurableKernelSnapshotPayload {
             .into_iter()
             .filter(|agent| durable_session_ids.contains(agent.session_id()))
             .collect();
-        let live_ids = agents
-            .iter()
-            .map(|agent| agent.id())
-            .collect::<std::collections::BTreeSet<_>>();
-        let room_computer_revoked = room_computer_revoked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|id| live_ids.contains(id.as_str()))
-            .cloned()
-            .collect();
         let slice_records = slices.list();
         let slice_saved_states = slices.list_saved_states();
         let slice_backups = slices.list_backups();
@@ -95,7 +80,6 @@ impl DurableKernelSnapshotPayload {
             sessions: durable_sessions,
             prompt_private_states,
             agents,
-            room_computer_revoked,
             slices: slice_records,
             slice_saved_states,
             slice_backups,
@@ -187,7 +171,6 @@ pub(crate) struct DurableSnapshotSources {
     pub(crate) agents: AgentServiceStore,
     pub(crate) slices: SliceStore,
     pub(crate) metaagent_events: MetaagentEventStore,
-    pub(crate) room_computer_revoked: Arc<Mutex<std::collections::BTreeSet<String>>>,
 }
 
 #[derive(Clone)]
@@ -198,7 +181,6 @@ pub(crate) struct DurableSnapshotScheduler {
     agents: AgentServiceStore,
     slices: SliceStore,
     metaagent_events: MetaagentEventStore,
-    room_computer_revoked: Arc<Mutex<std::collections::BTreeSet<String>>>,
     policy: DurableCheckpointPolicy,
     checkpoint_marker: Arc<Mutex<Option<DurableCheckpointMarker>>>,
 }
@@ -237,7 +219,6 @@ impl DurableSnapshotScheduler {
             agents: sources.agents,
             slices: sources.slices,
             metaagent_events: sources.metaagent_events,
-            room_computer_revoked: sources.room_computer_revoked,
             policy,
             checkpoint_marker: Arc::new(Mutex::new(None)),
         }
@@ -332,7 +313,6 @@ impl DurableSnapshotScheduler {
                     &self.agents,
                     &self.slices,
                     &self.metaagent_events,
-                    &self.room_computer_revoked,
                 ))
             })?;
         self.durable_state.save_entity_checkpoint(
@@ -518,7 +498,6 @@ mod tests {
             app.agents(),
             &app.slices(),
             &app.metaagent_event_store(),
-            &app.room_computer_revoked,
         );
 
         assert!(snapshot
@@ -588,7 +567,6 @@ mod tests {
             app.agents(),
             &app.slices(),
             &app.metaagent_event_store(),
-            &app.room_computer_revoked,
         );
 
         assert_eq!(snapshot.pending_slice_backup_restores, vec![transaction]);
@@ -610,7 +588,6 @@ mod tests {
                 agents: app.agents().clone(),
                 slices: app.slices(),
                 metaagent_events: app.metaagent_event_store(),
-                room_computer_revoked: app.room_computer_revoked.clone(),
             },
             10,
         );
@@ -665,7 +642,6 @@ mod tests {
                 agents: app.agents().clone(),
                 slices: app.slices(),
                 metaagent_events: app.metaagent_event_store(),
-                room_computer_revoked: app.room_computer_revoked.clone(),
             },
             1,
         );
@@ -698,7 +674,6 @@ mod tests {
                 agents: app.agents().clone(),
                 slices: app.slices(),
                 metaagent_events: app.metaagent_event_store(),
-                room_computer_revoked: app.room_computer_revoked.clone(),
             },
             1,
         );
@@ -746,7 +721,6 @@ mod tests {
                 agents: app.agents().clone(),
                 slices: app.slices(),
                 metaagent_events: app.metaagent_event_store(),
-                room_computer_revoked: app.room_computer_revoked.clone(),
             },
             1,
         );

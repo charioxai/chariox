@@ -116,3 +116,45 @@ async fn an_agent_cannot_take_its_own_usage_limit_decision_body() {
         "{not_stopped:?}"
     );
 }
+
+#[test]
+fn agent_profile_turn_end_reports_pending_to_the_cli_and_requesting_agent() {
+    run_large_stack_async_test("settings-at-turn-end", || async {
+        let world = world("settings-at-turn-end").await;
+        let result = room_command(
+            &world,
+            "b",
+            "agent settings set --model m-next --at-turn-end",
+        )
+        .await;
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.payload["response"]["status"],
+            "pending until this turn ends"
+        );
+        assert_ne!(model_of(&world, "b").await.as_deref(), Some("m-next"));
+
+        let read = room_command(&world, "b", "agent settings").await;
+        assert!(read.ok, "{read:?}");
+        assert_eq!(read.payload["response"]["pending"]["model"], "m-next");
+
+        let read = LocalDaemonRequest::GetAgentSettings(crate::local::GetAgentSettingsRequest {
+            session_id: Some(world.room.clone()),
+            agent: "b".into(),
+        });
+        let command = KernelCommand::from_local_request("read-agent-settings", None, None, &read);
+        let LocalDaemonResponse::AgentSettings { agent } =
+            world.router.dispatch(command, read).await.unwrap()
+        else {
+            panic!("the CLI can read the sub-agent's settings");
+        };
+        assert_eq!(agent.id, world.ids["b"]);
+        assert_eq!(
+            agent.pending_profile.unwrap().model.as_deref(),
+            Some("m-next")
+        );
+
+        let refused = room_command(&world, "b", "agent settings s").await;
+        assert!(!refused.ok, "{refused:?}");
+    });
+}

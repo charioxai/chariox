@@ -5,12 +5,92 @@ pub(super) fn roomy() -> Arc<pool::Pool> {
     Arc::new(pool::Pool::new(1 << 50, false))
 }
 
+/// Provider tools such as OpenCode give a command socket streams, which
+/// cannot be reopened by path: the stopped command still reads why.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_whose_error_stream_is_a_socket_is_told_why() {
+    use std::io::Read;
+    use std::os::fd::OwnedFd;
+    let (mut ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut child = std::process::Command::new("sleep")
+        .arg("10")
+        .stderr(std::process::Stdio::from(OwnedFd::from(theirs)))
+        .spawn()
+        .unwrap();
+    announce(child.id(), "chariox: stopped this command: a test reason\n");
+    ours.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut told = [0u8; 128];
+    let read = ours.read(&mut told).unwrap_or(0);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        String::from_utf8_lossy(&told[..read]),
+        "chariox: stopped this command: a test reason\n"
+    );
+}
+
+#[test]
+fn a_bursty_writers_rate_is_what_it_wrote_over_two_seconds() {
+    let mut window = std::collections::VecDeque::new();
+    // 8 MiB at once, then nothing for three samples: 8 MiB/s on average.
+    let mut rates = Vec::new();
+    for tick in 0..16u64 {
+        let writes = (tick / 4 + u64::from(tick % 4 > 0)) * 8 * MIB;
+        rates.push(write_rate(&mut window, tick * 250, writes));
+    }
+    assert_eq!(rates[0], 0, "one sample has no rate");
+    assert_eq!(
+        rates[1],
+        4 * MIB,
+        "a first burst counts over the whole window"
+    );
+    for rate in &rates[8..] {
+        assert!((7 * MIB..=9 * MIB).contains(rate), "{rates:?}");
+    }
+    // The same sample again changes nothing.
+    assert_eq!(write_rate(&mut window, 15 * 250, 32 * MIB), rates[15]);
+}
+
 #[test]
 fn memory_override_rejects_invalid_and_overflowing_limits() {
     for value in ["", "0", "-1", "NaN", "15", "18446744073709551615"] {
         assert!(configured_cap(Some(value)).is_err(), "{value}");
     }
     assert_eq!(configured_cap(Some("64")).unwrap(), Some(64 * MIB));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resource_admission_reports_when_the_command_did_not_run() {
+    let root = crate::test_support::TestTempDir::new("resource-admission");
+    let group = root.path().join("resource-group");
+    let mut prepared = PreparedDomain::watchdog("admission-test", None, roomy());
+    prepared.marker = None;
+    let (program, mut args) = prepared.command(
+        "/bin/sh".into(),
+        vec!["-c".into(), "printf 'program ran'; exit 125".into()],
+    );
+    args[3] = group.to_str().unwrap().to_string();
+    let run = || {
+        std::process::Command::new(&program)
+            .args(&args)
+            .output()
+            .unwrap()
+    };
+
+    let refused = run();
+    assert_eq!(refused.status.code(), Some(125));
+    assert!(refused.stdout.is_empty());
+    let stderr = String::from_utf8(refused.stderr).unwrap();
+    assert!(stderr.contains("The command did not run"));
+    assert!(stderr.contains("safe to retry"));
+
+    std::fs::create_dir(&group).unwrap();
+    let program_exit = run();
+    assert_eq!(program_exit.status.code(), Some(125));
+    assert_eq!(program_exit.stdout, b"program ran");
+    assert!(program_exit.stderr.is_empty());
 }
 
 #[cfg(unix)]

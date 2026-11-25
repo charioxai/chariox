@@ -8,6 +8,7 @@ use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 const PASSKEY: &str = "Access TEST Passkey";
 const AUTH: &str = "test-terminal";
 const SESSION: &str = "access-session";
+const PROJECT_TEST_MODEL: &str = "claude-sonnet-5-5";
 
 fn kernel_access_socket(root: &Path) -> PathBuf {
     // Isolated tests nest TMPDIR, so it cannot also be the sockaddr_un prefix.
@@ -60,6 +61,7 @@ fn kernel_access_child_server() {
                 crate::config::CredentialVaultUnlockPolicy::KernelInit;
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
             let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+            crate::test_support::seed_default_account_models(&app, "claude", &[PROJECT_TEST_MODEL]);
             let credential_session =
                 std::env::var("CHARIOX_ACCESS_TEST_CREDENTIAL_SESSION").as_deref() == Ok("1");
             for id in [SESSION, "other-session"]
@@ -1734,6 +1736,44 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
     assert_eq!(subscribed["kernel"], "b3", "{subscribed}");
 }
 
+#[tokio::test]
+async fn account_kernel_access_requires_live_owner_grant_and_local_enrollment() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    for request in [
+        serde_json::json!({"CloudAccountKernels":{"action":"list"}}),
+        serde_json::json!({"CloudAccountKernels":{"action":"unlink","target_id":"target-stale"}}),
+    ] {
+        let refused = holder.request(request.clone());
+        assert_eq!(
+            refused["error"]["code"], "kernel_access_not_covered",
+            "{refused}"
+        );
+    }
+    grant(&mut kernel, &mut holder).await;
+    for request in [
+        serde_json::json!({"CloudAccountKernels":{"action":"list"}}),
+        serde_json::json!({"CloudAccountKernels":{"action":"unlink","target_id":"target-stale"}}),
+    ] {
+        let forwarded = holder.request_on("other-kernel", request.clone());
+        assert!(
+            forwarded["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("directly"),
+            "{forwarded}"
+        );
+        let refused = holder.request(request);
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Sign this kernel in"),
+            "{refused}"
+        );
+    }
+}
+
 // A subscription routed to another kernel keeps that kernel's own heartbeat interval, so
 // asking for one is refused instead of being dropped without a word.
 #[tokio::test]
@@ -2000,7 +2040,7 @@ async fn a_refused_request_tells_the_grant_holder_why() {
         "workspace_id": "/tmp",
         "worktree_id": "/tmp",
         "metaagent": true,
-        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
+        "agent_defaults": {"provider": "claude", "model": PROJECT_TEST_MODEL, "effort": "low"}
     }}));
     let error = &refused["error"];
     let message = error["message"].as_str().unwrap_or_default();
@@ -2021,10 +2061,9 @@ async fn an_archived_default_project_is_explained_to_the_grant_holder() {
     grant(&mut kernel, &mut holder).await;
     let workspace = kernel.root.join("project-workspace");
     std::fs::create_dir(&workspace).unwrap();
-    // A model of the offline Claude catalog and an effort keep the account catalog out of this test.
     let request = serde_json::json!({"CreateSession": {
         "workspace_id": workspace, "worktree_id": workspace,
-        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
+        "agent_defaults": {"provider": "claude", "model": PROJECT_TEST_MODEL, "effort": "low"}
     }});
     let created = kernel.request(request.clone()).await;
     let project_id = created["response"]["SessionCreated"]["session"]["project_id"]

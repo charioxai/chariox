@@ -291,6 +291,20 @@ pub(super) fn child_finished(
         .collect()
 }
 
+fn assert_missing_answer_excerpt(team: &Team, payload: &serde_json::Value, reason: &str) {
+    let answer = &payload["public_answer"];
+    let excerpt = answer["excerpt"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing completion excerpt: {payload}"));
+    assert!(excerpt.to_lowercase().contains(reason), "{excerpt}");
+    assert!(excerpt.contains("chariox.history.turn"), "{excerpt}");
+    assert!(excerpt.contains(&team.child), "{excerpt}");
+    assert!(excerpt.contains(team.child_prompt.id()), "{excerpt}");
+    assert_eq!(answer["agent_id"], team.child.as_str());
+    assert_eq!(answer["prompt_id"], team.child_prompt.id());
+    assert_eq!(answer["task_id"], team.task.task_id.as_str());
+}
+
 #[tokio::test]
 async fn a_finished_child_is_one_urgent_event_for_its_parent() {
     let team = team("child-finished-urgent", false, false).await;
@@ -310,7 +324,114 @@ async fn a_finished_child_is_one_urgent_event_for_its_parent() {
     assert_eq!(event.payload["success"], true);
     assert_eq!(event.payload["outcome"]["kind"], "completed");
     assert_eq!(event.payload["deadline_reached"], false);
-    let _ = &team.child_run;
+    assert_missing_answer_excerpt(&team, &event.payload, "without a text answer");
+}
+
+/// A child whose long foreground command the kernel's restart recovery ended (the real
+/// recovery step: the command row it left open is closed with the restart reason). Its turn
+/// continues, ends, and settles; this is the task that settlement returns.
+async fn child_that_continued_after_a_restart(
+    label: &str,
+) -> (
+    Team,
+    crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    bool,
+) {
+    let team = team_with(label, None, false).await;
+    let open = serde_json::json!({"id": "cargo-ticket", "tool": "Bash", "status": "running"});
+    team.runtime
+        .apply_owned_structured_output_batch(
+            &team.room,
+            &team.child_run,
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: Some("cargo-ticket".into()),
+                    bytes: serde_json::to_vec(&open).unwrap(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    let prompt = team
+        .runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &team.room,
+            &team.child,
+            team.child_prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(team.child_run.clone()),
+            Some("provider-session".into()),
+        )
+        .unwrap();
+    assert!(team
+        .runtime
+        .owned
+        .end_foreground_provider_tools_left_by_restart(&team.room, &team.child, &prompt)
+        .unwrap());
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    // The continued turn ends normally, hours later.
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    let (task, correction) = team
+        .runtime
+        .owned
+        .settle_agent_task(&team.room, &team.child, &prompt, &team.child_run, false)
+        .unwrap()
+        .expect("the turn settles its task");
+    (team, task, correction)
+}
+
+// O0 (queue row 372): a restart cut a command of this turn; the turn continued and finished
+// hours later. Its outcome is what ended it, not the earlier restart.
+#[tokio::test]
+async fn a_turn_that_continued_after_a_restart_and_completed_reports_completed() {
+    let (team, task, correction) =
+        child_that_continued_after_a_restart("child-finished-after-restart").await;
+    team.runtime
+        .finish_agent_task_settlement(Some((task, correction)), &team.child_prompt)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["success"], true);
+    assert_eq!(events[0].payload["outcome"]["kind"], "completed");
+}
+
+// O1 (queue row 372): the provider process died mid-turn, no restart. The outcome says so,
+// also when an earlier restart had cut a command of the same turn.
+#[tokio::test]
+async fn a_provider_that_died_after_an_earlier_restart_reports_the_crash() {
+    let (team, task, _) =
+        child_that_continued_after_a_restart("child-finished-crash-after-restart").await;
+    let crash = crate::provider::TurnOutcome::new(
+        crate::provider::TurnOutcomeKind::ProviderCrashed,
+        true,
+        "Provider CLI exited with status 137.",
+    );
+    team.runtime
+        .publish_agent_task_completion(&task, Some(&crash), None)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["outcome"]["kind"], "provider_crashed");
+    assert!(events[0].payload["outcome"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("137"));
 }
 
 #[tokio::test]
@@ -323,7 +444,6 @@ async fn a_child_stopped_by_its_deadline_says_so() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     store
@@ -346,6 +466,7 @@ async fn a_child_stopped_by_its_deadline_says_so() {
     assert_eq!(events[0].payload["deadline_reached"], true, "ORCH-06");
     assert_eq!(events[0].payload["success"], false);
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled", "ORCH-16");
+    assert_missing_answer_excerpt(&team, &events[0].payload, "deadline");
 }
 
 #[tokio::test]
@@ -429,7 +550,6 @@ async fn provider_failure_reason_deadline_overrides_the_last_error() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(now),
-            inherited: Vec::new(),
         })
         .unwrap();
     runtime.tick_agent_deadlines(now).await.unwrap();
@@ -715,6 +835,7 @@ async fn a_steering_finish_is_not_shown_to_clients_as_a_user_prompt() {
                     agent_ids: Some(vec![team.parent.clone()]),
                     latest_prompt_count: Some(4),
                     include_prefetched_content,
+                    after_sequence: None,
                     cursor: None,
                 },
             )
@@ -746,7 +867,6 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -759,11 +879,12 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
     assert_eq!(events[0].payload["deadline_reached"], true);
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
     assert!(events[0].urgent);
+    assert_missing_answer_excerpt(&team, &events[0].payload, "cancelled");
 }
 
-// A4: the parent's deadline ends the sub-agents below it.
+// TL4: a parent's limit ends the parent only; the sub-agent below it keeps working.
 #[tokio::test]
-async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
+async fn a_parents_deadline_leaves_the_working_sub_agent_running() {
     let team = team_with("child-finished-parent-deadline", None, false).await;
     team.runtime
         .owned
@@ -772,7 +893,6 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             room: team.room.clone(),
             agent: team.parent.clone(),
             deadline: Some(crate::session::unix_epoch_ms() + 30),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -780,7 +900,7 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
         .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
-    assert_eq!(
+    assert_ne!(
         team.runtime
             .owned
             .provider_store
@@ -788,7 +908,7 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             .unwrap()
             .state(),
         crate::provider::ProviderRunState::Ended,
-        "the child's run ended with its parent's deadline"
+        "the child's run goes on after its parent's limit ended"
     );
     assert!(
         team.runtime
@@ -797,8 +917,99 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             .agent_tasks(Some(&team.room), Some(&team.child))
             .unwrap()
             .iter()
-            .all(|task| task.state
-                == crate::durable_state::agent_lifecycle::ExecutionState::Cancelled)
+            .any(|task| task.state
+                != crate::durable_state::agent_lifecycle::ExecutionState::Cancelled),
+        "the child's task was not cancelled"
+    );
+    assert!(
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_deadline(&team.room, &team.child)
+            .unwrap()
+            .is_none(),
+        "the child has no limit of its own"
+    );
+}
+
+// A parent's ended deadline stops only the parent: its sub-agent goes on, and work given to the
+// sub-agent afterwards is not stopped by the parent's later cleanup passes either.
+#[tokio::test]
+async fn a_sub_agents_new_work_survives_its_parents_ended_deadline() {
+    let team = team_with("child-new-work-after-parent-deadline", None, false).await;
+    let runtime = &team.runtime;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: team.room.clone(),
+            agent: team.parent.clone(),
+            deadline: Some(crate::session::unix_epoch_ms() + 30),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    let parent_receipt = store
+        .agent_deadline(&team.room, &team.parent)
+        .unwrap()
+        .unwrap();
+    assert!(parent_receipt.stopped_at_ms.is_some(), "{parent_receipt:?}");
+    assert_ne!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(&team.child_run)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+        "the parent's deadline must not end its sub-agent"
+    );
+
+    let attachment = runtime
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(&team.room)
+        .into_iter()
+        .next()
+        .expect("the room has an attachment");
+    // The sub-agent is given a prompt, queued in the prompt owner: a test runtime has no
+    // provider adapter to launch a turn with.
+    let session = runtime.owned.session_store.get_session(&team.room).unwrap();
+    runtime
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt(
+            &session,
+            crate::session::PromptQueueItem::new(
+                "child-prompt",
+                &attachment,
+                &team.child,
+                "continue",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .unwrap();
+    let work = |runtime: &KernelRuntimeState| {
+        let session = runtime.owned.session_store.get_session(&team.room).unwrap();
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &team.child);
+        active.is_some() || !queued.is_empty()
+    };
+    assert!(work(runtime), "the sub-agent has new work");
+
+    // The scheduler's next tick sees the parent's ended deadline and the child's new work.
+    runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    assert!(
+        work(runtime),
+        "the parent's old deadline stopped the sub-agent's new work"
     );
 }
 
@@ -942,6 +1153,7 @@ async fn a_cancelled_child_tells_the_parent_once_whichever_route_ends_it() {
     assert_eq!(events[0].payload["success"], false);
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
     assert!(events[0].urgent);
+    assert_missing_answer_excerpt(&team, &events[0].payload, "cancelled");
 }
 
 /// Case H: the owner's cancel of a child's card reached the parent as `child_finished`

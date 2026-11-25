@@ -9,7 +9,7 @@ async fn leased_account_authority_preserves_prompt_admission_and_queue() {
     let _env = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("leased-account-admission");
     std::env::set_var("CHARIOX_HOME", root.path().join("state"));
-    let mut config = crate::config::DaemonConfig::load_from_env();
+    let mut config = crate::config::DaemonConfig::load_from_env().unwrap();
     config.accept_remote_leases = true;
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
         user_id: "cloud-owner".into(),
@@ -181,7 +181,7 @@ async fn leased_account_authority_survives_launch_reload_and_worker_recovery() {
     let _env = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("leased-account-authority");
     std::env::set_var("CHARIOX_HOME", root.path().join("state"));
-    let mut config = crate::config::DaemonConfig::load_from_env();
+    let mut config = crate::config::DaemonConfig::load_from_env().unwrap();
     config.accept_remote_leases = true;
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
         user_id: "cloud-owner".into(),
@@ -423,7 +423,7 @@ async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
     let _env = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("exact-account-launch");
     std::env::set_var("CHARIOX_HOME", root.path().join("state"));
-    let mut config = crate::config::DaemonConfig::load_from_env();
+    let mut config = crate::config::DaemonConfig::load_from_env().unwrap();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
         user_id: "cloud-owner".into(),
         ..Default::default()
@@ -438,6 +438,7 @@ async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
         .unwrap();
     let materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "cloud-owner".into(),
             provider: "opencode".into(),
             profile_id: profile.profile_id.clone(),
@@ -570,7 +571,7 @@ async fn leased_project_inputs(linked_worktree: bool, check_files: bool) {
     let _env = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("leased-project-inputs");
     std::env::set_var("CHARIOX_HOME", root.path().join("state"));
-    let mut config = crate::config::DaemonConfig::load_from_env();
+    let mut config = crate::config::DaemonConfig::load_from_env().unwrap();
     config.accept_remote_leases = true;
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
         user_id: "cloud-owner".into(),

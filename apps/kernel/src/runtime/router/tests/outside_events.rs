@@ -329,6 +329,7 @@ fn outside_router_observes_a_real_terminal_job_without_a_terminal_watch() {
                     rows: 24,
                     title: None,
                     command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 7".into()]),
+                    stdin: None,
                 },
             }),
         )
@@ -377,7 +378,12 @@ fn outside_router_critical_approvals_are_only_section_eight_pointers() {
         );
         let _responder = router
             .runtime_state()
-            .create_kernel_operation_interaction(session.id(), session.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                session.id(),
+                session.owner_user_id(),
+                interaction,
+            )
             .await
             .unwrap();
         let response = dispatch(

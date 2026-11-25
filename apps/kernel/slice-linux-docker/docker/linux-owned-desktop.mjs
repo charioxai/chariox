@@ -53,6 +53,7 @@ export class LinuxOwnedDesktop {
     this.size=Object.freeze({width:size.width,height:size.height});
     this.root = root; this.source = environment; this.uid = process.getuid?.(); this.commands = commands;
     this.children = []; this.known = new Map(); this.browserKnown = new Map(); this.current = null; this.starting = null;
+    this.lifecycle = Promise.resolve();
   }
   binding() { return this.current; }
   isLive() { return readyDesktops.has(this) && Boolean(this.current) && !this.children.some(({child,core})=>core&&(child.exitCode!==null||child.signalCode!==null)); }
@@ -126,7 +127,8 @@ export class LinuxOwnedDesktop {
   // MP-08/MP-10: a browser crash does not retire the user's other apps or X11
   // identity. Use only verified browser roots/descendants, including orphans
   // already observed before their supervisor exited.
-  async stopBrowser() {
+  stopBrowser() { return this.serial(() => this.stopBrowserNow()); }
+  async stopBrowserNow() {
     const browser=this.children.filter(item=>item.browser);
     const known=await descendants([...browser.map(item=>item.identity).filter(Boolean),...this.browserKnown.values()]);
     for(const item of known)this.browserKnown.set(item.pid,item);
@@ -135,14 +137,20 @@ export class LinuxOwnedDesktop {
     for(const item of this.browserKnown.values())if(this.known.get(item.pid)?.started===item.started)this.known.delete(item.pid);
     this.browserKnown.clear();
   }
-  async start() {
+  // MP-08/MP-11 (row 548): start, stop and stopBrowser share this desktop's children, known set and runtime directory across awaits.
+  // They run one at a time, so a late stop can never remove the runtime or forget the children of a desktop started after it began.
+  serial(operation) {
+    const run = this.lifecycle.then(operation);
+    this.lifecycle = run.catch(() => {});
+    return run;
+  }
+  start() { return this.serial(() => this.startNow()); }
+  async startNow() {
     if (this.current) {
       if (this.children.some(({ child, core }) => core && (child.exitCode !== null || child.signalCode !== null))) throw new Error('MP-08: owned desktop unavailable; explicitly stop/start');
       return this.current;
     }
-    if (this.starting) return this.starting;
-    this.starting = this.create();
-    try { return await this.starting; } finally { this.starting = null; }
+    return this.create();
   }
   async create() {
     if(this.uid===0 && !this.browserUser){
@@ -225,15 +233,17 @@ export class LinuxOwnedDesktop {
       this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, ...this.size, environment: Object.freeze(env) });
       readyDesktops.add(this);
       return this.current;
-    } catch (error) { await this.stop(); throw error; }
+    } catch (error) { await this.stopNow(); throw error; }
   }
-  async stop() {
+  stop() { return this.serial(() => this.stopNow()); }
+  async stopNow() {
     readyDesktops.delete(this);
     this.current = null;
-    await settleOwned(this.children.filter(({child}) => child.pid), [...this.known.values()]);
-    this.children = [];this.known.clear();this.browserKnown.clear();
-    if (this.runtime) await rm(this.runtime, { recursive: true, force: true });
-    this.runtime = null;
+    // This stop owns what exists now: the fields are emptied before the first await.
+    const children = this.children, known = [...this.known.values()], runtime = this.runtime;
+    this.children = []; this.known = new Map(); this.browserKnown = new Map(); this.runtime = null;
+    await settleOwned(children.filter(({child}) => child.pid), known);
+    if (runtime) await rm(runtime, { recursive: true, force: true });
   }
   close() { return this.stop(); }
 }

@@ -79,7 +79,12 @@ impl KernelRuntimeState {
             let remaining_sec = pick.expires_ms.saturating_sub(now_ms) / 1000;
             let interaction = pick_interaction(&pick).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
-                .create_kernel_operation_interaction(&session, &pick.owner, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &session,
+                    &pick.owner,
+                    interaction,
+                )
                 .await
             {
                 Ok(receiver) => receiver,
@@ -185,7 +190,12 @@ impl KernelRuntimeState {
             let interaction =
                 export_interaction(&export).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
-                .create_kernel_operation_interaction(&session, &export.owner, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &session,
+                    &export.owner,
+                    interaction,
+                )
                 .await
             {
                 Ok(receiver) => receiver,
@@ -385,7 +395,17 @@ fn pick_interaction(pick: &FilePick) -> RuntimeInteraction {
             "An App asks you to choose {count} to share with it.\n\nInstallation: {}\nAccepted: {kinds}\n\nOnly the contents of the files you choose are shared, as private copies; the App never sees where they are. Only {} (the App's owner) can answer. Choose files in this terminal, or decline. In a text terminal: /app file grant {} \"FILE\"",
             pick.installation, pick.owner, pick.operation_id
         ),
-        vec![RuntimeInteractionChoice::new("decline", "Decline", "deny", None)],
+        // Choosing needs the client's own file chooser (`GrantAppFile`), so a client's button opens
+        // it; the kernel refuses this id as a reply.
+        vec![
+            RuntimeInteractionChoice::new(
+                "choose_files",
+                "Choose files",
+                "choose_files",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+            ),
+            RuntimeInteractionChoice::new("decline", "Decline", "deny", None),
+        ],
     )
 }
 
@@ -398,6 +418,16 @@ fn export_interaction(export: &FileExport) -> RuntimeInteraction {
             "An App offers you a copy of one of its files.\n\nInstallation: {}\nFile: {} ({} bytes)\n\nSave it from this terminal to choose where it goes, or decline. Only {} (the App's owner) can answer. In a text terminal: /app file save {} \"PATH\"",
             export.installation, export.name, export.size, export.owner, export.operation_id
         ),
-        vec![RuntimeInteractionChoice::new("decline", "Decline", "deny", None)],
+        // Saving needs the client to choose where the file goes (`SaveAppFileExport`), so a client's
+        // button does that; the kernel refuses this id as a reply.
+        vec![
+            RuntimeInteractionChoice::new(
+                "save_file",
+                "Save file",
+                "save_file",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+            ),
+            RuntimeInteractionChoice::new("decline", "Decline", "deny", None),
+        ],
     )
 }

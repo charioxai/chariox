@@ -78,7 +78,7 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let instances = self.app_control().user_views();
         let failed = crate::runtime::app_control::failed;
-        let mut response = match request {
+        let response = match request {
             LocalDaemonRequest::ClientAppView(request) => {
                 return Ok(
                     match self
@@ -231,24 +231,6 @@ impl KernelRuntimeState {
             }
             _ => unreachable!(),
         }?;
-        let access: crate::local::UserDomainWindowAccess =
-            serde_json::from_value(self.user_domain_window_projection(owner)).map_err(|_| {
-                DaemonError::LocalTransport {
-                    operation: "user_domain_access",
-                    message: "MP-08: window projection unavailable".into(),
-                }
-            })?;
-        match &mut response {
-            LocalDaemonResponse::UserAppViewOpened { view, .. }
-            | LocalDaemonResponse::UserAppViewFrontend { view, .. } => view.access = Some(access),
-            LocalDaemonResponse::UserAppViewsListed { views }
-            | LocalDaemonResponse::UserAppViewsChanged { views, .. } => {
-                for view in views {
-                    view.access = Some(access.clone());
-                }
-            }
-            _ => {}
-        }
         Ok(response)
     }
 
@@ -405,27 +387,8 @@ impl KernelRuntimeState {
             {
                 return Err(super::app_view_runtime::agent_not_granted());
             }
-            let grant = self
-                .owned
-                .kernel_browser_host
-                .retain_resource_grant(
-                    &user,
-                    agent.id(),
-                    UserDomainResource::AppView {
-                        view_id: view_id.into(),
-                    },
-                )
-                .map_err(|_| {
-                    if agent.has_extension_grant(
-                        crate::extension::ExtensionKind::App,
-                        &binding.installation,
-                    ) {
-                        crate::runtime::app_view_authority::view_not_claimed()
-                    } else {
-                        super::app_view_runtime::agent_not_granted()
-                    }
-                })?;
-            tracked.retain_browser_grant(grant);
+            let fence = self.owned.kernel_browser_host.run_fence(&user, agent.id());
+            tracked.retain_run_fence(fence);
         }
         if method == "chariox.lease" {
             return Ok(

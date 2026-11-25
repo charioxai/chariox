@@ -1,7 +1,7 @@
 import type { SessionProcessState } from "./kernel-events.js"
 import type { TurnOutcome } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 1013
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 1015
 
 export type * from "./kernel-types-apps.js"
 
@@ -12,6 +12,7 @@ export type * from "./kernel-types-resource-telemetry.js"
 export type * from "./kernel-types-runtime.js"
 export type * from "./kernel-types-cloud.js"
 export type * from "./kernel-types-provider.js"
+export type * from "./kernel-types-pane-feed.js"
 export type * from "./kernel-types-history.js"
 export type * from "./kernel-types-workflow.js"
 export type * from "./kernel-types-event-publication.js"
@@ -22,7 +23,6 @@ export type * from "./kernel-types-workflow-notifications.js"
 export type * from "./kernel-types-watchers.js"
 export type * from "./kernel-types-kernel-browser.js"
 export type * from "./kernel-types-room-terminal.js"
-export { userDomainWindowBadge } from "./kernel-types-kernel-browser.js"
 
 export * from "./notes.js"
 

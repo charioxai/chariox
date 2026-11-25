@@ -76,6 +76,7 @@ pub(super) async fn handle_daemon_request(
                 command_result_cache,
                 display_subscriptions,
                 local_browser,
+                false,
             )
             .await
         }
@@ -93,6 +94,7 @@ pub(super) async fn handle_prepared_daemon_request(
     command_result_cache: &Arc<CommandResultCache>,
     display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
     local_browser: Option<&Arc<super::LocalBrowserDirect>>,
+    same_computer: bool,
 ) -> RelayRequestOutcome {
     let received_at_ms = crate::session::unix_epoch_ms();
     let PreparedDaemonRequest {
@@ -130,7 +132,13 @@ pub(super) async fn handle_prepared_daemon_request(
                 {
                     KernelCaller::for_relay_request(caller_identity)
                 } else {
-                    let grant = match router.admit_self_host_terminal(&client_public_key) {
+                    let grant = match router.admit_self_host_terminal(
+                        &client_public_key,
+                        caller_identity
+                            .as_ref()
+                            .filter(|identity| identity.public_key_thumbprint.is_some())
+                            .map(|identity| identity.subject.as_str()),
+                    ) {
                         Ok(Some(grant)) => grant,
                         _ => {
                             return RelayRequestOutcome {
@@ -270,6 +278,7 @@ pub(super) async fn handle_prepared_daemon_request(
                         request.request,
                         request.command_id.clone(),
                         command_result_cache,
+                        same_computer,
                     )
                     .await
                 }
@@ -294,7 +303,16 @@ pub(super) async fn handle_prepared_daemon_request(
             )
         }
         ParsedRelayClientMessage::BrowserImportDelivery(request) => {
-            if router.admit_self_host_terminal(&client_public_key).is_err() {
+            if router
+                .admit_self_host_terminal(
+                    &client_public_key,
+                    caller_identity
+                        .as_ref()
+                        .filter(|identity| identity.public_key_thumbprint.is_some())
+                        .map(|identity| identity.subject.as_str()),
+                )
+                .is_err()
+            {
                 return RelayRequestOutcome {
                     display_event: None,
                     encrypted_response: None,
@@ -769,6 +787,9 @@ fn validate_cli_relay_sender_key(
         LocalDaemonRequest::ResolveKernelClientConnection(request) => {
             request.public_key_thumbprint.as_deref()
         }
+        LocalDaemonRequest::IssueRelayClientToken(request) => {
+            Some(request.public_key_thumbprint.as_str())
+        }
         _ => return Ok(()),
     };
     let Some(claimed_thumbprint) = claimed_thumbprint else {
@@ -1095,6 +1116,7 @@ async fn dispatch_on_behalf_of(
             request,
             command_id,
             command_result_cache,
+            false,
         )
         .await;
     }
@@ -1134,6 +1156,7 @@ async fn dispatch_on_behalf_of(
                     request,
                     Some(command_id.clone()),
                     command_result_cache,
+                    false,
                 )
                 .await
             };
@@ -1209,6 +1232,7 @@ async fn dispatch_relay_client_request(
     request: LocalDaemonRequest,
     command_id: Option<String>,
     command_result_cache: &CommandResultCache,
+    same_computer: bool,
 ) -> RelayDispatchOutcome {
     let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
     let command_id = command_id.unwrap_or_else(|| {
@@ -1217,7 +1241,7 @@ async fn dispatch_relay_client_request(
             crate::session::unix_epoch_ms()
         )
     });
-    let command = KernelCommand::from_local_request_with_caller(
+    let mut command = KernelCommand::from_local_request_with_caller(
         command_id.clone(),
         KernelCommandSource::RelayClient,
         caller,
@@ -1225,6 +1249,7 @@ async fn dispatch_relay_client_request(
         None,
         &request,
     );
+    command.same_computer = same_computer;
     // MD-3: replay must not bypass current terminal admission. Caller identity
     // comes from relay authentication, never the request or command ID.
     if matches!(
@@ -1324,7 +1349,20 @@ async fn dispatch_relay_client_request(
     #[cfg(test)]
     command_result_cache.await_dispatch_for_test().await;
     let command_id = command.command_id.clone();
-    let result = router.dispatch(command, request).await;
+    // Only a mutation (a command with a receipt) can be cancelled before it starts; a read is never held back.
+    let gate = fingerprint
+        .is_some()
+        .then(crate::runtime::start_gate::current)
+        .flatten();
+    if gate.as_ref().is_some_and(|gate| gate.is_cancelled()) {
+        command_result_cache.release_unstarted(&command_id).await;
+        return cancelled_dispatch_outcome();
+    }
+    let result = crate::runtime::start_gate::scope(gate, router.dispatch(command, request)).await;
+    if matches!(&result, Err(error) if crate::runtime::start_gate::is_cancelled_error(error)) {
+        command_result_cache.release_unstarted(&command_id).await;
+        return cancelled_dispatch_outcome();
+    }
     let outgoing = match result {
         Ok(response) => {
             let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
@@ -1355,6 +1393,14 @@ async fn dispatch_relay_client_request(
         unreachable!("relay command dispatch only builds response frames")
     };
     cached_relay_dispatch_outcome(response, error)
+}
+
+fn cancelled_dispatch_outcome() -> RelayDispatchOutcome {
+    RelayDispatchOutcome::RelayError(relay_error(
+        "request_cancelled",
+        "the request was cancelled before it started: the client lost authority",
+        true,
+    ))
 }
 
 #[allow(

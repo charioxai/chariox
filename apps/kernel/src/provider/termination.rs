@@ -85,11 +85,17 @@ impl ProviderRunTermination {
 
     pub fn signal(signal_name: &str, timestamp_ms: u64) -> Self {
         let signal_name = sanitize_signal_name(signal_name).unwrap_or("unknown");
-        Self::crashed(
+        let mut termination = Self::crashed(
             ProviderRunTerminationCategory::Signal,
             format!("provider process terminated by signal {signal_name}"),
             timestamp_ms,
-        )
+        );
+        // The signal stays in the termination record and the log; the person's outcome is calm.
+        termination.failure = Some(TurnOutcome::provider_failure(
+            TurnOutcomeKind::ProviderCrashed,
+            true,
+        ));
+        termination
     }
 
     /// `reason` is the harness's own error; its words and the code its adapter
@@ -105,11 +111,16 @@ impl ProviderRunTermination {
     }
 
     pub fn unknown_process_exit(timestamp_ms: u64) -> Self {
-        Self::crashed(
+        let mut termination = Self::crashed(
             ProviderRunTerminationCategory::Unknown,
             "provider process exited without an available status".to_string(),
             timestamp_ms,
-        )
+        );
+        termination.failure = Some(TurnOutcome::provider_failure(
+            TurnOutcomeKind::ProviderCrashed,
+            true,
+        ));
+        termination
     }
 
     pub fn runtime_failure(reason: &str, timestamp_ms: u64) -> Self {

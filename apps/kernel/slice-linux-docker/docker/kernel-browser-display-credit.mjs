@@ -13,6 +13,7 @@ import { identicalToDelivered, nativeCreditEmpty, nativeRegionBaseCurrent, nativ
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
+import {viewerDensityStill,viewerPixels,viewerStillPending} from './kernel-browser-viewer-still.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 // MP-08/MP-10: a lossless patch retires the video in hand for a key (~100 KB at 1920). While a page settles after
@@ -21,6 +22,18 @@ const frameKinds={video:1,stripes:2,tiles:3,png:4};
 const SETTLING_MS=1000;
 export function nativePatchable(stream,sample,producer=stream.producer,now=performance.now()){
  return !(producer?.holdsVideo&&now-(stream.keyAt??-Infinity)<SETTLING_MS)&&stream.canPatchNative(sample);
+}
+// Row 341 (A): the exact still at the viewer's density, once per page picture (the native raster's signature), document,
+// input epoch and protection. Chrome repaints while it re-rasterizes for the capture; when the same pixels come back the
+// still in hand is reused, so the capture never restarts itself. A capture that fails for any reason other than a moving
+// viewport falls back to the page-density exact.
+export async function displayCreditViewerStill(host,tab,stream,binding){
+ const c=stream.viewerStill;
+ if(c&&c.source===binding.source&&c.document===binding.document&&c.pixels===binding.pixels&&c.epoch===binding.epoch&&c.policy===binding.policy)return c.still;
+ const still=await viewerDensityStill({host,tab,compositor:binding.source,stream}).catch(error=>{if(error?.busy)throw error;return null;});
+ // A refusal is kept too: that picture goes back to the page-density path until the page changes.
+ stream.viewerStill={source:binding.source,document:binding.document,pixels:binding.pixels,epoch:binding.epoch,policy:binding.policy,still};
+ return still;
 }
 export async function displayCredit(host, stream, command, signal) {
   const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
@@ -107,23 +120,32 @@ export async function displayCredit(host, stream, command, signal) {
   if(compositor&&sample&&stream.codec!=='png'){
     // Serials are source-local. Retiring a source also retires its exact
     // base, even when a newly navigated document starts at the same serial.
-    if(stream.producer?.source!==compositor){stream.invalidate(true,'source');stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:(sample,producer)=>{const encode=!nativePatchable(stream,sample,producer)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
+    if(stream.producer?.source!==compositor){stream.invalidate(true,'source');stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,areaRate:stream.whole_page===true,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:(sample,producer)=>{const encode=!nativePatchable(stream,sample,producer)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
     // Admit recovery before selecting a native patch or taking an encoded
     // packet. A lost canvas base also reoffers any skipped patchable source.
     // Once retired, empty credits must let the pending recovery key finish.
     if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate(true,stream.document_id!==tab.document_id?'document':'credit_lag');
-    if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:host.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
+    if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(async binding=>(binding.pixels!==undefined?await displayCreditViewerStill(host,tab,stream,binding):null)??(binding.native?binding.sample:region&&stream.regionSource.exactCapture?await stream.regionSource.exactCapture():await host.displayScreenshot(tab,null,false)),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
+    // Row 341 (A): while a still at the viewer's density is pending, refinement follows the page's pixels, not the source's
+    // frame serial: the clip-scale capture itself repaints the page, and a new serial for the
+    // same pixels must not restart it.
     const policy=host.protection;
-    const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
+    const viewerPending=viewerStillPending(stream,{source:compositor,document:tab.document_id,epoch,policy,sample});
+    // The pixels are read only once the page is quiet (the refiner waits for that too); a moving page keys on its serial.
+    const quiet=performance.now()-Math.max(compositor.changedAt,host.inputChangedAt.get(tab.tab_id)??-Infinity)>=(stream.refiner.quietNativeMs??0);
+    const pixels=viewerPending?(quiet?viewerPixels(sample):`serial:${sample.serial}`):undefined;
+    const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,...(viewerPending?{pixels}:{}),...((stream.previousDensity??stream.device_scale_factor)!==stream.device_scale_factor?{whole:true}:{}),scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
     // Always run the deadline/epoch-aware verifier before unchanged reuse.
     // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
-    const nativeExact=binding.native&&stream.exact&&(sample.serial===stream.compositorSerial||stream.canPatchNative(sample));
-    const exact=nativeExact?null:stream.refiner.request(binding,Math.max(compositor.changedAt,host.inputChangedAt.get(tab.tab_id)??-Infinity),()=>host.protection===policy&&compositor.sample()?.serial===sample.serial&&(host.inputEpochs.get(tab.tab_id)??0)===epoch);
+    // Row 341 (A): for a viewer above the page's density a page-density exact canvas is not final; the still at the
+    // viewer's density follows it once the page is quiet.
+    const nativeExact=binding.native&&stream.exact&&!viewerPending&&(sample.serial===stream.compositorSerial||stream.canPatchNative(sample));
+    const exact=nativeExact?null:stream.refiner.request(binding,Math.max(compositor.changedAt,host.inputChangedAt.get(tab.tab_id)??-Infinity),()=>host.protection===policy&&(viewerPending?(quiet?viewerPixels(compositor.sample()):`serial:${compositor.sample()?.serial}`)===pixels:compositor.sample()?.serial===sample.serial)&&(host.inputEpochs.get(tab.tab_id)??0)===epoch);
     stream.creditEpoch=epoch;
     stream.producer.feedback(command.push?(command.push.congested?8:0):Math.max(0,stream.sequence-command.after_sequence));
     // MP-08/MP-10: an identical readback (protection refresh) of the
     // delivered exact canvas with the same masks needs no frame.
-    if(stream.exact&&identicalToDelivered(stream,sample)&&JSON.stringify(sample.raw[displayMaskRegions]??[])===stream.compositorMasks){
+    if(stream.exact&&!(viewerPending&&exact?.viewer_density)&&identicalToDelivered(stream,sample)&&JSON.stringify(sample.raw[displayMaskRegions]??[])===stream.compositorMasks){
       stream.compositorSerial=sample.serial;
       return {generation:host.generation,frame_sent:false,display_frame:null};
     }
@@ -152,7 +174,9 @@ export async function displayCredit(host, stream, command, signal) {
       source={...sample,...patch,motion:false,generation:host.generation};
     }
     else if(encoded){source={...encoded,generation:host.generation};}
-    else if(exact&&stream.previous)source={...exact,generation:host.generation};
+    // Row 341 (A): a viewer-density still answers the page's current pixels (the refiner matched them), so it carries the
+    // current frame serial for delivery's fences.
+    else if(exact&&stream.previous)source={...exact,...(exact.viewer_density?{refinement_serial:sample.serial}:{}),generation:host.generation};
     // The viewer already backs off empty credits. A second delay while
     // holding the capture gate adds latency to every pipelined slot.
     else return {generation:host.generation,frame_sent:false,display_frame:null};
@@ -190,6 +214,13 @@ export async function displayCredit(host, stream, command, signal) {
   return { generation: host.generation, frame_sent: frame !== null, display_frame: frame };
 }
 
+// The source's next frame, the pause or an abort, whichever comes first.
+const nextSourceFrame = (source, ms, signal) => new Promise(resolve => {
+  let off = () => {};
+  const done = () => { clearTimeout(timer); off(); signal?.removeEventListener('abort', done); resolve(); };
+  const timer = setTimeout(done, ms); off = source.subscribe(done); signal?.addEventListener('abort', done, { once: true });
+});
+
 // MP-08/MP-10: a push credit returns a frame or, after a bounded wait on
 // encoder/refiner/source readiness, nothing. The kernel pump re-issues it.
 export async function displayPushCredit(host, stream, command, signal, { budgetMs = 100, now = () => performance.now() } = {}) {
@@ -218,7 +249,13 @@ export async function displayPushCredit(host, stream, command, signal, { budgetM
     const refining = stream.refiner?.active;
     // A protected CDP capture source has no readiness signal: retry at the
     // old viewer idle-credit cadence (33 ms while active, else 100 ms).
-    if (!producer) { await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(now() - (stream.pushedAt ?? -Infinity) < 300 ? 33 : 100, deadline - now())))); if (now() >= deadline) return reply; continue; }
+    if (!producer) {
+      const pause = Math.max(0, Math.min(now() - (stream.pushedAt ?? -Infinity) < 300 ? 33 : 100, deadline - now()));
+      // Row 401 F1 (webperf-r19 A1): a screencast region (re)subscribed before its source's first frame wakes on that frame; the
+      // blind pause slept through it (~100 ms of the first picture after every re-subscribe). Other sources keep the idle cadence.
+      await (stream.regionScreencast ? nextSourceFrame(stream.regionSource, pause, signal) : new Promise(resolve => setTimeout(resolve, pause)));
+      if (now() >= deadline) return reply; continue;
+    }
     // Exact repair waits for the end of the quiet window, never past it.
     const quiet = stream.refiner?.quietNativeMs ?? 50;
     const changed = Math.max((stream.regionSource??host.compositors.get(stream.tab_id)?.source)?.changedAt ?? -Infinity, host.inputChangedAt.get(stream.tab_id) ?? -Infinity);

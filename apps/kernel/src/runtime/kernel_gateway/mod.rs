@@ -199,6 +199,16 @@ impl KernelGateway {
         origin: &Origin,
         command_id: &str,
     ) -> Result<(), GatewayError> {
+        #[cfg(test)]
+        if let Some(kernel) = crate::runtime::state::stand_in_kernel(&target.kernel_id) {
+            return kernel
+                .send(
+                    command_id.to_owned(),
+                    &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+                )
+                .await
+                .map(|_| ());
+        }
         self.send(
             &target.kernel_id,
             origin,
@@ -728,7 +738,7 @@ mod tests {
             )
             .unwrap());
         router
-            .admit_relay_stream(key)
+            .admit_relay_stream(key, None)
             .expect("a live gateway streams");
         let client_id = format!(
             "{}{}",
@@ -738,7 +748,7 @@ mod tests {
         let path = origins::path_in(&config.private_runtime_state_root());
         origins::revoke(&path, &client_id).unwrap().unwrap();
         router
-            .admit_relay_stream(key)
+            .admit_relay_stream(key, None)
             .expect_err("a revoked gateway gets no stream");
     }
 

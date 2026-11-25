@@ -255,6 +255,46 @@ impl KernelRuntimeOwnedState {
         queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
     ) -> Result<(), DaemonError> {
+        self.mirror_prompt_owner_agent_state_inner(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+            true,
+        )
+    }
+
+    /// For a caller that already holds the interaction mutation guard: the same mirror, without
+    /// the stale-interaction sweep, which takes that (non-reentrant) guard itself. The caller
+    /// withdraws what it needs under its own guard.
+    pub(super) fn mirror_prompt_owner_agent_state_holding_interactions(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<crate::session::PromptQueueItem>,
+        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
+    ) -> Result<(), DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        self.mirror_prompt_owner_agent_state_inner(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+            false,
+        )
+    }
+
+    fn mirror_prompt_owner_agent_state_inner(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<crate::session::PromptQueueItem>,
+        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+        sweep_stale_interactions: bool,
+    ) -> Result<(), DaemonError> {
         let before = self.session_store.get_session(session_id)?;
         let had_prompt_work = before.active_prompt_for_agent(agent_id).is_some()
             || before
@@ -300,7 +340,10 @@ impl KernelRuntimeOwnedState {
             self.unhide_agent(agent_id)?;
         }
         activity_mutation.record();
-        self.withdraw_stale_agent_interactions();
+        self.apply_agent_profile_after_turn(&session, agent_id)?;
+        if sweep_stale_interactions {
+            self.withdraw_stale_agent_interactions();
+        }
         self.provider_process_projection.invalidate();
         let _ = self.session_snapshot(session_id)?;
         Ok(())
@@ -384,6 +427,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         if phase == crate::session::DurablePromptDeliveryPhase::Delivered {
+            self.acknowledge_agent_release_note(agent_id, prompt_id);
             if let Some(run) = prompt.durable_delivery_provider_run_id() {
                 self.prompt_state_owner
                     .fold_pending_held_turn(&session, agent_id, run, &prompt);
@@ -800,6 +844,9 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         };
+        let started_next =
+            self.add_pending_wakes_to_notification(&session, agent_id, started_next)?;
+        let waiting = self.waits_before_promotion(session_id, agent_id, &started_next);
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(
@@ -809,6 +856,7 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
+        self.close_waits_after_promotion(session_id, agent_id, &started_next, &waiting)?;
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),
@@ -2038,8 +2086,8 @@ impl KernelRuntimeOwnedState {
         Ok(Some(prompt))
     }
 
-    /// While the agent is busy, an occurrence of a notification trigger joins that
-    /// trigger's prompt already waiting in the agent's queue instead of queueing a turn
+    /// While the agent is busy, a queue-mode occurrence joins the notification
+    /// prompt already waiting in the agent's queue instead of queueing a turn
     /// of its own. Returns the prompt that now delivers it and whether it joined just
     /// now, or `None` when no such prompt waits and the occurrence needs its own.
     pub(super) fn join_queued_agent_notification(
@@ -2047,7 +2095,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         trigger_id: &str,
-        notification: crate::session::QueuedNotification,
+        mut notification: crate::session::QueuedNotification,
         deadline_ms: u64,
     ) -> Result<Option<(String, bool)>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
@@ -2058,28 +2106,19 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
-        // A workflow's responsible agent gets the kernel's own text per run; a steering
-        // trigger joins the running turn instead of waiting.
-        // A trigger that is off admits nothing, joined or not.
         if !trigger.enabled()
             || trigger.busy_policy() != crate::session::AgentTriggerBusyPolicy::Queue
             || trigger.responsible_for().is_some()
         {
             return Ok(None);
         }
-        let base = trigger.prompt().to_string();
+        notification.batch_instruction = Some(trigger.prompt().to_owned());
         let Some((prompt, changed)) = self.prompt_state_owner.join_queued_notification(
             &session,
             agent_id,
-            trigger_id,
             notification,
             deadline_ms,
-            |notifications| {
-                format!(
-                    "{base}\n\n{}",
-                    super::agent_inbox_wake_text::coalesced_notification_notice(notifications)
-                )
-            },
+            super::agent_inbox_wake_text::coalesced_notification_notice,
         ) else {
             return Ok(None);
         };

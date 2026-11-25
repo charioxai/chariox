@@ -1,6 +1,6 @@
 {
-  "protocol_version": 1013,
-  "relay_peer_protocol_version": 450,
+  "protocol_version": 1015,
+  "relay_peer_protocol_version": 452,
   "outcome": {
     "kind": "answered_in_turn",
     "reason": "",

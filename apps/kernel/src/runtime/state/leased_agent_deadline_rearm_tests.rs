@@ -165,14 +165,6 @@ async fn a_worker_that_already_reached_the_deadline_ends_it_at_the_home_too() {
     assert!(awaiting(&home).is_empty());
     let kept = home_deadline(&home, &home.agent_id);
     assert_eq!(kept.deadline_ms, armed_ms, "the worker's deadline governs");
-    assert_eq!(
-        home.state
-            .owned
-            .durable_state_store
-            .agent_deadline_intent(&home.session_id, &home.agent_id)
-            .unwrap(),
-        Some(armed_ms)
-    );
     let notices = home
         .state
         .agent_notices_for_test(&home.session_id, &home.agent_id);
@@ -261,7 +253,6 @@ fn arm_at_home(home: &LeasedHome, agent: &str, deadline_ms: u64) {
             room: home.session_id.clone(),
             agent: agent.into(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
 }

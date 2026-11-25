@@ -45,6 +45,7 @@ impl KernelRuntimeOwnedState {
         interaction: &RuntimeInteraction,
     ) -> Result<(), DaemonError> {
         self.authorize_owner_room(source, caller, target)?;
+        self.refuse_self_approval(interaction, caller)?;
         use super::decision_holder::UserOnly;
         match super::decision_holder::user_only(pending, interaction) {
             None | Some(UserOnly::AccessGrant | UserOnly::KernelOperation)
@@ -59,7 +60,7 @@ impl KernelRuntimeOwnedState {
                 ));
             }
         }
-        if !self.ancestor_can_hold(rooms, caller) {
+        if !self.ancestor_can_hold(rooms, caller, false) {
             return Err(denied(
                 "your current authority requires the owner's answer to this card",
             ));

@@ -921,11 +921,11 @@ impl KernelRuntimeState {
         Ok(config)
     }
 
-    /// Ends what a person allowed the agent for terminal input and watched commands, as its
-    /// permissions or scope change.
+    /// Ends the agent's terminal input, watched commands and owner view grants as its scope changes.
     pub(in crate::runtime::state) fn forget_agent_grants(&self, agent_id: &str) {
         self.terminal_input_grants.forget(agent_id);
         self.watched_process_grants.forget(agent_id);
+        self.owned.owner_view.detach(agent_id);
     }
 
     /// What each agent of the session runs under, as the session's own configuration decides it.
@@ -1318,10 +1318,35 @@ impl KernelRuntimeState {
         let original =
             self.owned
                 .ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
+        let session = self.owned.session_store.get_session(session_id)?;
+        if context.at_turn_end
+            && self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+                .is_some()
+        {
+            if let Some(agent) = self
+                .defer_active_agent_profile_update(
+                    &session,
+                    &original,
+                    caller_user_id,
+                    selections.clone(),
+                    &context,
+                )
+                .await?
+            {
+                let applies = if agent.pending_profile().is_some() {
+                    SettingsApplies::AtTurnEnd
+                } else {
+                    SettingsApplies::Now
+                };
+                return Ok((agent, applies));
+            }
+        }
         if original.remote_execution().is_some() {
             self.ensure_remote_agent_binding_current(agent_id).await?;
         }
-        let session = self.owned.session_store.get_session(session_id)?;
         let active_turn = self
             .owned
             .prompt_state_owner
@@ -1435,18 +1460,8 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<(), DaemonError> {
-        let affected_workflows = self
-            .owned
-            .session_store
-            .write()
-            .invalidate_workflow_runtime_instances_for_agent_change(session_id, agent_id)?;
-        if affected_workflows.is_empty() {
-            return Ok(());
-        }
         self.owned
-            .persist_workflow_runtime_session(session_id, "workflow_source_agent_changed")?;
-        self.owned
-            .workflow_cleanup_runtime_instances_exclusive(session_id)
+            .invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)
     }
 
     pub(crate) async fn alias_agent(

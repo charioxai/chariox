@@ -20,6 +20,10 @@ const tmux = (...args) => execFileSync("tmux", ["-L", "subtui-drill", ...args], 
 const node = (id, parent, state, n, needs_user = false) => ({ agent_id: id, parent_agent_id: parent, kernel_id: null, alias: id, provider: "claude", model: null, depth: 1, state, outcome: null, deadline_ms: null, created_at_ms: n, needs_user })
 const tree = (rev, nodes) => ({ root: "room-agent", rev, totals: { live: nodes.filter(x => ["starting", "running", "waiting", "unreachable"].includes(x.state)).length, running: nodes.filter(x => x.state === "running").length, needs_user: nodes.filter(x => x.needs_user).length }, nodes })
 const R = "room-agent"
+// Row 524 W1-W7: what each node waits on, as the kernel's liveness says it.
+const T0 = Date.now()
+const wait = (kind, label, ageMin, due) => ({ waiting_on: { kind, detail: label, since_ms: T0 - ageMin * 60_000, ...(due ? { due_at_ms: due } : {}) }, waiting_events: [{ id: label, kind, label, since_ms: T0 - ageMin * 60_000, ...(due ? { due_at_ms: due } : {}), task_id: "t", wait_started_at_ms: T0 - ageMin * 60_000 }] })
+const withLiveness = (n, liveness) => ({ ...n, liveness })
 const trees = {
   none: tree(1, []),
   one: tree(2, [node("researcher", R, "running", 1)]),
@@ -28,7 +32,16 @@ const trees = {
   readerDone: tree(5, [node("researcher", R, "running", 1), node("reader", "researcher", "ended", 2), node("parser", "reader", "waiting", 3), node("writer", R, "running", 4), node("reviewer", "writer", "ended", 5), node("tester", R, "idle", 6)]),
   lastLive: tree(6, [node("researcher", R, "ended", 1), node("reader", "researcher", "ended", 2), node("parser", "reader", "idle", 3), node("writer", R, "running", 4), node("reviewer", "writer", "ended", 5), node("tester", R, "idle", 6)]),
   allDone: tree(7, [node("researcher", R, "ended", 1), node("reader", "researcher", "ended", 2), node("parser", "reader", "idle", 3), node("writer", R, "ended", 4), node("reviewer", "writer", "ended", 5), node("tester", R, "idle", 6)]),
-  dropped: tree(8, []),
+  waits: tree(9, [
+    withLiveness(node("builder", R, "waiting", 1), wait("background_command", "command cargo test -p chariox-kernel", 12)),
+    withLiveness(node("timerer", R, "waiting", 2), wait("timer", "timer check review", 1, T0 + 30 * 60_000)),
+    withLiveness(node("lead", R, "waiting", 3), wait("source", "sub-agent builder", 7)),
+    withLiveness(node("asker", R, "waiting", 4, true), wait("card", "your answer on 'Value for the Vault'", 5)),
+    withLiveness(node("replier", R, "waiting", 5), wait("source", "agent orch15", 2)),
+    withLiveness(node("hung", R, "running", 6), { stalled: true, last_activity_at_ms: T0 - 90 * 60_000 }),
+    node("rester", R, "idle", 7),
+  ]),
+  dropped: tree(10, []),
 }
 
 async function run(cols, port) {
@@ -55,7 +68,7 @@ async function run(cols, port) {
     const rows = tmux("capture-pane", "-p", "-e", "-t", session).split("\n")
     for (const row of rows) {
       const plain = row.replace(/\x1b\[[0-9;]*m/g, "")
-      const name = plain.match(/││\s*(\w+)\s+(?:running|waiting|done)\s*││/)?.[1]
+      const name = plain.match(/││\s*(\w+)\s+(?:running|waiting|ended|idle)\s*││/)?.[1]
       if (name && /\x1b\[38;2;250;178;131m[│┌└]/.test(row)) return name
     }
     return null
@@ -80,12 +93,12 @@ async function run(cols, port) {
     check("no stripe without sub-agents", !/Agents \d/.test(screen().join("\n")))
 
     setTree("one")
-    const one = await shot("one-agent", (text, flat) => /1 agent running/.test(flat))
-    check("one agent reads singular", /Agents 1 agent running/.test(area(one)))
+    const one = await shot("one-agent", (text, flat) => /1 sub-agent running/.test(flat))
+    check("one agent reads singular", /Agents 1 sub-agent running/.test(area(one)))
 
     setTree("six")
-    const six = await shot("six-agents-three-depths", (text, flat) => /6 agents running/.test(flat))
-    check("six agents plain count", /Agents 6 agents running/.test(area(six)))
+    const six = await shot("six-agents-three-depths", (text, flat) => /6 sub-agents running/.test(flat))
+    check("six agents plain count", /Agents 6 sub-agents running/.test(area(six)))
 
     keys("F7")
     const card = await shot("card-six", text => /researcher/.test(text) && /parser/.test(text))
@@ -119,8 +132,8 @@ async function run(cols, port) {
     check("Ctrl+Up moves it back to reader", await waitFocus("reader"), `focus ${focusedPanel()}`)
 
     setTree("mixed")
-    const mixed = await shot("mixed-needs-you-waiting-done", (text, flat) => /1 agent needs you · 2 running · 1 waiting · 2 done/.test(flat))
-    check("needs you leads", /Agents 1 agent needs you · 2 running · 1 waiting · 2 done/.test(area(mixed)))
+    const mixed = await shot("mixed-needs-you-waiting-done", (text, flat) => /1 sub-agent needs you · 2 running · 1 waiting · 2 done/.test(flat))
+    check("needs you leads", /Agents 1 sub-agent needs you · 2 running · 1 waiting · 2 done/.test(area(mixed)))
     check("panels say waiting while a decision is held", /reader\s+waiting/.test(mixed) && !/reader\s+needs you/.test(mixed))
     check("no decision card in the view", !/\[|Approve|Deny|Allow/.test(mixed.split("\n").filter(line => /reader|parser|writer/.test(line)).join("\n")))
 
@@ -131,19 +144,34 @@ async function run(cols, port) {
     await waitFor(text => !/reader\s+needs you/.test(text), "card closed")
 
     setTree("readerDone")
-    const done = await shot("node-finished-while-focused", text => /reader\s+done/.test(text))
-    check("a finished node keeps its panel, the view and the focus on it", /Sub-agents 6/.test(done) && /reader\s+done/.test(done) && focusedPanel() === "reader", `focus ${focusedPanel()}`)
+    const done = await shot("node-finished-while-focused", text => /reader\s+ended/.test(text))
+    check("a finished node keeps its panel, the view and the focus on it", /Sub-agents 6/.test(done) && /reader\s+ended/.test(done) && focusedPanel() === "reader", `focus ${focusedPanel()}`)
 
     setTree("lastLive")
-    await shot("last-live-writer", (text, flat) => /1 agent running · 5 done/.test(flat))
+    await shot("last-live-writer", (text, flat) => /1 sub-agent running · 5 done/.test(flat))
     setTree("allDone")
-    const ended = await shot("last-sub-agent-ended-view-closed", (text, flat) => /6 agents done/.test(flat) && !/Sub-agents 6/.test(text))
+    const ended = await shot("last-sub-agent-ended-view-closed", (text, flat) => /6 sub-agents done/.test(flat) && !/Sub-agents 6/.test(text))
     check("the view closes with the last live sub-agent; the room stays on its agents, no blank view", /Write your next prompt here/.test(ended) && !/Sub-agents \d/.test(ended))
     keys("F7")
     await shot("card-all-done", text => /researcher/.test(text))
     keys("Enter")
-    const afterRow = await shot("row-with-none-live-only-closes-card", (text, flat) => !/researcher\s+done/.test(text) && /6 agents done/.test(flat))
+    const afterRow = await shot("row-with-none-live-only-closes-card", (text, flat) => !/researcher\s+ended/.test(text) && /6 sub-agents done/.test(flat))
     check("a row with none live opens no view", !/Sub-agents \d/.test(afterRow))
+
+    setTree("waits")
+    await waitFor(text => /Agents/.test(text), "waits tree")
+    keys("F7")
+    const waits = await shot("card-waits", text => /builder/.test(text) && /rester/.test(text))
+    const rowOf = name => waits.split("\n").find(line => line.includes(name)) ?? ""
+    check("W1 a command names itself and its age", /builder.*waiting: cargo test -p chariox-kernel \(12 min\)/.test(rowOf("builder")), rowOf("builder"))
+    check("W2 a timer names its label and due time", /timerer.*waiting: timer 'check review' \(due \d\d:\d\d\)/.test(rowOf("timerer")), rowOf("timerer"))
+    check("W3 a sub-agent", /lead.*waiting: sub-agent builder \(7 min\)/.test(rowOf("lead")), rowOf("lead"))
+    check("W4 a card names its title", /asker.*waiting: your answer on '\S.*(?:5 min|…)/.test(rowOf("asker")), rowOf("asker"))
+    check("W5 a reply from an agent", /replier.*waiting: reply from orch15 \(2 min\)/.test(rowOf("replier")), rowOf("replier"))
+    check("W6 a stalled turn", /hung.*stalled: no provider activity for 1 h 30 min/.test(rowOf("hung")), rowOf("hung"))
+    check("W7 idle reads idle", /rester\s+idle\s*$/.test(rowOf("rester").trimEnd().replace(/[│ ]+$/, "")), rowOf("rester"))
+    keys("Escape")
+    await waitFor(text => !/rester\s+idle/.test(text.split("\n").slice(0, 28).join("\n")) || true, "card closed")
 
     setTree("dropped")
     const gone = await shot("parent-task-ended-stripe-gone", (text, flat) => !/Agents \d/.test(flat))

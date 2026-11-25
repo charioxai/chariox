@@ -238,6 +238,7 @@ pub(super) async fn handle_parsed_incoming_envelope(
                                 &command_result_cache,
                                 &display_subscriptions,
                                 Some(&local_browser),
+                                false,
                             )
                             .await
                         }
@@ -650,7 +651,10 @@ fn test_peer_response_kind(
         request,
     )
     .ok()
-    .and_then(|payload| serde_json::from_slice::<RelayPeerRequest>(&payload.plaintext).ok())
+    .and_then(|payload| {
+        crate::transport::relay_peer::open_peer_plaintext::<RelayPeerRequest>(&payload.plaintext)
+            .ok()
+    })
     .map(|request| match request {
         RelayPeerRequest::RoomBrowserController {
             command:

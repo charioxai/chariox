@@ -5,7 +5,7 @@ use crate::durable_state::agent_lifecycle::{
 };
 
 impl Fixture {
-    fn child_inbox(&self) -> Vec<InboxEvent> {
+    pub(super) fn child_inbox(&self) -> Vec<InboxEvent> {
         self.runtime
             .owned
             .durable_state_store
@@ -13,7 +13,7 @@ impl Fixture {
             .unwrap()
     }
 
-    fn state_of(&self, sequence: u64) -> String {
+    pub(super) fn state_of(&self, sequence: u64) -> String {
         self.child_inbox()
             .into_iter()
             .find(|e| e.sequence == sequence)
@@ -50,7 +50,7 @@ impl Fixture {
             .unwrap();
     }
 
-    fn blocked_delivery_tasks(&self) -> usize {
+    pub(super) fn blocked_delivery_tasks(&self) -> usize {
         self.runtime
             .owned
             .durable_state_store
@@ -62,7 +62,7 @@ impl Fixture {
     }
 
     /// Takes the room's directory away, as a deleted worktree does.
-    fn remove_workspace(&self) -> std::path::PathBuf {
+    pub(super) fn remove_workspace(&self) -> std::path::PathBuf {
         let dir = self._worktree.path().to_path_buf();
         let moved = dir.with_extension("moved");
         std::fs::rename(&dir, &moved).unwrap();
@@ -83,9 +83,19 @@ async fn card_rules_refused_start_settles_without_an_owner_decision() {
     assert!(error.to_string().contains("does not exist"), "{error}");
     assert_eq!(f.state_of(first.sequence), "pending");
 
+    // The start is retried with growing pauses, not given up on after the delivery window.
     f.sweep_after_delivery_window();
-    // No provider I/O happened, so the message is definitively undelivered: it
-    // ends as failed and tells its sender, instead of fencing the recipient.
+    assert_eq!(f.state_of(first.sequence), "pending");
+    assert_eq!(
+        f.blocked_delivery_tasks(),
+        0,
+        "no card while retries remain"
+    );
+
+    // Once the attempts are spent no provider I/O ever happened, so the message is definitively
+    // undelivered: it ends as failed and tells its sender, instead of fencing the recipient.
+    f.spend_start_attempts(first.sequence).await;
+    f.sweep_after_delivery_window();
     assert_eq!(f.state_of(first.sequence), "failed");
     f.runtime.sweep_agent_lifecycle().await.unwrap();
     let room = f.runtime.owned.session_store.get_session(&f.room).unwrap();
@@ -310,6 +320,7 @@ async fn a_due_wake_starts_a_turn_after_an_earlier_start_failed() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
+    f.spend_start_attempts(first.sequence).await;
     f.sweep_after_delivery_window();
     assert_eq!(f.state_of(first.sequence), "failed");
     std::fs::rename(&moved, f._worktree.path()).unwrap();
@@ -349,6 +360,7 @@ async fn a_due_timer_starts_a_turn_after_an_earlier_start_failed() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
+    f.spend_start_attempts(first.sequence).await;
     f.sweep_after_delivery_window();
     assert_eq!(f.state_of(first.sequence), "failed");
     std::fs::rename(&moved, f._worktree.path()).unwrap();
@@ -457,14 +469,17 @@ async fn refused_one_shot_wake_settles_its_waiting_task_at_exhaustion() {
     let sequence = wake.last_sequence.expect("the one-shot timer fired");
 
     let moved = f.remove_workspace();
-    for _ in 0..2 {
-        let error = f
-            .runtime
-            .deliver_agent_inbox(&f.room, &f.child)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("does not exist"), "{error}");
-    }
+    let error = f
+        .runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not exist"), "{error}");
+    // The start is retried with growing pauses; the wake ends only when the attempts are spent.
+    assert_eq!(f.state_of(sequence), "pending");
+    f.sweep_after_delivery_window();
+    assert_eq!(f.state_of(sequence), "pending", "attempts remain");
+    f.spend_start_attempts(sequence).await;
     std::fs::rename(&moved, f._worktree.path()).unwrap();
     assert_eq!(f.state_of(sequence), "pending");
     assert_eq!(
@@ -542,8 +557,9 @@ async fn refused_wait_deadline_delivers_after_the_workspace_returns() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
-    std::fs::rename(moved, f._worktree.path()).unwrap();
     assert!(error.to_string().contains("does not exist"), "{error}");
+    f.spend_start_attempts(deadline.sequence).await;
+    std::fs::rename(moved, f._worktree.path()).unwrap();
 
     f.sweep_after_delivery_window();
     assert_eq!(
@@ -551,6 +567,10 @@ async fn refused_wait_deadline_delivers_after_the_workspace_returns() {
         ExecutionState::Waiting
     );
     f.sweep_after_delivery_window();
+    store.agent_ledger_sql_for_test(&format!(
+        "UPDATE agent_inbox_start_failures SET retry_at_ms=1 WHERE sequence={}",
+        deadline.sequence
+    ));
     f.runtime
         .deliver_agent_inbox(&f.room, &f.child)
         .await

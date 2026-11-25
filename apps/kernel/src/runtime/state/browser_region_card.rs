@@ -45,6 +45,33 @@ impl ObservationFailures {
     }
 }
 
+/// What the watcher does after one attempt to start the browser it found unavailable.
+#[derive(Debug, PartialEq, Eq)]
+enum StartRecovery {
+    /// The browser is back: observe again.
+    Restarted,
+    /// It could not start (or was stopped on request) yet: try again within the budget.
+    Retry,
+    /// The 15 second budget ran out: settle the card unavailable.
+    GiveUp,
+}
+
+/// A failed start counts toward the same budget as a failed observation, so a controller that never
+/// comes back, or a browser that stays stopped, ends the card instead of keeping it pending.
+fn after_start_attempt(
+    failures: &mut ObservationFailures,
+    started: &Result<(), DaemonError>,
+) -> StartRecovery {
+    match started {
+        Ok(()) => {
+            failures.observed();
+            StartRecovery::Restarted
+        }
+        Err(_) if failures.exhausted() => StartRecovery::GiveUp,
+        Err(_) => StartRecovery::Retry,
+    }
+}
+
 impl Drop for RegionWatch {
     fn drop(&mut self) {
         self.watching
@@ -95,6 +122,47 @@ impl KernelRuntimeState {
             .await?;
         serde_json::from_value(result)
             .map_err(|_| region_error("browser region observation is invalid"))
+    }
+
+    /// After a kernel restart the card's Tab is back with a new document: ask the controller to
+    /// bind the card to the Tab's whole page.
+    async fn rebind_card_region(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        card_id: &str,
+        tab_id: &str,
+    ) -> Result<RegionObservation, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(region_error(
+                "browser region agent does not belong to this room",
+            ));
+        }
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id":tab_id, "rebind":true});
+        let result = self
+            .kernel_browser_operation(&user, Some(agent_id), "host.browser", params)
+            .await?;
+        serde_json::from_value(result)
+            .map_err(|_| region_error("browser region observation is invalid"))
+    }
+
+    /// The kernel restarted and ended its browser: the card's page comes back when the browser
+    /// starts again, the same way an agent's own read would start it.
+    pub(crate) async fn start_card_browser(&self, agent_id: &str) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        self.kernel_browser_operation(
+            &user,
+            Some(agent_id),
+            "host.browser",
+            // `unless_stopped`: the host answers `browser_unavailable` both for a controller a kernel
+            // restart ended and for one a `stop` ended. Only the first is the card's to bring back.
+            serde_json::json!({"op":"start","unless_stopped":true}),
+        )
+        .await?;
+        Ok(())
     }
 
     /// The App's confirmation preview, found by the browser host in the App's own Tab; the
@@ -253,6 +321,51 @@ impl KernelRuntimeState {
                     }
                 }
                 Ok(RegionObservation::ConditionMet { reason }) => {
+                    // A restart is not the person finishing: a plain card keeps its Tab and is
+                    // bound again to the page the browser brought back.
+                    if reason == "Browser restarted"
+                        && !app_confirmation
+                        && previous.verification.is_none()
+                        && previous.done_text.is_none()
+                    {
+                        match self
+                            .rebind_card_region(room, agent, id, &previous.tab_id)
+                            .await
+                        {
+                            Ok(RegionObservation::Present { region }) => {
+                                failures.observed();
+                                if let Err(error) = self
+                                    .owned
+                                    .rebind_browser_region_card(room, id, previous, *region)
+                                {
+                                    tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card rebind retained for retry");
+                                    tokio::time::sleep(Duration::from_millis(250)).await;
+                                }
+                                continue;
+                            }
+                            Ok(_) | Err(_) => {
+                                if !failures.exhausted() {
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    continue;
+                                }
+                                // The restart is not the person finishing, and the page was never
+                                // shown again: the agent is told the card is unavailable, never
+                                // that its step is done.
+                                if self
+                                    .close_unavailable_browser_region_card(
+                                        room,
+                                        id,
+                                        "Browser restarted and the page could not be shown again; take a fresh snapshot and ask again".into(),
+                                    )
+                                    .is_ok()
+                                {
+                                    return;
+                                }
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                continue;
+                            }
+                        }
+                    }
                     if self.close_browser_region_card(room, id, reason).is_ok() {
                         return;
                     }
@@ -284,16 +397,32 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     tracing::debug!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card observation will retry");
-                    let access_revoked = matches!(
+                    // The controller is stopped after a restart: start it, then observe again.
+                    if !app_confirmation && error.to_string().contains("browser_unavailable") {
+                        let started = self.start_card_browser(agent).await;
+                        if after_start_attempt(&mut failures, &started) == StartRecovery::GiveUp
+                            && self
+                                .close_unavailable_browser_region_card(
+                                    room,
+                                    id,
+                                    "Browser is stopped or could not be started for 15 seconds; take a fresh snapshot and ask again".into(),
+                                )
+                                .is_ok()
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                    // A different owner is the only refusal: the agent's own access needs no grant,
+                    // so a restart or a reload never closes a card that shows a live page.
+                    let foreign = matches!(
                         error,
                         DaemonError::UserDomainRefused {
-                            reason: crate::error::UserDomainRefusalReason::NotGranted
-                                | crate::error::UserDomainRefusalReason::ForeignOwner
-                                | crate::error::UserDomainRefusalReason::NotFocusedAgent
-                                | crate::error::UserDomainRefusalReason::StaleEpoch
+                            reason: crate::error::UserDomainRefusalReason::ForeignOwner
                         }
                     );
-                    if (access_revoked || failures.exhausted()) && self.close_unavailable_browser_region_card(room, id, if access_revoked { "Browser access was revoked" } else { "Browser region observation remained unavailable for 15 seconds; take a fresh snapshot and ask again" }.into()).is_ok() {
+                    if (foreign || failures.exhausted()) && self.close_unavailable_browser_region_card(room, id, if foreign { "Browser is no longer available to this agent" } else { "Browser region observation remained unavailable for 15 seconds; take a fresh snapshot and ask again" }.into()).is_ok() {
                         return;
                     }
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -356,8 +485,8 @@ impl KernelRuntimeState {
             return;
         };
         let user = self.provider_account_authority_owner_user_id(agent_record.owner_user_id());
-        // Revocation can prevent cleanup admission. The bounded controller
-        // lease then expires without another watcher renewal.
+        // A failed cleanup is not retried: the bounded controller lease then
+        // expires without another watcher renewal.
         let admitted = (!app_confirmation).then_some(agent);
         let _ = self.kernel_browser_operation(&user, admitted, "host.browser", serde_json::json!({"op":"popup_region", "card_id":card, "tab_id":tab, "release":true})).await;
     }
@@ -374,6 +503,52 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// The card's Tab came back with a new document after a restart: bind the card to it. The
+    /// card keeps its identity and its Tab; only a plain card (no proof, no awaited text) rebinds.
+    pub(super) fn rebind_browser_region_card(
+        &self,
+        room: &str,
+        id: &str,
+        expected: &RuntimeInteractionBrowserRegion,
+        region: RuntimeInteractionBrowserRegion,
+    ) -> Result<(), DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| region_error("interaction store unavailable"))?;
+        let activity = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(room)?;
+        let Some(card) = session.active_interactions().iter().find(|i| i.id() == id) else {
+            return Ok(());
+        };
+        if card.view().is_none_or(|v| v.browser_region != *expected) {
+            return Ok(());
+        }
+        if region.tab_id != expected.tab_id
+            || region.verification.is_some()
+            || expected.verification.is_some()
+            || region.done_text != expected.done_text
+        {
+            return Err(region_error(
+                "browser card rebind changed its Tab or its proof",
+            ));
+        }
+        session.update_active_interaction_view(
+            id,
+            RuntimeInteractionView {
+                browser_region: region,
+            },
+        );
+        sessions.restore_session(session);
+        drop(sessions);
+        activity.record();
+        self.session_snapshot(room)?;
+        self.terminal_stream.notify_terminal_projection_change(room);
+        Ok(())
+    }
+
     pub(super) fn update_browser_region_card(
         &self,
         room: &str,
@@ -436,5 +611,36 @@ mod tests {
         assert!(!failures.exhausted());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(failures.exhausted());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_browser_starts_count_toward_the_card_failure_budget() {
+        let refused: Result<(), DaemonError> = Err(region_error("browser_unavailable: stopped"));
+        let mut failures = ObservationFailures::default();
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::Retry
+        );
+        tokio::time::advance(Duration::from_secs(14)).await;
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::Retry
+        );
+        // A start that works resets the budget.
+        assert_eq!(
+            after_start_attempt(&mut failures, &Ok(())),
+            StartRecovery::Restarted
+        );
+        tokio::time::advance(Duration::from_secs(14)).await;
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::Retry
+        );
+        // Persistent failure ends the card with the unavailable settlement.
+        tokio::time::advance(Duration::from_secs(15)).await;
+        assert_eq!(
+            after_start_attempt(&mut failures, &refused),
+            StartRecovery::GiveUp
+        );
     }
 }

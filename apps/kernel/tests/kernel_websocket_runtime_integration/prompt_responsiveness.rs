@@ -101,6 +101,7 @@ fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
                 session_id: session_id.clone(),
                 agent_ids: Some(vec![agent_id.clone()]),
                 latest_prompt_count: Some(1),
+                after_sequence: None,
                 cursor: None,
             }),
         }),

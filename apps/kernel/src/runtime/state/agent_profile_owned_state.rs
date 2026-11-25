@@ -213,6 +213,7 @@ impl KernelRuntimeOwnedState {
         if !provider_model_or_account_changed
             && target_effort == agent.effort()
             && !selection_changed
+            && agent.pending_profile().is_none()
         {
             return Ok(owned::OwnedAgentProfileUpdate {
                 agent,
@@ -241,10 +242,23 @@ impl KernelRuntimeOwnedState {
             .prompt_state_owner
             .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
             .is_some();
-        if remote_update.is_none()
-            && !active_turn
-            && (provider_model_or_account_changed || target_effort != agent.effort())
-        {
+        // A background command is a child of the provider's process, and so is the notification
+        // turn that reports it: while it runs, the next dispatch replaces the process instead.
+        let background_command_runs =
+            match self.provider_store.get_run_for_agent(session_id, agent_id) {
+                Some(run) if run.state() != crate::provider::ProviderRunState::Ended => {
+                    self.run_has_running_background_calls(session_id, run.id())?
+                }
+                _ => false,
+            };
+        let changed = provider_model_or_account_changed || target_effort != agent.effort();
+        if remote_update.is_none() && !active_turn && background_command_runs && changed {
+            // The next turn after the command ended starts the new process.
+            if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+                self.provider_store.mark_run_settings_stale(run.id())?;
+            }
+        }
+        if remote_update.is_none() && !active_turn && !background_command_runs && changed {
             if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
                 match run.state() {
                     crate::provider::ProviderRunState::Starting
@@ -302,13 +316,16 @@ impl KernelRuntimeOwnedState {
                     resume_state,
                 )?;
                 // Continue on another account takes this exact stopped turn with the new profile.
-                if profile_changed && continue_limit.is_none() {
+                let mut updated = if profile_changed && continue_limit.is_none() {
                     agents
                         .change_usage_limit_stop(agent_id, |held| held.map(|_| None))?
                         .unwrap_or(updated)
                 } else {
                     updated
-                }
+                };
+                // A committed profile answers a change that was waiting for the turn to end.
+                updated.set_pending_profile(None);
+                agents.restore_agent(updated)
             };
             let _ = self.session_snapshot(session_id)?;
             agent
@@ -329,11 +346,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agents = self.agent_store.read();
         let agent = agents.get_agent(agent_id)?;
-        self.durable_state_store.append_event(
-            "agent.updated",
-            Some(agent.id().to_string()),
-            serde_json::json!({ "agent": &agent, "capability_name": null }),
-        )?;
+        self.persist_agent_profile_record(&agent)?;
         Ok(agent)
     }
 

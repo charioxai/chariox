@@ -579,7 +579,7 @@ impl SessionRuntimeStore {
         self.state.authorize_room_agent_request(actor_id, request)
     }
 
-    /// Cross-Room spawn and deletion enter the destination Room's command queue.
+    /// Cross-Room spawn, deletion, Room creation and Room deletion enter the destination command queue.
     /// The Room fence below checks the ownership and parent edge before either mutation.
     pub(super) async fn verify_metaagent_caller(
         &self,
@@ -602,6 +602,8 @@ impl SessionRuntimeStore {
                             LocalDaemonRequest::SpawnAgent(_)
                                 | LocalDaemonRequest::DestroyAgent(_)
                                 | LocalDaemonRequest::UpdateAgentConfig(_)
+                                | LocalDaemonRequest::CreateSession(_)
+                                | LocalDaemonRequest::DeleteSession(_)
                         )
                         && self.state.same_owner(agent.owner_user_id(), caller_user_id)
                 }
@@ -647,15 +649,19 @@ impl SessionRuntimeStore {
 
     pub(super) async fn create_session(
         &self,
-        request: CreateSessionRequest,
+        mut request: CreateSessionRequest,
         caller_user_id: String,
+        caller_metaagent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .create_session_response(request.with_owner_user_id(caller_user_id))
+            .create_session_response({
+                request.created_by_agent_id = caller_metaagent_id;
+                request.with_owner_user_id(caller_user_id)
+            })
             .await;
         self.with_session_projection_action_result(result).await
     }
@@ -893,19 +899,13 @@ impl SessionRuntimeStore {
         &self,
         request: FocusAgentRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .focus_agent(
-                &request.session_id,
-                &request.agent_id,
-                &caller_user_id,
-                terminal_caller,
-            )
+            .focus_agent(&request.session_id, &request.agent_id, &caller_user_id)
             .await
             .map_err(|error| match error {
                 DaemonError::AgentNotFound { agent_id } => DaemonError::AgentNotInSession {
@@ -958,14 +958,13 @@ impl SessionRuntimeStore {
         &self,
         request: CycleAgentFocusRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .cycle_agent_focus(&request.session_id, &caller_user_id, terminal_caller)
+            .cycle_agent_focus(&request.session_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent });
         self.with_session_projection_action_result(result).await

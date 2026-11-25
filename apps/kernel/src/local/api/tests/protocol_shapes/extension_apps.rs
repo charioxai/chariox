@@ -95,36 +95,15 @@ fn app_bindings_use_the_shared_extension_request_contract() {
     );
 }
 
-// MP-08/MP-10/MP-11 A05: persisted and projected App grants are kernel issued.
+// An App binding names only its installation: no kernel-issued lifetime, delegation or scope.
 #[test]
-fn capability_app_authority_protocol_462_shape_and_hash() {
-    use sha2::{Digest, Sha256};
-    assert_eq!(
-        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
-        crate::test_support::expected_local_protocol_version()
-    );
-    assert_eq!(
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        crate::test_support::expected_relay_peer_protocol_version()
-    );
-    let mut grant = crate::extension::ExtensionGrant::app("installed");
-    grant.app_grant = Some(crate::extension::AppCapabilityGrant {
-        grant_id: "grant-1".into(),
-        expires_at_ms: 28_800_001,
-        delegated_by_agent_id: Some("parent".into()),
-        delegated_from_grant_id: Some("grant-parent".into()),
-    });
+fn an_app_binding_carries_only_its_installation() {
+    let grant = crate::extension::ExtensionGrant::app("installed");
     let value = serde_json::to_value(&grant).unwrap();
-    assert_eq!(
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
-        "3a9d9b8ac64edd1e5814bc2d1bf0e66a857d86de57a5dc7b3a4b7cdd26fc47e3"
-    );
+    assert_eq!(value, serde_json::json!({"kind":"app","name":"installed"}));
     assert_eq!(
         serde_json::from_value::<crate::extension::ExtensionGrant>(value).unwrap(),
         grant
     );
-    assert!(
-        grant.validate_app_binding().is_err(),
-        "MP-11: issued authority cannot be submitted as a grant request"
-    );
+    grant.validate_app_binding().unwrap();
 }

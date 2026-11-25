@@ -22,8 +22,8 @@ use tokio::time::Instant;
 
 use crate::error::DaemonError;
 use crate::local::{
-    GetCredentialVaultStatusRequest, GetMachineRoomResourcesRequest, GetPersonInboxRequest,
-    KernelResourceRefusal, KernelResourceWatch, ListAppInstallationsRequest,
+    GetCredentialVaultStatusRequest, GetMachineRoomResourcesRequest, GetPaneFeedRequest,
+    GetPersonInboxRequest, KernelResourceRefusal, KernelResourceWatch, ListAppInstallationsRequest,
     ListCredentialsRequest, ListProviderAccountProfilesRequest, LocalDaemonRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
@@ -131,10 +131,16 @@ enum FeedResource {
     AppInstallations {
         session_id: Option<String>,
     },
+    OwnerView,
     /// Changes with the Rooms' pending interactions, which no request signals.
     PersonInbox,
     MachineRoomResources {
         session_id: String,
+    },
+    /// One agent pane; changes with its Room and with the Inbox, which no request signals.
+    PaneFeed {
+        session_id: String,
+        agent_id: String,
     },
 }
 
@@ -155,6 +161,7 @@ impl FeedResource {
             "vault_status" => allow_only(&[]).map(|()| Self::VaultStatus),
             "vault_entries" => allow_only(&[]).map(|()| Self::VaultEntries),
             "provider_accounts" => allow_only(&[]).map(|()| Self::ProviderAccounts),
+            "owner_view" => allow_only(&[]).map(|()| Self::OwnerView),
             "person_inbox" => allow_only(&[]).map(|()| Self::PersonInbox),
             "machine_room_resources" => {
                 allow_only(&["session_id"])?;
@@ -165,6 +172,20 @@ impl FeedResource {
                     .ok_or(("invalid_params", "`session_id` must name a Room".into()))?;
                 Ok(Self::MachineRoomResources {
                     session_id: session_id.into(),
+                })
+            }
+            "pane_feed" => {
+                allow_only(&["session_id", "agent_id"])?;
+                let text = |name: &str| match params.get(name) {
+                    Some(Value::String(value)) if !value.is_empty() => Ok(value.clone()),
+                    _ => Err((
+                        "invalid_params",
+                        format!("`pane_feed` needs the string `{name}`"),
+                    )),
+                };
+                Ok(Self::PaneFeed {
+                    session_id: text("session_id")?,
+                    agent_id: text("agent_id")?,
                 })
             }
             "app_installations" => {
@@ -267,8 +288,18 @@ impl Feed {
         self.refresh_resources(resources).await
     }
 
-    fn watches_person_inbox(&self) -> bool {
-        self.watched.contains_key(&FeedResource::PersonInbox)
+    /// The watched resources that follow the Rooms and the Inbox, which no request signals.
+    fn session_followers(&self) -> Vec<FeedResource> {
+        self.watched
+            .keys()
+            .filter(|resource| {
+                matches!(
+                    resource,
+                    FeedResource::PersonInbox | FeedResource::PaneFeed { .. }
+                )
+            })
+            .cloned()
+            .collect()
     }
 
     async fn refresh_resources(&mut self, resources: Vec<FeedResource>) -> Vec<KernelEvent> {
@@ -356,6 +387,12 @@ impl Feed {
             FeedResource::AppInstallations { session_id } => {
                 self.read_app_installations(session_id.clone()).await
             }
+            FeedResource::OwnerView => {
+                self.read_request(LocalDaemonRequest::OwnerView(
+                    crate::local::OwnerViewRequest::Status {},
+                ))
+                .await
+            }
             FeedResource::PersonInbox => {
                 self.read_request(LocalDaemonRequest::GetPersonInbox(GetPersonInboxRequest))
                     .await
@@ -366,6 +403,16 @@ impl Feed {
                         session_id: session_id.clone(),
                     },
                 ))
+                .await
+            }
+            FeedResource::PaneFeed {
+                session_id,
+                agent_id,
+            } => {
+                self.read_request(LocalDaemonRequest::GetPaneFeed(GetPaneFeedRequest {
+                    session_id: session_id.clone(),
+                    agent_id: agent_id.clone(),
+                }))
                 .await
             }
         }
@@ -501,6 +548,9 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
     changes.borrow_and_update();
     let sessions = Arc::clone(&router);
     let mut sessions_seen = sessions.session_projection_change_sequence();
+    let owner_view_runtime = sessions.runtime_state();
+    let owner_view = owner_view_runtime.owner_view_changes();
+    let mut owner_view_seen = owner_view.sequence();
     let mut inbox_seen = sessions.person_inbox_change_sequence();
     let mut feed = Feed {
         router,
@@ -536,14 +586,18 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
                 events
             }
             Some(event) = file_changes.recv(), if file_watch.is_some() => vec![event],
-            () = sessions.wait_for_session_projection_change_after(sessions_seen), if feed.watches_person_inbox() => {
+            () = sessions.wait_for_session_projection_change_after(sessions_seen), if !feed.session_followers().is_empty() => {
                 tokio::time::sleep(PERSON_INBOX_SETTLE).await;
                 sessions_seen = sessions.session_projection_change_sequence();
-                feed.refresh_resources(vec![FeedResource::PersonInbox]).await
+                feed.refresh_resources(feed.session_followers()).await
             }
-            () = sessions.wait_for_person_inbox_change_after(inbox_seen), if feed.watches_person_inbox() => {
+            () = sessions.wait_for_person_inbox_change_after(inbox_seen), if !feed.session_followers().is_empty() => {
                 inbox_seen = sessions.person_inbox_change_sequence();
-                feed.refresh_resources(vec![FeedResource::PersonInbox]).await
+                feed.refresh_resources(feed.session_followers()).await
+            }
+            () = owner_view.wait_for_change_after(owner_view_seen), if feed.watched.contains_key(&FeedResource::OwnerView) => {
+                owner_view_seen = owner_view.sequence();
+                feed.refresh_resources(vec![FeedResource::OwnerView]).await
             }
             changed = changes.changed() => {
                 if changed.is_err() {

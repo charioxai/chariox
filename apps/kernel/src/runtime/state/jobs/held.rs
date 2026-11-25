@@ -2,8 +2,8 @@
 //! never allocates or releases a machine: the agent keeps holding it afterwards, so what the job
 //! uploaded there must be removed by the job itself.
 //!
-//! Naming a held machine does not need `CHARIOX_REMOTE_JOBS`: that switch governs placing
-//! jobs on worker machines by the kernel's own offload policy, and the agent chose this machine itself.
+//! Naming a held machine is not an offload policy choice: the policy places jobs on worker machines
+//! the kernel rents, and the agent chose this machine itself.
 //!
 //! The plan (`return.json`) names the uploaded workspace and is saved, with stage `Planned`, before
 //! the first byte goes up. It is forgotten only once the workspace is removed, so "plan saved" means
@@ -43,6 +43,21 @@ use super::*;
 use crate::local::{ControlPlaneRequest, ControlPlaneResponse};
 use crate::runtime::kernel_gateway::Origin;
 use zeroize::Zeroizing;
+
+#[derive(Clone, Copy)]
+pub(super) enum HeldRelease {
+    Deleting,
+    Deleted,
+}
+
+impl HeldRelease {
+    pub(super) fn notice(self) -> &'static str {
+        match self {
+            Self::Deleting => "The machine is being released.\n",
+            Self::Deleted => "The machine was released.\n",
+        }
+    }
+}
 
 impl KernelRuntimeState {
     /// The held machine `allocation_ref` names, proven ready and reachable now, or the refusal that
@@ -125,7 +140,6 @@ impl KernelRuntimeState {
             )
         })?;
         Ok(JobMachine {
-            allocation_ref: allocation_ref.into(),
             machine_label: machine_label.unwrap_or_else(|| "held machine".into()),
             address,
             kernel_id: target.kernel_id,
@@ -138,10 +152,10 @@ impl KernelRuntimeState {
 impl KernelRuntimeState {
     /// Runs the job on the machine its request names. Nothing is allocated, so there is no capacity
     /// fallback: a machine that is gone fails the job with the reason.
-    pub(super) async fn run_job_on_held_machine(
+    pub(super) async fn run_job_on_named_machine(
         &self,
         record: &mut Record,
-        allocation_ref: &str,
+        target: &JobMachineTarget,
         environment: &BTreeMap<String, Zeroizing<String>>,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
@@ -149,17 +163,36 @@ impl KernelRuntimeState {
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
         }
-        self.job_acquisition_subject(&record.job_id)?;
+        // An enrolled placement needs no acquisition authority from the initiating turn.
+        let require_active_turn = matches!(target, JobMachineTarget::Allocation(_));
+        self.live_job_subject(&record.job_id, require_active_turn)?;
         let origin = Origin {
             grant_id: format!("job:{}", record.job_id),
             harness: self
                 .agent_harness_name(&record.room_id, &record.agent_id)
                 .unwrap_or_else(|| "Chariox".into()),
         };
+        let resolve = async {
+            match target {
+                JobMachineTarget::Allocation(allocation) => {
+                    self.job_held_machine(allocation, &origin, &record.job_id)
+                        .await
+                }
+                JobMachineTarget::Enrolled { kernel, .. } => {
+                    self.check_enrolled_job_agent(&record.agent_id, kernel)?;
+                    let machine = self.enrolled_job_machine(kernel, &origin.harness).await?;
+                    if machine.kernel_id != *kernel {
+                        return Err(ledger::error("The enrolled kernel changed. Run the job again with its current kernel ID."));
+                    }
+                    Ok(machine)
+                }
+            }
+        };
         let machine = tokio::select! {
-            machine = self.job_held_machine(allocation_ref, &origin, &record.job_id) => machine?,
+            machine = resolve => machine?,
             _ = cancelled.changed() => return Ok(cancelled_result(record)),
         };
+        record.placement = JobPlacement::Remote;
         record.machine_label = Some(machine.machine_label.clone());
         record.address = machine.address.clone();
         save_record(self, record)?;
@@ -171,42 +204,31 @@ impl KernelRuntimeState {
             .await
     }
 
-    /// A held machine is never deleted, so a command whose end was never read keeps running there
+    /// A named machine is never deleted, so a command whose end was never read keeps running there
     /// until it is stopped by name. Returns what to tell the agent when it could not be stopped.
-    pub(super) async fn stop_held_command(&self, record: &Record) -> Option<&'static str> {
+    pub(super) async fn stop_named_command(&self, record: &Record) -> Option<&'static str> {
         let (RemoteStage::Running { room, exec_id }, Some(_)) =
             (&record.remote, &record.request.machine)
         else {
             return None;
         };
         let stopped = async {
-            let plan = PendingReturn::load(self, &record.job_id)?;
-            let grant = self.return_grant(record, &plan.kernel_id).await?;
+            let plan = PendingReturn::load_saved(self, &record.job_id)?;
+            let grant = self.return_grant(record, plan.as_ref()).await?;
             Remote::new(grant, room.clone(), record.job_id.clone())
                 .cancel(exec_id)
                 .await
         };
         match tokio::time::timeout(Duration::from_secs(30), stopped).await {
             Ok(Ok(())) => None,
-            _ => Some(super::execute::HELD_COMMAND_MAY_RUN),
+            _ => Some(super::execute::NAMED_COMMAND_MAY_RUN),
         }
     }
 }
 
 impl KernelRuntimeState {
-    /// After a restart: the live grant to the held machine is gone. The service names the machine
-    /// again, and only the kernel the job's plan pinned is granted.
-    pub(super) async fn held_machine_reattach(
-        &self,
-        record: &Record,
-        kernel_id: &str,
-    ) -> Result<Arc<dyn crate::room_exec::gateway_placement::GrantedSend>, DaemonError> {
-        let allocation_ref = record
-            .request
-            .machine
-            .as_deref()
-            .ok_or_else(|| ledger::error("The job has no held machine"))?;
-        let origin = Origin {
+    fn held_job_origin(&self, record: &Record) -> Origin {
+        Origin {
             grant_id: format!(
                 "{}{}",
                 super::super::reach::OWNER_GRANT_PREFIX,
@@ -215,7 +237,52 @@ impl KernelRuntimeState {
             harness: self
                 .agent_harness_name(&record.room_id, &record.agent_id)
                 .unwrap_or_else(|| "Chariox".into()),
+        }
+    }
+
+    pub(super) async fn held_job_release(&self, record: &Record) -> Option<HeldRelease> {
+        let Some(JobMachineTarget::Allocation(allocation_ref)) = &record.request.machine else {
+            return None;
         };
+        let request = ControlPlaneRequest::Get {
+            allocation_ref: allocation_ref.clone(),
+        };
+        let origin = self.held_job_origin(record);
+        let command_id = format!("{}:release-state", record.job_id);
+        let Ok(Ok(ControlPlaneResponse::Machine { state, .. })) = tokio::time::timeout(
+            Duration::from_secs(3),
+            self.job_control_plane(&origin, &request, &command_id),
+        )
+        .await
+        else {
+            // The job output is still available if the lifecycle service cannot confirm the
+            // state. File return remains pending until the allocation can be checked again.
+            return None;
+        };
+        match state.as_str() {
+            "deleting" => Some(HeldRelease::Deleting),
+            "deleted" | "released" => Some(HeldRelease::Deleted),
+            _ => None,
+        }
+    }
+
+    pub(super) fn mark_held_job_deleted(&self, record: &mut Record) {
+        record.deleted = true;
+        self.give_up_pending_return(record);
+        self.forget_pending_return(&record.job_id);
+    }
+
+    /// After a restart: the live grant to the held machine is gone. The service names the machine
+    /// again, and only the kernel the job's plan pinned is granted.
+    pub(super) async fn held_machine_reattach(
+        &self,
+        record: &Record,
+        kernel_id: &str,
+    ) -> Result<Arc<dyn crate::room_exec::gateway_placement::GrantedSend>, DaemonError> {
+        let Some(JobMachineTarget::Allocation(allocation_ref)) = &record.request.machine else {
+            return Err(ledger::error("The job has no held machine"));
+        };
+        let origin = self.held_job_origin(record);
         let machine = self
             .job_held_machine(
                 allocation_ref,

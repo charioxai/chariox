@@ -212,8 +212,16 @@ impl Remote {
         grant: Arc<dyn GrantedSend>,
         job_id: &str,
     ) -> Result<Located, DaemonError> {
+        let home = Self::home(grant, job_id).await?;
+        let root = format!(
+            "{}/chariox-jobs/{job_id}/workspace",
+            home.trim_end_matches('/')
+        );
+        Ok(Located { home, root })
+    }
+    async fn home(grant: Arc<dyn GrantedSend>, job_id: &str) -> Result<String, DaemonError> {
         let probe = Self::new(grant, String::new(), job_id.into());
-        let home = match probe
+        match probe
             .call(
                 "home",
                 LocalDaemonRequest::StatKernelFile(StatKernelFileRequest {
@@ -223,15 +231,46 @@ impl Remote {
             )
             .await?
         {
-            LocalDaemonResponse::KernelFileStat { stat } if stat.exists => stat.path,
-            _ => return Err(ledger::error("Job machine has no home directory")),
-        };
-        let root = format!(
-            "{}/chariox-jobs/{job_id}/workspace",
-            home.trim_end_matches('/')
-        );
-        Ok(Located { home, root })
+            LocalDaemonResponse::KernelFileStat { stat } if stat.exists => Ok(stat.path),
+            _ => Err(ledger::error("Job machine has no home directory")),
+        }
     }
+
+    pub(super) async fn without_workspace(
+        grant: Arc<dyn GrantedSend>,
+        record: &Record,
+    ) -> Result<Self, DaemonError> {
+        let command_id = format!("{}:command", record.job_id);
+        if record.request.target_directory().is_none() {
+            let home = Self::home(grant.clone(), &record.job_id).await?;
+            let room = create_target_room(&*grant, &command_id, Some(&home)).await?;
+            return Ok(Self::new(grant, room, record.job_id.clone()));
+        }
+        let directory = record.cwd.to_string_lossy();
+        let mut remote = Self::new(grant, String::new(), record.job_id.clone());
+        let answer = remote
+            .call(
+                "directory",
+                LocalDaemonRequest::StatKernelFile(StatKernelFileRequest {
+                    path: directory.to_string(),
+                    with_sha256: false,
+                }),
+            )
+            .await?;
+        let LocalDaemonResponse::KernelFileStat { stat } = answer else {
+            return Err(ledger::error(
+                "The enrolled machine did not confirm the job directory.",
+            ));
+        };
+        if !stat.exists || stat.kind != Some(KernelFileKind::Directory) {
+            return Err(ledger::error(format!(
+                "The directory {directory} is missing on the enrolled machine. Copy it there with chariox.files.copy and try again."
+            )));
+        }
+        remote.room = create_target_room(&*remote.grant, &command_id, Some(&stat.path)).await?;
+        Ok(remote)
+    }
+
     pub(super) async fn prepare(
         grant: Arc<dyn GrantedSend>,
         record: &Record,
@@ -240,15 +279,20 @@ impl Remote {
         cancelled: &watch::Receiver<bool>,
     ) -> Result<Self, DaemonError> {
         let Located { home, root } = located;
+        let workspace = record.transfer_workspace()?;
         let room =
             create_target_room(&*grant, &format!("{}:prepare", record.job_id), Some(home)).await?;
         let preparation = Self::new(grant.clone(), room, record.job_id.clone());
         let relative_cwd = record
             .cwd
-            .strip_prefix(&record.workspace)
+            .strip_prefix(workspace.root)
             .map_err(|_| ledger::error("Job directory escaped workspace"))?;
-        let mut directories =
-            BTreeSet::from([root.clone(), format!("{root}/{}", relative_cwd.display())]);
+        let cwd = if relative_cwd.as_os_str().is_empty() {
+            root.clone()
+        } else {
+            format!("{root}/{}", relative_cwd.display())
+        };
+        let mut directories = BTreeSet::from([root.clone(), cwd.clone()]);
         for path in manifest.keys() {
             crate::jobs::relative(path)?;
             if let Some(parent) = Path::new(path)
@@ -270,7 +314,7 @@ impl Remote {
                 .await?;
         }
         for (index, (path, state)) in manifest.iter().enumerate() {
-            let local = crate::jobs::checked_path(&record.workspace, path)?;
+            let local = workspace.checked_path(path)?;
             let mut file = std::fs::File::open(&local)
                 .map_err(|e| ledger::error(format!("Cannot upload job file: {e}")))?;
             let size = file
@@ -331,15 +375,6 @@ impl Remote {
                 .utility(command, &format!("chmod:{index}"))
                 .await?;
         }
-        let relative_cwd = record
-            .cwd
-            .strip_prefix(&record.workspace)
-            .map_err(|_| ledger::error("Job directory escaped workspace"))?;
-        let cwd = if relative_cwd.as_os_str().is_empty() {
-            root.clone()
-        } else {
-            format!("{root}/{}", relative_cwd.display())
-        };
         let room =
             create_target_room(&*grant, &format!("{}:command", record.job_id), Some(&cwd)).await?;
         Ok(Self::new(grant, room, record.job_id.clone()))
@@ -352,9 +387,7 @@ impl Remote {
         base: &crate::jobs::Manifest,
         uploaded: &crate::jobs::Manifest,
     ) -> Result<(Vec<String>, Vec<String>), DaemonError> {
-        let rules = crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(
-            &record.workspace,
-        );
+        let workspace = record.transfer_workspace()?;
         let mut pending = vec![String::new()];
         let mut remote = BTreeMap::new();
         let mut total = 0u64;
@@ -396,10 +429,7 @@ impl Remote {
                     if crate::jobs::hard_excluded(&relative) {
                         continue;
                     }
-                    let ignored =
-                        crate::workspace_live_sync_ignore::workspace_live_sync_ignored_path(
-                            &relative, &rules,
-                        );
+                    let ignored = workspace.ignored(&relative);
                     let output = record.request.outputs.iter().any(|pattern| crate::workspace_live_sync_ignore::workspace_live_sync_ignore_pattern_matches(pattern, &relative));
                     if entry.kind == KernelFileKind::Directory {
                         if !ignored
@@ -413,11 +443,12 @@ impl Remote {
                         }
                     } else if entry.kind == KernelFileKind::File && (!ignored || output) {
                         total = total.saturating_add(entry.size);
-                        if total > 2 * 1024 * 1024 * 1024 || remote.len() >= 100_000 {
-                            return Err(ledger::error(
-                                "Job return exceeds the 2 GiB or 100000 file limit",
-                            ));
-                        }
+                        crate::jobs::check_transfer_limit(
+                            "return",
+                            workspace.root,
+                            total,
+                            remote.len() + 1,
+                        )?;
                         let stat = match self
                             .call(
                                 &format!("return-stat:{relative}"),
@@ -505,7 +536,7 @@ impl Remote {
                 None
             };
             let applied = crate::jobs::apply_return(
-                &record.workspace,
+                workspace.root,
                 &record.job_id,
                 &path,
                 base.get(&path),

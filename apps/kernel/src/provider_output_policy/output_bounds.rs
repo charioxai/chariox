@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
+use crate::provider::ContextCompaction;
 use crate::terminal::TerminalOutputKind;
 use serde_json::Value;
 
@@ -41,6 +42,33 @@ fn process_tool_settlement_preserves_terminal_reason_at_output_bound() {
     assert!(bounded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
 }
 
+#[cfg(test)]
+#[test]
+fn large_compaction_summary_fits_live_and_stored_records_as_json() {
+    use crate::history::SessionHistoryEntry;
+    use crate::provider_output_policy::tool_history::bounded_history_entry;
+
+    let summary = "Context 🧭 with a quote \" and newline\n".repeat(1200);
+    let state = ContextCompaction::Done {
+        summary: summary.clone(),
+    };
+    let raw = state.to_text();
+    let kind = TerminalOutputKind::ContextCompacted;
+    let live = bounded_terminal_output_bytes(&kind, raw.as_bytes());
+    let stored = bounded_history_entry(SessionHistoryEntry::provider_output(
+        "session", "run", None, kind, None, raw,
+    ))
+    .unwrap();
+    assert_eq!(stored.text.as_bytes(), live);
+    assert!(live.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
+    let ContextCompaction::Done { summary: kept } = serde_json::from_slice(&live).unwrap() else {
+        panic!("expected a completed compaction");
+    };
+    let prefix = kept.strip_suffix("\n\n[Summary truncated]").unwrap();
+    assert!(!prefix.is_empty());
+    assert!(summary.starts_with(prefix));
+}
+
 pub(crate) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[u8]) -> Vec<u8> {
     if matches!(
         kind,
@@ -49,12 +77,26 @@ pub(crate) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[
     {
         return bytes.to_vec();
     }
-    if matches!(kind, TerminalOutputKind::ProviderTool) {
-        if let Some(value) = bounded_provider_tool_json(bytes) {
-            return value;
-        }
+    let bounded = match kind {
+        TerminalOutputKind::ProviderTool => bounded_provider_tool_json(bytes),
+        TerminalOutputKind::ContextCompacted => bounded_compaction_json(bytes),
+        _ => None,
+    };
+    bounded.unwrap_or_else(|| bounded_text_bytes(bytes))
+}
+
+fn bounded_compaction_json(bytes: &[u8]) -> Option<Vec<u8>> {
+    let state: ContextCompaction = serde_json::from_slice(bytes).ok()?;
+    let marker = match state {
+        ContextCompaction::Running { .. } => return serde_json::to_vec(&state).ok(),
+        ContextCompaction::Done { .. } => "\n\n[Summary truncated]",
+        ContextCompaction::Failed { .. } => "\n\n[Reason truncated]",
+    };
+    let mut value = serde_json::to_value(state).ok()?;
+    if !shrink_strings_to_fit(&mut value, MAX_PROVIDER_OUTPUT_RECORD_BYTES, marker) {
+        return None;
     }
-    bounded_text_bytes(bytes)
+    serde_json::to_vec(&value).ok()
 }
 
 /// Retain the live output tail without observing or advancing the delta gate.

@@ -1042,6 +1042,7 @@ fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
             prompt_id: None,
             target_prompt_id: None,
             provider_run_id: None,
+            arrived_at_ms: None,
             attempted_at_ms: None,
             submit_epoch: None,
             resumed_at_ms: None,
@@ -1554,6 +1555,7 @@ fn leased_process_receipts_pin_birth_lease_and_terminal_outcome() {
     let f = Fixture::new();
     let wake = f.create("leased-source", "process", None, None);
     let intent = LeasedProcessReceipt {
+        job: None,
         binding: LeasedProcessBinding {
             worker_kernel_id: "worker".into(),
             worker_machine_id: "machine".into(),
@@ -2595,6 +2597,7 @@ mod driver_sources {
                 prompt_id: None,
                 target_prompt_id: None,
                 provider_run_id: None,
+                arrived_at_ms: None,
                 attempted_at_ms: None,
                 submit_epoch: None,
                 resumed_at_ms: None,

@@ -76,7 +76,7 @@ pub(crate) async fn user_config_mutation_effects(
         }]);
     }
 
-    if path == "agents.offload_without_asking" {
+    if path.starts_with("agents.offload_") {
         return Ok(vec![UserConfigMutationEffect {
             kind: "runtime_config".to_string(),
             path: path.to_string(),

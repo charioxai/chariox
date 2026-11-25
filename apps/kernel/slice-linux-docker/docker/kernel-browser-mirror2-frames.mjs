@@ -30,7 +30,7 @@ const OPS = {
 };
 const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
   focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
-  focus_visible: same, snapshot_complete: same, font_failures: same, sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same }); // sheets: frame-local ids, read through the child's own CDP session first
+  focus_visible: same, snapshot_complete: same, font_failures: same, sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same, title: same }); // sheets: frame-local ids, read through the child's own CDP session first
 const apply = (value, schema, what) => Object.fromEntries(Object.entries(value).map(([name, field]) => { if (!Object.hasOwn(schema, name)) throw new Error(`MP-11: unrebased mirror ${what} field`); return [name, field === undefined ? field : schema[name](field)]; }));
 export function rebaseRecord(record, slot) {
   if (!slot) return record;
@@ -122,7 +122,7 @@ export class MirrorFrames {
     const child = await this.world(host, frame, stream.id);
     const loaderId = await this.loaderId(child);
     const snap = await this.snapshot(child, loaderId, policy, tab, slot, stream);
-    const entry = { slot, owner, child, loaderId, hostSlot, depth, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), fragment: snap.fragment ?? null, focus: rebaseFocus(snap, slot) };
+    const entry = { slot, owner, child, loaderId, hostSlot, depth, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), fragment: snap.fragment ?? null, focus: rebaseFocus(snap, slot), playing: snap.media_playing === true };
     stream.frames.set(owner, entry); stream.frameSlots.set(slot, entry);
     const records = snap.nodes.map(r => rebaseRecord(r, slot));
     // The child's own fragment (its header) is its document record's (protocol 503).
@@ -178,6 +178,8 @@ export class MirrorFrames {
         if (raw.closed_candidates && await this.mirror.markClosedHosts(entry.child, raw)) { raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`, false, undefined, true)); }
         if (raw.resync) throw new Error('resync');
         delete raw.closed_candidates; delete raw.full_pending; // Controller-private discovery signal never enters the strict rebased delta schema.
+        // Row 486: a child frame's media playing joins the page's header (a player in a cross-origin frame plays for its Tab).
+        entry.playing = raw.media_playing === true; delete raw.media_playing;
         const delta = rebaseDelta(raw, entry.slot), ops = [], resources = [...delta.resources];
         // A frame the child added is attached from the child's world, like the page's own.
         for (const op of delta.ops) {

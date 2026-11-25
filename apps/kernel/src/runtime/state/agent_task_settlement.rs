@@ -150,16 +150,20 @@ impl KernelRuntimeOwnedState {
     ) -> String {
         let reason = crate::terminal::public_task_failure_reason(&task.reason);
         let mut text = alias.map_or_else(|| reason.clone(), |alias| format!("{alias}: {reason}"));
+        if crate::provider::switch_turn::needs_fresh_agent(&task.reason) {
+            text.push_str(" Start a fresh agent to continue with the brief.");
+            return text;
+        }
         match self.task_settle_steps(task) {
             Ok(steps) if !steps.is_empty() => {
                 text.push_str(&format!(" Open: {}.", steps.join("; ")));
             }
             Ok(_) => {}
             Err(error) => {
-                // Damaged registrations must not take away the task's Cancel choice.
+                // Damaged registrations must not take away the task's Stop choice.
                 let reason =
                     crate::secret_redaction::redact_secrets(&error.to_string()).into_owned();
-                text.push_str(&format!(" Recovery instructions could not be read: {reason}. Cancel this task or restore its authoritative receipts before Resume."));
+                text.push_str(&format!(" Recovery instructions could not be read: {reason}. Stop this task or restore its authoritative receipts before Resume."));
             }
         }
         text

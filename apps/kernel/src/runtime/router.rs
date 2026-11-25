@@ -24,6 +24,7 @@ use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::terminal::TerminalStreamHealthStore;
 use crate::transport::relay_client::RelayClientState;
 
+mod account_kernels;
 pub(crate) mod agent_turn_bridge;
 mod caller_identity_bridge;
 mod card_action;
@@ -33,6 +34,7 @@ mod dispatch;
 pub(crate) mod event_connection_lifecycle;
 mod kernel_access;
 mod managed_context_bridge;
+mod pane_feed;
 mod session_view;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,

@@ -226,9 +226,14 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentConfig(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
-            request.session_id.clone(),
-        )),
+        LocalDaemonRequest::GetAgentSettings(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -268,6 +273,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetMachineRoomResources(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetPaneFeed(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ReportPaneSettings(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -710,6 +721,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SubscribeUserAppViews(_)
         | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         | LocalDaemonRequest::AcceptAppHostAction(_)
+        | LocalDaemonRequest::CloudAccountKernels(_)
         | LocalDaemonRequest::ControlPlane(_)
         | LocalDaemonRequest::GetEnvironmentOperation(_)
         | LocalDaemonRequest::SaveProjectEnvironment(_)
@@ -814,6 +826,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListMetaagentEvents(_)
         | LocalDaemonRequest::ReadMetaagentEvent(_)
         | LocalDaemonRequest::AckMetaagentEvents(_)
+        | LocalDaemonRequest::GetAgentReleaseNotes { .. }
         | LocalDaemonRequest::GetTerminalCommandCatalog(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
@@ -917,6 +930,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachines(_)
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetRoomListSnapshot(_)
+        | LocalDaemonRequest::OwnerView(_)
         | LocalDaemonRequest::GetPersonInbox(_)
         | LocalDaemonRequest::SetInboxCardState(_)
         | LocalDaemonRequest::SetInboxMute(_)
@@ -950,6 +964,9 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListPairedClients(_)
         | LocalDaemonRequest::RecordPairedClient(_)
         | LocalDaemonRequest::RevokePairedClient(_)
+        | LocalDaemonRequest::RelayIssuerStatus(_)
+        | LocalDaemonRequest::ConfigureRelayIssuer(_)
+        | LocalDaemonRequest::IssueRelayClientToken(_)
         | LocalDaemonRequest::GetProviderAuthStatus(_)
         | LocalDaemonRequest::StartProviderLogin(_)
         | LocalDaemonRequest::GetProviderLoginStatus(_)

@@ -60,6 +60,7 @@ fn room_with_agents(count: usize) -> Room {
                     prompt_id: None,
                     target_prompt_id: None,
                     provider_run_id: None,
+                    arrived_at_ms: None,
                     attempted_at_ms: None,
                     submit_epoch: None,
                     resumed_at_ms: None,
@@ -94,6 +95,8 @@ async fn a_sweep_over_many_waiting_recipients_keeps_its_cost_and_still_delivers_
     let one = room_with_agents(1);
     let many = room_with_agents(8);
     let alone = one.snapshots_in_one_pass().await;
+    // The first Room's deliveries run apart from its pass: let them end before the next count.
+    one.runtime.task_work_settled().await;
     let crowded = many.snapshots_in_one_pass().await;
     assert_eq!(
         crowded, alone,

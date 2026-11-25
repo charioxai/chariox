@@ -184,6 +184,12 @@ impl ProviderProcessServiceStore {
         self.read().run_actor_completion_signal()
     }
 
+    /// Claude runs (all, or `only` that one) whose process ended while idle,
+    /// each with whether it ended before it took any turn.
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
+        self.read().claude_runs_exited_while_idle(only)
+    }
+
     /// A per-run execution permit orders credential-bearing spawn against retirement.
     /// The lane map and STORE are released before any process or filesystem work.
     fn acquire_spawn_permit(
@@ -825,6 +831,7 @@ impl ProviderProcessServiceStore {
         mode: PromptAssemblyMode,
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
+        render_handoff: Option<&crate::provider::switch_turn::RenderHandoff<'_>>,
     ) -> Result<
         tokio::sync::oneshot::Receiver<crate::provider::ProviderPromptSubmitReceipt>,
         DaemonError,
@@ -839,14 +846,32 @@ impl ProviderProcessServiceStore {
             steering,
             origin_prompt_id,
         )?;
-        let envelope = self.prepare_skill_prompt(
-            &session_id,
-            &agent_id,
-            &prompt_id,
-            origin_prompt_id,
-            run,
-            envelope,
-        )?;
+        let envelope = if let Some(render_handoff) = render_handoff {
+            let (mut envelope, handoff) = self.prepare_switch_skill_prompt(
+                run,
+                &prompt_id,
+                origin_prompt_id,
+                envelope,
+                false,
+                render_handoff,
+            )?;
+            if let Some(handoff) = handoff {
+                envelope.visible_user_prompt = crate::provider::encode_account_handoff(
+                    &handoff.text,
+                    &envelope.visible_user_prompt,
+                );
+            }
+            envelope
+        } else {
+            self.prepare_skill_prompt(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                origin_prompt_id,
+                run,
+                envelope,
+            )?
+        };
         let move_session = session_id.clone();
         let move_agent = agent_id.clone();
         self.with_agent_move_admission(&move_session, Some(&move_agent), None, || {

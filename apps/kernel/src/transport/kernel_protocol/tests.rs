@@ -599,7 +599,7 @@ fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
         });
         current
             .session
-            .add_active_interaction(RuntimeInteraction::new(
+            .add_interaction_fixture(RuntimeInteraction::new(
                 "owner-decision",
                 "agent-a",
                 RuntimeInteractionKind::Permission,
@@ -627,7 +627,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
     let mut current = previous.clone();
     current
         .session
-        .add_active_interaction(RuntimeInteraction::new(
+        .add_interaction_fixture(RuntimeInteraction::new(
             "interaction-a",
             "agent-a",
             RuntimeInteractionKind::Permission,
@@ -789,6 +789,7 @@ fn room_list_snapshot(
             configured: false,
             connected: false,
             relay_url: None,
+            registration_refused: None,
             relay_token_configured: false,
             daemon_id: "daemon-1".to_string(),
             machine_id: "machine-1".to_string(),
@@ -911,8 +912,6 @@ fn user_domain_refusals_protocol_493_snapshot() {
         crate::test_support::expected_relay_peer_protocol_version()
     );
     let values = [
-        Reason::NotRequested,
-        Reason::NotFocusedAgent,
         Reason::ForeignOwner,
         Reason::StaleEpoch,
         Reason::StaleReference,
@@ -926,7 +925,7 @@ fn user_domain_refusals_protocol_493_snapshot() {
             "{:x}",
             Sha256::digest(include_bytes!("user-domain-refusals-443.json"))
         ),
-        "a97facd41c511caaf1fbbecfc7f33eacb76dd49800b09187968e88ee28a7eb52"
+        "ddf88cefe98db351420c1ccced8eb269a22f9fed69b3e6f27625b918bf728aeb"
     );
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("user-domain-refusals-443.json")).unwrap();
@@ -1082,7 +1081,7 @@ fn review971c_task_and_interaction_keep_session_snapshot() {
     review971c_assert_full_snapshot(|current| {
         current
             .session
-            .add_active_interaction(RuntimeInteraction::new(
+            .add_interaction_fixture(RuntimeInteraction::new(
                 "decision",
                 "agent-a",
                 RuntimeInteractionKind::Permission,

@@ -227,6 +227,14 @@ impl RuntimeSession {
         Some(removed)
     }
 
+    pub(crate) fn discard_unadmitted_workflow(&mut self, workflow_id: &str) {
+        self.remove_workflow(workflow_id);
+        self.workflow_runs
+            .retain(|run| run.workflow_id() != workflow_id);
+        self.workflow_runtime_instances
+            .retain(|instance| instance.workflow_id() != workflow_id);
+    }
+
     pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {
         self.workflows
             .iter()
@@ -736,18 +744,9 @@ impl RuntimeSession {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
-        // Agent decisions have process-local responders. Task and usage-limit
-        // decisions must be recreated with live responders after recovery.
-        let interaction_count = self.active_interactions.len();
-        self.active_interactions.retain(|interaction| {
-            interaction.agent_id().is_none()
-                && !crate::session::is_blocked_task_decision(interaction.id())
-                && !interaction
-                    .id()
-                    .starts_with(crate::agent::UsageLimitStop::DECISION_PREFIX)
-        });
-        reconciliation.cleared_agent_interaction_count =
-            interaction_count - self.active_interactions.len();
+        // A saved presentation has no live responder. Domain state owns rearming.
+        reconciliation.cleared_agent_interaction_count = self.active_interactions.len();
+        self.active_interactions.clear();
         let terminal_workflow_run_ids = self
             .workflow_runs
             .iter()
@@ -1212,7 +1211,11 @@ impl RuntimeSession {
             })
             .filter_map(|(index, item)| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
-                if !queue.enabled() {
+                if !queue.enabled()
+                    || self
+                        .workflow(item.workflow_id())
+                        .is_some_and(WorkflowDefinition::is_archived)
+                {
                     return None;
                 }
                 Some((index, queue.priority(), item.created_at_ms()))
@@ -1245,6 +1248,9 @@ impl RuntimeSession {
                     return None;
                 }
                 let workflow = self.workflow(item.workflow_id())?;
+                if workflow.is_archived() {
+                    return None;
+                }
                 let instance = self.idle_workflow_runtime_instance(
                     workflow.id(),
                     item.endpoint_id(),
@@ -1281,6 +1287,9 @@ impl RuntimeSession {
             .filter_map(|item| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 let workflow = self.workflow(item.workflow_id())?;
+                if workflow.is_archived() {
+                    return None;
+                }
                 self.idle_workflow_runtime_instance(
                     workflow.id(),
                     item.endpoint_id(),

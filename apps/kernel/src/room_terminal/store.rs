@@ -30,6 +30,10 @@ pub(super) struct TerminalRecord {
     pub created_at_ms: u64,
     /// `None` while the terminal ran when the record was written.
     pub ended: Option<RoomTerminalOutcome>,
+    /// When it ended (Unix ms), so an ended terminal is removed on time even after a restart.
+    /// Absent in records written before this field: recovery takes the file's own write time.
+    #[serde(default)]
+    pub ended_at_ms: Option<u64>,
     pub scrollback_text: String,
     pub screen_text: String,
 }
@@ -122,8 +126,14 @@ impl TerminalStore {
                 record.ended.is_none() && !handed_over.contains(&record.terminal_id);
             if ended_by_restart {
                 record.ended = Some(RoomTerminalOutcome::KernelRestarted);
+                record.ended_at_ms = Some(crate::session::unix_epoch_ms());
             }
-            if migrated || ended_by_restart {
+            // An ended record from before `ended_at_ms` existed ended no later than its last write.
+            let undated = record.ended.is_some() && record.ended_at_ms.is_none();
+            if undated {
+                record.ended_at_ms = Some(file_write_time_ms(&path));
+            }
+            if migrated || ended_by_restart || undated {
                 self.save(&record)?;
             }
             records.push(record);
@@ -155,6 +165,15 @@ impl TerminalStore {
         );
         Ok(())
     }
+}
+
+fn file_write_time_ms(path: &Path) -> u64 {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|age| u64::try_from(age.as_millis()).ok())
+        .unwrap_or_else(crate::session::unix_epoch_ms)
 }
 
 fn read_for_recovery(path: &Path) -> Result<(TerminalRecord, bool), String> {

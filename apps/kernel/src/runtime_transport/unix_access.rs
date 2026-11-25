@@ -522,19 +522,9 @@ fn submit_without_waiting(
         AccessSubmission::Granted(_) => status(runtime_state),
         AccessSubmission::Pending(pending) => {
             let answer = status(runtime_state);
-            let holder = pending.holder.clone();
             let runtime_state = runtime_state.clone();
             tokio::spawn(async move {
-                if let Err(error) = runtime_state.decide_kernel_access(pending, None).await {
-                    let error = access_transport_error(&error);
-                    runtime_state.remember_access_request_outcome(
-                        &holder,
-                        crate::local::KernelAccessStatusReason {
-                            code: error.code,
-                            message: error.message,
-                        },
-                    );
-                }
+                let _ = runtime_state.decide_kernel_access(pending, None).await;
             });
             answer
         }
@@ -628,6 +618,8 @@ pub(super) async fn serve_connection(
             socket,
             KernelConnectionClass::Unauthenticated,
             Some(peer),
+            None,
+            true,
         )
         .await;
     }

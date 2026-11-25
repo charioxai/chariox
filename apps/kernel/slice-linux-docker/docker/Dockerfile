@@ -57,7 +57,10 @@ RUN mkdir -p /opt/chariox-runtime-bin \
       && test -x /opt/chariox-prebuilt/chariox-relay \
       && bash apps/kernel/slice-linux-docker/docker/check-prebuilt-glibc.sh /opt/chariox-prebuilt/chariox-kernel /opt/chariox-prebuilt/chariox-relay \
       && install -m 0755 /opt/chariox-prebuilt/chariox-kernel /opt/chariox-runtime-bin/chariox-kernel \
-      && install -m 0755 /opt/chariox-prebuilt/chariox-relay /opt/chariox-runtime-bin/chariox-relay; \
+      && install -m 0755 /opt/chariox-prebuilt/chariox-relay /opt/chariox-runtime-bin/chariox-relay \
+      && if [ -e /opt/chariox-prebuilt/chariox ]; then \
+        install -m 0755 /opt/chariox-prebuilt/chariox /opt/chariox-runtime-bin/chariox; \
+      fi; \
     else \
       case "$CHARIOX_RUNTIME_BUILD_PROFILE" in \
         release) \
@@ -78,7 +81,21 @@ RUN mkdir -p /opt/chariox-runtime-bin \
       && install -m 0755 "target/$profile_dir/chariox-relay" /opt/chariox-runtime-bin/chariox-relay; \
     fi
 
+FROM node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c AS cli-builder
+# The artifact builder supplies the full, immutable repository checkout.
+# Slice image builds consume the resulting prebuilt CLI from their signed context.
+WORKDIR /opt/chariox-source
+RUN npm install --global bun@1.4.2 pnpm@9.15.0
+RUN --mount=type=bind,from=cli-source,target=/src \
+    cp -a /src/. . \
+    && pnpm install --frozen-lockfile \
+    && pnpm --filter @chariox/cli run build \
+    && version="$(awk -F '"' '/^version = / {print $2; exit}' apps/kernel/Cargo.toml)" \
+    && bun apps/cli/scripts/compile.mjs --target linux-x64 --outfile /out/chariox --version "$version" \
+    && test "$(/out/chariox --version)" = "chariox $version"
+
 FROM scratch AS managed-release-artifacts
+COPY --from=cli-builder /out/chariox /chariox
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay
@@ -237,8 +254,7 @@ RUN groupadd --gid 1001 slice \
   && mkdir -p /opt/chariox-slice/bin /opt/chariox-slice/logs \
   && chown -R slice:slice /opt/chariox-slice
 
-COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
-COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
+COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/ /opt/chariox-slice/bin/
 COPY --chmod=0555 apps/kernel/slice-linux-docker/docker/check-runtime.sh /opt/chariox-slice/check-runtime.sh
 RUN /opt/chariox-slice/check-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
@@ -277,6 +293,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-confi
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-permissions.mjs \
      apps/kernel/slice-linux-docker/docker/browser-page-permission-shim.mjs \
+     apps/kernel/slice-linux-docker/docker/browser-page-fonts.mjs \
+     apps/kernel/slice-linux-docker/docker/browser-page-font-recorder.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-downloads.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-upload.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-node-ref.mjs \
@@ -393,6 +411,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-document.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-admission.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-regions.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-screencast-region.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-region-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-error-label.mjs \
@@ -447,6 +466,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-identity.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-process.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-refiner.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-viewer-still.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-sample-lane.mjs \

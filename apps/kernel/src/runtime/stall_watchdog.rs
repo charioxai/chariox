@@ -10,6 +10,7 @@ const STALL_THRESHOLD: Duration = Duration::from_secs(2);
 struct Operation {
     component: &'static str,
     operation: &'static str,
+    stage: Option<&'static str>,
     location: &'static Location<'static>,
     thread: String,
     started: Instant,
@@ -88,6 +89,7 @@ fn register(
         Operation {
             component,
             operation,
+            stage: None,
             location,
             thread: std::thread::current()
                 .name()
@@ -112,7 +114,11 @@ fn overdue(registry: &mut Registry, now: Instant) -> Vec<serde_json::Value> {
             continue;
         }
         operation.reported = true;
-        notices.push(serde_json::json!({"component": operation.component, "operation": operation.operation, "call_site": operation.location.to_string(), "thread": operation.thread, "duration_ms": duration.as_millis()}));
+        let mut notice = serde_json::json!({"component": operation.component, "operation": operation.operation, "call_site": operation.location.to_string(), "thread": operation.thread, "duration_ms": duration.as_millis()});
+        if let Some(stage) = operation.stage {
+            notice["stage"] = stage.into();
+        }
+        notices.push(notice);
     }
     if !notices.is_empty() {
         let held = registry.operations.values().filter(|operation| operation.operation == "lock_hold").map(|operation| serde_json::json!({"name": operation.component, "call_site": operation.location.to_string(), "thread": operation.thread, "duration_ms": now.saturating_duration_since(operation.started).as_millis()})).collect::<Vec<_>>();
@@ -146,7 +152,7 @@ fn thread_names() -> String {
 }
 
 impl Watch {
-    pub(crate) fn progress(&self) {
+    pub(crate) fn stage(&self, name: &'static str, threshold: Duration) {
         if let Some(operation) = self
             .registry
             .lock()
@@ -156,6 +162,12 @@ impl Watch {
         {
             operation.started = Instant::now();
             operation.reported = false;
+            operation.stage = Some(name);
+            operation.threshold = threshold;
+            std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .clone_into(&mut operation.thread);
         }
     }
 }
@@ -184,6 +196,7 @@ mod tests {
             Operation {
                 component: "catalog",
                 operation: "lock_hold",
+                stage: None,
                 location,
                 thread: "holder".into(),
                 started: now,

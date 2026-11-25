@@ -68,7 +68,12 @@ impl KernelRuntimeState {
             let interaction = validation_interaction(&operation, &requested_by)
                 .with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
-                .create_kernel_operation_interaction(&session, &operation.owner, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &session,
+                    &operation.owner,
+                    interaction,
+                )
                 .await
             {
                 Ok(receiver) => receiver,

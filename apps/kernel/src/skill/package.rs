@@ -258,6 +258,24 @@ pub(crate) fn package_skill_directory(
     };
     package_collected_files(&root, files)
 }
+/// Read the exact canonical path the catalog recorded without retargeting it
+/// through a symlink introduced after installation.
+pub(super) fn package_recorded_skill_directory(
+    root: &Path,
+) -> Result<CharioxSkillPackage, DaemonError> {
+    #[cfg(unix)]
+    {
+        let directory = source_unix::open_directory(root)?;
+        package_collected_files(root, source_unix::collect(&directory)?)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Err(failure(
+            "recorded folder refresh requires no-follow directory reads",
+        ))
+    }
+}
 /// An agent's folder source is read with its existing workspace boundary. The
 /// canonical comparison is followed by no-follow descriptor traversal, so a
 /// concurrent source replacement cannot redirect the kernel into another root.

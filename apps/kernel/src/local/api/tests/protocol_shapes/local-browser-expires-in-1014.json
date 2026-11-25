@@ -1,0 +1,8 @@
+{
+  "local_protocol": 1015,
+  "LocalBrowserConnectIssued": ["endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms"],
+  "LocalTerminalConnectIssued": ["endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms", "paired_origin"],
+  "LocalBrowserLeaseRenewed": ["expires_at_ms", "expires_in_ms", "next_sequence"],
+  "LocalTerminalLeaseRenewed": ["expires_at_ms", "expires_in_ms", "next_sequence"],
+  "expires_in_ms": "milliseconds from the kernel's answer until expires_at_ms; the client times its renewal from this, not from expires_at_ms against its own clock"
+}

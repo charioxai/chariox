@@ -87,18 +87,25 @@ impl KernelRuntimeState {
         Ok((root_index, run_id.clone()))
     }
 
-    /// The agent whose provider process tree holds `peer`, when the kernel launched one for it.
-    pub(in crate::runtime::state) fn agent_of_peer(
+    /// A grant can bind only to the dedicated root identified in this peer's verified chain.
+    pub(in crate::runtime::state) fn access_agent_of_chain<'a>(
         &self,
-        peer: &ProcessIdentity,
-    ) -> Option<crate::agent::AgentInstance> {
-        let chain = ancestry(peer).ok()?;
-        let (_, run_id) = self.tracked_provider_run(&chain).ok()?;
+        chain: &'a [ProcessIdentity],
+    ) -> Option<(&'a ProcessIdentity, crate::agent::AgentInstance)> {
+        let (index, run_id) = self.tracked_provider_run(chain).ok()?;
         let run = self.owned.provider_store.get_run(&run_id).ok()?;
-        self.owned
+        let agent = self
+            .owned
             .agent_store
             .get_agent(run.agent_instance_id()?)
-            .ok()
+            .ok()?;
+        let current = self
+            .owned
+            .provider_store
+            .get_run_for_agent(run.session_id(), agent.id())
+            .is_some_and(|current| current.id() == run_id);
+        (current && run.state() == crate::provider::ProviderRunState::Running && !agent.archived())
+            .then_some((&chain[index], agent))
     }
 
     fn sudo_for_chain(&self, chain: &[ProcessIdentity]) -> Result<KernelSudoTurn, DaemonError> {

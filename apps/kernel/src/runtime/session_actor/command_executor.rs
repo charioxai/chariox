@@ -211,10 +211,13 @@ impl SessionRuntimeCommandExecutor {
         connection_class: Option<KernelConnectionClass>,
         idempotency_key: Option<String>,
     ) -> StoreRequestFuture<'_> {
+        let at_turn_end = matches!(&request, LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(_));
         match request {
-            LocalDaemonRequest::CreateSession(request) => {
-                Box::pin(async move { self.store.create_session(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::CreateSession(request) => Box::pin(async move {
+                self.store
+                    .create_session(request, caller_user_id, caller_metaagent_id)
+                    .await
+            }),
             LocalDaemonRequest::ListProjects(request) => {
                 Box::pin(async move { self.store.list_projects(request, caller_user_id).await })
             }
@@ -253,21 +256,17 @@ impl SessionRuntimeCommandExecutor {
                     .detach_from_session(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::FocusAgent(request) => Box::pin(async move {
-                self.store
-                    .focus_agent(request, caller_user_id, terminal_caller)
-                    .await
-            }),
+            LocalDaemonRequest::FocusAgent(request) => {
+                Box::pin(async move { self.store.focus_agent(request, caller_user_id).await })
+            }
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Box::pin(async move {
                 self.store
                     .acknowledge_agent_output_seen(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::CycleAgentFocus(request) => Box::pin(async move {
-                self.store
-                    .cycle_agent_focus(request, caller_user_id, terminal_caller)
-                    .await
-            }),
+            LocalDaemonRequest::CycleAgentFocus(request) => {
+                Box::pin(async move { self.store.cycle_agent_focus(request, caller_user_id).await })
+            }
             LocalDaemonRequest::ResizeTerminal(request) => {
                 Box::pin(async move { self.store.resize_terminal(request).await })
             }
@@ -388,13 +387,15 @@ impl SessionRuntimeCommandExecutor {
                     )
                     .await
             }),
-            LocalDaemonRequest::UpdateAgentProfile(request) => Box::pin(async move {
+            LocalDaemonRequest::UpdateAgentProfile(request)
+            | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => Box::pin(async move {
                 self.store
                     .update_agent_profile(
                         request,
                         caller_user_id,
                         caller_metaagent_id,
                         connection_class,
+                        at_turn_end,
                     )
                     .await
             }),

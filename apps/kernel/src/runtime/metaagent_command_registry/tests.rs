@@ -2,6 +2,10 @@ use super::*;
 
 const ROUTED_COMMAND_CASES: &[&str] = &[
     "prompt agent-2 investigate",
+    "room create --name Bench --provider dev-stub --account-profile drill",
+    "session create --name Bench",
+    "session new",
+    "room delete room-2",
     "agent list",
     "agent ls",
     "agent spawn reviewer",
@@ -414,4 +418,54 @@ fn peer_commands_and_owner_room_card_authority_are_documented() {
         .as_str()
         .unwrap()
         .contains("never acts for a peer"));
+}
+
+#[test]
+fn command_search_returns_only_short_relevant_matches() {
+    let search = |query: &str| {
+        search_commands(MetaCommandSearchArgs {
+            query: Some(query.to_string()),
+            tag: None,
+            scope: None,
+            mutates: None,
+            policy: None,
+            limit: Some(100),
+        })
+    };
+    let commands = search("interaction cards answer open");
+    assert!((1..=5).contains(&commands.len()), "{commands:?}");
+    assert!(commands
+        .iter()
+        .any(|command| command["name"] == "agent answer"));
+    assert!(commands.iter().all(|command| {
+        command["search_score"]
+            .as_i64()
+            .is_some_and(|score| score > 5)
+            && command.get("usage").is_none()
+            && command.get("examples").is_none()
+    }));
+    assert!(search("xylophonenomatch").is_empty());
+    let docs = command_docs(MetaCommandDocsArgs {
+        command: "agent answer".into(),
+    })
+    .unwrap();
+    assert!(docs["usage"].is_string());
+}
+
+#[test]
+fn a_room_can_be_created_and_deleted_but_never_attached_switched_or_dropped_as_a_session() {
+    for command in [
+        "session attach room-2",
+        "session use room-2",
+        "session delete room-2",
+    ] {
+        let tokens = tokenize_command(command).unwrap();
+        assert!(
+            matches!(
+                execution_policy(&tokens),
+                MetaCommandExecutionPolicy::Denied { message } if message.contains("room create")
+            ),
+            "`{command}` stays denied and names the Room commands"
+        );
+    }
 }

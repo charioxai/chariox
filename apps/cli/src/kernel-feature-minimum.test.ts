@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { issueOwnMachineEnrollmentRequest, ownMachineEnrollmentMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
+import * as requests from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
 test("active steering requires the prompt receipt protocol", () => {
@@ -85,10 +86,10 @@ test("integration received-event listing and replay require protocol 911", () =>
   }
 })
 
-test("the Environment requests require protocol 982", () => {
+test("the Environment requests require protocol 1015", () => {
   for (const kind of ["GetProjectEnvironment", "SaveProjectEnvironment", "SetProjectEnvironmentSecret", "RunProjectEnvironmentSetup", "ImportProjectEnvironmentEntries", "DraftProjectEnvironment", "RunRemoteProjectEnvironmentSetup", "RemoteEnvironmentOperation", "CheckProjectEnvironment", "ResolveEnvironmentProposal", "GetEnvironmentOperation", "CancelEnvironmentOperation"]) {
-    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 981), /Project Environment needs protocol ≥982/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 982))
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 1014), /Project Environment needs protocol ≥1015/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 1015))
   }
 })
 
@@ -154,4 +155,11 @@ test("machine acquisition requires the kernel's owner connection support", () =>
     assert.throws(() => requireKernelFeatureProtocol(request, 1005), /Machine acquisition needs protocol ≥1006/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1006))
   }
+})
+
+test("a program's stdin is refused before sending to a kernel that would ignore it", () => {
+  const request = requests.openRoomTerminalRequest({ kernelTerminal: true }, { cols: 80, rows: 24 }, { command: ["bash", "-s"], stdin: { kind: "inline", data_base64: "ZWNobyBoaQo=" } })
+  assert.throws(() => requireKernelFeatureProtocol(request, 1013), /kernel too old: Program stdin needs protocol ≥1014; this kernel is 1013/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1014))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(requests.openRoomTerminalRequest({ kernelTerminal: true }, { cols: 80, rows: 24 }, { command: ["ls"] }), 1013))
 })

@@ -78,6 +78,7 @@ pub enum HistoryEventKind {
     ProviderTool,
     ProviderError,
     ProviderStatus,
+    ContextCompacted,
     Notice,
     SessionCreated,
     AgentCreated,
@@ -615,6 +616,7 @@ impl From<SessionHistoryEntryKind> for HistoryEventKind {
             SessionHistoryEntryKind::ProviderTool => Self::ProviderTool,
             SessionHistoryEntryKind::ProviderError => Self::ProviderError,
             SessionHistoryEntryKind::ProviderStatus => Self::ProviderStatus,
+            SessionHistoryEntryKind::ContextCompacted => Self::ContextCompacted,
             SessionHistoryEntryKind::Notice => Self::Notice,
         }
     }
@@ -631,6 +633,7 @@ impl TryFrom<HistoryEventKind> for SessionHistoryEntryKind {
             HistoryEventKind::ProviderTool => Ok(Self::ProviderTool),
             HistoryEventKind::ProviderError => Ok(Self::ProviderError),
             HistoryEventKind::ProviderStatus => Ok(Self::ProviderStatus),
+            HistoryEventKind::ContextCompacted => Ok(Self::ContextCompacted),
             HistoryEventKind::Notice => Ok(Self::Notice),
             _ => Err(()),
         }
@@ -645,9 +648,9 @@ impl HistoryEventRole {
             | SessionHistoryEntryKind::ProviderReasoning
             | SessionHistoryEntryKind::ProviderError => Self::Assistant,
             SessionHistoryEntryKind::ProviderTool => Self::Tool,
-            SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::Notice => {
-                Self::System
-            }
+            SessionHistoryEntryKind::ProviderStatus
+            | SessionHistoryEntryKind::ContextCompacted
+            | SessionHistoryEntryKind::Notice => Self::System,
         }
     }
 }
@@ -741,6 +744,8 @@ pub struct OperationalHistoryStore {
     read_delay_ms: u64,
     #[cfg(test)]
     delayed_reads: Arc<AtomicU64>,
+    #[cfg(test)]
+    agent_history_loads: Arc<AtomicU64>,
     max_size_bytes: u64,
     capture_enabled: Arc<AtomicBool>,
     writer: Arc<OperationalHistoryWriter>,
@@ -877,6 +882,8 @@ impl OperationalHistoryStore {
             read_delay_ms,
             #[cfg(test)]
             delayed_reads: Arc::default(),
+            #[cfg(test)]
+            agent_history_loads: Arc::default(),
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
             capture_enabled: Arc::new(AtomicBool::new(true)),
             writer: Arc::new(OperationalHistoryWriter {
@@ -913,6 +920,17 @@ impl OperationalHistoryStore {
     #[cfg(test)]
     pub(crate) fn reads_served(&self) -> u64 {
         self.delayed_reads.load(Ordering::SeqCst)
+    }
+
+    /// How many times one agent's history was read, whole or from a sequence on.
+    #[cfg(test)]
+    pub(crate) fn agent_history_loads(&self) -> u64 {
+        self.agent_history_loads.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn count_agent_history_load(&self) {
+        self.agent_history_loads.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn capture_enabled(&self) -> bool {
@@ -1754,6 +1772,7 @@ fn history_event_kind_key(kind: HistoryEventKind) -> &'static str {
         HistoryEventKind::ProviderTool => "provider_tool",
         HistoryEventKind::ProviderError => "provider_error",
         HistoryEventKind::ProviderStatus => "provider_status",
+        HistoryEventKind::ContextCompacted => "context_compacted",
         HistoryEventKind::Notice => "notice",
         HistoryEventKind::SessionCreated => "session_created",
         HistoryEventKind::AgentCreated => "agent_created",

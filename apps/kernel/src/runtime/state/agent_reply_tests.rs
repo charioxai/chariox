@@ -101,6 +101,7 @@ impl Fixture {
                     prompt_id: None,
                     target_prompt_id: None,
                     provider_run_id: None,
+                    arrived_at_ms: None,
                     attempted_at_ms: None,
                     submit_epoch: None,
                     resumed_at_ms: None,
@@ -113,7 +114,7 @@ impl Fixture {
         event
     }
 
-    fn replies(&self) -> Vec<InboxEvent> {
+    pub(super) fn replies(&self) -> Vec<InboxEvent> {
         self.runtime
             .owned
             .durable_state_store
@@ -121,7 +122,7 @@ impl Fixture {
             .unwrap()
     }
 
-    fn assert_gone(&self, count: usize) {
+    pub(super) fn assert_gone(&self, count: usize) {
         let events = self.replies();
         assert_eq!(
             events.len(),
@@ -214,6 +215,34 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap();
+}
+
+/// Row 449: a start refused because the turn's task already exists ("superseded turn or
+/// conflicting task identity") told the parent "delegate gone: failed_start" about an agent
+/// that was alive on that task. Only a delegate that cannot start is reported gone.
+#[tokio::test]
+async fn a_task_identity_conflict_does_not_report_the_delegate_gone() {
+    let f = Fixture::new();
+    f.request("already-started");
+    f.runtime
+        .owned
+        .settle_failed_delegate_start(
+            &f.room,
+            &f.child,
+            "local transport `agent.lifecycle` failed: superseded turn or conflicting task identity",
+        )
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(
+        f.replies()
+            .iter()
+            .all(|event| event.payload["public_answer"]["reason"] != "failed_start"),
+        "a delegate alive on its task was reported gone: {:?}",
+        f.replies()
+            .iter()
+            .map(|e| e.payload.to_string())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

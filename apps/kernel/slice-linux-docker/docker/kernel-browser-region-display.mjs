@@ -5,6 +5,9 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {DisplayStream,PortableEncoder} from './kernel-browser-display.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 const chromeUi=t=>['browser_chrome','browser_auxiliary'].includes(t?.kind);
+// Row 341 (A), allocated 1015: the whole-page video (the visible page, not a navigation's Tab display preview) of a viewer
+// that accepts stills at its own density comes to rest at that density; element crops and previews keep the page density.
+export const regionViewerScale=(target,command)=>target?.kind==='visible_page'&&command.tab_display!==true&&command.viewer_density_stills===true?{viewer_scale:command.device_scale_factor}:{};
 export async function createRegionDisplay({host,command,scope,signal,target,lease,args,window,tab,policy,generation,placement,offset={x:0,y:0},overlayTab=null,connection:windowConnection=null,Capture}){
  let source,stream,releaseRender;
  const closeLease=async()=>{try{await releaseRender?.();}finally{await lease.close();}};
@@ -38,7 +41,8 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
    generation,subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,
    device_scale_factor:scale,css_width:source.region.css_width,css_height:source.region.css_height,
    ...(placement?{region_offset:placement}:{})};
-  stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
+  // Row 332: the visible page's whole-page video sizes its rate by its picture (areaBitrate); element crops keep theirs.
+  stream=new DisplayStream({...result,...(target.kind==='visible_page'?{whole_page:true}:{}),...regionViewerScale(target,command),tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
    // Crops use whole-video dependencies; an eight-row encoder cannot divide
    // every valid even crop (including a two-device-pixel opaque tile).
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},

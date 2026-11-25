@@ -36,6 +36,7 @@ pub(crate) fn parse_card_action(
 pub(crate) fn room_read(request: &LocalDaemonRequest) -> Option<&str> {
     match request {
         LocalDaemonRequest::GetSessionState(r) => Some(&r.session_id),
+        LocalDaemonRequest::GetPaneFeed(r) => Some(&r.session_id),
         LocalDaemonRequest::ListSessionMembers(r) => Some(&r.session_id),
         LocalDaemonRequest::ListAgents(r) => Some(&r.session_id),
         LocalDaemonRequest::ListDescendants(r) => Some(&r.session_id),

@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 /// it receives as `CXR3` frames; a client that offers it may send its own that way.
 pub const HEADER: &str = "x-chariox-relay-requests";
 pub const OFFER: &str = "binary-v1";
+/// A kernel that offers this next to `binary-v1` also sends and takes the peer requests and
+/// replies (`DaemonPeerRequest`, `DaemonIncomingPeerRequest`, `DaemonPeerResponse`,
+/// `DaemonIncomingPeerResponse`) as binary frames; the relay answers it when it takes them.
+pub const PEER_HEADER: &str = "x-chariox-relay-peer-binary";
+pub const PEER_OFFER: &str = "v1";
 const HEADER_LIMIT: usize = 4096;
 
 /// The handshake request with the offer added (see `binary_event::connection_request`).
@@ -20,6 +25,10 @@ pub fn offer(
     request
         .headers_mut()
         .insert(HEADER, OFFER.parse().expect("a valid header value"));
+    request.headers_mut().insert(
+        PEER_HEADER,
+        PEER_OFFER.parse().expect("a valid header value"),
+    );
     request
 }
 
@@ -34,6 +43,22 @@ pub enum RequestHeader {
     },
     DaemonRequest {
         relay_request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_identity: Option<RelayCallerIdentity>,
+        sender_public_key: String,
+        nonce: String,
+    },
+    /// A kernel's request to another kernel, as the sender gives it to the relay.
+    DaemonPeerRequest {
+        request_id: String,
+        target: ClientTarget,
+        sender_public_key: String,
+        nonce: String,
+    },
+    /// The same request as the relay hands it to the target kernel.
+    DaemonIncomingPeerRequest {
+        relay_request_id: String,
+        from_daemon_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller_identity: Option<RelayCallerIdentity>,
         sender_public_key: String,
@@ -55,11 +80,28 @@ impl RequestHeader {
                 sender_public_key,
                 nonce,
                 ..
+            }
+            | Self::DaemonIncomingPeerRequest {
+                relay_request_id,
+                sender_public_key,
+                nonce,
+                ..
             } => (relay_request_id, sender_public_key, nonce),
+            Self::DaemonPeerRequest {
+                request_id,
+                sender_public_key,
+                nonce,
+                ..
+            } => (request_id, sender_public_key, nonce),
         }
     }
     fn valid(&self) -> bool {
         let (id, key, nonce) = self.fields();
+        if let Self::DaemonIncomingPeerRequest { from_daemon_id, .. } = self {
+            if from_daemon_id.is_empty() || from_daemon_id.len() > 1024 {
+                return false;
+            }
+        }
         !id.is_empty()
             && id.len() <= 1024
             && !key.is_empty()
@@ -140,6 +182,34 @@ pub fn from_envelope(envelope: &RelayEnvelope) -> Result<Option<Vec<u8>>, std::i
             },
             p,
         ),
+        RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            target,
+            encrypted_request: p,
+        } => (
+            RequestHeader::DaemonPeerRequest {
+                request_id: request_id.clone(),
+                target: target.clone(),
+                sender_public_key: p.sender_public_key.clone(),
+                nonce: p.nonce.clone(),
+            },
+            p,
+        ),
+        RelayEnvelope::DaemonIncomingPeerRequest {
+            relay_request_id,
+            from_daemon_id,
+            caller_identity,
+            encrypted_request: p,
+        } => (
+            RequestHeader::DaemonIncomingPeerRequest {
+                relay_request_id: relay_request_id.clone(),
+                from_daemon_id: from_daemon_id.clone(),
+                caller_identity: caller_identity.clone(),
+                sender_public_key: p.sender_public_key.clone(),
+                nonce: p.nonce.clone(),
+            },
+            p,
+        ),
         _ => return Ok(None),
     };
     let ciphertext = STANDARD
@@ -170,6 +240,24 @@ pub fn into_envelope(bytes: &[u8]) -> Result<RelayEnvelope, std::io::Error> {
             ..
         } => RelayEnvelope::DaemonRequest {
             relay_request_id,
+            caller_identity,
+            encrypted_request,
+        },
+        RequestHeader::DaemonPeerRequest {
+            request_id, target, ..
+        } => RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            target,
+            encrypted_request,
+        },
+        RequestHeader::DaemonIncomingPeerRequest {
+            relay_request_id,
+            from_daemon_id,
+            caller_identity,
+            ..
+        } => RelayEnvelope::DaemonIncomingPeerRequest {
+            relay_request_id,
+            from_daemon_id,
             caller_identity,
             encrypted_request,
         },
@@ -266,5 +354,29 @@ mod tests {
         ]
         .concat();
         assert!(decode(&forged).is_err());
+    }
+
+    #[test]
+    fn peer_requests_travel_as_ciphertext_bytes_and_come_back_unchanged() {
+        for envelope in [
+            RelayEnvelope::DaemonPeerRequest {
+                request_id: "peer-request".into(),
+                target: ClientTarget {
+                    daemon_id: Some("kernel-2".into()),
+                    daemon_alias: None,
+                },
+                encrypted_request: payload(100 * 1024),
+            },
+            RelayEnvelope::DaemonIncomingPeerRequest {
+                relay_request_id: "relay-peer-request".into(),
+                from_daemon_id: "kernel-1".into(),
+                caller_identity: None,
+                encrypted_request: payload(100 * 1024),
+            },
+        ] {
+            let wire = from_envelope(&envelope).unwrap().unwrap();
+            assert!(wire.len() < 101 * 1024);
+            assert_eq!(into_envelope(&wire).unwrap(), envelope);
+        }
     }
 }

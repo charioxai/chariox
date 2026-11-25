@@ -75,6 +75,29 @@ async function mirrored(html, run, routes = {}, initialOptions = {}, environment
   }
 }
 
+// T1: Chrome reports no target change when a page retitles itself (only URL changes reach Target.targetInfoChanged), so a
+// parked state read showing the Browser tab strip waited out its whole wait. The mirror's drain sees the new title.
+test("T1: a page retitling itself wakes a parked state read within one mirror drain", () => mirrored("<title>one</title><p>retitle</p>", async ({ next, evaluate, host }) => {
+  await next();
+  const before = host.stateSignal.count, started = Date.now();
+  const parked = host.stateSignal.wait(before, 4000);
+  await evaluate("document.title = 'two'");
+  await next(1500);
+  assert.notEqual(await parked, before, "the title change woke the parked state read");
+  assert.ok(Date.now() - started < 3000, `woke in ${Date.now() - started} ms`);
+  assert.equal((await host.request({ op: "state" })).tabs[0].title, "two");
+}));
+// T1 review: a recovery or layout reset that first sees the new title wakes the parked state read too (it used to take the change
+// silently, so no later drain saw a difference).
+test("T1: a reset that first sees a retitled page wakes a parked state read", () => mirrored("<title>one</title><p>retitle</p>", async ({ next, evaluate, host }) => {
+  await next();
+  const before = host.stateSignal.count, started = Date.now();
+  const parked = host.stateSignal.wait(before, 4000);
+  await evaluate("document.title = 'two'");
+  await next(0, true);
+  assert.notEqual(await parked, before, "the reset's title change woke the parked state read");
+  assert.ok(Date.now() - started < 3000, `woke in ${Date.now() - started} ms`);
+}));
 test("MP-10: a focused unchanged field does not answer every credit (no form-op busy loop)", () => mirrored(
   '<input id="q" autofocus value="query"><p>page</p>', async ({ next, evaluate }) => {
     await evaluate("document.querySelector('#q').focus()");
@@ -207,6 +230,21 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
   }, {
     "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="mark">framed</p>' },
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
+  }));
+
+// Row 486 review P1 (#1717): a cross-origin child frame's drains carry media_playing too. They must keep the child attached:
+// its changes arrive as ordinary ops on the same ids, never as a re-mounted document on every credit.
+test("Row 486: a cross-origin child frame stays attached across drains (no re-mount per credit)", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/ticker" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const first = await next();
+    assert.equal(first.reset, true);
+    let texts = 0, remounts = 0;
+    for (let i = 0; i < 6; i++) { const p = await next(400); for (const op of p.ops) { if (op.op === "text") texts++; if (op.op === "children") remounts++; } }
+    assert(texts >= 3, `the child's text changes arrive as text ops (${texts})`);
+    assert.equal(remounts, 0, "no child document is re-mounted");
+  }, {
+    "/ticker": { type: "text/html", body: '<!doctype html><p id="t">0</p><script>let i=0;setInterval(()=>{document.getElementById("t").textContent=String(++i)},200)</script>' },
   }));
 
 // A cross-site navigation moves the page to a new renderer, where execution context ids start over: the new document's
@@ -425,6 +463,133 @@ for (const tainted of [false, true]) for (const device_scale_factor of [1, 2]) t
   assert.equal(tiles, 1, "MP-10: the canvas still reaches the viewer");
 }, { "/dot.png": dot }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// T3 (subvysion, browserfidelity r21): a still over the budget travels at the density its measured size predicts, not at half
+// again and again: a frame that missed the budget by a little arrived at a quarter of its density. Noise does not compress, so
+// its PNG size follows its area: the still keeps more than a quarter of the canvas's width and still fits the budget.
+for (const device_scale_factor of [1, 2]) test(`T3: the still of a canvas over the still budget keeps the density that fits it, not a quarter (DPR${device_scale_factor})`, () => mirrored(noise(false), async ({ subscribe, evaluate }) => {
+  const canvasWidth = await evaluate('document.querySelector("#c").width');
+  const { next } = await subscribe({ device_scale_factor });
+  let still = null;
+  for (let i = 0; i < 6 && !still; i++) still = (await next(1100)).tiles[0] ?? null;
+  assert(still, "the canvas still reaches the viewer");
+  assert(still.data_base64.length <= 512 * 1024, `the still fits the packet's still budget (${still.data_base64.length})`);
+  const share = Buffer.from(still.data_base64, "base64").readUInt32BE(16) / canvasWidth;
+  assert(share > 0.27 && share < 0.5, `the still keeps the density that fits (width share ${share.toFixed(3)}; halving gave 0.25)`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// T3 (subvysion): two stills over one packet's budget share it: the first (there, a hidden video under the canvas that paints
+// it) cannot leave the second at a lower density. Two noise canvases side by side arrive in one packet at about the same density.
+const noisePair = `<style>body{margin:0;display:flex}canvas{display:block;width:50vw;height:100vh}</style><canvas id="a"></canvas><canvas id="b"></canvas><script>for(const c of document.querySelectorAll("canvas")){c.width=innerWidth/2*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)}</script>`;
+for (const device_scale_factor of [1, 2]) test(`T3: two stills over the budget share it evenly (DPR${device_scale_factor})`, () => mirrored(noisePair, async ({ subscribe, evaluate }) => {
+  const canvasWidth = await evaluate('document.querySelector("#a").width');
+  const { next } = await subscribe({ device_scale_factor });
+  let tiles = [];
+  for (let i = 0; i < 6 && tiles.length < 2; i++) tiles = (await next(1100)).tiles;
+  assert.equal(tiles.length, 2, "both stills arrive in one packet");
+  assert(tiles.reduce((n, t) => n + t.data_base64.length, 0) <= 512 * 1024, "together within the still budget");
+  const shares = tiles.map(t => Buffer.from(t.data_base64, "base64").readUInt32BE(16) / canvasWidth).sort();
+  assert(shares[0] > 0.8 * shares[1] && shares[0] > 0.27, `about the same density, above a quarter (${shares.map(v => v.toFixed(3))})`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// T3 (subvysion): a still another region's opaque still covers from above is never seen; the one on top takes the whole budget.
+// Guards: a half-transparent cover, a cover with a hole and a smaller cover cover nothing, and both stills still travel.
+// Review guards: a cover inside a half-transparent (or alpha-filtered) wrapper, a cover whose pixels do not fill its box
+// (object-fit: contain of a square bitmap, padding), and an alpha-changing filter on the cover itself.
+const noiseStack = ({ top = "", bottom = "", hole = false, small = false, wrap = "", square = false, strip = false } = {}) => `<style>body{margin:0}canvas{position:absolute;left:0;top:0;width:100vw;height:100vh;box-sizing:border-box}#t{z-index:1;${top}}#b{${bottom}}${small ? "#t{width:90vw}" : ""}${wrap ? `#w{position:absolute;inset:0;z-index:1;${wrap}}` : ""}</style><canvas id="b"></canvas>${wrap ? '<div id="w"><canvas id="t"></canvas></div>' : '<canvas id="t"></canvas>'}<script>for(const c of document.querySelectorAll("canvas")){c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;${square ? 'if(c.id==="t")c.width=c.height;' : ''}${strip ? 'if(c.id==="t"){c.width=4096;c.height=800}' : ''}const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)}${strip ? 'document.querySelector("#t").getContext("2d").clearRect(2060,0,2,800);' : ''}${hole ? 'document.querySelector("#t").getContext("2d").clearRect(innerWidth*devicePixelRatio/2-40,innerHeight*devicePixelRatio/2-40,80,80)' : ''}</script>`;
+const stackStills = async ({ subscribe, evaluate }, device_scale_factor) => {
+  const canvasWidth = await evaluate('document.querySelector("#b").width'), { next } = await subscribe({ device_scale_factor });
+  let tiles = [];
+  for (let i = 0; i < 6 && !tiles.length; i++) tiles = (await next(1100)).tiles;
+  // A second refresh shows whether the covered still follows later (it must not while its cover's still stands).
+  await new Promise(resolve => setTimeout(resolve, 1100)); for (let i = 0; i < 2; i++) tiles = [...tiles, ...(await next(1100)).tiles];
+  return { tiles, shares: tiles.map(t => Buffer.from(t.data_base64, "base64").readUInt32BE(16) / canvasWidth), bytes: tiles.reduce((n, t) => n + t.data_base64.length, 0) };
+};
+for (const device_scale_factor of [1, 2]) {
+  test(`T3: a still an opaque still covers from above is skipped; the one on top takes the budget (DPR${device_scale_factor})`, () => mirrored(noiseStack(), async (page) => {
+    const { tiles, shares } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
+    assert(tiles[0].data_base64.length <= 512 * 1024 && shares[0] > 0.27, `the cover keeps the whole budget's density (a lone canvas's) (${shares[0].toFixed(3)})`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+  // subvysion's canvas: a colour-only filter (brightness) keeps the cover opaque; so does an opaque wrapper.
+  for (const [name, options] of [["a brightness filter", { top: "filter:brightness(.8)" }], ["an opaque wrapper", { wrap: "opacity:1" }]]) test(`T3: a cover with ${name} still skips the still it covers (DPR${device_scale_factor})`, () => mirrored(noiseStack(options), async (page) => {
+    const { tiles } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+  // subvysion's own shape: the covered one cannot be hit (pointer-events:none) and paints at z-index -1 in the root context.
+  test(`T3: an unhittable still at a negative z-index under an opaque still is skipped (DPR${device_scale_factor})`, () => mirrored(noiseStack({ bottom: "pointer-events:none;z-index:-1", top: "transform:translateX(0)" }), async (page) => {
+    const { tiles } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+  for (const [name, options] of [["a half-transparent cover", { top: "opacity:.5" }], ["a cover with a hole", { hole: true }], ["a smaller cover", { small: true }], ["an unhittable still that paints above", { bottom: "pointer-events:none;z-index:2" }], ["a rotated cover", { top: "transform:rotate(1deg)" }], ["a cover in a half-transparent wrapper", { wrap: "opacity:.5" }], ["a cover in a wrapper with an alpha filter", { wrap: "filter:opacity(.5)" }], ["a blurred cover", { top: "filter:blur(4px)" }], ["a square cover drawn with object-fit:contain", { square: true, top: "object-fit:contain" }], ["a padded cover", { top: "padding:20px" }], ["a large cover with a narrow transparent strip", { strip: true }]]) test(`T3: under ${name} both stills still travel (DPR${device_scale_factor})`, () => mirrored(noiseStack(options), async (page) => {
+    const { tiles } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 2, "both stills reach the viewer");
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+}
+
+// T3 review 3: a video can carry transparency (VP9 with alpha): a ready video over a canvas covers it only when its frame's alpha
+// is proven opaque, as a canvas cover's is. A fully transparent 64x64 VP9 clip stretched over a noise canvas: both stills travel.
+const alphaWebm = { type: "video/webm", binary: Buffer.from("GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAPyEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHWTbuMU6uEElTDZ1OsggEnTbuMU6uEHFO7a1OsggPc7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsCrXsYMPQkBNgIxMYXZmNjIuMy4xMDBXQYxMYXZmNjIuMy4xMDBEiYhAj0AAAAAAABZUrmvMrgEAAAAAAABD14EBc8WINszwV3Jcik6cgQAitZyDdW5kiIEAhoVWX1ZQOYOBASPjg4QF9eEA4JSwgUC6gUCagQJTwIEBVbCEVbmBARJUw2dAf3Nzn2PAgGfImUWjh0VOQ09ERVJEh4xMYXZmNjIuMy4xMDBzc9pjwItjxYg2zPBXclyKTmfIpUWjh0VOQ09ERVJEh5hMYXZjNjIuMTEuMTAwIGxpYnZweC12cDlnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAxLjAwMDAwMDAwMAAfQ7Z1QirngQCg2qGvgQAAAIJJg0IAA/AD9gA4JBwYQgAAMGAAAGc///5plf////6Za/////9imB1EwAB1oaampO6BAaWfgkmDQgAD8AP2ADgkHBhCAAAwYAAAZz///18RYTuzAKCxoZOBAGQAhgBAkpwASUAAAyAAAFRwdaGWppTugQGlj4YAQJKcAElAAAMgAABUcPuBnKCxoZOBAMgAhgBAkpwASsAAAyAAAFRwdaGWppTugQGlj4YAQJKcAErAAAMgAABUcPuBnKCxoZOBASwAhgBAkpwAScAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEnAAAMgAABUcPuBnKCxoZOBAZAAhgBAkpwASKAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEigAAMgAABUcPuBnKCxoZOBAfQAhgBAkpwAR4AAAyAAAFRwdaGWppTugQGlj4YAQJKcAEeAAAMgAABUcPuBnKCxoZOBAlgAhgBAkpwARuAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEbgAAMgAABUcPuBnKCxoZOBArwAhgBAkpwARkAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEZAAAMgAABUcPuBnKCxoZOBAyAAhgBAkpwARcAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEXAAAMgAABUcPuBnKCxoZOBA4QAhgBAkpwARUAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEVAAAMgAABUcPuBnBxTu2uRu4+zgQC3iveBAfGCAazwgQM=", "base64") };
+const videoOver = `<style>body{margin:0}canvas,video{position:absolute;left:0;top:0;width:100vw;height:100vh}video{z-index:1;object-fit:fill}</style><canvas id="b"></canvas><video id="t" src="/alpha.webm" autoplay muted loop playsinline></video><script>const c=document.querySelector("#b");c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)</script>`;
+for (const device_scale_factor of [1, 2]) test(`T3: under a transparent video both stills still travel (DPR${device_scale_factor})`, () => mirrored(videoOver, async (page) => {
+  for (let i = 0; i < 40 && await page.evaluate('document.querySelector("#t").readyState') < 2; i++) await settle(50);
+  assert(await page.evaluate('document.querySelector("#t").readyState') >= 2, "fixture: the transparent video has a frame");
+  const { tiles } = await stackStills(page, device_scale_factor);
+  assert.equal(new Set(tiles.map(t => t.node_id)).size, 2, `both stills reach the viewer (${tiles.length} stills)`);
+}, { "/alpha.webm": alphaWebm }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review: a WebGL canvas's buffer reads clear once composited (preserveDrawingBuffer false, the default), exactly as if
+// the page had cleared it. A transformed WebGL canvas whose pixels read clear after a real still keeps that still (its
+// content may still show natively); a 2D canvas the page cleared reads clear for real and shows the page through it.
+const glCleared = '<style>body{margin:0}canvas{display:block;width:240px;height:120px;transform:rotate(3deg);margin:20px}</style><canvas id="g" width="240" height="120"></canvas><canvas id="k" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl",{preserveDrawingBuffer:true});g.clearColor(1,0,0,1);g.clear(g.COLOR_BUFFER_BIT);const k=document.querySelector("#k").getContext("2d");k.fillStyle="#f00";k.fillRect(0,0,240,120);window.wipe=()=>{g.clearColor(0,0,0,0);g.clear(g.COLOR_BUFFER_BIT);k.clearRect(0,0,240,120);return true}</script>';
+test("YM-C1: a transformed WebGL canvas that read real pixels keeps its still when it reads clear; a cleared 2D canvas goes clear", () => mirrored(glCleared, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const clearOf = still => decodePng(still.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0);
+  const first = new Map();
+  for (let i = 0; i < 8 && first.size < 2; i++) for (const tile of (await next(1100)).tiles) first.set(tile.node_id, tile);
+  assert.equal(first.size, 2, "both canvases' stills reach the viewer");
+  // Document order: the WebGL canvas, then the 2D one.
+  const [gl, flat] = [...first.keys()].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  assert(![...first.values()].some(clearOf), "the first stills hold the red pixels");
+  await evaluate("wipe()");
+  const later = new Map();
+  for (let i = 0; i < 4; i++) for (const tile of (await next(1100)).tiles) later.set(tile.node_id, tile);
+  assert(later.has(flat) && clearOf(later.get(flat)), "the cleared 2D canvas shows the page through it");
+  assert(!later.has(gl), "the WebGL canvas keeps its still");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review 2: a default WebGL canvas (preserveDrawingBuffer false) reads clear from the start; untransformed, its still comes
+// from the rendered page (a real picture). Transformed later, its clear readback must not replace that still with a clear one.
+const glFallback = '<style>body{margin:0;background:#f0f}canvas{display:block;width:240px;height:120px;margin:20px}</style><canvas id="g" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl");const draw=()=>{g.clearColor(1,0,0,1);g.clear(g.COLOR_BUFFER_BIT);requestAnimationFrame(draw)};draw();window.turn=()=>{document.querySelector("#g").style.transform="rotate(3deg)";return true}</script>';
+test("YM-C1: a default WebGL canvas whose still came from the rendered page keeps it once transformed", () => mirrored(glFallback, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const clearOf = still => decodePng(still.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0);
+  let first = null;
+  for (let i = 0; i < 8 && !first; i++) first = (await next(1100)).tiles[0] ?? null;
+  assert(first && !clearOf(first), "the untransformed canvas gets a real still (rendered page)");
+  await evaluate("turn()");
+  const later = [];
+  for (let i = 0; i < 4; i++) later.push(...(await next(1100)).tiles.filter(t => t.node_id === first.node_id));
+  assert(!later.some(clearOf), `the transformed canvas keeps its still (${later.length} later stills, ${later.filter(clearOf).length} clear)`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review 3/4: a faded canvas over an authored CSS gradient. Undrawn, and again once a drawn picture is cleared, it travels as
+// the clear still (a 1x1 transparent PNG), which the viewer paints as nothing, so the gradient shows (renderer test); the red
+// still of its drawn state never stays after the clear.
+const fadedGradient = '<style>body{margin:0}canvas{display:block;width:240px;height:120px;margin:20px;opacity:.5;background-image:linear-gradient(red,blue)}</style><canvas id="g" width="240" height="120"></canvas><script>const g=document.getElementById("g").getContext("2d");function paint(){g.fillStyle="#f00";g.fillRect(0,0,240,120)}function wipe(){g.clearRect(0,0,240,120)}</script>';
+test("YM-C1: a faded canvas over an authored gradient travels as the clear still when undrawn and again once cleared", () => mirrored(fadedGradient, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const isClear = t => t.data_base64 === encodePng(1, 1, Buffer.alloc(4));
+  const lastOf = async (rounds, want) => { let last = null; for (let i = 0; i < rounds && !(last && want(last)); i++) for (const t of (await next(1100)).tiles) last = t; return last; };
+  const undrawn = await lastOf(4, isClear);
+  assert(undrawn && isClear(undrawn), "undrawn: the clear still");
+  await evaluate("paint()");
+  const painted = await lastOf(4, t => !isClear(t));
+  assert(painted && !isClear(painted), "drawn: a real still");
+  await evaluate("wipe()");
+  const cleared = await lastOf(4, isClear);
+  assert(cleared && isClear(cleared), "cleared: the clear still replaces the drawn one");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 // browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
 // compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
 // shows; a 2D canvas the page fills black stays black.
@@ -439,6 +604,78 @@ for (const device_scale_factor of [1, 2]) test(`MP-10: the still of an opaque We
   // The WebGL canvas's still holds its clear colour, not black; the black 2D canvas's still stays black.
   assert.deepEqual([...stills.values()].map(centre).sort(), ["0,0,0", "26,128,204"]);
 }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// B3/B4 (browserfidelity r16): a viewer's hover move reaches the page (mouseover, :hover reveals a submenu whose item
+// then takes the click), and a right click reaches it as the right button (mousedown 2, contextmenu) with Chrome's own
+// menu cancelled after the page's listeners ran.
+const hover = '<style>body{margin:0}#m{width:200px;height:40px;background:#ccc}#sub{display:none;width:200px;height:40px;background:#9c9}#m:hover #sub{display:block}</style><div id="m">menu<div id="sub"><a id="item" href="#item">item</a></div></div><p id="r" style="margin-top:100px;width:200px;height:40px;background:#c99">right</p><script>window.ev=[];m.addEventListener("mouseover",()=>ev.push("over"));item.addEventListener("click",()=>ev.push("item"));r.addEventListener("mousedown",e=>ev.push("down"+e.button));r.addEventListener("contextmenu",e=>ev.push("ctx:"+e.defaultPrevented))</script>';
+test("B3/B4: a hover move opens a :hover submenu whose item takes the click; a right click is the page's", () => mirrored(hover, async ({ next, evaluate, input }) => {
+  const first = await next(), ids = Object.fromEntries(elements(first).filter(([, , attrs]) => attrs.id).map(([id, , attrs]) => [attrs.id, id]));
+  assert(ids.m && ids.r && ids.item, "menu, item and right-click target are in the snapshot");
+  await input(first.sequence, { kind: "move", node_id: ids.m, x: 20, y: 10 });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "block"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "block", "the kernel page hovers the menu");
+  assert((await evaluate("ev")).includes("over"));
+  let packet = first; for (let i = 0; i < 4; i++) packet = await next(300);
+  await input(packet.sequence, { kind: "click", node_id: ids.item, x: 5, y: 5 });
+  for (let i = 0; i < 40 && !(await evaluate("ev.includes('item')")); i++) await settle(25);
+  assert((await evaluate("ev")).includes("item"), "the revealed item takes the click");
+  await input(packet.sequence, { kind: "click", node_id: ids.r, x: 10, y: 10, button: "right" });
+  for (let i = 0; i < 40 && !(await evaluate("ev.some(e=>e.startsWith('ctx'))")); i++) await settle(25);
+  const events = await evaluate("ev");
+  assert(events.includes("down2"), `right button down reaches the page (${events})`);
+  assert(events.includes("ctx:false"), `the page sees its contextmenu uncancelled (${events})`);
+}));
+
+// B3 review: the viewer's pointer leaving the page leaves the kernel page too: mouseleave runs and :hover ends.
+test("B3: a leave after a hover move ends the page's hover (mouseleave, :hover off)", () => mirrored(hover.replace('m.addEventListener("mouseover",()=>ev.push("over"));', 'm.addEventListener("mouseover",()=>ev.push("over"));m.addEventListener("mouseleave",()=>ev.push("leave"));'), async ({ next, evaluate, input }) => {
+  const first = await next(), ids = Object.fromEntries(elements(first).filter(([, , attrs]) => attrs.id).map(([id, , attrs]) => [attrs.id, id]));
+  await input(first.sequence, { kind: "move", node_id: ids.m, x: 20, y: 10 });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "block"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "block", "the kernel page hovers the menu");
+  await input(first.sequence, { kind: "leave" });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "none"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "none", "the hover ended with the leave");
+  assert((await evaluate("ev")).includes("leave"), "the page's mouseleave ran");
+}));
+
+// B3 review 2: a hover inside a mirrored cross-origin frame reaches that frame's page (a JS menu opens on mouseenter), and the
+// item it reveals takes the click.
+const frameHover = '<!doctype html><body style="margin:0"><div id="m" style="width:200px;height:30px;background:#ccc">menu</div><a id="item" href="#item" style="display:none;width:200px;height:30px">item</a><script>m.addEventListener("mouseenter",()=>{item.style.display="block";parent.postMessage("open","*")});item.addEventListener("click",e=>{e.preventDefault();parent.postMessage("item","*")})</script>';
+test("B3: a hover move inside a mirrored cross-origin frame opens its JS menu, whose item takes the click", () => mirrored(
+  `<body style="margin:0"><iframe id="cross" src="http://localhost:PORT/menu" style="position:absolute;left:10px;top:20px;width:220px;height:100px;border:0"></iframe><script>window.got=[];addEventListener("message",e=>got.push(e.data))</script></body>`, async ({ next, evaluate, input }) => {
+    await settle(700);
+    const snapshot = await next(600), framed = tag => elements(snapshot).find(([id, t, attrs]) => attrs.id === tag && Number(id.slice(1)) >= 1e9)?.[0];
+    const menu = framed("m");
+    assert(menu, "the frame's menu is mirrored");
+    await input(snapshot.sequence, { kind: "move", node_id: menu, x: 20, y: 10 });
+    for (let i = 0; i < 40 && !(await evaluate("got")).includes("open"); i++) await settle(25);
+    assert((await evaluate("got")).includes("open"), "the frame's page hovers its menu");
+    // The item (hidden until the hover) is in the snapshot already; its style change since then needs a newer packet to aim at.
+    const item = framed("item"); assert(item, "the item is mirrored");
+    let packet = snapshot; for (let i = 0; i < 4; i++) packet = await next(300);
+    await input(packet.sequence, { kind: "click", node_id: item, x: 5, y: 5 });
+    for (let i = 0; i < 40 && !(await evaluate("got")).includes("item"); i++) await settle(25);
+    assert((await evaluate("got")).includes("item"), "the revealed item takes the click");
+  }, {
+    "/menu": { type: "text/html", body: frameHover },
+  }));
+
+// B4 review: a right click inside a frame (same-origin or mirrored cross-origin) cancels Chrome's menu in that frame's
+// own window (a frame's contextmenu never reaches its parent), after the page's listeners saw it uncancelled.
+const frameMenu = '<!doctype html><body style="margin:0"><button id="r" style="width:80px;height:30px">r</button><script>window.ev=[];r.addEventListener("contextmenu",e=>{ev.push("ctx:"+e.defaultPrevented);setTimeout(()=>{ev.push("final:"+e.defaultPrevented);parent.postMessage(ev.join(),"*")})})</script>';
+test("B4: a right click inside a same-origin and a cross-origin frame leaves no native menu (contextmenu cancelled in the frame)", () => mirrored(
+  `<body style="margin:0"><iframe id="same" srcdoc='${frameMenu}' style="position:absolute;left:10px;top:10px;width:200px;height:60px;border:0"></iframe><iframe id="cross" src="http://localhost:PORT/menu" style="position:absolute;left:10px;top:200px;width:200px;height:60px;border:0"></iframe><script>window.got=[];addEventListener("message",e=>got.push(e.data))</script></body>`, async ({ next, evaluate, input }) => {
+    await settle(600);
+    const snapshot = await next(600), buttons = elements(snapshot).filter(([, tag, attrs]) => tag === "button" && attrs.id === "r").map(([id]) => id);
+    const same = buttons.find(id => Number(id.slice(1)) < 1e9), cross = buttons.find(id => Number(id.slice(1)) >= 1e9);
+    assert(same && cross, `both frames' buttons are mirrored (${buttons})`);
+    for (const node_id of [same, cross]) await input(snapshot.sequence, { kind: "click", node_id, x: 10, y: 10, button: "right" });
+    for (let i = 0; i < 40 && (await evaluate("got")).length < 2; i++) await settle(25);
+    assert.deepEqual((await evaluate("got")).toSorted(), ["ctx:false,final:true", "ctx:false,final:true"], "each frame's page saw its contextmenu, then it was cancelled");
+  }, {
+    "/menu": { type: "text/html", body: frameMenu },
+  }));
 
 // browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
 // position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
@@ -771,6 +1008,141 @@ test("MP-08: the header says whether the page's focus draws its ring (:focus-vis
     await input(sequence, { kind: "key", key: "ArrowDown" });
     assert.deepEqual(await stateOf([three, true]), [three, true], "MP-08: a key inside the frame turns its ring on");
   }, { "/inner": { type: "text/html", body: '<!doctype html><button id="three" style="width:120px;height:30px">three</button>' } }));
+
+// browserfidelity r18 (Y3-C1a): a page whose own script takes the wheel (a smooth-scroll or full-page library: a non-passive
+// wheel listener on window, document, html or body) must get every wheel; the header says so, and stops saying so when it goes.
+test("Y3-C1a: the header says whether the page's own script takes the wheel, on a snapshot and after the page changes it", () => mirrored(
+  '<div id="a" style="height:3000px">a</div><script>window.take = e => e.preventDefault(); window.count = () => {}</script>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next();
+    assert.equal(snapshot.page_wheel, false, "Y3-C1a: a page without wheel listeners scrolls in the viewer");
+    let wheel = snapshot.page_wheel;
+    const after = async (script, want) => {
+      await evaluate(`${script}; document.getElementById('a').textContent = String(Math.random())`);
+      const end = Date.now() + 4000;
+      while (wheel !== want && Date.now() < end) { const packet = await next(1000); if (Object.hasOwn(packet, "page_wheel")) wheel = packet.page_wheel; }
+      return wheel;
+    };
+    assert.equal(await after("addEventListener('wheel', take, { passive: false })", true), true, "Y3-C1a: a non-passive window listener added later takes the wheel");
+    assert.equal(await after("removeEventListener('wheel', take, { passive: false })", false), false, "Y3-C1a: removing it gives the wheel back to the viewer");
+    assert.equal(await after("document.addEventListener('wheel', count, { passive: true }); document.body.addEventListener('wheel', count)", false), false, "Y3-C1a: passive listeners (root listeners are passive by default) never take it");
+    assert.equal(await after("document.getElementById('a').addEventListener('wheel', take, { passive: false })", false), false, "Y3-C1a: an inner element's listener does not take the document's wheel");
+    assert.equal(await after("document.body.addEventListener('mousewheel', take, { passive: false })", true), true, "Y3-C1a: a non-passive mousewheel listener on body takes it");
+    assert.equal(await after("document.body.removeEventListener('mousewheel', take, { passive: false }); document.documentElement.addEventListener('wheel', take, { passive: false })", true), true, "Y3-C1a: so does one on html");
+    assert.equal((await next(0, true)).page_wheel, true, "Y3-C1a: a snapshot carries it");
+  }));
+
+// Y3-C1a review: adding or removing a wheel listener changes no DOM; a page that sets its handler up later (a timer, no
+// mutation) or drops it is asked again on its own schedule, so the header follows within a few seconds.
+test("Y3-C1a: a wheel listener added or removed without any DOM change still reaches the header", () => mirrored(
+  '<div id="a" style="height:3000px">a</div><script>window.take = e => e.preventDefault()</script>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    let wheel = (await next()).page_wheel;
+    assert.equal(wheel, false);
+    const after = async (script, want) => {
+      await evaluate(script);
+      const end = Date.now() + 6000;
+      while (wheel !== want && Date.now() < end) { const packet = await next(1000); if (Object.hasOwn(packet, "page_wheel")) wheel = packet.page_wheel; }
+      return wheel;
+    };
+    assert.equal(await after("addEventListener('wheel', take, { passive: false })", true), true, "a listener added with no mutation takes the wheel");
+    assert.equal(await after("removeEventListener('wheel', take, { passive: false })", false), false, "removing it with no mutation gives the wheel back");
+  }));
+
+// browserfidelity r19 W0-T1 (tldraw): icons drawn as CSS masks into an "SVG stack" by fragment (only the :target element
+// shows). The viewer has the bytes without the fragment, so each fragment's resource pins its own element.
+test("W0-T1: an SVG stack named by fragment arrives with its own element shown, per fragment", () => mirrored(
+  '<div style="width:30px;height:30px;background:#000;mask:url(/s/stack.svg#b)"></div><div style="width:30px;height:30px;background-image:url(/s/stack.svg#a)"></div>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const delivered = [...(await next()).resources];
+    const svg = () => delivered.filter(r => r.mime_type === "image/svg+xml" && r.data_base64).map(r => Buffer.from(r.data_base64, "base64").toString());
+    for (let i = 0; i < 6 && svg().length < 2; i++) delivered.push(...(await next(1000)).resources);
+    const texts = svg();
+    assert(texts.some(t => t.includes('svg>[id][id="b"]{display:inline}')), `W0-T1: the mask's resource shows #b (${texts.map(t => t.slice(0, 160))})`);
+    assert(texts.some(t => t.includes('svg>[id][id="a"]{display:inline}')), "W0-T1: the background's resource shows #a (the file loaded once, under the mask's fragment)");
+  }, { "/s/stack.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"><style>svg>[id]{display:none}svg>[id]:target{display:inline}</style><circle id="a" cx="15" cy="15" r="12"/><rect id="b" width="30" height="30"/></svg>' } }));
+// browserfidelity r19 Y3-R1 (6thsense, tensr): the viewer moved its copy the page's own way (smooth); the kernel page must be
+// where the viewer is as soon as the input is done, or its start position comes back to the viewer as the page's.
+test("Y3-R1: the kernel page lands where the viewer scrolled at once, whatever scroll-behavior the page asks for", () => mirrored(
+  '<style>html{scroll-behavior:smooth}</style><div style="height:6000px">a</div>', async ({ next, input, evaluate }) => {
+    const snapshot = await next();
+    await input(snapshot.sequence, { kind: "scroll_to", node_id: null, x: 0, y: 1200 });
+    assert.equal(await evaluate("scrollY"), 1200, "Y3-R1: the page stands at the viewer's position when the scroll input is done");
+  }));
+
+// browserfidelity r19 (F5, tldraw): faces a page makes by script (new FontFace + document.fonts.add) have no stylesheet rule;
+// the mirror carries them as @font-face rules of the document's last adopted sheet, from a URL or from bytes, and the page
+// still sees Chromium's own FontFace and FontFaceSet.
+test("F5: faces the page makes by script reach the viewer as @font-face rules, and FontFace still looks native to the page", () => mirrored(
+  `<p style="font-family:JsUrl">a</p><p style="font-family:JsBytes">b</p><script>
+    document.fonts.add(new FontFace("JsUrl", "url(/f/u.woff2) format('woff2')", { weight: "700", style: "italic" }));
+    document.fonts.add(new FontFace("JsBytes", new Uint8Array([119, 79, 70, 50, 1, 2, 3, 4]).buffer));
+    const gone = new FontFace("Gone", "url(/f/g.woff2)"); document.fonts.add(gone); document.fonts.delete(gone);
+    new FontFace("NotAdded", "url(/f/n.woff2)");
+  </script>`, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const fontsCss = packet => JSON.stringify([packet.nodes ?? [], packet.ops.filter(op => op.op === "adopted")]); // snapshot records are compact: their text is searched
+    const css = fontsCss(await next());
+    assert.match(css, /@font-face ?\{[^}]*font-family: ?\\?"JsUrl\\?"[^}]*\}/, `F5: the face made from a URL (${css.slice(0, 1500)})`);
+    assert.match(css, /@font-face ?\{[^}]*JsUrl[^}]*font-style: ?italic[^}]*font-weight: ?700/, "F5: with its descriptors");
+    assert.match(css, /@font-face ?\{[^}]*JsBytes[^}]*\}/, "F5: the face made from bytes");
+    assert.doesNotMatch(css, /Gone|NotAdded/, "F5: a face deleted from the set, or never added, is not carried");
+    await evaluate(`document.fonts.add(new FontFace("Later", "url(/f/l.woff2)")); document.body.append("c")`);
+    let later = "";
+    for (let i = 0; i < 8 && !later.includes("Later"); i++) later = fontsCss(await next(1000));
+    assert.match(later, /@font-face ?\{[^}]*Later/, "F5: a face added later reaches the viewer as a change of the document's sheets");
+    const identity = await evaluate(`(() => { class Sub extends FontFace {} const face = new FontFace("x", "url(/f/x.woff2)"), d = Object.getOwnPropertyDescriptor(window, "FontFace");
+      return { source: FontFace.toString(), call: Function.prototype.toString.call(FontFace), name: FontFace.name, length: FontFace.length, instance: face instanceof FontFace,
+        proto: Object.getPrototypeOf(face) === FontFace.prototype, ctor: FontFace.prototype.constructor === FontFace, sub: new Sub("y", "url(/f/y.woff2)") instanceof Sub,
+        flags: [d.writable, d.enumerable, d.configurable], add: [document.fonts.add.toString(), document.fonts.add.name, document.fonts.add.length, Object.hasOwn(document.fonts.add, "prototype")],
+        deleteSource: document.fonts.delete.toString(), toStringSource: Function.prototype.toString.toString(), binding: "__charioxScriptFonts" in window,
+        detect: "FontFace" in window && typeof FontFace === "function" && typeof document.fonts.check === "function", plain: (() => { try { FontFace("z", "url(a)"); return "called"; } catch (e) { return e.constructor.name; } })() }; })()`);
+    assert.deepEqual(identity, { source: "function FontFace() { [native code] }", call: "function FontFace() { [native code] }", name: "FontFace", length: 2, instance: true, proto: true, ctor: true, sub: true,
+      flags: [true, false, true], add: ["function add() { [native code] }", "add", 1, false], deleteSource: "function delete() { [native code] }", toStringSource: "function toString() { [native code] }",
+      binding: false, detect: true, plain: "TypeError" }, "F5: the page sees Chromium's own shapes");
+  }, { "/f/u.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) }, "/f/l.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) } }));
+
+// #1617 review: a face's src can be a data: URL (its ';' and ',' sit inside the URL), and a page can change a face's descriptors
+// after it is in the set, with no other set operation; the viewer's rule follows both.
+const scriptFontsCss = packet => JSON.stringify([packet.nodes ?? [], packet.ops.filter(op => op.op === "adopted")]);
+// #1617 review 2: a face's metric overrides (ascent, descent, line gap, size adjust) set the baseline and line height the page
+// shows; the viewer's rule carries them, including a change made after the face is in the set.
+test("F5-R2: a script-made face carries its metric overrides, also when changed later", () => mirrored(
+  `<p style="font-family:Metric">a</p><script>
+    window.face = new FontFace("Metric", "url(/f/u.woff2) format('woff2')", { ascentOverride: "90%", descentOverride: "10%", lineGapOverride: "0%", sizeAdjust: "110%" }); document.fonts.add(face);
+  </script>`, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const css = scriptFontsCss(await next());
+    assert.match(css, /@font-face ?\{[^}]*Metric[^}]*ascent-override: ?90%[^}]*descent-override: ?10%[^}]*line-gap-override: ?0%[^}]*size-adjust: ?110%/, `F5: the overrides travel (${css.slice(0, 1200)})`);
+    await evaluate(`face.lineGapOverride = "5%"`);
+    let later = "";
+    for (let i = 0; i < 8 && !/line-gap-override: ?5%/.test(later); i++) later = scriptFontsCss(await next(1000));
+    assert.match(later, /@font-face ?\{[^}]*Metric[^}]*line-gap-override: ?5%/, "F5: a later override change reaches the viewer");
+  }, { "/f/u.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) } }));
+
+test("F5-R1a: a script-made face from a data: URL reaches the viewer", () => mirrored(
+  `<p style="font-family:Embedded">a</p><script>
+    document.fonts.add(new FontFace("Embedded", "url(data:font/woff2;base64,d09GMgABAAAAAA==) format('woff2')"));
+  </script>`, async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const css = scriptFontsCss(await next());
+    assert.match(css, /@font-face ?\{[^}]*Embedded[^}]*src: ?url\([^}]*format\(\\?"woff2\\?"\)/, `F5-R1a: the face made from a data: URL (${css.slice(0, 1500)})`);
+  }));
+
+test("F5-R1b: a script-made face whose descriptors change later reaches the viewer as changed; the setters look native", () => mirrored(
+  `<p style="font-family:Renamed">b</p><script>
+    window.moving = new FontFace("Moving", "url(/f/m.woff2)", { weight: "700" }); document.fonts.add(window.moving);
+  </script>`, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    assert.match(scriptFontsCss(await next()), /@font-face ?\{[^}]*Moving[^}]*font-weight: ?700/, "F5-R1b: the face before its change");
+    await evaluate(`setTimeout(() => { window.moving.family = "Renamed"; window.moving.weight = "300"; }, 0)`);
+    let later = "";
+    for (let i = 0; i < 8 && !/Renamed/.test(later); i++) later = scriptFontsCss(await next(1000));
+    assert.match(later, /@font-face ?\{[^}]*Renamed[^}]*font-weight: ?300/, `F5-R1b: the face's new family and weight reach the viewer (${later.slice(0, 800)})`);
+    assert.doesNotMatch(later, /Moving/, "F5-R1b: the old family is gone");
+    const setter = await evaluate(`(() => { const d = Object.getOwnPropertyDescriptor(FontFace.prototype, "family"), set = d.set; return [set.toString(), set.name, set.length, Object.hasOwn(set, "prototype"), Function.prototype.toString.call(set), d.enumerable, d.configurable, d.get.name]; })()`);
+    assert.deepEqual(setter, ["function set family() { [native code] }", "set family", 1, false, "function set family() { [native code] }", true, true, "get family"], "F5-R1b: the descriptor setters look native");
+  }, { "/f/m.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) } }));
 
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
@@ -2043,6 +2415,75 @@ test('MP-10: review r19 a newly inserted closed host becomes a tile without rese
  }
 ));
 
+// Row 489: Chromium's PDF document is a body whose light DOM is one whitespace text node and whose closed root holds the
+// viewer's iframe. That body is a closed host like an empty one: the viewer gets a region, not an empty page.
+test('Row 489: a body with only whitespace light DOM and a closed root is an opaque region',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{document.body.attachShadow({mode:"closed"}).innerHTML="<style>iframe{position:absolute;left:0;top:0;width:600px;height:400px;border:0}</style><iframe src=/viewer></iframe><slot></slot>"})</script><style>body{height:100%;margin:0}</style></head><body>\n    \n  </body>',
+ async ctx=>{
+  let found=null;for(let i=0;i<6&&!found;i++){const p=await ctx.next(i?600:0);if([...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].some(n=>n[4]?.reason==='closed_shadow'))found=p;}
+  assert(found,'the PDF-shaped body is a closed_shadow tile');
+  // The body's own box is 0 high (the viewer iframe is absolute in the closed root): its region covers what the root paints.
+  const lease=await regionLease(ctx,found.sequence);
+  assert(lease.rect.width>=590&&lease.rect.height>=390,`the body's region covers the viewer iframe: ${JSON.stringify(lease.rect)}`);
+ },{'/viewer':{type:'text/html',body:'<!doctype html><body style="margin:0;background:rgb(82,86,89)"><p style="color:white">page 1 of 15</p></body>'}}
+));
+
+// Row 489 review (#1716): a closed root painting away from its host keeps the host as the region's origin (placement, clicks),
+// and a closed host in normal flow keeps its own layout size (its painted overflow never pushes the content after it).
+test('Row 489: a closed host painting outside its box keeps its origin, and an in-flow 0-high host keeps its height',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{for(const id of ["away","flow"])document.getElementById(id).attachShadow({mode:"closed"}).innerHTML=id==="away"?"<div style=position:absolute;left:-50px;top:-50px;width:200px;height:200px;background:rgb(0,90,200)></div>":"<div style=position:absolute;left:0;top:0;width:300px;height:100px;background:rgb(200,90,0)></div>"})</script></head><body style="margin:0"><div id=away style="position:absolute;left:100px;top:100px;width:100px;height:100px"></div><div id=flow style="position:relative;height:0;margin-top:400px"></div><p>after</p></body>',
+ async ctx=>{
+  let packet=null,rows=[];for(let i=0;i<6;i++){const p=await ctx.next(i?600:0);rows.push(...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[]));packet=p;if(rows.filter(n=>n[4]?.reason==='closed_shadow').length>=2)break;}
+  const tiles=rows.filter(n=>n[4]?.reason==='closed_shadow');
+  assert.equal(tiles.length,2,'both hosts are closed_shadow tiles');
+  assert(tiles.some(n=>n[4].size?.[1]===0),`the in-flow 0-high host keeps height 0: ${JSON.stringify(tiles.map(n=>n[4].size))}`);
+  const stream=ctx.host.mirror.streams.get(ctx.subscription_id),leases=[];
+  for(const [region_id,r] of stream.regionRecords)if(r.kind==='tile')try{leases.push(await ctx.host.mirror.v2.regions.resolve({mirror_subscription_id:ctx.subscription_id,generation:ctx.generation,document_id:stream.document_id,sequence:packet.sequence,region_id},stream.scope))}catch{}
+  const away=leases.find(l=>l.rect.x===50&&l.rect.y===50);
+  assert(away,`the away host's capture covers its painted ink from (50,50): ${JSON.stringify(leases.map(l=>l.rect))}`);
+  assert.deepEqual({...away.element_offset},{x:-50,y:-50},'placed relative to the host at (100,100)');
+ }));
+
+// Row 489: a real PDF (Chromium's own viewer) reaches the viewer as a region with pixels.
+const minimalPdf = () => {
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>', null, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  const text = 'BT /F1 48 Tf 72 700 Td (Row 489 page one) Tj ET'; objects[3] = `<< /Length ${text.length} >>\nstream\n${text}\nendstream`;
+  let out = '%PDF-1.4\n'; const offsets = [];
+  objects.forEach((body, i) => { offsets.push(out.length); out += `${i + 1} 0 obj\n${body}\nendobj\n`; });
+  const xref = out.length; out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+};
+test('Row 489: a PDF document shows Chromium\'s viewer as a region with pixels',()=>mirrored('',async ctx=>{
+  await settle(2500);
+  const seen={closed:false,stills:[],packets:0};let last=null;
+  for(let i=0;i<10;i++){const p=await ctx.next(i?500:0);last=p;seen.packets++;const tile=[...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].find(n=>n[4]?.reason==='closed_shadow');if(tile){seen.closed=true;seen.tile=tile;}for(const op of p.ops)if(op.op==='size')seen.sizes=(seen.sizes??[]).concat([op.size]);for(const t of p.tiles??[])seen.stills.push([t.width,t.height]);}
+  let lease=null;try{lease=(await regionLease(ctx,last.sequence)).rect}catch(error){lease=String(error.message)}
+  const kinds=[...ctx.host.mirror.streams.get(ctx.subscription_id).regionRecords.values()].map(r=>r.kind);
+  console.log('ROW489-PDF',JSON.stringify({...seen,lease,kinds,url:await ctx.evaluate('location.href'),type:await ctx.evaluate('document.contentType')}));
+  assert(seen.closed,'the PDF body is a closed_shadow tile');
+  const size=seen.tile?.[4]?.size;
+  assert(size?.[0]>=600&&size?.[1]>=400,`the viewer lays the tile out at what the viewer paints, not the body's 0-high box: ${JSON.stringify(size)}`);
+  assert(typeof lease==='object'&&lease.width>=600&&lease.height>=400,`its region covers the viewer: ${JSON.stringify(lease)}`);
+ },{'/':{type:'application/pdf',binary:minimalPdf()}}));
+
+// Row 486: the viewer never evicts a Tab that plays video or audio (muted too); the page's mirror header says so.
+test('Row 486: media_playing follows a muted video and an audio-only element as they play and pause',()=>mirrored(
+ '<canvas id=c width=64 height=36></canvas><video id=v muted playsinline style="width:64px;height:36px"></video><audio id=a muted></audio><script>const c=document.getElementById("c"),x=c.getContext("2d");let i=0;setInterval(()=>{x.fillStyle=`hsl(${(i+=7)%360} 80% 50%)`;x.fillRect(0,0,64,36)},30);window.stream=()=>c.captureStream(30)</script>',
+ async({next,evaluate,host,tab_id})=>{
+  // A person's click allows sound: play() runs as a user gesture.
+  const gesture=async expression=>{const {connection,sessionId}=await host.browser.resolvePageTarget(host.tabs.get(tab_id).target_id);const r=await connection.send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true,userGesture:true},sessionId);assert(!r.exceptionDetails,r.exceptionDetails?.exception?.description);return r.result.value};
+  const playing=async(want,label)=>{let last;for(let i=0;i<12;i++){const p=await next(400);if(p.media_playing!==undefined)last=p.media_playing;if(last===want)return;}assert.equal(last,want,label)};
+  await playing(false,'nothing plays at first');
+  await gesture('(async()=>{const v=document.getElementById("v");v.srcObject=stream();await v.play();return true})()');
+  await playing(true,'a muted video that plays');
+  await evaluate('document.getElementById("v").pause();true');
+  await playing(false,'paused');
+  await gesture('(async()=>{const a=document.getElementById("a");a.srcObject=stream();await a.play();return true})()');
+  await playing(true,'an audio-only element that plays');
+  await evaluate('document.getElementById("a").pause();true');
+  await playing(false,'paused again');
+ }));
+
 // MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
 for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(
  child ? '<iframe src="http://localhost:PORT/child" style="width:300px;height:160px"></iframe>' : '<p>stable</p>',
@@ -2108,19 +2549,121 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
-// A headless browser has no window to read a region from: it refused every region display as a stale reference, and the
-// viewer asked again every second for as long as the page was open. It now says once, with a fixed reason, that it never can.
-test("MP-08: a browser with no display of its own refuses a region display with that reason", () => mirrored(
-  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c"></canvas>',
+// R1 (proposal R): a browser with no display of its own (headless) gives a page region video from Chrome's own frames: the region
+// display is granted as a crop of the Tab's screencast, and a canvas animating at 60 fps reaches it at >= 25 frames a second.
+// (It used to refuse with region_video_no_display, and the viewer showed one still a second.)
+test("R1a: a browser with no display of its own streams a region as a crop of the Tab's screencast", () => mirrored(
+  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
   async ({ host, next, subscription_id, generation, tab_id }) => {
     const packet = await next(), stream = host.mirror.streams.get(subscription_id);
     const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
     assert(region_id, "MP-10: the canvas is an opaque region");
     const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
-    const refused = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
-    assert(refused, "MP-08: no region display without a display");
-    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", `the region display is granted: ${JSON.stringify(reply)}`);
+    assert.deepEqual([reply.css_width, reply.css_height], [200, 100]);
+    const source = host.displays.get(reply.subscription_id)?.regionSource;
+    assert(source, "the region's source is attached");
+    const serials = new Set(), off = source.subscribe(frame => { if (frame?.crop) serials.add(frame.serial); });
+    await settle(500); serials.clear(); const t0 = Date.now(); await settle(2000);
+    const fps = serials.size / ((Date.now() - t0) / 1000); off();
+    assert(fps >= 25, `the region gets >= 25 frames a second from the screencast (${fps.toFixed(1)})`);
+    const sample = source.sample();
+    assert.deepEqual([sample.width, sample.height, sample.crop.width, sample.crop.height], [200, 100, 200, 100], "frames are named at the crop");
+    // The display's own frame path: the shared screencast image goes to the encoder with the region's crop, and the video is
+    // the crop's size.
+    const display = host.displays.get(reply.subscription_id), calls = [], encode = display.encoder.encode.bind(display.encoder);
+    const encoded = [];
+    display.encoder.encode = async (...args) => { const data = typeof args[0] === "string" ? args[0] : ""; const call = { crop: args[5]?.crop ?? null, jpeg: data.startsWith("/9j/") }; calls.push(call); const result = await encode(...args); encoded.push(Boolean(result?.data_base64)); return result; };
+    for (let i = 0; i < 20 && !encoded.includes(true); i++) { await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); await settle(100); }
+    assert(calls.length >= 1 && calls.every(c => !c.jpeg || c.crop?.width === 200 && c.crop?.height === 100), `a screencast image reaches the encoder only with the region's crop (${JSON.stringify(calls)})`);
+    assert(encoded.includes(true), `the encoder produced video for the crop (${JSON.stringify(encoded)})`);
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 1 (P1): once a screencast region stops moving, its lossless exact still is the region's own crop at the viewer's
+// density (the presenter accepts only css size x DPR), never the whole viewport.
+for (const dpr of [1, 2]) test(`R1: a screencast region at rest gets its exact still at the region's size (viewer DPR${dpr})`, () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:30px;top:40px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false}(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);if(run)requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: dpr });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), captures = [], frames = [];
+    const screenshot = host.displayScreenshot.bind(host);
+    host.displayScreenshot = async (...args) => { const shot = await screenshot(...args); captures.push([shot.width, shot.height]); return shot; };
+    const source = display.regionSource, own = source.exactCapture?.bind(source);
+    if (own) source.exactCapture = async () => { const shot = await own(); captures.push([shot.width, shot.height]); return shot; };
+    const credit = async () => { const r = await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); if (r?.display_frame) frames.push(r.display_frame); };
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !captures.length; i++) { await credit(); await settle(120); }
+    assert(captures.length, "an exact still is captured once the region rests");
+    // The display's density is the page's own (observation never changes it): the presenter accepts css size x reply DPR.
+    const k = reply.device_scale_factor;
+    assert(captures.every(([w, h]) => w === 200 * k && h === 100 * k), `every exact capture is the region's crop at the display's DPR ${k} (${JSON.stringify(captures)})`);
+    const exact = frames.filter(f => f.payload?.kind === "png" || f.kind === "png");
+    for (const f of exact) { const png = Buffer.from(f.payload?.data_base64 ?? f.data_base64, "base64"); assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [200 * k, 100 * k], "the exact frame is the region's size"); }
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, { device_scale_factor: dpr }, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 2 (P2): a CDP clip is in page coordinates, the lease rect in viewport ones. On a page scrolled to y=500 a canvas seen at
+// viewport y=40 is captured at page y=540: the exact still at rest holds the canvas's own final pixels, not the page elsewhere.
+test("R1: a screencast region's exact still on a scrolled page holds the region's own pixels", () => mirrored(
+  '<style>body{margin:0;height:3000px;background:#f0f}canvas{position:absolute;left:30px;top:540px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>scrollTo(0,500);const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false;g.fillStyle="rgb(0,128,255)";g.fillRect(0,0,200,100)}(function f(){if(!run)return;g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    await evaluate("scrollTo(0,500)"); await settle(300);
+    let packet = await next(); for (let i = 0; i < 4 && !(await evaluate("scrollY")); i++) packet = await next();
+    assert.equal(await evaluate("scrollY"), 500, "fixture: the page is scrolled");
+    const stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), shots = [], errors = [];
+    const source = display.regionSource, own = source.exactCapture.bind(source);
+    source.exactCapture = async () => { try { const shot = await own(); shots.push(shot); return shot; } catch (error) { errors.push(String(error?.message ?? error)); throw error; } };
+    const credit = () => host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null);
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !shots.length; i++) { await credit(); await settle(120); }
+    assert(shots.length, `an exact still is captured once the region rests (${JSON.stringify(errors)})`);
+    const { pixels, width, height } = decodePng(shots.at(-1).data_base64, 1), at = ((height >> 1) * width + (width >> 1)) * 4;
+    assert.deepEqual([...pixels.subarray(at, at + 3)], [0, 128, 255], "the exact still is the canvas's final picture, not the page beside it");
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 S4/S1 (orch14 decision 11-22 under AGENTS.md "Secrets and agents"): a Vault fill on a page whose region streams raw screencast
+// pixels fences before the value is written (the kernel registers the target, host.protect, then fills): no frame captured at or
+// after that moment reaches the lease, and the region stops. The same when the target is in a child frame.
+const fillPage = child => `<style>body{margin:0}canvas{width:300px;height:120px;display:block}#v{position:absolute;left:20px;top:40px;width:200px;font:20px monospace}</style><canvas id="c" width="300" height="120"></canvas>${child ? '<iframe id="f" srcdoc="<input id=v>" style="position:absolute;left:20px;top:40px;width:220px;height:40px;border:0"></iframe>' : '<input id="v">'}<script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=\`hsl(\${(n++*7)%360},80%,50%)\`;g.fillRect(0,0,300,120);requestAnimationFrame(f)})()</script>`;
+for (const child of [false, true]) test(`R1 S4${child ? "/S1 (target in a child frame)" : ""}: a Vault fill fences the region screencast before the value is written`, () => mirrored(fillPage(child),
+  async ({ host, next, subscription_id, generation, tab_id }) => {
+    await settle(400);
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    const source = host.displays.get(reply.subscription_id).regionSource, frames = [];
+    source.subscribe(frame => frames.push({ at: Date.now(), captured: frame.capturedAt }));
+    await settle(700);
+    assert(frames.length > 5, `frames flow before the fill (${frames.length})`);
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+    const { nodeIds } = await connection.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: child ? "iframe" : "#v" }, sessionId);
+    let backendNodeId = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0] }, sessionId)).node.backendNodeId;
+    if (child) { const frame = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0], depth: -1, pierce: true }, sessionId)).node; const find = n => n.attributes?.includes("v") && n.nodeName === "INPUT" ? n : (n.children ?? []).concat(n.contentDocument ? [n.contentDocument] : []).map(find).find(Boolean); backendNodeId = find(frame).backendNodeId; }
+    const before = frames.length, fillStart = Date.now();
+    await host.protect({ values: ["SECRET-4242"], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${backendNodeId}` }] });
+    await evaluate_fill(host, tab, child);
+    await settle(1200);
+    const late = frames.slice(before).filter(f => f.captured >= fillStart);
+    assert.deepEqual(late, [], `no frame captured after the fill started reached the lease (${late.length} of ${frames.length - before} after)`);
+    assert.equal(source.valid(), false, "the region stops"); assert.equal(source.sample(), null);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+async function evaluate_fill(host, tab, child) {
+  const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  await connection.send("Runtime.evaluate", { expression: child ? `document.getElementById("f").contentDocument.getElementById("v").value="SECRET-4242"` : `document.getElementById("v").value="SECRET-4242"` }, sessionId);
+}
 // The navigation preview asks for a Tab display. A headless browser answered with a CDP display at the viewer's layout
 // size, which the viewer rejects as invalid geometry: every navigation retried it while the new page stayed hidden.
 test("MP-08: a browser with no display of its own refuses a Tab display with that reason", () => mirrored(

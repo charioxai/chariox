@@ -336,7 +336,8 @@ fn dictation_live_kernel_with_fake_speech_service() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let app = crate::DaemonApp::bootstrap(crate::DaemonConfig::load_from_env()).unwrap();
+        let app =
+            crate::DaemonApp::bootstrap(crate::DaemonConfig::load_from_env().unwrap()).unwrap();
         app.run().await.unwrap();
     });
     // Wake the fixture listener on an early client failure so shutdown cannot hang.

@@ -4,8 +4,8 @@
 //! profile), Vault, credentials, machine identity, relay pairing and history.
 //! What is the agent's own stays: the paths its launch names (working folder,
 //! provider profile, scratch folder, program) are mounted back, and the
-//! chariox CLI keeps the kernel registry and local sign-in token it reads to
-//! reach this kernel, read-only.
+//! chariox CLI keeps the kernel registry read-only. The provider receives its
+//! own CLI credential in its launch environment.
 //!
 //! Secrets live in folders of their own, and exactly those folders are
 //! covered, matched by path component: a folder that only shares a name prefix
@@ -185,6 +185,15 @@ pub(crate) fn configure(config: &crate::config::DaemonConfig) -> Result<(), Daem
             })?;
         }
     }
+    // A running provider can receive a workflow turn later. Keep this mount
+    // present from launch so it sees new files without restarting the provider.
+    let instructions = crate::config::DaemonConfig::workflow_instruction_mount();
+    private_folder(&instructions).map_err(|error| {
+        confinement_error(format!(
+            "could not create workflow instruction directory {}: {error}",
+            instructions.display()
+        ))
+    })?;
     let _ = CONFIGURED_FOLDERS.set(folders);
     Ok(())
 }
@@ -355,6 +364,7 @@ fn secrets() -> Secrets {
     let mut folders = home_secret_folders()
         .into_iter()
         .chain(CONFIGURED_FOLDERS.get().into_iter().flatten().cloned())
+        .chain(crate::agent_temp::private_root())
         .filter_map(|folder| folder.canonicalize().ok())
         .filter(|folder| folder.is_dir())
         .collect::<Vec<_>>();
@@ -370,12 +380,9 @@ fn secrets() -> Secrets {
 
 /// What the chariox CLI reads to reach this kernel.
 fn cli_paths() -> Vec<PathBuf> {
-    vec![
-        crate::config::default_state_dir().join("kernel-local-auth"),
-        crate::config::default_config_dir()
-            .join("kernels")
-            .join("active"),
-    ]
+    vec![crate::config::default_config_dir()
+        .join("kernels")
+        .join("active")]
 }
 
 fn existing_canonical(paths: Vec<PathBuf>) -> Vec<PathBuf> {

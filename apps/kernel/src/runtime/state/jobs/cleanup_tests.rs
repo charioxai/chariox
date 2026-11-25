@@ -24,6 +24,8 @@ async fn serve_profile(state: &KernelRuntimeState) -> tokio::net::TcpListener {
         machine_credential: None,
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
     state.owned.config_projection.update(config);
@@ -85,7 +87,7 @@ pub(super) async fn service(
 }
 
 /// Answers every request by its action, in any order, until the test ends it.
-async fn service_by_action(
+pub(super) async fn service_by_action(
     state: &KernelRuntimeState,
     answer: impl Fn(&serde_json::Value) -> (u16, serde_json::Value) + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
@@ -182,7 +184,7 @@ async fn offload_job_cleanup_does_not_retry_authorization_denial() {
 
 #[tokio::test]
 async fn offload_job_completed_result_survives_unconfirmed_cleanup() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let value = state
         .dispatch_job_tool(
             Some(&run),
@@ -276,7 +278,6 @@ async fn job_refused_by_the_service(
     set_policy: impl FnOnce(&KernelRuntimeState, &AgentTaskExecution),
 ) -> serde_json::Value {
     let mut config = crate::config::DaemonConfig::for_tests();
-    config.remote_jobs = true;
     config.user_config.agents.offload_without_asking = Some(true);
     let (state, run, task, _workspace) = super::tests::fixture_with(config).await;
     set_policy(&state, &task);

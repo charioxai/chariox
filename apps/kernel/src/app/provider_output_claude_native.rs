@@ -8,8 +8,8 @@ use crate::app::DaemonApp;
 use crate::app::KernelPromptDispatch;
 use crate::error::DaemonError;
 use crate::provider::{
-    ProviderNativeInteractionBridge, ProviderPromptSignalBatch, ProviderResumeState,
-    RuntimeProviderRun,
+    ContextCompaction, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
+    ProviderResumeState, RuntimeProviderRun,
 };
 use crate::session::{
     unix_epoch_ms, PromptAttachment, RuntimeInteraction, RuntimeInteractionChoice,
@@ -19,7 +19,6 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod context_delivery;
-mod first_run_notice;
 mod hidden_context;
 mod local_denial;
 mod permission;
@@ -30,17 +29,22 @@ mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transcript;
+mod trust_dialog;
 mod typed_prompt;
 mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
-pub(crate) use first_run_notice::claude_native_first_run_notice;
+pub(crate) use permission::write_claude_hook_context_response;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(crate) use start_screen::{
     claude_headless_owner_decision_pending, claude_headless_prompt_written,
     claude_headless_stuck_screen_line,
 };
 pub(super) use startup_exit::claude_native_startup_exit;
+pub(crate) use trust_dialog::{
+    claude_native_trust_dialog_update, claude_native_trust_interaction_id,
+    claude_native_trust_keys, ClaudeTrustDialog, ClaudeTrustKeys,
+};
 
 use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
@@ -65,7 +69,7 @@ use permission::{
     update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
     write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
     write_claude_headless_workspace_trust_denied_marker,
-    write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
+    write_claude_headless_workspace_trust_interaction_marker,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_passthrough,
     write_claude_permission_response, write_claude_workspace_trust_selection_marker,
@@ -167,6 +171,10 @@ pub(crate) struct ClaudeNativeProcessOutcome {
 /// Kernel-owned conversation policy for native-origin turns. The bridge only
 /// wires its hidden hook context and acknowledgement into that shared policy.
 pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Bind the protected hook replay to the turn and the dispatch's handoff room"
+    )]
     fn prepare_context(
         &self,
         session_id: &str,
@@ -175,6 +183,7 @@ pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
         prompt_id: &str,
         steering: bool,
         base: String,
+        handoff_room: Option<usize>,
     ) -> Result<String, DaemonError>;
     fn protect_inputs(
         &self,
@@ -417,6 +426,141 @@ fn acknowledge_claude_headless_steering_enqueue(
 }
 
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
+    fn note_compaction_hook(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        context_file: &str,
+        agent_id: &str,
+        event_name: &str,
+        event: &Value,
+    ) -> Result<(), DaemonError> {
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        let prompt_id = event
+            .get("prompt_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let (number, state) = match event_name {
+            "PreCompact" => {
+                let Some(prompt_id) = prompt_id else {
+                    crate::logging::warn_with_fields(
+                        "daemon.claude_native",
+                        "ignoring compaction start without a Claude prompt ID",
+                        serde_json::json!({ "provider_run_id": provider_run_id }),
+                    );
+                    return Ok(());
+                };
+                let prompt = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+                (
+                    cursor.start_compaction(prompt_id, prompt.as_ref().map(|prompt| prompt.id())),
+                    ContextCompaction::Running {
+                        started_at_ms: unix_epoch_ms(),
+                    },
+                )
+            }
+            "PostCompact" => {
+                let Some(number) = prompt_id.and_then(|id| cursor.settle_compaction(id)) else {
+                    crate::logging::info_with_fields(
+                        "daemon.claude_native",
+                        "dropping compaction summary without a matching running compaction",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "claude_prompt_id": prompt_id,
+                        }),
+                    );
+                    return Ok(());
+                };
+                (
+                    Some(number),
+                    ContextCompaction::Done {
+                        summary: event
+                            .get("compact_summary")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    },
+                )
+            }
+            "StopFailure" => (
+                prompt_id.and_then(|id| cursor.settle_compaction(id)),
+                ContextCompaction::Failed {
+                    reason: "Claude encountered an error before it finished compacting context."
+                        .into(),
+                },
+            ),
+            _ => return Ok(()),
+        };
+        if let Some(number) = number {
+            save_claude_transcript_cursor(context_file, &cursor);
+            self.publish_compaction(session_id, provider_run_id, number, state);
+        }
+        Ok(())
+    }
+
+    pub(super) fn cancel_compaction(
+        &mut self,
+        run: &RuntimeProviderRun,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let (Some(agent_id), Some(context_file)) = (
+            run.agent_instance_id(),
+            run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT"),
+        ) else {
+            return Ok(());
+        };
+        let session_id = run.session_id();
+        if !self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .is_some_and(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.status() == crate::session::PromptStatus::Cancelling
+            })
+        {
+            return Ok(());
+        }
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        let compactions = cursor.cancel_compactions(prompt_id);
+        if compactions.is_empty() {
+            return Ok(());
+        }
+        save_claude_transcript_cursor(context_file, &cursor);
+        for number in compactions {
+            self.publish_compaction(
+                session_id,
+                run.id(),
+                number,
+                ContextCompaction::Failed {
+                    reason: "The turn was cancelled before Claude finished compacting context."
+                        .into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn publish_compaction(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        number: u64,
+        state: ContextCompaction,
+    ) {
+        ProviderOutputFanout::new(self.app).fan_out(
+            session_id,
+            provider_run_id,
+            TerminalOutputKind::ContextCompacted,
+            Some(format!(
+                "claude-transcript:{provider_run_id}:{}",
+                transcript::compaction_merge_key_suffix(number)
+            )),
+            self.app.attachments.list_session_attachment_ids(session_id),
+            state.to_text().as_bytes(),
+        );
+    }
+
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self {
             app,
@@ -595,6 +739,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
                 continue;
             }
+            if matches!(event_name, "PreCompact" | "PostCompact") {
+                self.note_compaction_hook(
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    &agent_id,
+                    event_name,
+                    &event,
+                )?;
+                continue;
+            }
             if event_name == "CharioxContextDelivered" {
                 self.accept_context_delivery(
                     session_id,
@@ -694,6 +849,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 dispatch_prompt_id,
                                 inputs.prompt_id != inputs.origin_prompt_id,
                                 base,
+                                inputs.handoff_room,
                             )?
                         } else {
                             fs::read_to_string(context_file).map_err(|error| {
@@ -782,6 +938,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             "",
                             false,
                             base,
+                            None,
                         )?,
                         None => base,
                     };
@@ -929,6 +1086,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     }
                 }
             } else if event_name == "StopFailure" {
+                self.note_compaction_hook(
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    &agent_id,
+                    event_name,
+                    &event,
+                )?;
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);
             } else if event_name == "SessionEnd"
@@ -1243,6 +1408,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             unix_epoch_ms(),
         );
         save_claude_transcript_cursor(context_file, &cursor);
+        if drain.unbound_compaction_summaries > 0 {
+            crate::logging::info_with_fields(
+                "daemon.claude_native",
+                "dropping transcript compaction summaries without a Claude prompt ID",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "count": drain.unbound_compaction_summaries,
+                }),
+            );
+        }
         let terminal_failure = drain.terminal_failure.clone();
         let active_prompt_id = self
             .app
@@ -2189,11 +2364,24 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             return Ok(());
         }
-        let hidden_context =
-            self.managed_base_context(session_id, context_file, provider_run, prompt)?;
-        let handoff_room = crate::provider::claude_native_hidden_context_room(&hidden_context);
-        let hidden_context =
-            join_claude_context([hidden_context, (prompt.context_handoff)(handoff_room)]);
+        let hidden_context = self
+            .managed_base_context(session_id, context_file, provider_run, prompt)
+            .map_err(|error| {
+                if matches!(
+                    &error,
+                    DaemonError::ProviderProtocol {
+                        operation: "claude_hidden_context_size",
+                        ..
+                    }
+                ) && !(prompt.context_handoff)(usize::MAX).is_empty()
+                {
+                    crate::provider::switch_turn::too_large(
+                        "the required instructions and attachments together with the handoff brief",
+                    )
+                } else {
+                    error
+                }
+            })?;
         // MP-08 / MP-10 / MP-11: native PTY runs use the same validated
         // skill adapter as structured runs. Only its visible /name enters the
         // PTY; instruction bodies remain in UserPromptSubmit additionalContext.
@@ -2204,13 +2392,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             crate::prompt_assembly::PromptManifest::default(),
         )
         .with_steering(prompt.id != prompt.origin_prompt_id);
-        let envelope = self.app.providers.prepare_skill_prompt(
-            session_id,
-            agent_id,
+        let (envelope, handoff) = self.app.providers.prepare_switch_skill_prompt(
+            provider_run,
             prompt.id,
             prompt.origin_prompt_id,
-            provider_run,
             envelope,
+            true,
+            &|room| Ok((prompt.context_handoff)(room)),
         )?;
         let visible = envelope.visible_user_prompt;
         let skill_context = envelope
@@ -2218,9 +2406,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .as_ref()
             .map(|delivery| delivery.hidden_context.clone())
             .unwrap_or_default();
+        let (handoff_text, handoff_room) = handoff.map_or((String::new(), None), |handoff| {
+            (handoff.text, Some(handoff.room))
+        });
         let hidden_context = crate::provider::fit_claude_native_hidden_context(
             provider_run_id,
-            envelope.hidden_system_context,
+            join_claude_context([envelope.hidden_system_context, handoff_text]),
         )?;
         if provider_run
             .pty_env()
@@ -2229,7 +2420,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             // Preserve full scheduled inputs before rendering, and before any PTY submission.
             // The hook re-protects these inputs under the current Room barrier.
-            hidden_context::stage_managed_inputs(context_file, prompt, &skill_context)?;
+            hidden_context::stage_managed_inputs(
+                context_file,
+                prompt,
+                &skill_context,
+                handoff_room,
+            )?;
         }
         fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
             provider_run_id: provider_run_id.to_string(),

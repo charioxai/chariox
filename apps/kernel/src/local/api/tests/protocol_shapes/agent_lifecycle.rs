@@ -36,6 +36,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         state: ExecutionState::Waiting,
         reason: "delegate result".into(),
         owner_action: None,
+        question_reply: None,
         obligations: vec![AgentObligation {
             id: "obligation".into(),
             kind: "delegate".into(),
@@ -264,7 +265,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "b42ad8612213eb6a1e3d3c951303552930b5a69663c58d2cb4b4204c127a0fc1"
+        "a48a0594a5a5a9b3e5b970790babba1a3762fae0e0b115e4d62baa85ff236225"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

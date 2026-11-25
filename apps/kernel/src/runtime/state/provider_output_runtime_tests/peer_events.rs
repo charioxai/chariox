@@ -439,7 +439,11 @@ async fn a_decision_a_peer_raises_never_reaches_its_follower() {
     follow(&team, 0, &peer).await;
     let _answer = team
         .runtime
-        .create_runtime_interaction(&team.room, card("perm-peer", &peer))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &team.room,
+            card("perm-peer", &peer),
+        )
         .await
         .unwrap();
     assert!(

@@ -169,6 +169,41 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         unread_for_user_id: Option<&str>,
     ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.agent_activity_for_session_at(
+            session,
+            unread_for_user_id,
+            crate::session::unix_epoch_ms(),
+        )
+    }
+
+    pub(super) fn agent_activity_for_session_at(
+        &self,
+        session: &crate::session::RuntimeSession,
+        unread_for_user_id: Option<&str>,
+        now_ms: u64,
+    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.agent_activity_projected(session, unread_for_user_id, now_ms, &|| {
+            self.session_processes(session.id())
+        })
+    }
+
+    /// What the agent tree reads of a Room's agents. The commands a Room holds for room come from the process
+    /// registry, which the wake scheduler (it publishes tree changes) must never wait on: the tree names waits
+    /// from the durable wakes and the Room's cards only.
+    pub(crate) fn agent_activity_for_tree(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.agent_activity_projected(session, None, crate::session::unix_epoch_ms(), &Vec::new)
+    }
+
+    fn agent_activity_projected(
+        &self,
+        session: &crate::session::RuntimeSession,
+        unread_for_user_id: Option<&str>,
+        now_ms: u64,
+        processes: &dyn Fn() -> Vec<crate::runtime::process_resources::SessionProcess>,
+    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
         let prompt_activity = self.owned.prompt_activity.read();
         let active_turns = self.owned.active_turns.snapshot();
         let mut activity = crate::runtime::projection::agent_activity_for_session_projection(
@@ -188,6 +223,7 @@ impl KernelRuntimeState {
             },
             &prompt_activity,
             &active_turns,
+            now_ms,
             unread_for_user_id,
             |agent_id| {
                 self.owned
@@ -202,12 +238,17 @@ impl KernelRuntimeState {
             .project_external_observed_activity(session.id(), &mut activity);
         crate::runtime::projection::annotate_waits(
             &mut activity,
-            &self.session_processes(session.id()),
+            &processes(),
             &crate::runtime::projection::YieldedSources::of_room(
                 &self.owned.durable_state_store,
                 session.id(),
             ),
             &crate::runtime::projection::SourceLabels::of_session(session),
+        );
+        crate::runtime::projection::annotate_cards(
+            &mut activity,
+            session,
+            &self.owned.decisions_held_by_agents(session.id()),
         );
         if let Err(error) = crate::runtime::projection::annotate_deadline_ends(
             &mut activity,

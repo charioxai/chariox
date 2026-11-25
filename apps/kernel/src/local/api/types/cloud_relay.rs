@@ -156,11 +156,31 @@ pub struct RelayStatus {
     pub capabilities: Vec<String>,
     pub configured: bool,
     pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_refused: Option<RelayRegistrationRefusal>,
     pub relay_url: Option<String>,
     pub relay_token_configured: bool,
     pub daemon_id: String,
     pub machine_id: String,
     pub machine_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayRegistrationRefusal {
+    pub reason: String,
+    pub next_step: String,
+    pub since_ms: u64,
+    /// No retry is scheduled while the kernel waits for replacement credentials.
+    pub next_retry_at_ms: Option<u64>,
+}
+
+impl RelayRegistrationRefusal {
+    pub(crate) fn owner_message(&self) -> String {
+        format!(
+            "Relay not registered: {}. Next step: {}.",
+            self.reason, self.next_step
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,4 +213,10 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "framed_plaintext_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_OPENCODE_CAPABILITY,
+    VIEWER_DENSITY_STILLS_CAPABILITY,
 ];
+
+/// MP-08/MP-11 (row 341): `display_subscribe` accepts `viewer_density_stills`. Viewers ask for it only of a kernel that
+/// advertises this: a protocol number alone can also name another change's allocation.
+pub const VIEWER_DENSITY_STILLS_CAPABILITY: &str = "viewer_density_stills_v1";

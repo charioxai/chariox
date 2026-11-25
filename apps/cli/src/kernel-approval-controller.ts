@@ -70,6 +70,8 @@ export function createKernelApprovalController(deps: {
   detachedInteractions?(): readonly RuntimeInteraction[]
   detachedBinding?(): number
   respondDetached?(interactionId: string, choiceId: string): Promise<void>
+  /** Accept on an App's clipboard or link offer: the same request `/app host accept` sends, then the action here. */
+  acceptHostOffer?(sessionId: string, operationId: string): Promise<void>
   /** MP-08 / MP-11: one sudo approval surface, shared with external access. */
   delegateSudoToPasskeyPopup?: boolean
   connected(): boolean
@@ -216,6 +218,7 @@ export function createKernelApprovalController(deps: {
     if (action && interactionId) void sendHandoff(interactionId, action)
     else render()
   }
+  const detachedHostOffer = (id: string) => deps.detachedInteractions?.().some(item => item.id === id) === true
   const choose = async (interactionId: string, choiceId: string) => {
     sync()
     const current = view()
@@ -227,6 +230,29 @@ export function createKernelApprovalController(deps: {
     if (handoff && choiceId === HANDOFF_ENTER_CHOICE) {
       entry = { interactionId, value: createHandoffEntry(handoff) }
       error = null
+      render()
+      return
+    }
+    // An App offer's Accept is its dedicated request, not a reply; the card in front of the person is the review.
+    const hostOperation = choiceId === "accept_host_action" ? appHostOperationId(current.interaction) : undefined
+    if (hostOperation && deps.acceptHostOffer) {
+      const requestEpoch = epoch
+      const requestSession = sessionId
+      const token = {}
+      pending = token
+      error = null
+      render()
+      try { await deps.acceptHostOffer(detachedHostOffer(current.interaction.id) ? "" : requestSession, hostOperation) } catch (failure) {
+        if (!disposed && requestEpoch === epoch) error = failure instanceof Error && failure.message ? failure.message : "The kernel did not take this offer. It may have expired."
+      } finally {
+        if (pending === token) pending = null
+        if (!disposed) sync()
+      }
+      return
+    }
+    // Choosing or saving a file is done in the terminal with a path; the card says the command.
+    if (choiceId === "choose_files" || choiceId === "save_file") {
+      error = choiceId === "choose_files" ? "Choose files with /app file grant OPERATION \"FILE\" (the card names the operation)." : "Save the file with /app file save OPERATION \"PATH\" (the card names the operation)."
       render()
       return
     }

@@ -179,6 +179,13 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("session.view.attach", Interactive)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::GetPaneFeed(request) => {
+            LocalRequestMetadata::new("pane_feed.get", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::ReportPaneSettings(request) => {
+            LocalRequestMetadata::new("pane_feed.report_settings", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::DetachFromSession(request) => {
             LocalRequestMetadata::new("session.detach", Interactive)
                 .attachment(&request.attachment_id)
@@ -256,6 +263,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::PreflightProviderAccountPortability(_) => {
             LocalRequestMetadata::new("provider_account.portability.preflight", Interactive)
+        }
+        LocalDaemonRequest::CloudAccountKernels(request) => {
+            LocalRequestMetadata::new(account_kernels_command_type(request), Interactive)
         }
         LocalDaemonRequest::ControlPlane(_) => {
             LocalRequestMetadata::new("control_plane", Interactive)
@@ -422,7 +432,15 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
-        LocalDaemonRequest::UpdateAgentProfile(request) => {
+        LocalDaemonRequest::GetAgentSettings(request) => {
+            let mut metadata = LocalRequestMetadata::new("agent.settings.read", Normal);
+            if let Some(session_id) = &request.session_id {
+                metadata = metadata.session(session_id);
+            }
+            metadata
+        }
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => {
             LocalRequestMetadata::new("agent.profile.update", Interactive)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
@@ -663,6 +681,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::CloudAccountKernels(request) => account_kernels_command_type(request),
         LocalDaemonRequest::ControlPlane(_) => "control_plane",
         LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
         LocalDaemonRequest::IssueOwnMachineEnrollment(_) => "machine.enroll",
@@ -847,6 +866,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::PauseMetaagentTask(_) => "metaagent.task.pause",
         LocalDaemonRequest::ResumeMetaagentTask(_) => "metaagent.task.resume",
         LocalDaemonRequest::AbortMetaagentTask(_) => "metaagent.task.abort",
+        LocalDaemonRequest::GetAgentReleaseNotes { .. } => "agent_release_notes.read",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
@@ -956,6 +976,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
+        LocalDaemonRequest::OwnerView(_) => "owner_view",
+        LocalDaemonRequest::GetPaneFeed(_) => "pane_feed.get",
+        LocalDaemonRequest::ReportPaneSettings(_) => "pane_feed.report_settings",
         LocalDaemonRequest::GetPersonInbox(_) => "person_inbox.get",
         LocalDaemonRequest::SetInboxCardState(_) => "person_inbox.set_card_state",
         LocalDaemonRequest::SetInboxMute(_) => "person_inbox.set_mute",
@@ -1001,6 +1024,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListPairedClients(_) => "paired_client.list",
         LocalDaemonRequest::RecordPairedClient(_) => "paired_client.record",
         LocalDaemonRequest::RevokePairedClient(_) => "paired_client.revoke",
+        LocalDaemonRequest::RelayIssuerStatus(_) => "relay_issuer.status",
+        LocalDaemonRequest::ConfigureRelayIssuer(_) => "relay_issuer.configure",
+        LocalDaemonRequest::IssueRelayClientToken(_) => "relay_issuer.client_token.issue",
         LocalDaemonRequest::GetProviderAuthStatus(_) => "provider.auth_status.get",
         LocalDaemonRequest::StartProviderLogin(_) => "provider.login.start",
         LocalDaemonRequest::GetProviderLoginStatus(_) => "provider.login.status",
@@ -1059,10 +1085,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RetryRoomSetup(_) => "session.setup.retry",
         LocalDaemonRequest::DismissRoomSetup(_) => "session.setup.dismiss",
         LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
+        LocalDaemonRequest::GetAgentSettings(_) => "agent.settings.read",
         LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
         LocalDaemonRequest::ListDescendants(_) => "agent.descendants.list",
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
-        LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
+        LocalDaemonRequest::UpdateAgentProfile(_)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
         LocalDaemonRequest::SpawnAgents(_) => "agents.spawn",
         LocalDaemonRequest::UndoTurn(_) => "turn.undo",
@@ -1255,5 +1283,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::PeekAgentTranscript(_)
         | LocalDaemonRequest::ReadAgentTranscriptEntry(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
+    }
+}
+
+fn account_kernels_command_type(request: &crate::local::AccountKernelsRequest) -> &'static str {
+    match request {
+        crate::local::AccountKernelsRequest::List {} => "account_kernels.list",
+        crate::local::AccountKernelsRequest::Unlink { .. } => "account_kernels.unlink",
     }
 }

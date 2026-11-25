@@ -113,23 +113,32 @@ impl KernelRuntimeState {
                 ControlFlow::Continue(())
             }
         })?;
-        let more = open.len() > limit || unread_full;
-        let shown: Vec<&InboxEvent> = open.iter().take(limit).collect();
+        let reader = self.owned.agent_store.get_agent(actor)?;
+        let mut events = Vec::new();
+        let mut shown = Vec::new();
+        let mut untrusted = false;
+        // Leave room for the envelope and its cursor.
+        let mut remaining = 60 * 1024;
+        for event in open.iter().take(limit) {
+            let (relation, row) = self.inbox_event_view(room, &reader, event, 0)?;
+            let bytes = row.to_string().len() + 1;
+            if bytes > remaining {
+                break;
+            }
+            remaining -= bytes;
+            untrusted |= !relation.is_instruction();
+            events.push(row);
+            shown.push(event.sequence);
+        }
+        let more = shown.len() < open.len() || unread_full;
+        let next_after = shown.last().copied().unwrap_or(after);
         if !shown.is_empty() {
             store.agent_lifecycle(Operation::MarkShown {
                 room: room.into(),
                 agent: actor.into(),
-                sequences: shown.iter().map(|event| event.sequence).collect(),
+                sequences: shown,
             })?;
         }
-        let reader = self.owned.agent_store.get_agent(actor)?;
-        let views: Vec<(SenderRelation, serde_json::Value)> = shown
-            .iter()
-            .map(|event| self.inbox_event_view(room, &reader, event, 0))
-            .collect::<Result<_, _>>()?;
-        let untrusted = views.iter().any(|(relation, _)| !relation.is_instruction());
-        let events: Vec<serde_json::Value> = views.into_iter().map(|(_, view)| view).collect();
-        let next_after = shown.last().map_or(after, |event| event.sequence);
         Ok(serde_json::json!({
             "untrusted": untrusted,
             "notice": READING_NOTICE,
@@ -293,8 +302,10 @@ impl KernelRuntimeState {
                 None => (None, None),
             },
         };
-        let view = serde_json::json!({
+        let mut view = serde_json::json!({
             "sequence": event.sequence,
+            "arrived_at_ms": event.arrived_at_ms,
+            "state": event.state,
             "kind": event.kind,
             "urgent": event.urgent,
             "needs_answer": self.decision_open(room, event),
@@ -316,6 +327,11 @@ impl KernelRuntimeState {
             "truncated": window.next_offset.is_some(),
             "attachments": attachments,
         });
+        if view.to_string().len() + 1 > 60 * 1024 {
+            let omitted = view["attachments"].as_array().map_or(0, Vec::len);
+            view["attachments"] = serde_json::json!([]);
+            view["attachments_omitted"] = serde_json::json!(omitted);
+        }
         Ok((relation, view))
     }
 

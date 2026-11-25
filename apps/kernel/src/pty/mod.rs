@@ -12,4 +12,4 @@ pub(crate) use handover::OutgoingPty;
 pub use handover::PtyHandover;
 pub(crate) use handover::ReaderGate;
 pub use manager::{PtyAgent, PtyManager, PtyOutputChunk, PtyProcessState, PtySpawnRequest};
-pub(crate) use manager::{PtyInputWriter, PtyOutputSignal};
+pub(crate) use manager::{PtyInputWriter, PtyOutputSignal, PtyShutdownReaps};

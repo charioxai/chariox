@@ -11,6 +11,7 @@ import {dirtyTiles, nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 export {dirtyTiles} from './kernel-browser-tiles.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
+import { areaBitrate } from './kernel-browser-motion.mjs';
 import { cpuContention } from './kernel-browser-contention.mjs';
 import { discardPacket } from './kernel-browser-native-worker.mjs';
 
@@ -57,9 +58,11 @@ export async function closeDisplayChild(child, graceMs = 500) {
 }
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set();this.nativeSession=randomUUID(); }
-  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = []) {
+  // R1 (agreed with webperf-r19 11-22): options.crop {x,y,width,height} in device pixels: an encoded image (a region of a
+  // display-less browser's Tab screencast) is cropped in the child right after decoding; the raw frame shape is unchanged.
+  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = [], {crop} = {}) {
     if(png?.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(png,bitrate,reset,false);
-    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions});
+    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions,...(crop?{crop}:{})});
   }
   async encodeStripes(raw,bitrate,reset=false,codec='avc1.420033'){
     if(raw.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(raw,bitrate,reset,true);
@@ -106,7 +109,14 @@ export class PortableEncoder {
       this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
     }
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
+  // Row 401 F2: start the helper ahead of the first frame. Its cold start (process, imports, first decode and crop) cost ~96 ms
+  // of a region's first key frame after every (re)subscribe; a frame sent meanwhile waits for it rather than being refused busy.
+  warm() {
+    if(this.child||this.failure)return Promise.resolve();
+    return this.warming??=this.exchange({operation:'warm'}).then(()=>{},()=>{}).finally(()=>{this.warming=null;});
+  }
   async exchange(request) {
+    if(this.warming&&request.operation!=='warm')await this.warming;
     if(request.raw)request={...request,protected_regions:request.raw[displayMaskRegions]??[]};
     if (this.failure) throw this.failure;
     if (!this.child) {
@@ -146,6 +156,8 @@ export class PortableEncoder {
               this.packets.add(reply.packet.name);
             }
             this.pending.resolve({stripes:reply.stripes,...(reply.packet?{packet:reply.packet}:{})});
+          }else if(this.pending?.warm){
+            this.pending.resolve(reply.warm===true);
           }else if(this.pending?.hash){
             if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>2560||reply.width*reply.height>2560*1600)return fail();
             this.pending.resolve(reply);
@@ -163,7 +175,7 @@ export class PortableEncoder {
     try {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
-        this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
+        this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint',warm:request.operation==='warm', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
         if(request.raw?.[displayNativeMaskSource]){
           // MP-08/MP-10/MP-11: lease held by MotionEncoder until the native
           // helper finishes. No unmasked bytes enter a codec or packet file.
@@ -243,6 +255,8 @@ export class DisplayStream {
     this.encoder.timing = timing;
   }
   canPatchNative(sample) {
+    // Row 341 (A): page-density patches never land on a viewer-density canvas; the next video frame restores it.
+    if((this.previousDensity??this.device_scale_factor)!==this.device_scale_factor)return false;
     if(!this.previous||this.repair)return false;
     const raw=sample.raw;
     const committed=this.exact?(this.compositorCommittedSerial??this.compositorSerial):this.compositorSerial;
@@ -263,6 +277,7 @@ export class DisplayStream {
   // The motion encoder skips candidates before their credit; a refused plan
   // holds lossless frames until exactness returns (see shiftHold).
   shiftCandidate(sample) {
+    if((this.previousDensity??this.device_scale_factor)!==this.device_scale_factor)return false;
     const raw=sample?.raw;
     if(!this.previous||this.repair||!this.exact||this.shiftHold||!raw?.nativeExact||raw[displayMaskRegions]?.length||this.compositorMasks!=='[]'||!(sample.serial>this.compositorSerial))return false;
     // A protection refresh readback past an undelivered change gets a static
@@ -325,7 +340,9 @@ export class DisplayStream {
     let at = timestamp();
     this.adoptLease(afterSequence);
     const current = source.motion || source.native_tiles || source.native_exact ? {width:source.width,height:source.height,signature:source.data_base64,pixels:null}
-      : source.pixels ?? await this.pixels.run('decode',{data:source.data_base64,scale:this.device_scale_factor});
+      : source.pixels ?? await this.pixels.run('decode',{data:source.data_base64,scale:source.viewer_density??this.device_scale_factor});
+    // Row 341 (A): a still at the viewer's density (above the page's) ships as one PNG at that density.
+    const density=source.viewer_density??this.device_scale_factor;
     this.timing('png_decode', at); at = timestamp();
     // Already-admitted 419 credits may lag the delivered sequence. Eight
     // frames is the hard recovery window; clients still validate every base.
@@ -333,6 +350,9 @@ export class DisplayStream {
     // MP-11: tile-only native work belongs to an existing compositor base.
     // Its serial is a scheduling hint and can never become a full PNG.
     if(source.native_repair&&(!bound||!this.previous)){this.invalidate(true,'repair_unbound');return null;}
+    // Row 341 (A): page-density repair tiles never land on a canvas at another density (a delivered viewer-density still).
+    // An independent frame restores the page density first.
+    if(source.native_repair&&(this.previousDensity??this.device_scale_factor)!==this.device_scale_factor){this.invalidate(true,'repair_density');return null;}
     if (source.native_tiles && !bound) throw Error('MD-DISPLAY: native patch base lost');
     const wasExact = this.exact;
     if (!bound) {
@@ -352,7 +372,7 @@ export class DisplayStream {
     const clip = source.dirty_clip;
     const region = clip && { x:clip.x*this.device_scale_factor, y:clip.y*this.device_scale_factor,
       width:clip.width*this.device_scale_factor, height:clip.height*this.device_scale_factor };
-    const tiles = this.exact && this.previous?.pixels && !source.motion && !source.native_tiles ? await this.pixels.run('tiles',{previous:this.previous,current,region}) : [];
+    const tiles = this.exact && this.previous?.pixels && !source.motion && !source.native_tiles && (this.previousDensity??this.device_scale_factor)===density ? await this.pixels.run('tiles',{previous:this.previous,current,region}) : [];
     this.timing('compare_tiles', at); at = timestamp();
     const png = () => typeof source.data_base64 === 'function' ? source.data_base64() : source.data_base64;
     const full = () => ({ kind: 'png', data_base64: png() });
@@ -366,9 +386,11 @@ export class DisplayStream {
     let payload, repair = null, bootstrap = false, offer = null;
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles,
       ...(source.moves?{moves:source.moves}:{}),...(source.native_packet?{native_packet:source.native_packet}:{})};
-    else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback) && !source.motion) {
+    else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback || density!==(this.previousDensity??this.device_scale_factor)) && !source.motion) {
       const exact = source.native_repair?null:full();
-      if (exact&&JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
+      // Row 341 (A): a frame that changes the canvas density ships whole: tiles cannot change the canvas size.
+      if (exact&&(density!==this.device_scale_factor||density!==(this.previousDensity??this.device_scale_factor))) payload = exact;
+      else if (exact&&JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
       else {
         // A verified capture may supersede the immutable RGB snapshot while
         // repair batches are still queued. Never mark its older tiles exact.
@@ -387,7 +409,7 @@ export class DisplayStream {
     else if (this.codec === 'png'||source.force_lossless) payload = full();
     else {
       codec.used = true;
-      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[]);
+      const encoded = source.encoded ?? await this.encoder.encode(png(), this.whole_page ? areaBitrate(this.bitrate, current.width, current.height) : this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[],source.crop?{crop:source.crop}:{});
       offer=encoded.lease??null;
       if(encoded.dropped)payload=full();
       else if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}
@@ -403,7 +425,7 @@ export class DisplayStream {
     const envelope = payload => ({ ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
       width: source.motion ? (this.css_width??1280)*this.device_scale_factor : current.width, height: source.motion ? (this.css_height??800)*this.device_scale_factor : current.height, css_width: this.css_width??1280, css_height: this.css_height??800,
-      device_scale_factor: this.device_scale_factor, colour: 'srgb' });
+      device_scale_factor: source.motion ? this.device_scale_factor : density, colour: 'srgb' });
     let packet = envelope(payload);
     if (payload.kind === 'png' && egressBytes(packet,this.relay_binary) > egressLimit) {
       // Existing repair certificates belong to the replaced video canvas,
@@ -466,7 +488,7 @@ export class DisplayStream {
       this.shiftRate(bytes,pixels);
       if(pixels>=4096)this.shiftBytesPerPixel=(this.shiftBytesPerPixel??(this.relay_binary ? .225 : .3))*.8+bytes/pixels*.2;
     }
-    this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
+    this.document_id = documentId; this.previous = current; this.previousDensity = density; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
     // A small exact patch can acknowledge input over a lossy video base. It
     // certifies only its damaged pixels; idle native verification still repairs
     // the untouched raster before the whole frame becomes exact.

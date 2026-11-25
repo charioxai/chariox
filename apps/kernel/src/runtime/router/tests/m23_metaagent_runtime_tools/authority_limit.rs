@@ -345,7 +345,7 @@ async fn folders_by_config() {
 }
 
 #[test]
-fn a_deadline_is_never_later_than_the_parents_and_follows_it_down() {
+fn a_limit_bounds_only_the_agent_that_carries_it() {
     run_large_stack_async_test("authority-deadline", deadline);
 }
 
@@ -363,21 +363,189 @@ async fn deadline() {
         )
     };
     set("a", 10 * 60_000).await.unwrap();
+    // TL4: the parent's limit caps no child. A child may be given a later limit, or none.
     let later = room_command(&world, "a", "agent deadline b 2h").await;
-    assert!(
-        !later.ok && error_text(&later).contains("parent"),
-        "{later:?}"
-    );
+    assert!(later.ok, "{later:?}");
     let sooner = room_command(&world, "a", "agent deadline b 5m").await;
     assert!(sooner.ok, "{sooner:?}");
-    // The user shortens the parent: the child and the grandchild end with it.
+    // Shortening the parent moves nothing below it.
+    let before = room_command(&world, "a", "agent deadline get b").await;
     set("a", 60_000).await.unwrap();
-    for agent in ["b", "d"] {
-        let got = room_command(&world, "a", &format!("agent deadline get {agent}")).await;
-        let deadline_ms = got.payload["response"]["deadline"]["deadline_ms"]
-            .as_u64()
-            .unwrap_or(u64::MAX);
-        assert!(deadline_ms <= now + 60_000, "{agent}: {deadline_ms}");
+    let after = room_command(&world, "a", "agent deadline get b").await;
+    assert_eq!(
+        before.payload["response"]["deadline"], after.payload["response"]["deadline"],
+        "the child keeps its own limit"
+    );
+    let grandchild = room_command(&world, "a", "agent deadline get d").await;
+    assert!(
+        grandchild.payload["response"]["deadline"].is_null(),
+        "a limit set above a child is not copied onto it: {grandchild:?}"
+    );
+    let spawned = room_command(&world, "a", "agent spawn kid --provider dev-stub").await;
+    assert!(spawned.ok, "{spawned:?}");
+    let kid = room_command(&world, "a", "agent deadline get kid").await;
+    assert!(
+        kid.payload["response"]["deadline"].is_null(),
+        "a new child under a limited parent starts with no limit: {kid:?}"
+    );
+}
+
+#[test]
+fn a_finished_child_gets_a_new_deadline_from_its_parent_and_runs_again() {
+    run_large_stack_async_test("authority-finished-deadline", finished_deadline);
+}
+
+/// Ends `agent`'s deadline the way the scheduler does, so the agent is finished.
+async fn finish(world: &World, agent: &str) {
+    let store = world.app.lock().await.durable_state_store().clone();
+    let deadline = store
+        .agent_deadline(&world.room, &world.ids[agent])
+        .unwrap()
+        .unwrap()
+        .deadline_ms;
+    for stopped in [false, true] {
+        store
+            .agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::ReachDeadline {
+                    room: world.room.clone(),
+                    agent: world.ids[agent].clone(),
+                    now: deadline,
+                    stopped,
+                },
+            )
+            .unwrap();
+    }
+}
+
+async fn runs(world: &World, agent: &str) -> bool {
+    world
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .ensure_agent_before_deadline(&world.room, &world.ids[agent])
+        .is_ok()
+}
+
+#[test]
+fn editing_a_middle_agent_gives_the_agent_below_no_limit_from_an_ended_ancestor() {
+    run_large_stack_async_test("authority-middle-agent-edits", middle_agent_edits);
+}
+
+/// a -> b -> d: a's limit ends only a. Editing b afterwards writes no limit onto d.
+async fn middle_agent_edits() {
+    let world = world("authority-middle-agent-edits").await;
+    let now = crate::session::unix_epoch_ms();
+    let set = |agent: &str, deadline_ms: Option<u64>| {
+        world.router.runtime_state.set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: world.room.clone(),
+                agent_id: world.ids[agent].clone(),
+                deadline_ms,
+            },
+        )
+    };
+    let limit_of_d = || async {
+        world
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_deadline(&world.room, &world.ids["d"])
+            .unwrap()
+    };
+    // a's limit passes for real and ends a, the agent that carries it.
+    set("a", Some(now + 300)).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    finish(&world, "a").await;
+    assert!(!runs(&world, "a").await, "a's limit ended a");
+    assert!(runs(&world, "b").await, "a's limit does not end b");
+    assert!(runs(&world, "d").await, "a's limit does not end d");
+
+    // Extending b gives d nothing: a limit bounds only the agent that carries it.
+    set("b", Some(now + 8 * 60_000)).await.unwrap();
+    assert!(runs(&world, "d").await, "extending b ended d");
+    assert!(
+        limit_of_d().await.is_none(),
+        "extending b wrote a limit onto d"
+    );
+    set("b", None).await.unwrap();
+    assert!(runs(&world, "d").await, "clearing b ended d");
+    assert!(
+        limit_of_d().await.is_none(),
+        "clearing b wrote a limit onto d"
+    );
+}
+
+async fn finished_deadline() {
+    let world = world("authority-finished-deadline").await;
+    let now = crate::session::unix_epoch_ms();
+    let set = |agent: &str, after_ms: u64| {
+        world.router.runtime_state.set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: world.room.clone(),
+                agent_id: world.ids[agent].clone(),
+                deadline_ms: Some(now + after_ms),
+            },
+        )
+    };
+    set("a", 10 * 60_000).await.unwrap();
+    set("b", 5 * 60_000).await.unwrap();
+    finish(&world, "b").await;
+    assert!(
+        !runs(&world, "b").await,
+        "the reached deadline ends b's run"
+    );
+
+    // The parent's limit does not bound b: the parent may give a later time, or none.
+    let later = room_command(&world, "a", "agent deadline b 2h").await;
+    assert!(later.ok, "{later:?}");
+    assert!(runs(&world, "b").await, "the new limit revived b");
+    finish(&world, "b").await;
+    assert!(!runs(&world, "b").await);
+    // D2: an agent cannot change its own limit, and the refusal says who can.
+    let refused = room_command(&world, "b", "agent deadline b 1h").await;
+    assert!(!refused.ok, "{refused:?}");
+    assert!(
+        error_text(&refused).contains("owner"),
+        "the refusal names who can change it: {refused:?}"
+    );
+    assert!(!runs(&world, "b").await, "a refused edit changes nothing");
+
+    // D1: the parent gives the finished child a new deadline, and b runs again.
+    let extended = room_command(&world, "a", "agent deadline b 8m").await;
+    assert!(extended.ok, "{extended:?}");
+    assert!(runs(&world, "b").await);
+    let got = room_command(&world, "a", "agent deadline get b").await;
+    assert_eq!(
+        got.payload["response"]["deadline"]["state"], "armed",
+        "{got:?}"
+    );
+
+    // D1: the parent's own deadline ended too: the owner clears or extends the child.
+    finish(&world, "b").await;
+    set("a", 60_000).await.unwrap();
+    finish(&world, "a").await;
+    for _ in 0..2 {
+        assert!(!runs(&world, "b").await);
+        let reopened = world
+            .router
+            .runtime_state
+            .set_agent_deadline(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                crate::local::SetAgentDeadlineRequest {
+                    session_id: world.room.clone(),
+                    agent_id: world.ids["b"].clone(),
+                    deadline_ms: None,
+                },
+            )
+            .await;
+        assert!(reopened.is_ok(), "{reopened:?}");
+        assert!(runs(&world, "b").await);
+        set("b", 60_000).await.unwrap();
+        finish(&world, "b").await;
     }
 }
 

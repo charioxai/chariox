@@ -322,3 +322,24 @@ test("detached copy consent uses the same approval panel without a session mutat
   assert.equal(controller.view().count, 0)
   controller.dispose()
 })
+
+test("Accept on an App host offer sends the dedicated accept, never a reply; Decline stays a reply", async () => {
+  const accepted: string[][] = []
+  const offer: RuntimeInteraction = { ...approvalFixture, id: "app_host_op1", kernel_operation_id: "host_action:op1", choices: [{ id: "accept_host_action", label: "Accept", reply: "accept_host_action" }, { id: "decline", label: "Decline", reply: "deny" }] }
+  let current = session("session-1", [offer])
+  const replies: unknown[][] = []
+  const controller = createKernelApprovalController({
+    respondHandoff: async () => { throw new Error("unexpected hand-off") }, notify() {},
+    getSession: () => current, connected: () => true, onView() {}, onOpen() {}, onClose() {}, scroll() {},
+    respond: async (...args) => { replies.push(args); return current },
+    acceptHostOffer: async (sessionId, operationId) => { accepted.push([sessionId, operationId]) },
+    applySession: (value) => { current = value }, showPasskeyPrompt: () => true,
+  })
+  controller.sync()
+  controller.handleKey(key("f8"))
+  await controller.choose("app_host_op1", "accept_host_action")
+  assert.deepEqual(accepted, [["session-1", "op1"]])
+  assert.deepEqual(replies, [], "Accept is not a reply")
+  await controller.choose("app_host_op1", "decline")
+  assert.deepEqual(replies, [["session-1", "app_host_op1", "decline"]])
+})
