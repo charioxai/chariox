@@ -1,4 +1,4 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: a parent's deadline reaches a leased child's worker.
+//! MP-08 / MP-09 / MP-10 / MP-11: a leased agent's own deadline reaches its worker.
 use super::*;
 use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
 
@@ -128,7 +128,7 @@ async fn serve_fake_worker(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
+async fn a_leased_agents_deadline_cancels_its_running_turn_on_its_worker() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(format!("ws://{}", listener.local_addr().unwrap()));
@@ -239,7 +239,7 @@ async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
             session.owner_user_id(),
             crate::local::SetAgentDeadlineRequest {
                 session_id: session.id().into(),
-                agent_id: parent.id().into(),
+                agent_id: child.id().into(),
                 deadline_ms: Some(deadline_ms),
             },
         )
@@ -250,7 +250,7 @@ async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
 
     let request = tokio::time::timeout(std::time::Duration::from_secs(5), cancelled_rx.recv())
         .await
-        .expect("the parent's deadline must send the leased child's cancellation to its worker")
+        .expect("the deadline must send the leased agent's cancellation to its worker")
         .unwrap();
     assert!(matches!(
         request,
@@ -284,14 +284,12 @@ async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
         ExecutionState::Cancelled,
         "the leased child is not reported cancelled while its worker still runs"
     );
-    for agent in [parent.id(), child.id()] {
-        assert!(store
-            .agent_deadline(session.id(), agent)
-            .unwrap()
-            .unwrap()
-            .stopped_at_ms
-            .is_none());
-    }
+    assert!(store
+        .agent_deadline(session.id(), child.id())
+        .unwrap()
+        .unwrap()
+        .stopped_at_ms
+        .is_none());
 
     // The worker confirms the leased turn stopped.
     runtime
@@ -311,13 +309,11 @@ async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
             .state,
         ExecutionState::Cancelled
     );
-    for agent in [parent.id(), child.id()] {
-        assert!(store
-            .agent_deadline(session.id(), agent)
-            .unwrap()
-            .unwrap()
-            .stopped_at_ms
-            .is_some());
-    }
+    assert!(store
+        .agent_deadline(session.id(), child.id())
+        .unwrap()
+        .unwrap()
+        .stopped_at_ms
+        .is_some());
     server.abort();
 }

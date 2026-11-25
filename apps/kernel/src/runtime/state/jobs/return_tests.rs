@@ -56,6 +56,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
         estimated_minutes: None,
         memory_mib: None,
         remote: RemoteStage::Idle,
+        cancel_cause: None,
     }
 }
 

@@ -323,7 +323,6 @@ async fn a_child_stopped_by_its_deadline_says_so() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     store
@@ -429,7 +428,6 @@ async fn provider_failure_reason_deadline_overrides_the_last_error() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(now),
-            inherited: Vec::new(),
         })
         .unwrap();
     runtime.tick_agent_deadlines(now).await.unwrap();
@@ -747,7 +745,6 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -762,9 +759,9 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
     assert!(events[0].urgent);
 }
 
-// A4: the parent's deadline ends the sub-agents below it.
+// TL4: a parent's limit ends the parent only; the sub-agent below it keeps working.
 #[tokio::test]
-async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
+async fn a_parents_deadline_leaves_the_working_sub_agent_running() {
     let team = team_with("child-finished-parent-deadline", None, false).await;
     team.runtime
         .owned
@@ -773,7 +770,6 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             room: team.room.clone(),
             agent: team.parent.clone(),
             deadline: Some(crate::session::unix_epoch_ms() + 30),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -781,7 +777,7 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
         .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
-    assert_eq!(
+    assert_ne!(
         team.runtime
             .owned
             .provider_store
@@ -789,7 +785,7 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             .unwrap()
             .state(),
         crate::provider::ProviderRunState::Ended,
-        "the child's run ended with its parent's deadline"
+        "the child's run goes on after its parent's limit ended"
     );
     assert!(
         team.runtime
@@ -798,16 +794,26 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             .agent_tasks(Some(&team.room), Some(&team.child))
             .unwrap()
             .iter()
-            .all(|task| task.state
-                == crate::durable_state::agent_lifecycle::ExecutionState::Cancelled)
+            .any(|task| task.state
+                != crate::durable_state::agent_lifecycle::ExecutionState::Cancelled),
+        "the child's task was not cancelled"
+    );
+    assert!(
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_deadline(&team.room, &team.child)
+            .unwrap()
+            .is_none(),
+        "the child has no limit of its own"
     );
 }
 
-// The owner revives only the sub-agent a parent's deadline ended. The parent's finished cleanup
-// must not stop the work the revived sub-agent starts afterwards.
+// A parent's ended deadline stops only the parent: its sub-agent goes on, and work given to the
+// sub-agent afterwards is not stopped by the parent's later cleanup passes either.
 #[tokio::test]
-async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
-    let team = team_with("child-revived-after-parent-deadline", None, false).await;
+async fn a_sub_agents_new_work_survives_its_parents_ended_deadline() {
+    let team = team_with("child-new-work-after-parent-deadline", None, false).await;
     let runtime = &team.runtime;
     let store = &runtime.owned.durable_state_store;
     store
@@ -815,7 +821,6 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
             room: team.room.clone(),
             agent: team.parent.clone(),
             deadline: Some(crate::session::unix_epoch_ms() + 30),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -828,29 +833,17 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .unwrap()
         .unwrap();
     assert!(parent_receipt.stopped_at_ms.is_some(), "{parent_receipt:?}");
-    assert_eq!(
+    assert_ne!(
         runtime
             .owned
             .provider_store
             .get_run(&team.child_run)
             .unwrap()
             .state(),
-        crate::provider::ProviderRunState::Ended
+        crate::provider::ProviderRunState::Ended,
+        "the parent's deadline must not end its sub-agent"
     );
 
-    // Only the child is revived: its limit is cleared, the parent's stays ended.
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    runtime
-        .set_agent_deadline(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            crate::local::SetAgentDeadlineRequest {
-                session_id: team.room.clone(),
-                agent_id: team.child.clone(),
-                deadline_ms: None,
-            },
-        )
-        .await
-        .unwrap();
     let attachment = runtime
         .owned
         .attachment_store
@@ -858,7 +851,7 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .into_iter()
         .next()
         .expect("the room has an attachment");
-    // The revived child is given a prompt, queued in the prompt owner: a test runtime has no
+    // The sub-agent is given a prompt, queued in the prompt owner: a test runtime has no
     // provider adapter to launch a turn with.
     let session = runtime.owned.session_store.get_session(&team.room).unwrap();
     runtime
@@ -867,7 +860,7 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .submit_prepared_prompt(
             &session,
             crate::session::PromptQueueItem::new(
-                "revived-prompt",
+                "child-prompt",
                 &attachment,
                 &team.child,
                 "continue",
@@ -884,7 +877,7 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
             .state_parts(&session, &team.child);
         active.is_some() || !queued.is_empty()
     };
-    assert!(work(runtime), "the revived child has new work");
+    assert!(work(runtime), "the sub-agent has new work");
 
     // The scheduler's next tick sees the parent's ended deadline and the child's new work.
     runtime
@@ -893,7 +886,7 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .unwrap();
     assert!(
         work(runtime),
-        "the parent's old deadline stopped the revived child's new work"
+        "the parent's old deadline stopped the sub-agent's new work"
     );
 }
 

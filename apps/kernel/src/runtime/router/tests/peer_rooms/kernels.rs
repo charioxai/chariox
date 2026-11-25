@@ -122,7 +122,6 @@ fn a_peer_message_after_deadline_is_refused_before_it_enters_the_inbox() {
                     room: rooms.peer_room.clone(),
                     agent: rooms.peer.id().into(),
                     deadline: Some(deadline_ms),
-                    inherited: vec![],
                 })
                 .unwrap();
         }

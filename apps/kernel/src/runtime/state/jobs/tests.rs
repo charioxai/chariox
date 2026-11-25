@@ -13,6 +13,19 @@ pub(super) async fn fixture() -> Fixture {
 }
 
 pub(super) async fn fixture_with(config: crate::config::DaemonConfig) -> Fixture {
+    fixture_inner(config, false).await.0
+}
+
+/// A parent, as `fixture`, and a sub-agent of it with a task of its own in the same turn.
+async fn fixture_with_child() -> (Fixture, AgentTaskExecution) {
+    let (fixture, child) = fixture_inner(crate::config::DaemonConfig::for_tests(), true).await;
+    (fixture, child.expect("the child's task"))
+}
+
+async fn fixture_inner(
+    config: crate::config::DaemonConfig,
+    with_child: bool,
+) -> (Fixture, Option<AgentTaskExecution>) {
     let worktree = crate::test_support::TestWorktree::new("offload-job-entry");
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -54,6 +67,30 @@ pub(super) async fn fixture_with(config: crate::config::DaemonConfig) -> Fixture
     else {
         panic!("task required")
     };
+    let child_task = with_child.then(|| {
+        let child = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("child")
+                    .with_parent_agent_id(agent.id()),
+            )
+            .unwrap();
+        let ledger::Outcome::Task(task) = app
+            .durable_state_store()
+            .agent_lifecycle(ledger::Operation::Begin {
+                owner: session.owner_user_id().into(),
+                room: session.id().into(),
+                agent: child.id().into(),
+                prompt: "offload-child-turn".into(),
+                run: Some(run.id().into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap()
+        else {
+            panic!("child task required")
+        };
+        task
+    });
     run.mark_running();
     app.providers_mut().insert_run_for_test(run.clone());
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
@@ -64,7 +101,7 @@ pub(super) async fn fixture_with(config: crate::config::DaemonConfig) -> Fixture
     // As at startup, recovery reaches the job gateway through the router.
     let router = state.job_router.clone().unwrap();
     state.bind_job_recovery(&router);
-    (state, run, task, worktree)
+    ((state, run, task, worktree), child_task)
 }
 
 #[tokio::test]
@@ -206,7 +243,7 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         router,
         home: home.path().to_owned(),
     });
-    let record = Record { job_id: "job-remote-test".into(), wake_id: "wake-remote-test".into(), registration_id: "completion-wake-remote-test".into(), room_id: "home-room".into(), agent_id: "home-agent".into(), request: RunJobRequest { command: JobCommand::Argv(vec!["/bin/sh".into(), "-c".into(), "printf remote > source.txt; mkdir -p target; printf artifact > target/build.bin; printf '%s' \"$NAMED\"".into()]), cwd: None, env: vec!["NAMED".into()], needs: JobNeeds::default(), timeout_s: 30, wait_s: 0, outputs: vec!["target/*.bin".into()], machine: None, machine_only: false }, workspace: source.path().to_owned(), cwd: source.path().to_owned(), placement: JobPlacement::Remote, started_at_ms: crate::session::unix_epoch_ms(), running_at_ms: None, state: "uploading".into(), allocation_ref: None, capability_revision: None, machine_label: Some("offload-test".into()), held_kernel_id: None, address: Some("2001:db8::1".into()), result: None, exec_id: None, class_id: None, rate_per_minute: None, estimate_micros: None, deleted: false, remote_available: true, remote_refusal: None, estimated_minutes: None, memory_mib: None, remote: RemoteStage::Idle };
+    let record = Record { job_id: "job-remote-test".into(), wake_id: "wake-remote-test".into(), registration_id: "completion-wake-remote-test".into(), room_id: "home-room".into(), agent_id: "home-agent".into(), request: RunJobRequest { command: JobCommand::Argv(vec!["/bin/sh".into(), "-c".into(), "printf remote > source.txt; mkdir -p target; printf artifact > target/build.bin; printf '%s' \"$NAMED\"".into()]), cwd: None, env: vec!["NAMED".into()], needs: JobNeeds::default(), timeout_s: 30, wait_s: 0, outputs: vec!["target/*.bin".into()], machine: None, machine_only: false }, workspace: source.path().to_owned(), cwd: source.path().to_owned(), placement: JobPlacement::Remote, started_at_ms: crate::session::unix_epoch_ms(), running_at_ms: None, state: "uploading".into(), allocation_ref: None, capability_revision: None, machine_label: Some("offload-test".into()), held_kernel_id: None, address: Some("2001:db8::1".into()), result: None, exec_id: None, class_id: None, rate_per_minute: None, estimate_micros: None, deleted: false, remote_available: true, remote_refusal: None, estimated_minutes: None, memory_mib: None, remote: RemoteStage::Idle, cancel_cause: None };
     let base = crate::jobs::snapshot(source.path(), &record.request.outputs).unwrap();
     let upload = crate::jobs::snapshot(source.path(), &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
@@ -784,4 +821,196 @@ async fn job_admission_ignores_active_jobs_pipe_count() {
     }
     assert!(result["job_id"].as_str().is_some(), "{result}");
     assert_ne!(result["result"]["outcome"], "outside_end", "{result}");
+}
+
+// TL6: a job the agent's time limit cancelled says so, and an earlier cancel by the agent does not.
+#[tokio::test]
+async fn a_job_cancelled_by_its_agents_limit_says_so_in_its_status() {
+    let (state, run, task, _worktree) = fixture().await;
+    let start = || async {
+        state
+            .dispatch_job_tool(
+                Some(&run),
+                "chariox.jobs.run",
+                &serde_json::json!({"command":["/bin/sleep","30"],"wait_s":1}),
+                &task,
+            )
+            .await
+            .unwrap()["job_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (cancelled_by_agent, cancelled_by_limit) = (start().await, start().await);
+    state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.cancel",
+            &serde_json::json!({ "job_id": cancelled_by_agent }),
+            &task,
+        )
+        .await
+        .unwrap();
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::SetDeadline {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            deadline: Some(crate::session::unix_epoch_ms() + 300),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let _ = state
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await;
+    let status = |id: String| {
+        let (state, run, task) = (&state, &run, &task);
+        async move {
+            for _ in 0..50 {
+                let status = state
+                    .dispatch_job_tool(
+                        Some(run),
+                        "chariox.jobs.status",
+                        &serde_json::json!({ "job_id": id }),
+                        task,
+                    )
+                    .await
+                    .unwrap();
+                if status["result"].is_object() {
+                    return status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            panic!("job {id} never saved a result");
+        }
+    };
+    let by_limit = status(cancelled_by_limit).await;
+    assert_eq!(by_limit["result"]["outcome"], "cancelled", "{by_limit}");
+    assert_eq!(
+        by_limit["cancelled_by"]["reason"], "the agent's time limit ended",
+        "{by_limit}"
+    );
+    assert!(by_limit["cancelled_by"]["at_ms"].is_u64());
+    assert!(by_limit["cancelled_by"]["next_step"]
+        .as_str()
+        .unwrap()
+        .contains("agent deadline"));
+    let by_agent = status(cancelled_by_agent.clone()).await;
+    assert!(
+        by_agent.get("cancelled_by").is_none(),
+        "the agent's own cancel is not the limit's: {by_agent}"
+    );
+    // The cause was saved with the result: clearing the limit and a kernel restart (which
+    // empties what the driver kept in memory) change neither answer.
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::SetDeadline {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            deadline: None,
+        })
+        .unwrap();
+    state
+        .job_wake_driver
+        .as_ref()
+        .unwrap()
+        .cancel_causes
+        .lock()
+        .unwrap()
+        .clear();
+    let reread = |id: String| {
+        let (state, run, task) = (&state, &run, &task);
+        async move {
+            state
+                .dispatch_job_tool(
+                    Some(run),
+                    "chariox.jobs.status",
+                    &serde_json::json!({ "job_id": id }),
+                    task,
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let limit_id = by_limit["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        reread(limit_id).await["cancelled_by"]["reason"],
+        "the agent's time limit ended",
+        "a cleared limit keeps its cause"
+    );
+    assert!(
+        reread(cancelled_by_agent)
+            .await
+            .get("cancelled_by")
+            .is_none(),
+        "the agent's own cancel is still its own"
+    );
+    // A job id without a saved result names the likely reasons and the next step.
+    let missing = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.status",
+            &serde_json::json!({ "job_id": "job-nothing" }),
+            &task,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        missing.contains("no saved result") && missing.contains("chariox.jobs.list"),
+        "{missing}"
+    );
+}
+
+// TL6: a parent reads the status of a sub-agent's job, and nobody else reads another agent's.
+#[tokio::test]
+async fn a_parent_reads_a_sub_agents_job_and_a_sub_agent_does_not_read_its_parents() {
+    let ((state, run, parent_task, _worktree), child_task) = fixture_with_child().await;
+    let job = |task: &AgentTaskExecution| {
+        let (state, run) = (&state, &run);
+        let task = task.clone();
+        async move {
+            state
+                .dispatch_job_tool(
+                    Some(run),
+                    "chariox.jobs.run",
+                    &serde_json::json!({"command":["/bin/sh","-c","printf 'out-of-the-job\\n'"],"wait_s":5}),
+                    &task,
+                )
+                .await
+                .unwrap()["job_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let status = |task: &AgentTaskExecution, id: &str| {
+        let (state, run) = (&state, &run);
+        let (task, id) = (task.clone(), id.to_owned());
+        async move {
+            state
+                .dispatch_job_tool(
+                    Some(run),
+                    "chariox.jobs.status",
+                    &serde_json::json!({ "job_id": id }),
+                    &task,
+                )
+                .await
+        }
+    };
+    let child_job = job(&child_task).await;
+    let seen = status(&parent_task, &child_job).await.unwrap();
+    assert_eq!(seen["agent"]["alias"], "child", "{seen}");
+    assert!(
+        seen["result"]["output_tail"]
+            .as_str()
+            .unwrap()
+            .contains("out-of-the-job"),
+        "{seen}"
+    );
+    let parent_job = job(&parent_task).await;
+    let refused = status(&child_task, &parent_job).await.unwrap_err();
+    assert!(refused.to_string().contains("no such job"), "{refused}");
 }

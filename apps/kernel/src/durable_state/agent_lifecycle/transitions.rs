@@ -82,8 +82,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             room,
             agent,
             deadline,
-            inherited,
-        } => super::deadlines::set(tx, room, agent, deadline, inherited),
+        } => super::deadlines::set(tx, room, agent, deadline),
         Operation::BeatDeadlineClock { now } => {
             super::deadline_clock::beat(tx, now)?;
             Ok(Outcome::Saved)

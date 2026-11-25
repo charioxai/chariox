@@ -131,6 +131,31 @@ impl KernelRuntimeState {
         Ok(Some(record))
     }
 
+    /// A reached time limit is about to cancel `agent`'s unfinished jobs: saves the limit as the
+    /// cause of each that was not already cancelled for another reason.
+    pub(crate) fn mark_jobs_cancelled_by_limit(&self, room: &str, agent: &str, deadline_ms: u64) {
+        let Some(driver) = self.job_wake_driver.as_ref() else {
+            return;
+        };
+        for job in self
+            .session_jobs(room)
+            .into_iter()
+            .filter(|job| job.agent_id == agent)
+        {
+            if driver
+                .read(&job.job_id)
+                .is_ok_and(|record| record.result.is_none())
+            {
+                driver
+                    .cancel_causes
+                    .lock()
+                    .expect("job cancel causes")
+                    .entry(job.job_id)
+                    .or_insert(CancelCause::Limit { deadline_ms });
+            }
+        }
+    }
+
     pub(crate) fn cancel_session_job(
         &self,
         room: &str,
