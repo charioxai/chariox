@@ -696,4 +696,6 @@ pub use workspace::*;
 /// Local 1015 (relay peer unchanged): a default visible-page `display_subscribe` may ask `resize_rebind` of a kernel that
 /// advertises `display_resize_rebind_v1`; the kernel keeps that subscription across a resize of the Browser window (same
 /// Tab re-admitted on the new window) and its frames carry `binding_sequence`, the new window epoch.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
+/// 1016 (relay peer 453): a Room terminal list result carries an optional `unavailable` list naming the machines it could
+/// not ask; an empty list stays off the wire.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
