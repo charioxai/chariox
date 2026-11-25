@@ -32,6 +32,7 @@ async function bundleInputs(root, target) {
   await mkdir(join(source, 'deploy/release-bundle'), { recursive: true });
   await copyFile(join(repository, 'deploy/release-bundle/install.sh'), join(source, 'deploy/release-bundle/install.sh'));
   await put(join(source, 'LICENSE'), 'license');
+  await put(join(source, 'apps/kernel/src/local/api/types.rs'), 'pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;\n');
   const sliceBuildContext = join(root, 'slice-build-context');
   await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/runtime-source-roots.txt'), 'apps/kernel\n');
   await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
@@ -54,12 +55,19 @@ async function fixture(context, { target = 'linux-x64', runtimeCommit = commit }
   return { root, options, releaseKeyPath: inputs.releaseKeyPath, releasePublic: inputs.releasePublic };
 }
 
+test('a bundle whose source states no kernel protocol is refused', async (context) => {
+  const { options } = await fixture(context);
+  await rm(join(options.sourceRoot, 'apps/kernel/src/local/api/types.rs'));
+  await assert.rejects(assemble(options), /apps\/kernel\/src\/local\/api\/types\.rs/);
+});
+
 test('a Linux bundle is assembled, signed and verified, and any change is refused', async (context) => {
   const { options, releaseKeyPath, releasePublic } = await fixture(context);
   const assembled = await assemble(options);
   const manifest = JSON.parse(await readFile(join(options.output, 'manifest.json'), 'utf8'));
   assert.equal(manifest.schema, 'chariox.release-bundle.v1');
   assert.deepEqual([manifest.version, manifest.platform, manifest.sourceCommit], ['0.2.0', 'linux-x64', commit]);
+  assert.equal(manifest.kernelProtocol, 1013, 'the signed manifest states the kernel protocol the bundle installs');
   assert.equal(manifest.macosSigning, null);
   assert.equal(manifest.runtime, undefined);
   assert.ok(manifest.files.some(file => file.path === 'bin/chariox-app-wasm-worker'));
