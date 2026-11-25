@@ -39,9 +39,10 @@ fn lost_report(f: &Fixture) -> (String, String) {
         .unwrap();
     let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
     assert_eq!(events.len(), 1, "the waiting agent hears of the loss once");
-    assert_eq!(events[0].payload["process_lost"], true, "{:?}", events[0]);
+    let answer = &events[0].payload["public_answer"];
+    assert_eq!(answer["process_lost"], true, "{:?}", events[0]);
     (
-        events[0].payload["output_tail"]
+        answer["output_tail"]
             .as_str()
             .unwrap()
             .to_owned(),
