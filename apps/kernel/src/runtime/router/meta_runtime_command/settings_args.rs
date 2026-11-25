@@ -72,7 +72,17 @@ pub(super) fn meta_agent_settings_request(
         }
         index += 2;
     }
-    let target = settings_target(actor, agents, reference)?;
+    let target = match reference {
+        None => actor.clone(),
+        Some(reference) => crate::runtime::room_tool_admission::resolve_agent(
+            agents,
+            actor.session_id(),
+            reference,
+        )?
+        .clone(),
+    };
+    // Row 405 (PA11): who may change the target's settings is decided by room admission
+    // (self, an agent above it, or a same-owner peer within its own authority).
     let profile = provider.is_some()
         || account_profile.is_some()
         || model.is_some()
@@ -140,6 +150,10 @@ pub(super) fn settings_target<'a>(
         actor.session_id(),
         reference.unwrap_or_else(|| actor.id()),
     )?;
-    crate::runtime::room_tool_admission::self_or_below(actor, target, agents)?;
+    // Row 405 (agent parity): the owner's agents read one another's settings; an agent of
+    // another account (a guest's) reads only itself and the agents below it.
+    if actor.owner_user_id() != target.owner_user_id() {
+        crate::runtime::room_tool_admission::self_or_below(actor, target, agents)?;
+    }
     Ok(target)
 }

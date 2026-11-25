@@ -72,20 +72,9 @@ impl KernelRuntimeState {
         actor_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if matches!(request, LocalDaemonRequest::HideAgent(_)) {
-            return Err(denied("only the owner can hide or unhide agents"));
-        }
-        if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
-            return Err(denied("only the user can change an agent's parent"));
-        }
         let rooms_made_by_agents = self.room_agent_tools_enabled();
         if let (LocalDaemonRequest::DeleteSession(r), true) = (request, rooms_made_by_agents) {
             return self.authorize_created_room_delete(actor_id, &r.session_ref);
-        }
-        if super::sudo::teardown_request(request) {
-            return Err(denied(
-                "room agents cannot tear down sessions, projects or kernels",
-            ));
         }
         if !rooms_made_by_agents {
             return Ok(());
@@ -149,6 +138,18 @@ impl KernelRuntimeState {
                 super::peer_rooms::PeerControl::Cancel,
             );
         }
+        // PA10: whoever may stop an agent's turn in another room of the owner may also take back
+        // or re-arm its usage-limit resume there (`agent resume [cancel] --room`).
+        if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
+            if r.session_id != actor.session_id() && only_usage_limit(r) {
+                let target = deadline_target(&r.session_id, &r.agent_id)?;
+                return self.authorize_peer_control(
+                    &actor,
+                    &target,
+                    super::peer_rooms::PeerControl::Cancel,
+                );
+            }
+        }
         // Who may change a deadline in another room may read it there.
         if let LocalDaemonRequest::GetAgentDeadline(r) = request {
             if r.session_id != actor.session_id() {
@@ -160,8 +161,17 @@ impl KernelRuntimeState {
                 );
             }
         }
-        let cross_room_delete = matches!(request, LocalDaemonRequest::DestroyAgent(r) if r.session_id != actor.session_id());
-        if !cross_room_delete
+        // Row 405: a request aimed at one of the owner's agents in another room is judged by
+        // the peer check below, like one in the caller's room.
+        let cross_room_target = match request {
+            LocalDaemonRequest::DestroyAgent(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::AliasAgent(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::UpdateAgentConfig(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::UpdateAgentProfile(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::UpdateAgentSubstitutes(r) => r.session_id != actor.session_id(),
+            _ => false,
+        };
+        if !cross_room_target
             && rooms_named(request)
                 .iter()
                 .any(|room| room != actor.session_id())
@@ -172,8 +182,9 @@ impl KernelRuntimeState {
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::HideAgent(_) => {
-                return Err(denied("only the owner can hide or unhide agents"));
+            // Organising the owner's agents is an ordinary owner action (row 405).
+            LocalDaemonRequest::HideAgent(_) | LocalDaemonRequest::SetAgentParent(_) => {
+                return Ok(());
             }
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),
@@ -182,14 +193,13 @@ impl KernelRuntimeState {
                 (&r.session_id, &r.agent_id, false)
             }
             LocalDaemonRequest::UpdateAgentSubstitutes(r) => (&r.session_id, &r.agent_id, false),
+            // Ending, archiving and deleting are the owner's ordinary actions (row 405).
             LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
             | LocalDaemonRequest::ArchiveProject(_)
             | LocalDaemonRequest::DeleteProject(_)
             | LocalDaemonRequest::DeleteKernel(_) => {
-                return Err(denied(
-                    "room agents cannot tear down sessions, projects or kernels",
-                ));
+                return Ok(());
             }
             LocalDaemonRequest::ForkAgent(_) => {
                 return Err(denied(
@@ -252,8 +262,7 @@ impl KernelRuntimeState {
         if room != actor.session_id() {
             let source = self.owned.session_store.get_session(actor.session_id())?;
             let destination = self.owned.session_store.get_session(room)?;
-            if !deleting
-                || self.drives_as_room_guest(&source, &actor)
+            if self.drives_as_room_guest(&source, &actor)
                 || !self.same_owner(source.owner_user_id(), destination.owner_user_id())
             {
                 return Err(denied("target is outside the caller room"));
@@ -268,13 +277,28 @@ impl KernelRuntimeState {
                 LocalDaemonRequest::UpdateAgentConfig(r) => r.usage_limit.is_none(),
                 _ => false,
             };
-        if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
-            // The owner's delete is open to the owner's agents in their own Room, whoever created
-            // the target: what the owner can delete, an agent of the owner can delete.
-            if !(deleting && room == actor.session_id()) {
-                return Err(denied("only the agents above an agent can control it"));
+        // Row 405: an agent above it, or another of the owner's agents the peer check admits
+        // (its permission comparison keeps the owner's per-agent settings).
+        if !own_settings && target.id() == actor.id() {
+            return Err(denied("only the agents above an agent can control it"));
+        }
+        // Deleting an agent that is not below the caller: its own Room and owner, never the
+        // caller itself or an agent above it (deleting that would delete the caller).
+        if deleting && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
+            if target.session_id() == actor.session_id() {
+                self.authorize_delete_scope(&actor, &target)?;
+            } else if self.owned.agent_store.is_ancestor(target.id(), &actor) {
+                // Another Room of the same owner (row 405 PA12): never an agent above the caller.
+                return Err(denied(
+                    "that agent is above you; deleting it would delete you",
+                ));
             }
-            self.authorize_delete_scope(&actor, &target)?;
+        }
+        if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
+            self.authorize_peer_control(&actor, &target, super::peer_rooms::PeerControl::Cancel)?;
+            if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
+                self.keep_peer_config_within_own(&actor, &target, r)?;
+            }
         }
         if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
             self.keep_configured_folders_inside_parent(&target, r)?;
@@ -465,6 +489,41 @@ impl KernelRuntimeState {
     }
 
     /// A5: moving a sub-agent keeps it inside the folders of its own parent.
+    /// A peer sets another agent's mode and permission only within its own; clearing them
+    /// returns the agent to the Room's default, judged the same way.
+    fn keep_peer_config_within_own(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+        request: &crate::local::UpdateAgentConfigRequest,
+    ) -> Result<(), DaemonError> {
+        let actor_room = self.owned.session_store.get_session(actor.session_id())?;
+        let mine = self.owned.agent_store.effective_execution_config(
+            &actor_room,
+            actor,
+            &self.owned.session_store,
+        );
+        let target_room = self.owned.session_store.get_session(target.session_id())?;
+        let room_default = crate::session::effective_agent_execution_config(&target_room, None);
+        let level = request.permission_level.or(request
+            .clear_permission_level
+            .then_some(room_default.permission_level));
+        let mode = request
+            .execution_mode
+            .or(request.clear_execution_mode.then_some(room_default.mode));
+        if level.is_some_and(|level| !mine.permission_level.permits(level))
+            || mode.is_some_and(|mode| !mine.mode.permits(mode))
+        {
+            return Err(denied(format!(
+                "you run {:?} in {} mode, so you cannot set {} above that; ask the person or an agent above it",
+                mine.permission_level,
+                mine.mode,
+                target.alias().unwrap_or(target.agent_ref()),
+            )));
+        }
+        Ok(())
+    }
+
     fn keep_configured_folders_inside_parent(
         &self,
         target: &crate::agent::AgentInstance,
@@ -510,3 +569,18 @@ impl KernelRuntimeState {
 #[cfg(test)]
 #[path = "room_agent_admission_tests.rs"]
 mod tests;
+
+/// A config change that only takes back or re-arms the usage-limit resume.
+fn only_usage_limit(r: &crate::local::UpdateAgentConfigRequest) -> bool {
+    r.usage_limit.is_some()
+        && r.execution_mode.is_none()
+        && !r.clear_execution_mode
+        && r.permission_level.is_none()
+        && !r.clear_permission_level
+        && r.max_context_tokens.is_none()
+        && !r.clear_max_context_tokens
+        && r.workspace_id.is_none()
+        && !r.clear_workspace_id
+        && r.worktree_id.is_none()
+        && !r.clear_worktree_id
+}
