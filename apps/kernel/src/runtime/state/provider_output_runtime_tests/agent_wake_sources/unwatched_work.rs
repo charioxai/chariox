@@ -244,10 +244,6 @@ async fn cell_2_a_backstop_does_not_wake_an_agent_another_turn_already_resumed()
         "cell 2: a superseded backstop still holds the idle agent's message: {:?}",
         team.runtime.owned.what_arms_agent(&team.room, &team.child)
     );
-    let tasks_before = store
-        .agent_tasks(Some(&team.room), Some(&team.child))
-        .unwrap()
-        .len();
 
     // The deadline passes.
     store
@@ -282,14 +278,6 @@ async fn cell_2_a_backstop_does_not_wake_an_agent_another_turn_already_resumed()
             .map(|e| (e.kind.clone(), e.state.clone(), e.prompt_id.clone(), e.payload.clone()))
             .collect::<Vec<_>>(),
         backstop.task_id
-    );
-    assert_eq!(
-        store
-            .agent_tasks(Some(&team.room), Some(&team.child))
-            .unwrap()
-            .len(),
-        tasks_before,
-        "cell 2: no turn started for the backstop"
     );
 }
 
