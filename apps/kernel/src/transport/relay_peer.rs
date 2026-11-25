@@ -706,7 +706,8 @@ impl RemoteFileBytes {
 /// The plaintext of a peer request or response: its `data_base64` file bytes travel as bytes,
 /// not as base64 text, so a file slice costs its own size on the wire (see `framed_plaintext`).
 pub(crate) fn seal_peer_plaintext<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(value).map(|json| crate::transport::framed_plaintext::frame_bytes_only(&json))
+    serde_json::to_vec(value)
+        .map(|json| crate::transport::framed_plaintext::frame_bytes_only(&json))
 }
 
 /// The value inside a peer request or response plaintext.

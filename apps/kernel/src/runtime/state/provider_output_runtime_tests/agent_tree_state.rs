@@ -678,7 +678,10 @@ async fn a_node_reports_its_account_workspace_worktree_and_machine() {
 async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
     // The child finished its turn: idle, nothing armed.
     let team = team("tree-live-wake", false, true).await;
-    assert!(read(&team).nodes[0].liveness.is_none(), "nothing armed: no reason");
+    assert!(
+        read(&team).nodes[0].liveness.is_none(),
+        "nothing armed: no reason"
+    );
     assert_eq!(read(&team).nodes[0].state, AgentTreeState::Idle);
     let store = &team.runtime.owned.durable_state_store;
     let now = crate::session::unix_epoch_ms();
@@ -737,13 +740,24 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
     let liveness = tree.nodes[0].liveness.as_ref().unwrap_or_else(|| {
         panic!(
             "the live wake is named: wakes {:?}",
-            store.agent_wakes(Some(&team.room), Some(&team.child)).unwrap().iter().map(|w| (w.id.clone(), w.state.clone(), w.task_id.clone())).collect::<Vec<_>>()
+            store
+                .agent_wakes(Some(&team.room), Some(&team.child))
+                .unwrap()
+                .iter()
+                .map(|w| (w.id.clone(), w.state.clone(), w.task_id.clone()))
+                .collect::<Vec<_>>()
         )
     });
     let on = liveness.waiting_on.as_ref().unwrap();
-    assert_eq!(on.kind, crate::runtime::projection::AgentWaitKind::BackgroundCommand);
+    assert_eq!(
+        on.kind,
+        crate::runtime::projection::AgentWaitKind::BackgroundCommand
+    );
     assert_eq!(on.detail, "cargo test");
     assert_eq!(liveness.waiting_events[0].label, "command build");
     assert_eq!(tree.nodes[0].state, AgentTreeState::Waiting);
-    assert_eq!(tree.totals.live, 1, "a node waiting on its wake is live: its pane stays open");
+    assert_eq!(
+        tree.totals.live, 1,
+        "a node waiting on its wake is live: its pane stays open"
+    );
 }

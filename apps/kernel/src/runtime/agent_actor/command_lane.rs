@@ -228,7 +228,11 @@ pub(super) async fn run_agent_command_lane(
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
-        if envelope.start_gate.as_ref().is_some_and(|gate| !gate.begin()) {
+        if envelope
+            .start_gate
+            .as_ref()
+            .is_some_and(|gate| !gate.begin())
+        {
             let _ = envelope
                 .result_tx
                 .send(Err(crate::runtime::start_gate::cancelled()));

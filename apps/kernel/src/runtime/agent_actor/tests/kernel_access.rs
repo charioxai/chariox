@@ -196,7 +196,8 @@ async fn a_remote_client_agent_mutation_cancelled_while_queued_does_not_run() {
         prompt_id: queued_id.clone(),
     };
     let local_request = LocalDaemonRequest::CancelQueuedPrompt(request.clone());
-    let command = KernelCommand::from_local_request("remote-queued-cancel", None, None, &local_request);
+    let command =
+        KernelCommand::from_local_request("remote-queued-cancel", None, None, &local_request);
     let gate = crate::runtime::start_gate::StartGate::default();
 
     // Install a real lane without its consumer. Dispatch must enqueue before

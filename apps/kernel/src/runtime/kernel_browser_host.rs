@@ -1420,7 +1420,9 @@ mod tests {
         revoking.join().unwrap();
         assert!(ended.load(Ordering::SeqCst));
         assert_eq!(submitted.load(Ordering::SeqCst), 1);
-        assert!(fence.commit(|| submitted.fetch_add(1, Ordering::SeqCst)).is_err());
+        assert!(fence
+            .commit(|| submitted.fetch_add(1, Ordering::SeqCst))
+            .is_err());
         assert_eq!(
             submitted.load(Ordering::SeqCst),
             1,

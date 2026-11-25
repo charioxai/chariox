@@ -204,7 +204,9 @@ impl BinaryPeerReply {
         let mut first = head;
         let head_len = first.len();
         let mut part = vec![0; split / 4 * 3];
-        let size = STANDARD.decode_slice(&encoded.as_bytes()[..split], &mut part).ok()?;
+        let size = STANDARD
+            .decode_slice(&encoded.as_bytes()[..split], &mut part)
+            .ok()?;
         first.extend_from_slice(&part[..size]);
         let first_len = first.len();
         let block_encoded = BLOCK / 3 * 4;
@@ -266,7 +268,9 @@ impl BinaryPeerReply {
             return None;
         }
         Some((
-            Message::Binary(binary_chunk(id, offset, self.len, &block[offset - start..end - start]).into()),
+            Message::Binary(
+                binary_chunk(id, offset, self.len, &block[offset - start..end - start]).into(),
+            ),
             end,
         ))
     }
@@ -305,7 +309,9 @@ impl BinaryPeerReply {
 #[cfg(test)]
 mod binary_tests {
     use super::*;
-    use crate::frame_transport::{BINARY_CHUNK_HEADER_BYTES, CHUNK_BYTES, MIN_BINARY_PAYLOAD_BYTES};
+    use crate::frame_transport::{
+        BINARY_CHUNK_HEADER_BYTES, CHUNK_BYTES, MIN_BINARY_PAYLOAD_BYTES,
+    };
 
     // Every frame fits a transport chunk, the chunks rebuild head and ciphertext exactly, and
     // writing them frees exactly the ciphertext bytes (the head and block table stay charged
@@ -326,7 +332,11 @@ mod binary_tests {
                     reply.next_chunk(7, offset, limit, true)
                 {
                     let payload = frame.len() - BINARY_CHUNK_HEADER_BYTES;
-                    assert!(frame.len() <= CHUNK_BYTES, "{size}: a {} byte frame", frame.len());
+                    assert!(
+                        frame.len() <= CHUNK_BYTES,
+                        "{size}: a {} byte frame",
+                        frame.len()
+                    );
                     // The receiver refuses a short chunk that does not end the message.
                     assert!(
                         payload >= MIN_BINARY_PAYLOAD_BYTES || end == reply.len(),

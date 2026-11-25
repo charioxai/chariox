@@ -185,7 +185,7 @@ async fn a_browser_region_card_is_bound_again_to_the_page_a_restart_brought_back
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: initial.clone(),
         }));
         sessions.restore_session(session);
@@ -235,7 +235,7 @@ async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(&id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: browser_region(),
         }));
         sessions.restore_session(session);

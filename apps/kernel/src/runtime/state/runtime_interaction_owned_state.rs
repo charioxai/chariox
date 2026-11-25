@@ -695,7 +695,9 @@ impl KernelRuntimeOwnedState {
                 .ok_or_else(|| interaction_error("Task card has no Room"))?;
             if !interaction.room_dismissed() {
                 self.dismiss_blocked_task_card(session_id, interaction_id)?;
-                room.replace_active_interaction(interaction.with_room_dismissed(true));
+                room.update_active_interaction(interaction_id, |card| {
+                    card.with_room_dismissed(true)
+                });
                 sessions.restore_session(room);
             }
             drop(sessions);

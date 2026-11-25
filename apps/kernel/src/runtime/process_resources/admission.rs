@@ -981,7 +981,8 @@ impl Ledger {
             // The rate the volume is really being filled at: what its free space lost.
             let observed = lost.get(&writer.volume).copied().unwrap_or_default();
             let below = disk.free < disk.floor / 2;
-            let near_full = observed > 0 && disk.free < observed.saturating_mul(FILL_HORIZON_SECONDS);
+            let near_full =
+                observed > 0 && disk.free < observed.saturating_mul(FILL_HORIZON_SECONDS);
             // Within the fill horizon only a runaway is stopped, the fastest of them: any
             // agent command writing this fast to that volume, an overwriter too (an accepted
             // cost in a real emergency, Miguel 11-24).

@@ -53,7 +53,10 @@ tokio::task_local! {
 }
 
 /// Runs `request` with `gate` as the request's start gate (`None`: not cancellable, as for a read).
-pub(crate) async fn scope<F: std::future::Future>(gate: Option<StartGate>, request: F) -> F::Output {
+pub(crate) async fn scope<F: std::future::Future>(
+    gate: Option<StartGate>,
+    request: F,
+) -> F::Output {
     REQUEST_START.scope(gate, request).await
 }
 
@@ -92,7 +95,10 @@ mod tests {
         assert!(begun.begin());
         begun.cancel();
         assert!(!begun.is_cancelled());
-        assert!(begun.begin(), "begin stays true for a request already running");
+        assert!(
+            begun.begin(),
+            "begin stays true for a request already running"
+        );
 
         let queued = StartGate::default();
         queued.cancel();

@@ -1862,6 +1862,7 @@ async fn answered_task_question_does_not_reopen_before_its_waiter_runs() {
             task: task.clone(),
             prompt: task,
             reason: "Please choose which check to run".into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -1975,8 +1976,11 @@ async fn an_agents_question_may_use_the_app_offer_choice_ids() {
         f.state
             .owned
             .register_runtime_interaction(
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    interaction,
+                ),
                 &f.session,
-                interaction,
                 send,
                 Some(DEFAULT_LOCAL_USER_ID),
                 None,

@@ -406,7 +406,9 @@ impl KernelRuntimeState {
                     }
                     KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
                         self.revoke_leased_computer(&user, agent_id).await?;
-                        return Ok(serde_json::json!({"agent_id": agent_id, "leased_computer": false}));
+                        return Ok(
+                            serde_json::json!({"agent_id": agent_id, "leased_computer": false}),
+                        );
                     }
                     _ => {}
                 }

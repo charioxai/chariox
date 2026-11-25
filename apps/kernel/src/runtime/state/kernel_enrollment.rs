@@ -8,9 +8,17 @@ use sha2::Digest;
 /// The owner answers within the code's own lifetime; the card never outlives it.
 const MAX_WAIT: Duration = Duration::from_secs(600);
 /// How long one tool call waits for the owner before saying the card is still open.
-const ANSWER_WINDOW: Duration = if cfg!(test) { Duration::from_secs(2) } else { Duration::from_secs(60) };
+const ANSWER_WINDOW: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(60)
+};
 const RETRY_AFTER_MS: u64 = 5_000;
-const POLL_EVERY: Duration = if cfg!(test) { Duration::from_millis(100) } else { Duration::from_secs(2) };
+const POLL_EVERY: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(2)
+};
 
 pub(super) const ENROLL_TOOL: &str = "chariox.kernels.enroll";
 
@@ -71,19 +79,33 @@ fn cloud_call(
                 .into_reader()
                 .take(65537)
                 .read_to_end(&mut bytes)
-                .map_err(|_| enrollment_error("enrollment_unavailable", "Chariox did not answer; ask again in a moment"))?;
-            serde_json::from_slice(&bytes)
-                .map_err(|_| enrollment_error("enrollment_unavailable", "Chariox did not answer; ask again in a moment"))
+                .map_err(|_| {
+                    enrollment_error(
+                        "enrollment_unavailable",
+                        "Chariox did not answer; ask again in a moment",
+                    )
+                })?;
+            serde_json::from_slice(&bytes).map_err(|_| {
+                enrollment_error(
+                    "enrollment_unavailable",
+                    "Chariox did not answer; ask again in a moment",
+                )
+            })
         }
         Err(ureq::Error::Status(status, response)) => {
             let mut bytes = Vec::new();
             let message = {
                 use std::io::Read;
-                response.into_reader().take(8192).read_to_end(&mut bytes).ok().and_then(|_| {
-                    serde_json::from_slice::<serde_json::Value>(&bytes)
-                        .ok()
-                        .and_then(|body| body["error"]["message"].as_str().map(str::to_owned))
-                })
+                response
+                    .into_reader()
+                    .take(8192)
+                    .read_to_end(&mut bytes)
+                    .ok()
+                    .and_then(|_| {
+                        serde_json::from_slice::<serde_json::Value>(&bytes)
+                            .ok()
+                            .and_then(|body| body["error"]["message"].as_str().map(str::to_owned))
+                    })
             };
             Err(match (status, message) {
                 (404, _) => enrollment_error(
@@ -113,7 +135,12 @@ async fn blocking_call(
 ) -> Result<serde_json::Value, DaemonError> {
     tokio::task::spawn_blocking(move || cloud_call(&profile, method, &path_and_query, body))
         .await
-        .map_err(|_| enrollment_error("enrollment_unavailable", "Chariox did not answer; ask again in a moment"))?
+        .map_err(|_| {
+            enrollment_error(
+                "enrollment_unavailable",
+                "Chariox did not answer; ask again in a moment",
+            )
+        })?
 }
 
 fn normalized_code(value: &str) -> Option<String> {
@@ -138,14 +165,26 @@ impl KernelRuntimeState {
             user_code: String,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
-            enrollment_error("invalid_request", "Pass user_code, the code the new kernel shows")
+            enrollment_error(
+                "invalid_request",
+                "Pass user_code, the code the new kernel shows",
+            )
         })?;
         let user_code = normalized_code(&args.user_code).ok_or_else(|| {
-            enrollment_error("invalid_request", "That is not a kernel code; it looks like ABCD-EFGH")
+            enrollment_error(
+                "invalid_request",
+                "That is not a kernel code; it looks like ABCD-EFGH",
+            )
         })?;
-        let runs = self.owned.provider_store.get_runs_by_runtime_mcp_auth_token(token);
+        let runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(token);
         let [run] = runs.as_slice() else {
-            return Err(enrollment_error("not_allowed", "Enrolling a kernel needs one active agent"));
+            return Err(enrollment_error(
+                "not_allowed",
+                "Enrolling a kernel needs one active agent",
+            ));
         };
         let reach = self
             .reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))
@@ -159,13 +198,19 @@ impl KernelRuntimeState {
             .owned
             .agent_store
             .get_agent(&reach.agent_id)
-            .map_err(|_| enrollment_error("not_allowed", "This agent has no Room to ask the owner in"))?
+            .map_err(|_| {
+                enrollment_error("not_allowed", "This agent has no Room to ask the owner in")
+            })?
             .session_id()
             .to_owned();
         let session = self.owned.session_store.get_session(&room)?;
         let config = self.owned.config_projection.snapshot();
         let profile = crate::runtime::cloud_relay_control::active_cloud_profile(&config)
-            .filter(|p| p.kernel_credential.as_deref().is_some_and(|c| !c.is_empty()))
+            .filter(|p| {
+                p.kernel_credential
+                    .as_deref()
+                    .is_some_and(|c| !c.is_empty())
+            })
             .cloned()
             .ok_or_else(|| {
                 enrollment_error(
@@ -206,8 +251,16 @@ impl KernelRuntimeState {
             }
             if !asked {
                 asked = true;
-                self.ask_owner(&profile, &room, &session, &reach.agent_id, &id, &waiting, &machine)
-                    .await?;
+                self.ask_owner(
+                    &profile,
+                    &room,
+                    &session,
+                    &reach.agent_id,
+                    &id,
+                    &waiting,
+                    &machine,
+                )
+                .await?;
             }
             // The call never holds longer than a provider's tool timeout: past the window it says
             // the owner has not answered yet, and asking again with the same code reads the answer.
@@ -238,14 +291,16 @@ impl KernelRuntimeState {
         waiting: &Waiting,
         machine: &Option<String>,
     ) -> Result<(), DaemonError> {
-        let approved = self
-            .owned
-            .durable_state_store
-            .load_subject_events_by_kind(id, "kernel.enrollment_approved", 1)?;
-        let denied = self
-            .owned
-            .durable_state_store
-            .load_subject_events_by_kind(id, "kernel.enrollment_denied", 1)?;
+        let approved = self.owned.durable_state_store.load_subject_events_by_kind(
+            id,
+            "kernel.enrollment_approved",
+            1,
+        )?;
+        let denied = self.owned.durable_state_store.load_subject_events_by_kind(
+            id,
+            "kernel.enrollment_denied",
+            1,
+        )?;
         if let Some(event) = denied.first() {
             // The owner denied. The background task is telling Cloud; only when Cloud still waits
             // well after the answer did that fail, and then it is applied again. No second card.
@@ -276,11 +331,21 @@ impl KernelRuntimeState {
         }
         let lifetime = chrono::DateTime::parse_from_rfc3339(&waiting.expires_at)
             .ok()
-            .and_then(|at| (at.with_timezone(&chrono::Utc) - chrono::Utc::now()).to_std().ok())
+            .and_then(|at| {
+                (at.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                    .to_std()
+                    .ok()
+            })
             .ok_or_else(expired)?;
         let description = match machine {
-            Some(name) => format!("Let the new kernel {name} join your account? Its code is {}.", waiting.user_code),
-            None => format!("Let a new kernel join your account? Its code is {}.", waiting.user_code),
+            Some(name) => format!(
+                "Let the new kernel {name} join your account? Its code is {}.",
+                waiting.user_code
+            ),
+            None => format!(
+                "Let a new kernel join your account? Its code is {}.",
+                waiting.user_code
+            ),
         };
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             id,
@@ -288,8 +353,18 @@ impl KernelRuntimeState {
             "",
             description,
             vec![
-                RuntimeInteractionChoice::new("approve", "Approve", "approve", Some(RuntimeInteractionChoiceStyle::Primary)),
-                RuntimeInteractionChoice::new("deny", "Deny", "deny", Some(RuntimeInteractionChoiceStyle::Danger)),
+                RuntimeInteractionChoice::new(
+                    "approve",
+                    "Approve",
+                    "approve",
+                    Some(RuntimeInteractionChoiceStyle::Primary),
+                ),
+                RuntimeInteractionChoice::new(
+                    "deny",
+                    "Deny",
+                    "deny",
+                    Some(RuntimeInteractionChoiceStyle::Danger),
+                ),
             ],
         );
         // The card stays answerable as long as this task waits for it, not for the
@@ -298,7 +373,12 @@ impl KernelRuntimeState {
             .with_related_agent_id(agent.to_owned())
             .with_timeout_sec(lifetime.min(MAX_WAIT).as_secs().max(1));
         let receiver = self
-            .create_kernel_operation_interaction(room, session.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                room,
+                session.owner_user_id(),
+                interaction,
+            )
             .await?;
         let (state, profile, room, id, owner, user_code) = (
             self.clone(),
@@ -365,8 +445,14 @@ async fn login_status(
         "/v1/kernel-device-approvals?userCode={}",
         crate::runtime::cloud_api_client::cloud_url_component(user_code)
     );
-    serde_json::from_value(blocking_call(profile.clone(), "GET", query, None).await?)
-        .map_err(|_| enrollment_error("enrollment_unavailable", "Chariox did not answer; ask again in a moment"))
+    serde_json::from_value(blocking_call(profile.clone(), "GET", query, None).await?).map_err(
+        |_| {
+            enrollment_error(
+                "enrollment_unavailable",
+                "Chariox did not answer; ask again in a moment",
+            )
+        },
+    )
 }
 
 async fn decide(
@@ -383,13 +469,19 @@ async fn decide(
     .await
     .map(|_| ())
     .map_err(|error| match error {
-        DaemonError::MachineRequest { code, message } if code == "enrollment_refused" && message.contains("expired") => expired(),
+        DaemonError::MachineRequest { code, message }
+            if code == "enrollment_refused" && message.contains("expired") =>
+        {
+            expired()
+        }
         other => other,
     })
     .or_else(|error| match &error {
         // Already approved is the state asked for.
         DaemonError::MachineRequest { code, message }
-            if decision == "approve" && code == "enrollment_refused" && message.contains("already approved") =>
+            if decision == "approve"
+                && code == "enrollment_refused"
+                && message.contains("already approved") =>
         {
             Ok(())
         }
@@ -404,7 +496,10 @@ fn expired() -> DaemonError {
     )
 }
 
-fn done(status: &str, machine: &Option<String>) -> crate::transport::runtime_tools::RuntimeToolResult {
+fn done(
+    status: &str,
+    machine: &Option<String>,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
     crate::transport::runtime_tools::RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({"status": status, "kernel": machine}),

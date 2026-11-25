@@ -238,7 +238,10 @@ async fn a_task_identity_conflict_does_not_report_the_delegate_gone() {
             .iter()
             .all(|event| event.payload["public_answer"]["reason"] != "failed_start"),
         "a delegate alive on its task was reported gone: {:?}",
-        f.replies().iter().map(|e| e.payload.to_string()).collect::<Vec<_>>()
+        f.replies()
+            .iter()
+            .map(|e| e.payload.to_string())
+            .collect::<Vec<_>>()
     );
 }
 

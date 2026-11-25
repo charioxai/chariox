@@ -241,12 +241,13 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
         };
         // Sealed only now, so waiting for the state is charged to a forwarded decision.
         request.rebase_decision_budget();
-        let plaintext = crate::transport::relay_peer::seal_peer_plaintext(&request).map_err(
-            |error| DaemonError::LocalTransport {
-                operation: "serialize relay peer request",
-                message: error.to_string(),
-            },
-        )?;
+        let plaintext =
+            crate::transport::relay_peer::seal_peer_plaintext(&request).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "serialize relay peer request",
+                    message: error.to_string(),
+                }
+            })?;
         let encrypted_request = relay_crypto::encrypt_payload_for_peer(
             &config.relay_private_key,
             target_public_key,
@@ -925,12 +926,13 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         return Err(error);
     }
     request.rebase_decision_budget();
-    let plaintext = crate::transport::relay_peer::seal_peer_plaintext(&request).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "serialize relay peer request",
-            message: error.to_string(),
-        }
-    })?;
+    let plaintext =
+        crate::transport::relay_peer::seal_peer_plaintext(&request).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "serialize relay peer request",
+                message: error.to_string(),
+            }
+        })?;
     let encrypted_request = relay_crypto::encrypt_payload_for_peer(
         &config.relay_private_key,
         &kernel.public_key,

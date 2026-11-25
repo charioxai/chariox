@@ -167,7 +167,10 @@ mod tests {
         assert_eq!(action(&notice), None);
         notice.agent_id = "provider-account:work".into();
         assert_eq!(action(&notice), Some(expected));
-        assert!(is_sign_in_notice(&notice), "the sign-in request is the kernel's own notice");
+        assert!(
+            is_sign_in_notice(&notice),
+            "the sign-in request is the kernel's own notice"
+        );
         notice.agent_id = "ordinary-agent".into();
         assert!(!is_sign_in_notice(&notice));
     }

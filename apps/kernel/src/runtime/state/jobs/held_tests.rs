@@ -105,7 +105,7 @@ async fn a_job_naming_a_held_machine_runs_on_its_kernel_and_leaves_the_machine_h
 
 #[tokio::test]
 async fn absolute_job_cwd_uploads_only_the_selected_directory_to_a_held_worker() {
-    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-small-workspace");
     stand_in_kernel("held-kernel-small-workspace", home.path());
     let workspace = workspace.path().canonicalize().unwrap();

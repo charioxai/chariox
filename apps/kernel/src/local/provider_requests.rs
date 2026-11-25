@@ -16,20 +16,12 @@ mod remote_machines;
 
 use blocking::block_on_relay_query;
 pub(crate) use catalog::{
-    CatalogLoad,
-    check_copied_opencode_login,
-    load_provider_catalog,
-    load_provider_catalog_for,
-    logout_provider_response,
-    observe_provider_auth_status,
-    OpenCodeCopyCheck,
-    prepare_opencode_model_cache,
-    provider_auth_status_response,
+    check_copied_opencode_login, load_provider_catalog, load_provider_catalog_for,
+    logout_provider_response, observe_provider_auth_status, prepare_opencode_model_cache,
+    provider_auth_status_response, provider_command_catalogs_response,
+    refresh_provider_account_auth_with_config, refresh_provider_account_profile_explicitly,
+    refresh_provider_account_profile_with_config, CatalogLoad, OpenCodeCopyCheck,
     PROVIDER_CATALOG_CACHE_TTL,
-    provider_command_catalogs_response,
-    refresh_provider_account_auth_with_config,
-    refresh_provider_account_profile_explicitly,
-    refresh_provider_account_profile_with_config,
 };
 pub(crate) use remote_machines::{
     forgotten_machine_name, record_for_machine_id, remote_machine_records,

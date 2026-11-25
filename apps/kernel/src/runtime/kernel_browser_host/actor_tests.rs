@@ -1103,7 +1103,8 @@ done
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("owner", &script, &root);
     let policy = || json!({"values":[],"targets":[],"unknown":false});
-    let request = |params: Value| host.protected_request("owner", None, "host.browser", params, policy());
+    let request =
+        |params: Value| host.protected_request("owner", None, "host.browser", params, policy());
     // A restarted kernel remembers no stop: the recovery start brings the browser back.
     let after_restart = request(json!({"op":"start","unless_stopped":true}));
     let restarted = root.join("started").exists();
@@ -1124,7 +1125,10 @@ done
         refused.unwrap_err().contains("browser_unavailable"),
         "an explicit stop stays in force for a card"
     );
-    assert!(!revived, "the card's recovery start reopened a stopped browser");
+    assert!(
+        !revived,
+        "the card's recovery start reopened a stopped browser"
+    );
     explicit.unwrap();
     assert!(explicit_started);
 }

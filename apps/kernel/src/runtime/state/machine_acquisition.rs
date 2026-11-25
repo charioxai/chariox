@@ -224,7 +224,12 @@ impl KernelRuntimeState {
                     .or_else(|| session.agent_display_name(agent))
                     .unwrap_or_else(|| agent.to_owned())
             }),
-            self.owned.acquire_purposes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(request_id).cloned(),
+            self.owned
+                .acquire_purposes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(request_id)
+                .cloned(),
         );
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
@@ -301,7 +306,11 @@ fn machine_request_title(agent: Option<String>, purpose: Option<String>) -> Stri
     let who = agent.unwrap_or_else(|| "An agent".into());
     match purpose {
         Some(purpose) => {
-            let end = if purpose.ends_with(['.', '?', '!']) { "" } else { "." };
+            let end = if purpose.ends_with(['.', '?', '!']) {
+                ""
+            } else {
+                "."
+            };
             format!("{who} asks for a machine. Purpose: {purpose}{end}")
         }
         None => format!("{who} asks for a machine and gave no purpose."),
@@ -320,15 +329,27 @@ impl AcquirePurpose {
                 Some((end, _)) => format!("{}…", &text[..end]),
                 None => text,
             });
-        let Some(purpose) = purpose else { return Self(None) };
-        state.owned.acquire_purposes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(request_id.to_owned(), purpose);
+        let Some(purpose) = purpose else {
+            return Self(None);
+        };
+        state
+            .owned
+            .acquire_purposes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(request_id.to_owned(), purpose);
         Self(Some((state.clone(), request_id.to_owned())))
     }
 }
 impl Drop for AcquirePurpose {
     fn drop(&mut self) {
         if let Some((state, request_id)) = self.0.take() {
-            state.owned.acquire_purposes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&request_id);
+            state
+                .owned
+                .acquire_purposes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&request_id);
         }
     }
 }
@@ -448,7 +469,8 @@ impl KernelRuntimeState {
                     &reach.agent_id,
                     &request_id,
                 );
-                let _purpose = AcquirePurpose::hold(self, &service_request_id, args.purpose.as_deref());
+                let _purpose =
+                    AcquirePurpose::hold(self, &service_request_id, args.purpose.as_deref());
                 let result = match self
                     .job_control_plane(
                         &origin,

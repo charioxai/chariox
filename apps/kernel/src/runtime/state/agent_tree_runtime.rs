@@ -105,14 +105,18 @@ impl KernelRuntimeState {
             &|agent| {
                 // One read of a Room's agent activity serves every node in it.
                 let mut rooms = room_activity.borrow_mut();
-                let activity = rooms.entry(agent.session_id().to_owned()).or_insert_with(|| {
-                    // The stored Room has no agents of its own: sub-agents live in the agent store.
-                    self.session_with_agents(agent.session_id())
-                        .ok()
-                        .map(|room| self.agent_activity_for_tree(&room))
-                        .unwrap_or_default()
-                });
-                activity.get(agent.id()).map(|activity| activity.liveness.clone())
+                let activity = rooms
+                    .entry(agent.session_id().to_owned())
+                    .or_insert_with(|| {
+                        // The stored Room has no agents of its own: sub-agents live in the agent store.
+                        self.session_with_agents(agent.session_id())
+                            .ok()
+                            .map(|room| self.agent_activity_for_tree(&room))
+                            .unwrap_or_default()
+                    });
+                activity
+                    .get(agent.id())
+                    .map(|activity| activity.liveness.clone())
             },
             &|room| self.owned.session_store.get_session(room).ok(),
         )?;

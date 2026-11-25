@@ -641,7 +641,6 @@ async fn agent_profile_turn_end_survives_reopening_the_kernel() {
     assert!(agent.pending_profile().is_none());
 }
 
-
 /// The provider's own `run_in_background` call: a child of the process, running.
 fn background_launch_batch() -> crate::provider::ProviderPromptSignalBatch {
     crate::provider::ProviderPromptSignalBatch {

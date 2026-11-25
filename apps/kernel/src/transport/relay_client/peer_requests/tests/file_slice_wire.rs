@@ -38,8 +38,7 @@ fn a_file_slice_reply_is_sealed_at_its_own_size() {
     );
     let opened = relay_crypto::decrypt_payload_for_private_key(&receiver, &sealed).unwrap();
     let (json, _) = crate::transport::framed_plaintext::open(&opened.plaintext).unwrap();
-    let RelayPeerResponse::FileSliceRead { content, .. } =
-        serde_json::from_slice(&json).unwrap()
+    let RelayPeerResponse::FileSliceRead { content, .. } = serde_json::from_slice(&json).unwrap()
     else {
         panic!("a file slice reply");
     };
@@ -60,7 +59,11 @@ fn a_file_slice_write_request_is_sealed_at_its_own_size() {
         content: RemoteFileBytes::encode(&bytes),
     };
     let plaintext = crate::transport::relay_peer::seal_peer_plaintext(&request).unwrap();
-    assert!(plaintext.len() < bytes.len() + bytes.len() / 20, "{} bytes", plaintext.len());
+    assert!(
+        plaintext.len() < bytes.len() + bytes.len() / 20,
+        "{} bytes",
+        plaintext.len()
+    );
     let opened: crate::transport::relay_peer::RelayPeerRequest =
         crate::transport::relay_peer::open_peer_plaintext(&plaintext).unwrap();
     assert_eq!(opened, request);
