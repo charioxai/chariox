@@ -643,4 +643,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1016 (provisional; relay peer 453): a workflow node run held for a provider account names it
+/// (`waiting_account`) and when its usage is back (`waiting_until_ms`), both absent while nothing waits.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
