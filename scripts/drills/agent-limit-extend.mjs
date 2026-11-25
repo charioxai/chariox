@@ -107,10 +107,11 @@ async function main() {
   await k.rpc({ SetAgentDeadline: { session_id: room, agent_id: boss, deadline_ms: limitMs } })
   note("parent-limit-set", { boss, limitMs })
   const later = await refused({ SetAgentDeadline: { session_id: room, agent_id: kid.id, deadline_ms: limitMs + 3600000 } })
-  check("D2-a-child-limit-past-its-running-parents-is-refused-with-the-next-step", later.includes("at or before") && later.includes("agent deadline"), { later })
-  // The parent's limit reaches the child as its own (inherited) limit; the refused edit leaves it alone.
-  const inherited = await deadlineOf(kid.id)
-  check("D2-the-refused-edit-changed-nothing", inherited?.state === "armed" && inherited.deadline_ms === limitMs, { inherited })
+  // #1581 design (docs/AGENT_DEADLINES.md, 3ec36a52689): a limit bounds only the agent that carries it.
+  // A child's own limit may pass its running parent's; the parent's limit is not inherited by the child.
+  check("D2-a-child-limit-past-its-running-parents-is-accepted-A-bounds-only-own-agent", later === "", { later })
+  const own = await deadlineOf(kid.id)
+  check("D2-the-child-carries-exactly-its-own-limit", own?.state === "armed" && own.deadline_ms === limitMs + 3600000, { own })
 
   await until(async () => { const d = await deadlineOf(boss); return d?.state === "reached" && !!d?.stopped_at_ms }, "the parent's limit ended and its cleanup finished", 120000)
   check("D3-the-parent-limit-ended-its-run", (await deadlineOf(boss))?.state === "reached", {})

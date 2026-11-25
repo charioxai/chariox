@@ -37,7 +37,7 @@ const check = (id, passed, detail) => {
   writeFileSync(join(evidence, "verdict.json"), JSON.stringify(checks, null, 2))
   note(id, { passed, detail })
 }
-const env = { PATH: process.env.PATH, IS_SANDBOX: "1", CHARIOX_ROOM_AGENT_TOOLS: "1", SHELL: "/bin/bash", ...(process.env.CHARIOX_CLAUDE_BIN ? { CHARIOX_CLAUDE_BIN: process.env.CHARIOX_CLAUDE_BIN } : {}) }
+const env = { PATH: process.env.PATH, IS_SANDBOX: "1", CHARIOX_PROVIDER_DEV_STUB: "1", CHARIOX_ROOM_AGENT_TOOLS: "1", SHELL: "/bin/bash", ...(process.env.CHARIOX_CLAUDE_BIN ? { CHARIOX_CLAUDE_BIN: process.env.CHARIOX_CLAUDE_BIN } : {}) }
 async function freePort() {
   const server = createServer()
   await new Promise(r => server.listen(0, "127.0.0.1", r))
