@@ -132,7 +132,9 @@ impl<'a> Layout<'a> {
             by_ref,
             controls,
             scroll,
-            page: page_size["css_width"].as_f64().zip(page_size["css_height"].as_f64()),
+            page: page_size["css_width"]
+                .as_f64()
+                .zip(page_size["css_height"].as_f64()),
         }
     }
 
@@ -162,7 +164,9 @@ impl<'a> Layout<'a> {
         let y = (number("y") - scroll_y + number("height") / 2.0).round();
         let visible = x >= 0.0
             && y >= 0.0
-            && self.page.is_none_or(|(width, height)| x < width && y < height);
+            && self
+                .page
+                .is_none_or(|(width, height)| x < width && y < height);
         entry["in_viewport"] = visible.into();
         if visible {
             entry["click"] = json!({"x": x as i64, "y": y as i64});
@@ -547,8 +551,10 @@ mod tests {
         // Review #1753 P2: off-screen below or right of the page is not clickable.
         let mut page = token_page();
         page["page_size"] = json!({"css_width":1280,"css_height":800});
-        page["snapshot"]["dom_nodes"][1]["bounds"] = json!({"x":620.0,"y":2000.0,"width":40.0,"height":32.0});
-        page["snapshot"]["dom_nodes"][2]["bounds"] = json!({"x":1500.0,"y":806.0,"width":32.0,"height":32.0});
+        page["snapshot"]["dom_nodes"][1]["bounds"] =
+            json!({"x":620.0,"y":2000.0,"width":40.0,"height":32.0});
+        page["snapshot"]["dom_nodes"][2]["bounds"] =
+            json!({"x":1500.0,"y":806.0,"width":32.0,"height":32.0});
         let find = |page: &Value, query: &str| {
             project(
                 page.clone(),
