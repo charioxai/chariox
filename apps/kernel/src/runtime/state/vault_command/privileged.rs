@@ -15,6 +15,8 @@ pub(crate) const PRIVILEGED_RUN: &str = "chariox.privileged.run";
 const KERNEL_GRACE: Duration = Duration::from_secs(15);
 /// `timeout`'s exit code when it had to end the command.
 const TIMED_OUT_CODE: i32 = 124;
+/// What it returns when the command also ignored the stop request and was killed.
+const KILLED_AFTER_TIMEOUT_CODE: i32 = 137;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,6 +156,7 @@ impl KernelRuntimeState {
     ) -> Result<crate::local::PrivilegedRunOutcome, DaemonError> {
         let stdin = Zeroizing::new(format!("{}\n", password.as_str()));
         let masks = vec![(credential_id.to_string(), password)];
+        let started = std::time::Instant::now();
         let output = run_command(
             self,
             context,
@@ -161,7 +164,7 @@ impl KernelRuntimeState {
                 launch: super::super::agent_process_watch::KernelLaunch::Privileged {
                     sudo: run.sudo,
                 },
-                argv: ending_at_timeout(run.argv, run.timeout),
+                argv: inside_sudo(run.argv, run.timeout),
                 cwd: std::path::PathBuf::from("/"),
                 env: Vec::new(),
                 stdin: Some(stdin),
@@ -170,10 +173,14 @@ impl KernelRuntimeState {
         )
         .await?;
         use super::super::agent_process_watch::KernelCommandExit;
+        // `timeout` ends the command with 124, or 137 when it needed SIGKILL; either
+        // is a timeout only if the whole time had passed (a command may kill itself).
+        let waited = started.elapsed() >= run.timeout;
         let (status, exit_code) = match output.exit {
-            KernelCommandExit::Exited(TIMED_OUT_CODE) | KernelCommandExit::TimedOut => {
+            KernelCommandExit::Exited(TIMED_OUT_CODE | KILLED_AFTER_TIMEOUT_CODE) if waited => {
                 ("timed_out", None)
             }
+            KernelCommandExit::TimedOut => ("timed_out", None),
             KernelCommandExit::Exited(code) => ("exited", Some(code)),
             KernelCommandExit::Lost => ("lost", None),
         };
@@ -246,14 +253,26 @@ impl Machine {
     }
 }
 
-/// `timeout` runs as root inside sudo and ends the command at the deadline,
-/// three seconds after asking it to stop.
-fn ending_at_timeout(argv: Vec<String>, timeout: Duration) -> Vec<String> {
-    ["timeout", "-k", "3", &timeout.as_secs().to_string()]
-        .map(str::to_string)
-        .into_iter()
-        .chain(argv)
-        .collect()
+/// What runs inside sudo: `timeout` ends the command at the deadline, three
+/// seconds after asking it to stop, and the shell in front gives the program
+/// no input. Sudo reads the password from the same pipe only when its rules ask
+/// for one (not with NOPASSWD, nor in a kernel that is root), and the program
+/// must never get the rest of that pipe either way.
+fn inside_sudo(argv: Vec<String>, timeout: Duration) -> Vec<String> {
+    [
+        "sh",
+        "-c",
+        "exec \"$@\" </dev/null",
+        "sh",
+        "timeout",
+        "-k",
+        "3",
+        &timeout.as_secs().to_string(),
+    ]
+    .map(str::to_string)
+    .into_iter()
+    .chain(argv)
+    .collect()
 }
 
 /// `sudo` from the kernel's own PATH, then the standard system folders.

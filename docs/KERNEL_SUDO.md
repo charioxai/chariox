@@ -220,7 +220,7 @@ default and at most 240 s, after which it is stopped.
   creating session.
 
 - `chariox.privileged.run {argv, credential_id, machine?, timeout_seconds?}` is not a sudo window: the
-  kernel runs one command as root with `sudo -S -k -p '' -- timeout ... <argv>` as its own user, outside
+  kernel runs one command as root with `sudo -S -k -p '' -- sh -c 'exec "$@" </dev/null' sh timeout ... <argv>` as its own user, outside
   the agent's sandbox (the sandbox's no-new-privileges flag stops sudo for every agent command, and stays),
   and types the sudo password from the Vault entry `credential_id` on sudo's stdin only: never argv,
   environment or a file. The entry is the owner's: a `command_stdin` entry whose origin is

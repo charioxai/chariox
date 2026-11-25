@@ -29,20 +29,28 @@ fn origin(f: &Fixture) -> String {
 }
 
 /// A sudo that accepts exactly `accepts`, echoes what it typed the way a
-/// terminal would, records its argv and environment, and runs the command.
+/// terminal would, records its argv and environment, and runs the command. An
+/// empty `accepts` is a NOPASSWD rule: it never reads stdin.
 fn fake_sudo(dir: &std::path::Path, accepts: &str) {
     use std::os::unix::fs::PermissionsExt as _;
+    let asks = if accepts.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "IFS= read -r typed\n\
+             if [ \"$typed\" != '{accepts}' ]; then\n\
+               echo 'Sorry, try again.' >&2\n\
+               echo 'sudo: 1 incorrect password attempt' >&2\n\
+               exit 1\n\
+             fi\n\
+             echo \"typed $typed\" >&2\n"
+        )
+    };
     let script = format!(
         "#!/bin/sh\n\
          printf '%s\\n' \"$@\" > '{dir}/argv'\n\
          env > '{dir}/env'\n\
-         IFS= read -r typed\n\
-         if [ \"$typed\" != '{accepts}' ]; then\n\
-           echo 'Sorry, try again.' >&2\n\
-           echo 'sudo: 1 incorrect password attempt' >&2\n\
-           exit 1\n\
-         fi\n\
-         echo \"typed $typed\" >&2\n\
+         {asks}\
          shift 5\n\
          exec \"$@\"\n",
         dir = dir.display()
@@ -105,7 +113,9 @@ async fn the_owners_agent_runs_a_command_with_sudo_and_never_sees_the_password()
     assert!(!used.to_string().contains(SECRET));
     // Sudo got the password on stdin only: not in its words, not in its environment.
     let argv = std::fs::read_to_string(dir.join("argv")).unwrap();
-    assert!(argv.starts_with("-S\n-k\n-p\n\n--\ntimeout\n-k\n3\n120\n/bin/sh\n"));
+    assert!(argv.starts_with(
+        "-S\n-k\n-p\n\n--\nsh\n-c\nexec \"$@\" </dev/null\nsh\ntimeout\n-k\n3\n120\n/bin/sh\n"
+    ));
     let env = std::fs::read_to_string(dir.join("env")).unwrap();
     for text in [&argv, &env] {
         assert!(!text.contains(SECRET), "{text}");
@@ -224,6 +234,58 @@ async fn a_command_that_outlives_its_timeout_is_ended_inside_sudo() {
     .unwrap();
     assert_eq!(slow["status"], "timed_out");
     assert!(started.elapsed() < Duration::from_secs(10));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_sudo_that_never_reads_the_password_still_gives_the_command_no_input() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    // A NOPASSWD rule (or a kernel that is already root): sudo leaves the pipe unread.
+    with_fake_sudo(&f, "");
+    let handle = sudo_entry(&f, "nopasswd", SECRET, &origin(&f)).await;
+    let used = call(
+        &f,
+        RUN,
+        json!({"credential_id": handle, "argv": ["/bin/cat"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(used["stdout"], "", "{used}");
+    assert_eq!(used["exit_code"], 0);
+    assert!(!used.to_string().contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_command_that_ignores_the_stop_request_is_still_reported_as_timed_out() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    with_fake_sudo(&f, SECRET);
+    let handle = sudo_entry(&f, "stubborn", SECRET, &origin(&f)).await;
+    let started = std::time::Instant::now();
+    let slow = call(
+        &f,
+        RUN,
+        json!({"credential_id": handle, "timeout_seconds": 1,
+            "argv": ["/bin/sh", "-c", "trap '' TERM; exec sleep 30"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(slow["status"], "timed_out", "{slow}");
+    assert!(started.elapsed() < Duration::from_secs(12));
+    // A command that kills itself at once is not a timeout.
+    let killed = call(
+        &f,
+        RUN,
+        json!({"credential_id": handle, "argv": ["/bin/sh", "-c", "kill -9 $$"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(killed["status"], "exited", "{killed}");
+    assert_eq!(killed["exit_code"], 137);
     f.state.shutdown_cleanup().await.unwrap();
 }
 
