@@ -1466,6 +1466,7 @@ mod tests {
                 task: task.task_id.clone(),
                 prompt: task.prompt_id.clone(),
                 reason: "Which branch should I release from?".into(),
+                reply: None,
             })
             .unwrap()
         else {
@@ -1708,6 +1709,7 @@ mod tests {
                 prompt: task.prompt_id.clone(),
                 task: task.task_id,
                 reason: "resend the diff".into(),
+                reply: None,
             })
             .unwrap()
         else {

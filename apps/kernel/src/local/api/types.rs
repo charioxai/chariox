@@ -685,4 +685,6 @@ pub use workspace::*;
 /// follows a page size change by an ordinary delta whose header carries `css_width`/`css_height`, not a layout reset.
 /// Local 1015 (relay peer 451, provisional until the Landing 14 union renumbers): `ExtensionGrant.app_grant` (the App
 /// binding's lifetime and delegation) is removed.
+/// 1015 adds `origin` (`agent` or `kernel`) to an Inbox notice: only an agent's `chariox.notify_person` is a requested
+/// notification (a pane card and a badge count); the kernel's own notices are person actions that stay in the center.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

@@ -8690,7 +8690,7 @@ at any depth. Task `owner_action` is only `"question"`; `"browser_access"`, the
 `GetPersonInbox` answers `PersonInbox{cards, mutes}` (kernel resource `person_inbox`). A card is
 `{card_id, session_id, snoozed_until_ms, body}`, and `body` is one of `needs_you{interaction}` (a pending
 interaction of the Room, answered with the same `RespondToInteraction`), `notice{…}` (sent by an agent with
-`chariox.notify_person`), `workflow{workflow_id, workflow_name, run_id, run_number, outcome, at_ms}` (a failed
+`chariox.notify_person`, `origin: agent`, a requested notification the Web shows as a pane card and in the badge until it is read; the kernel's own notices are `origin: kernel`: a sign-in request carries an `action` and is a person action that counts as needs-you, a refused workflow start is status; local 1015 adds `origin`), `workflow{workflow_id, workflow_name, run_id, run_number, outcome, at_ms}` (a failed
 or waiting run of a workflow whose responsible is the person; it leaves when the person opens the run or a newer
 run starts) or `flag{subscription_id, subscriber_name, source_name, health, at_ms}` (a subscription that stopped
 delivering; it leaves when the subscription is fixed or removed). `SetInboxCardState{card_ids, change}` reads,

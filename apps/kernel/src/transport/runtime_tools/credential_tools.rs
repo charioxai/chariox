@@ -121,6 +121,8 @@ pub struct RequestPopupChoiceArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupCustomChoiceArgs {
     pub id: String,
+    /// The agent's own label for the free-text box; absent means a plain box with no label of ours.
+    #[serde(default)]
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
@@ -610,10 +612,10 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "custom_choice": {
                         "type": "object",
-                        "required": ["id", "label"],
+                        "required": ["id"],
                         "properties": {
                             "id": {"type": "string"},
-                            "label": {"type": "string"},
+                            "label": {"type": "string", "description": "Optional. The label of the free-text box on the card. Omit it for a plain box."},
                             "placeholder": {"type": "string"},
                             "min_length": {"type": "integer", "minimum": 1},
                             "max_length": {"type": "integer", "minimum": 1}

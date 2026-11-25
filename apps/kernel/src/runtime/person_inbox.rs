@@ -11,7 +11,8 @@ use crate::error::DaemonError;
 use crate::local::{
     InboxCardChange, LocalDaemonResponse, NotificationSubscriptionHealth,
     NotificationSubscriptionRow, PersonInboxCard, PersonInboxCardBody, PersonInboxFlag,
-    PersonInboxNotice, PersonInboxPriority, PersonInboxWorkflowRun, SetInboxCardStateRequest,
+    PersonInboxNotice, PersonInboxNoticeOrigin, PersonInboxPriority, PersonInboxWorkflowRun,
+    SetInboxCardStateRequest,
     SetInboxMuteRequest,
 };
 use crate::runtime::command::{caller_user_id, KernelCaller};
@@ -328,6 +329,14 @@ impl OwnedInbox {
                     agent_name,
                     title,
                     body,
+                    origin: if notice.is_workflow_relink()
+                        || notice.is_workflow_start_refusal()
+                        || provider_account::is_sign_in_notice(notice)
+                    {
+                        PersonInboxNoticeOrigin::Kernel
+                    } else {
+                        PersonInboxNoticeOrigin::Agent
+                    },
                     link: action.is_none().then(|| notice.link.clone()).flatten(),
                     action,
                     priority: notice.priority,

@@ -14,6 +14,11 @@ fn card_id(profile: &ProviderAccountProfile) -> String {
     )
 }
 
+/// The notice is the kernel's own sign-in request for a provider account.
+pub(super) fn is_sign_in_notice(notice: &StoredNotice) -> bool {
+    notice.agent_id.starts_with(ORIGIN)
+}
+
 /// Only kernel notices with the reserved origin may project an executable action.
 /// An agent's ordinary link remains an ordinary link, even with the same URL.
 pub(super) fn action(notice: &StoredNotice) -> Option<PersonInboxNoticeAction> {
@@ -162,5 +167,8 @@ mod tests {
         assert_eq!(action(&notice), None);
         notice.agent_id = "provider-account:work".into();
         assert_eq!(action(&notice), Some(expected));
+        assert!(is_sign_in_notice(&notice), "the sign-in request is the kernel's own notice");
+        notice.agent_id = "ordinary-agent".into();
+        assert!(!is_sign_in_notice(&notice));
     }
 }
