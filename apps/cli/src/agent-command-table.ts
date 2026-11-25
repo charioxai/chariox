@@ -78,7 +78,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "machine release", brief: "Release an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "delete an acquired machine; read machine status until its state is deleted" },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
-  { name: "kernels restart", brief: "Restart a kernel's browser", flags: [{ name: "--browser" }, KERNEL, TIMEOUT, SOCKET], summary: "restart the browser of this kernel, or of --kernel NAME: Chrome and its display start again and every Tab comes back at its URL with its opener. Answers with the browser state once it is up. Needs --browser" },
+  { name: "kernels restart", brief: "Restart a kernel, or only its browser", flags: [{ name: "--browser" }, KERNEL, TIMEOUT, SOCKET], summary: "restart this kernel, or --kernel NAME, as a hot reload: its terminals and running agents carry on, its Vault keeps its unlock and its deadline, clients reconnect. Answers KernelRestarting once the reload is prepared, or refuses with why and the kernel keeps running. With --browser it restarts only the browser: Chrome and its display start again and every Tab comes back at its URL with its opener, and it answers with the browser state once it is up" },
   {
     name: "request", brief: "Send a JSON request to a kernel",
     flags: [KERNEL, { name: "--command-id", value: "ID" }, { name: "--no-subscribe" }, TIMEOUT, SOCKET],

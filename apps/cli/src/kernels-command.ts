@@ -210,7 +210,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     const split = terminalVerb === "open" || (command === "exec" && !execPlace) ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)
     const options = split < 0 ? rest : rest.slice(0, split)
-    // `chariox kernels restart --browser` restarts the browser of a kernel (row 548); a bare `kernels` still lists them.
+    // `chariox kernels restart [--browser] [--kernel NAME]` restarts a kernel as a hot reload (row 551), or only its browser (row 548); a bare `kernels` still lists them.
     const kernelsRestart = command === "kernels" && rest[0] === "restart"
     const { flags, positionals } = parseArguments(kernelsRestart ? "kernels restart" : verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command, verb || terminalVerb || execPlace || kernelsRestart ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
@@ -253,12 +253,14 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     } else if (command === "guide") {
       console.log(guideText())
     } else if (kernelsRestart) {
-      // The browser is the only thing a person can restart here today; `--browser` names it, so a later `--kernel`-wide restart
-      // cannot be started by a missing flag.
-      if (!flags.has("--browser")) throw new CommandFailure("usage", usageOf("kernels restart"))
       kernel = (flags.get("--kernel") as string | undefined) ?? null
-      const response = await sendRequest({ KernelBrowser: { command: { op: "restart" } } }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) + 60 }) as { KernelBrowser?: { result: unknown } }
-      console.log(JSON.stringify(response.KernelBrowser?.result ?? response))
+      if (flags.has("--browser")) {
+        const response = await sendRequest({ KernelBrowser: { command: { op: "restart" } } }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) + 60 }) as { KernelBrowser?: { result: unknown } }
+        console.log(JSON.stringify(response.KernelBrowser?.result ?? response))
+      } else {
+        const response = await sendRequest({ RestartKernel: {} }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) }) as { KernelRestarting?: unknown }
+        console.log(JSON.stringify(response))
+      }
     } else if (command === "kernels") {
       const listed = await sendRequest({ ListGatewayKernels: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayKernelsListed: unknown }
       console.log(JSON.stringify(listed.GatewayKernelsListed))
