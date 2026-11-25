@@ -98,10 +98,12 @@ struct Layout<'a> {
     /// Refs the accessibility tree names a button or link: a control is not a box.
     controls: std::collections::BTreeSet<&'a str>,
     scroll: Vec<(f64, f64)>,
+    /// The tab's own page size, from the host; a click point outside it is not offered.
+    page: Option<(f64, f64)>,
 }
 
 impl<'a> Layout<'a> {
-    fn new(snapshot: &'a Value) -> Self {
+    fn new(snapshot: &'a Value, page_size: &Value) -> Self {
         let by_ref = snapshot["dom_nodes"]
             .as_array()
             .into_iter()
@@ -130,6 +132,7 @@ impl<'a> Layout<'a> {
             by_ref,
             controls,
             scroll,
+            page: page_size["css_width"].as_f64().zip(page_size["css_height"].as_f64()),
         }
     }
 
@@ -157,7 +160,9 @@ impl<'a> Layout<'a> {
         let number = |key: &str| bounds[key].as_f64().unwrap_or(0.0);
         let x = (number("x") - scroll_x + number("width") / 2.0).round();
         let y = (number("y") - scroll_y + number("height") / 2.0).round();
-        let visible = x >= 0.0 && y >= 0.0;
+        let visible = x >= 0.0
+            && y >= 0.0
+            && self.page.is_none_or(|(width, height)| x < width && y < height);
         entry["in_viewport"] = visible.into();
         if visible {
             entry["click"] = json!({"x": x as i64, "y": y as i64});
@@ -295,7 +300,7 @@ pub(super) fn project(payload: Value, find: Value) -> Result<Value, DaemonError>
     }
     let query = find["query"].as_str().unwrap_or_default().to_lowercase();
     let requested = find["kind"].as_str().unwrap_or("any");
-    let layout = Layout::new(snapshot);
+    let layout = Layout::new(snapshot, &payload["page_size"]);
     let mut nodes = BTreeMap::<String, Value>::new();
     if requested == "container" {
         for node in snapshot["dom_nodes"].as_array().into_iter().flatten() {
@@ -535,5 +540,32 @@ mod tests {
         // through snapshot or screenshot if it wants it. The ref, name and bounds are what it needs.
         assert!(!found.to_string().contains("SHOWN_ONCE"), "{found}");
         assert!(found["matches"][0]["attributes"]["id"] == "token-box");
+    }
+
+    #[test]
+    fn find_omits_a_click_point_outside_the_tab_page_and_follows_a_resized_tab() {
+        // Review #1753 P2: off-screen below or right of the page is not clickable.
+        let mut page = token_page();
+        page["page_size"] = json!({"css_width":1280,"css_height":800});
+        page["snapshot"]["dom_nodes"][1]["bounds"] = json!({"x":620.0,"y":2000.0,"width":40.0,"height":32.0});
+        page["snapshot"]["dom_nodes"][2]["bounds"] = json!({"x":1500.0,"y":806.0,"width":32.0,"height":32.0});
+        let find = |page: &Value, query: &str| {
+            project(
+                page.clone(),
+                json!({"query":query,"kind":"button","offset":0,"document_id":"document"}),
+            )
+            .unwrap()["matches"][0]
+                .clone()
+        };
+        let below = find(&page, "copy");
+        assert_eq!(below["in_viewport"], false, "{below}");
+        assert!(below.get("click").is_none());
+        let right = find(&page, "reveal");
+        assert_eq!(right["in_viewport"], false, "{right}");
+        assert!(right.get("click").is_none());
+        // The same tab laid out 1600 x 2600 (resized): both are inside it.
+        page["page_size"] = json!({"css_width":1600,"css_height":2600});
+        assert_eq!(find(&page, "copy")["click"], json!({"x":640,"y":1516}));
+        assert_eq!(find(&page, "reveal")["in_viewport"], true);
     }
 }

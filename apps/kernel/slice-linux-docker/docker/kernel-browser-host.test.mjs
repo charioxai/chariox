@@ -948,7 +948,7 @@ test('MP-08/MP-10/MP-11 an agent click outside the viewport says so, in CSS pixe
  const refused=await host.handle({id:'outside',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:viewport.css_width+158,y:355}}});
  assert.equal(refused.ok,false);
  assert.equal(refused.error.code,'kernel_browser_failed');
- assert.equal(refused.error.message,'MD-2: pointer outside viewport; x/y are CSS pixels inside state viewport css_width x css_height (screenshot pixels / device_scale_factor)');
+ assert.equal(refused.error.message,`MD-2: pointer outside viewport; x/y are CSS pixels inside this tab's page ${viewport.css_width}x${viewport.css_height} (screenshot pixels / device_scale_factor)`);
  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,before,'nothing is dispatched');
  assert.equal(host.browser?.connection!==undefined,true,'a refused coordinate does not stop the browser');
 }));
@@ -3869,4 +3869,12 @@ test('MP-08 a payment commit is single use even after a lost acknowledgement',()
   assert.equal(again.ok,false,'do not pay again when the first result is uncertain');
   assert.match(JSON.stringify(again),/already.*sent|receipt/i);
   assert.equal(sent.filter(r=>r.method==='Input.dispatchMouseEvent').length,before);
+}));
+
+test("row 559/553 review P2: a snapshot reply names the tab's own page size, resized or not", () => using(async ({host}) => {
+  const tab = await host.request({op: "open", url: "https://example.com"});
+  const read = async () => (await host.handle({id: 1, method: "host.browser", params: {op: "snapshot", tab_id: tab.tab_id, generation: host.generation}})).result;
+  assert.deepEqual((await read()).page_size, {css_width: 1280, css_height: 800});
+  host.layouts.set(tab.tab_id, {width: 1280, height: 1324, subscriptionId: 'resize'});
+  assert.deepEqual((await read()).page_size, {css_width: 1280, css_height: 1324});
 }));
