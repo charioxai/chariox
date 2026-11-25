@@ -29,6 +29,7 @@ fn mp08_mp11_viewer_density_stills_1015_snapshot_hash() {
         initial_push: false,
         tab_display: false,
         viewer_density_stills: false,
+        resize_rebind: false,
     };
     // A viewer that does not ask sends no field.
     assert!(

@@ -6634,6 +6634,23 @@ without the capability, or with deferred boxes open, still re-snapshots as befor
 so the web asks only kernels at 1015 or later. `browser-mirror2-layout-delta-1015.json` pins the shape (Rust hash test
 `browser_mirror2_layout_delta_1015_shape_is_pinned`).
 
+### MP-08 / MP-10 / MP-11: visible-page video follows a resize (local 1015)
+
+Local 1015 (relay peer unchanged) adds the opt-in `display_subscribe` field `resize_rebind:true` for a default visible-page
+subscription (no `target`). A viewer asks for it only of a kernel that advertises the capability `display_resize_rebind_v1`
+in its status; the reply echoes it when accepted. Without it, a resize of the Browser window retires the window binding
+(`viewport_resize`), so every visible-page crop on it is removed and the viewer re-subscribes. For a subscription that
+asked, the kernel instead keeps it: credits wait (bounded) while the kernel admits the same Tab and document on the resized
+window through the same visible-page admission (layout read, geometry, native attestation, lease, Vault projection). It then
+swaps that capture into the subscription (same `subscription_id` and `binding_id`), and its encoder restarts with a key frame
+at the new size. Every frame of such a subscription carries `binding_sequence`, the window epoch its binding is at. A viewer
+accepts a frame whose `binding_sequence` is later than its binding's `sequence` as the same binding at that epoch and at the
+frame's CSS size (validated as a region binding, at the binding's density or, for a still, its `viewer_scale`), and names
+that epoch in input. The kernel refuses input naming the old one, as it refuses any stale epoch. If the admission refuses
+(another document, a covered page, protection) or does not finish in 3 s, the subscription is removed exactly as before. A
+subscription without the field keeps the retire-and-resubscribe behaviour. `browser-display-resize-rebind-1015.json` pins the
+shape (Rust hash test `row487_display_resize_rebind_1015_shape_is_pinned`).
+
 ### OSS landing union protocol 629 / peer 232
 
 The combined landing keeps local protocol 629 and peer 232. It includes the

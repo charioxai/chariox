@@ -285,7 +285,14 @@ impl KernelRuntimeState {
         // Deleting an agent that is not below the caller: its own Room and owner, never the
         // caller itself or an agent above it (deleting that would delete the caller).
         if deleting && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
-            self.authorize_delete_scope(&actor, &target)?;
+            if target.session_id() == actor.session_id() {
+                self.authorize_delete_scope(&actor, &target)?;
+            } else if self.owned.agent_store.is_ancestor(target.id(), &actor) {
+                // Another Room of the same owner (row 405 PA12): never an agent above the caller.
+                return Err(denied(
+                    "that agent is above you; deleting it would delete you",
+                ));
+            }
         }
         if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
             self.authorize_peer_control(&actor, &target, super::peer_rooms::PeerControl::Cancel)?;

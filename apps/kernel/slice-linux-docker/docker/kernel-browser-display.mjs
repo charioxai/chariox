@@ -425,7 +425,9 @@ export class DisplayStream {
     const envelope = payload => ({ ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
       width: source.motion ? (this.css_width??1280)*this.device_scale_factor : current.width, height: source.motion ? (this.css_height??800)*this.device_scale_factor : current.height, css_width: this.css_width??1280, css_height: this.css_height??800,
-      device_scale_factor: source.motion ? this.device_scale_factor : density, colour: 'srgb' });
+      device_scale_factor: source.motion ? this.device_scale_factor : density, colour: 'srgb',
+      // Row 487: the window epoch input must name; a resize rebind raises it.
+      ...(this.resizeRebind === true && this.regionLease ? { binding_sequence: this.regionLease.sequence } : {}) });
     let packet = envelope(payload);
     if (payload.kind === 'png' && egressBytes(packet,this.relay_binary) > egressLimit) {
       // Existing repair certificates belong to the replaced video canvas,

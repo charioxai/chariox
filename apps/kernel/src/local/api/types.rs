@@ -691,4 +691,7 @@ pub use workspace::*;
 /// card by title (`AgentWaitKind::card`) and a timer its due time (`due_at_ms`) on `waiting_on` and `waiting_events`.
 /// Local 1015 (relay peer 452, Landing 14): `KernelBrowser { op: "restart" }` restarts the user's browser (its controller process, Chrome and display) and
 /// answers with the restored browser state; Tabs come back with their `opener_tab_id`. `chariox kernels restart --browser` sends it.
+/// Local 1015 (relay peer unchanged): a default visible-page `display_subscribe` may ask `resize_rebind` of a kernel that
+/// advertises `display_resize_rebind_v1`; the kernel keeps that subscription across a resize of the Browser window (same
+/// Tab re-admitted on the new window) and its frames carry `binding_sequence`, the new window epoch.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

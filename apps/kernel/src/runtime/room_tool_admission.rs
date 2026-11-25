@@ -46,6 +46,20 @@ pub(crate) fn resolve_agent<'a>(
     Ok(target)
 }
 
+/// The actor itself, or an agent below it. Row 405 leaves the settings read (`agent settings
+/// [<agent>]`) with this check; changes go through room admission.
+pub(crate) fn self_or_below(
+    actor: &AgentInstance,
+    target: &AgentInstance,
+    agents: &[AgentInstance],
+) -> Result<(), DaemonError> {
+    if target.id() == actor.id() && target.session_id() == actor.session_id() {
+        Ok(())
+    } else {
+        in_subtree(actor, target, agents)
+    }
+}
+
 /// A caller controls every agent below it, at any depth, and nothing else.
 /// Membership only: the permission level or mode of either agent never decides.
 pub(crate) fn in_subtree(

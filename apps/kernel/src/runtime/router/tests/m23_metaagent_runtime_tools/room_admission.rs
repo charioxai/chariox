@@ -581,12 +581,20 @@ async fn room_boundaries() {
         .unwrap()
         .project_id()
         .to_string();
-    // Row 405 (PA8): ending, archiving and deleting are the owner's ordinary actions.
+    // Row 405 (PA8): ending and archiving are the owner's ordinary actions, deleting a Project too.
+    // Deleting a Room stays the creator's: the Room the agent runs in is the owner's to delete.
+    let delete_room: LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"DeleteSession":{"session_ref":session.id(),"workspace_id":null}}),
+    )
+    .unwrap();
+    assert!(router
+        .runtime_state
+        .authorize_room_agent_request(a.id(), &delete_room)
+        .is_err());
     for value in [
         serde_json::json!({"EndSession":{"session_id":session.id()}}),
         serde_json::json!({"ArchiveProject":{"project_id":project_id}}),
         serde_json::json!({"DeleteProject":{"project_id":project_id}}),
-        serde_json::json!({"DeleteSession":{"session_ref":session.id(),"workspace_id":null}}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         assert!(router
