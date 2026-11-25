@@ -41,6 +41,36 @@ pub(crate) fn privileged_run_spec() -> RuntimeToolSpec {
     }
 }
 
+/// One request, checked: what runs, where, and the entry's use it must match.
+struct Run {
+    argv: Vec<String>,
+    timeout: Duration,
+    machine: Machine,
+    sudo: std::path::PathBuf,
+}
+
+impl Run {
+    fn new(
+        state: &KernelRuntimeState,
+        argv: &serde_json::Value,
+        machine: Option<&str>,
+        timeout_seconds: Option<u64>,
+    ) -> Result<Self, DaemonError> {
+        Ok(Self {
+            argv: super::super::agent_process_watch::command_argv(argv, true)?,
+            timeout: command_timeout(timeout_seconds)?,
+            machine: state.privileged_machine(machine)?,
+            sudo: sudo_program()?,
+        })
+    }
+
+    fn target(&self) -> crate::config::VaultUseTarget {
+        crate::config::VaultUseTarget::CommandStdin {
+            origin: self.machine.origin.clone(),
+        }
+    }
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn privileged_run(
         &self,
@@ -51,14 +81,21 @@ impl KernelRuntimeState {
         self.recheck_vault_command_context(&context)?;
         let args: RunArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid privileged run arguments: {e}")))?;
-        let argv = super::super::agent_process_watch::command_argv(&args.argv, true)?;
-        let timeout = command_timeout(args.timeout_seconds)?;
-        let machine = self.privileged_machine(args.machine.as_deref())?;
-        let target = crate::config::VaultUseTarget::CommandStdin {
-            origin: machine.origin.clone(),
-        };
-        self.check_entry_machine(&context, &args.credential_id, &target, &machine)?;
-        let sudo = sudo_program()?;
+        let run = Run::new(
+            self,
+            &args.argv,
+            args.machine.as_deref(),
+            args.timeout_seconds,
+        )?;
+        let target = run.target();
+        // A leased run's entry is the home Vault's; the home checks its binding.
+        if context.home.is_none() {
+            check_entry_machine(
+                &self.home_runtime_secret_service()?,
+                &args.credential_id,
+                &run,
+            )?;
+        }
         let _unlock = self
             .prepare_workspace_vault_uses(
                 &context,
@@ -71,18 +108,65 @@ impl KernelRuntimeState {
             .read_workspace_vault_value(&context, &args.credential_id, &target)
             .await?;
         self.recheck_vault_command_context(&context)?;
+        let outcome = self
+            .run_with_password(Some(context), run, &args.credential_id, password)
+            .await?;
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::to_value(outcome)
+                .map_err(|e| error(format!("privileged run result: {e}")))?,
+        })
+    }
+
+    /// The owner's own run, from the Vault menu or the CLI. The caller has
+    /// checked that the request comes from the owner and that the Vault is open.
+    pub(crate) async fn owner_privileged_run(
+        &self,
+        id: &str,
+        argv: Vec<String>,
+        machine: Option<String>,
+        timeout_seconds: Option<u64>,
+    ) -> Result<crate::local::PrivilegedRunOutcome, DaemonError> {
+        let run = Run::new(
+            self,
+            &serde_json::json!(argv),
+            machine.as_deref(),
+            timeout_seconds,
+        )?;
+        let service = self.home_runtime_secret_service()?;
+        check_entry_machine(&service, id, &run)?;
+        let password =
+            zeroize::Zeroizing::new(service.workspace_secret_input_for_target(id, &run.target())?);
+        service.record_vault_activity(
+            id,
+            &format!("Used by owner for sudo on {}", run.machine.name),
+        )?;
+        self.run_with_password(None, run, id, password).await
+    }
+
+    /// The run itself: the password goes to sudo's stdin and nowhere else, and
+    /// everything that comes back is masked for it.
+    async fn run_with_password(
+        &self,
+        context: Option<VaultAgentContext>,
+        run: Run,
+        credential_id: &str,
+        password: Zeroizing<String>,
+    ) -> Result<crate::local::PrivilegedRunOutcome, DaemonError> {
         let stdin = Zeroizing::new(format!("{}\n", password.as_str()));
-        let masks = vec![(args.credential_id.clone(), password)];
+        let masks = vec![(credential_id.to_string(), password)];
         let output = run_command(
             self,
             context,
             super::super::agent_process_watch::KernelCommand {
-                launch: super::super::agent_process_watch::KernelLaunch::Privileged { sudo },
-                argv: ending_at_timeout(argv, timeout),
+                launch: super::super::agent_process_watch::KernelLaunch::Privileged {
+                    sudo: run.sudo,
+                },
+                argv: ending_at_timeout(run.argv, run.timeout),
                 cwd: std::path::PathBuf::from("/"),
                 env: Vec::new(),
                 stdin: Some(stdin),
-                timeout: timeout + KERNEL_GRACE,
+                timeout: run.timeout + KERNEL_GRACE,
             },
         )
         .await?;
@@ -94,17 +178,19 @@ impl KernelRuntimeState {
             KernelCommandExit::Exited(code) => ("exited", Some(code)),
             KernelCommandExit::Lost => ("lost", None),
         };
-        if let Some(refusal) = sudo_refusal(&output, &machine.name) {
+        if let Some(refusal) = sudo_refusal(&output, &run.machine.name) {
             return Err(error(refusal));
         }
         let (stdout, stdout_cut) = masked(&output.stdout, &masks);
         let (stderr, stderr_cut) = masked(&output.stderr, &masks);
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({"status": status, "exit_code": exit_code,
-                "stdout": stdout, "stderr": stderr, "machine": machine.name,
-                "ran_as": "root",
-                "truncated": output.truncated || stdout_cut || stderr_cut}),
+        Ok(crate::local::PrivilegedRunOutcome {
+            status: status.into(),
+            exit_code,
+            stdout,
+            stderr,
+            machine: run.machine.name,
+            ran_as: "root".into(),
+            truncated: output.truncated || stdout_cut || stderr_cut,
         })
     }
 
@@ -120,35 +206,28 @@ impl KernelRuntimeState {
             ))),
         }
     }
+}
 
-    /// A sudo password is bound to one machine. Naming the origin tells the
-    /// owner which entry to make when the one given is for another use.
-    fn check_entry_machine(
-        &self,
-        context: &VaultAgentContext,
-        id: &str,
-        target: &crate::config::VaultUseTarget,
-        machine: &Machine,
-    ) -> Result<(), DaemonError> {
-        // A leased run's entry is the home Vault's; the home checks its binding.
-        if context.home.is_some() {
-            return Ok(());
-        }
-        let service = self.home_runtime_secret_service()?;
-        let declared = service
-            .credential(id)?
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.use_binding.as_ref())
-            .map(|binding| &binding.target);
-        if declared == Some(target) {
-            return Ok(());
-        }
-        Err(error(format!(
-            "entry_wrong_machine: {id} is not the sudo password of {}. Make an entry for it (use: command_stdin, origin {}) or use the entry made for this machine",
-            machine.name, machine.origin
-        )))
+/// A sudo password is bound to one machine. Naming the origin tells the
+/// owner which entry to make when the one given is for another use.
+fn check_entry_machine(
+    service: &crate::secret::RuntimeSecretService,
+    id: &str,
+    run: &Run,
+) -> Result<(), DaemonError> {
+    let declared = service
+        .credential(id)?
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.use_binding.as_ref())
+        .map(|binding| &binding.target);
+    if declared == Some(&run.target()) {
+        return Ok(());
     }
+    Err(error(format!(
+        "entry_wrong_machine: {id} is not the sudo password of {}. Make an entry for it (use: command_stdin, origin {}) or use the entry made for this machine",
+        run.machine.name, run.machine.origin
+    )))
 }
 
 /// The machine a sudo password belongs to: the origin the entry is bound to.

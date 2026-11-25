@@ -278,3 +278,129 @@ fn sudos_own_refusals_each_name_the_next_step_and_a_command_failure_passes_throu
 fn refusal_for(output: &super::super::agent_process_watch::KernelCommandOutput) -> Option<String> {
     super::super::vault_command::sudo_refusal(output, "nelpx")
 }
+
+async fn owner(
+    f: &Fixture,
+    class: crate::local::KernelConnectionClass,
+    request: crate::local::OwnerVaultRequest,
+) -> Result<crate::local::LocalDaemonResponse, String> {
+    let request = crate::local::LocalDaemonRequest::OwnerVault(request);
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "owner-sudo",
+        None,
+        None,
+        &request,
+    );
+    command.caller.connection_class = Some(class);
+    f.router
+        .dispatch(command, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn owner_entry(f: &Fixture, value: &str) -> String {
+    use crate::local::{LocalDaemonResponse, OwnerVaultRequest, OwnerVaultResult, VaultPassphrase};
+    let created = owner(
+        f,
+        crate::local::KernelConnectionClass::Terminal,
+        OwnerVaultRequest::Create {
+            name: "sudo".into(),
+            kind: "Command secret".into(),
+            use_binding: crate::config::VaultUseBinding {
+                target: crate::config::VaultUseTarget::CommandStdin { origin: origin(f) },
+                value_kind: crate::config::VaultValueKind::Secret,
+            },
+            value: VaultPassphrase::new(value),
+        },
+    )
+    .await
+    .unwrap();
+    let LocalDaemonResponse::OwnerVault {
+        result: OwnerVaultResult::Saved { id },
+    } = created
+    else {
+        panic!("owner creation failed")
+    };
+    id
+}
+
+#[tokio::test]
+async fn the_owner_runs_the_same_request_and_gets_the_same_result() {
+    use crate::local::{
+        KernelConnectionClass, LocalDaemonResponse, OwnerVaultRequest, OwnerVaultResult,
+    };
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    with_fake_sudo(&f, SECRET);
+    let id = owner_entry(&f, SECRET).await;
+    let run = |class, id: &str, argv: Vec<&str>| {
+        owner(
+            &f,
+            class,
+            OwnerVaultRequest::RunPrivileged {
+                id: id.into(),
+                argv: argv.into_iter().map(str::to_string).collect(),
+                machine: None,
+                timeout_seconds: None,
+            },
+        )
+    };
+    let LocalDaemonResponse::OwnerVault {
+        result: OwnerVaultResult::PrivilegedRun { outcome, .. },
+    } = run(
+        KernelConnectionClass::Terminal,
+        &id,
+        vec!["/bin/sh", "-c", "echo ran; exit 7"],
+    )
+    .await
+    .unwrap()
+    else {
+        panic!("owner run failed")
+    };
+    assert_eq!(
+        serde_json::to_value(&outcome).unwrap(),
+        json!({"status": "exited", "exit_code": 7, "stdout": "ran\n",
+            "stderr": format!("typed [vault:{id}]\n"), "machine": machine(&f),
+            "ran_as": "root", "truncated": false})
+    );
+    // The Vault's Activity shows the owner's use.
+    let LocalDaemonResponse::OwnerVault {
+        result: OwnerVaultResult::Activity { events, .. },
+    } = owner(
+        &f,
+        KernelConnectionClass::Terminal,
+        OwnerVaultRequest::Activity { id: id.clone() },
+    )
+    .await
+    .unwrap()
+    else {
+        panic!("no activity")
+    };
+    assert!(events
+        .iter()
+        .any(|e| e.event.starts_with("Used by owner for sudo on")));
+    // An agent's connection is not the owner's client: refused, nothing runs.
+    let marker = workspace(&f).join("must-not-run");
+    let marker_text = marker.display().to_string();
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let refused = run(class, &id, vec!["/usr/bin/touch", &marker_text])
+            .await
+            .unwrap_err();
+        assert!(!refused.contains(SECRET), "{refused}");
+    }
+    assert!(!marker.exists());
+    // A wrong password is the same refusal as for an agent.
+    let wrong = owner_entry(&f, OTHER).await;
+    let refused = run(KernelConnectionClass::Terminal, &wrong, vec!["/bin/true"])
+        .await
+        .unwrap_err();
+    assert!(refused.contains("wrong_password"), "{refused}");
+    for value in [SECRET, OTHER] {
+        assert!(!refused.contains(value), "{refused}");
+    }
+    f.state.shutdown_cleanup().await.unwrap();
+}

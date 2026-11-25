@@ -68,13 +68,15 @@ impl KernelRuntimeState {
 /// Runs the command off the async runtime; it may take minutes.
 async fn run_command(
     state: &KernelRuntimeState,
-    context: VaultAgentContext,
+    context: Option<VaultAgentContext>,
     command: super::agent_process_watch::KernelCommand,
 ) -> Result<super::agent_process_watch::KernelCommandOutput, DaemonError> {
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
-        state.recheck_vault_command_context(&context)?;
-        state.run_kernel_command(&context, command)
+        if let Some(context) = &context {
+            state.recheck_vault_command_context(context)?;
+        }
+        state.run_kernel_command(context.as_ref(), command)
     })
     .await
     .map_err(|_| error("the command runner stopped unexpectedly"))?

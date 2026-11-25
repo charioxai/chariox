@@ -176,7 +176,7 @@ pub use api::{
     OwnerVaultRequest, OwnerVaultResult, PairedClientRecord, PairingInviteIntent,
     PairingInviteRecord, PairingJoinRecord, PauseMetaagentTaskRequest, PauseWorkflowRunRequest,
     PollCloudRelayLoginRequest, PollRuntimeNoticesRequest, PreviewPromptSettingRequest,
-    PreviewWorkflowScheduleRequest, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView,
+    PreviewWorkflowScheduleRequest, PrivilegedRunOutcome, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView,
     ProjectEnvironmentFilePath, ProjectEnvironmentFilePresenceKind, ProjectEnvironmentFileView,
     ProjectEnvironmentSecretName, ProjectEnvironmentSecretSource, ProjectEnvironmentSecretView,
     ProjectEnvironmentSetupField, ProjectEnvironmentSetupState, ProjectEnvironmentView,

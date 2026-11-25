@@ -117,7 +117,7 @@ impl KernelRuntimeState {
         masks.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
         let output = run_command(
             self,
-            context.clone(),
+            Some(context.clone()),
             super::super::agent_process_watch::KernelCommand {
                 launch: super::super::agent_process_watch::KernelLaunch::Isolated,
                 argv,

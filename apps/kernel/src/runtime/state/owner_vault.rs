@@ -172,6 +172,24 @@ impl KernelRuntimeState {
         // KA, sudo and host forwarding cannot turn an agent into an owner client.
         let owner = self.owner_client_user_id(command)?;
         self.require_unlocked_vault()?;
+        // A run takes up to minutes and changes nothing in the Vault: it must
+        // not hold the Vault's change guard.
+        let request = match request {
+            OwnerVaultRequest::RunPrivileged {
+                id,
+                argv,
+                machine,
+                timeout_seconds,
+            } => {
+                let outcome = self
+                    .owner_privileged_run(&id, argv, machine, timeout_seconds)
+                    .await?;
+                return Ok(LocalDaemonResponse::OwnerVault {
+                    result: OwnerVaultResult::PrivilegedRun { id, outcome },
+                });
+            }
+            other => other,
+        };
         let _guard = self.vault_observation_mutation_guard().await;
         self.require_unlocked_vault()?;
         let service = self.home_runtime_secret_service()?;
@@ -308,6 +326,9 @@ impl KernelRuntimeState {
                     BindingChange::Rebind,
                 )?;
                 OwnerVaultResult::Saved { id }
+            }
+            OwnerVaultRequest::RunPrivileged { .. } => {
+                unreachable!("answered before the change guard")
             }
             OwnerVaultRequest::Delete { id } => {
                 let entry = registered_entry(&registry, &id)?;
