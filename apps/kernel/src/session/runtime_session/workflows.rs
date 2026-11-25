@@ -1211,7 +1211,11 @@ impl RuntimeSession {
             })
             .filter_map(|(index, item)| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
-                if !queue.enabled() {
+                if !queue.enabled()
+                    || self
+                        .workflow(item.workflow_id())
+                        .is_some_and(WorkflowDefinition::is_archived)
+                {
                     return None;
                 }
                 Some((index, queue.priority(), item.created_at_ms()))
@@ -1244,6 +1248,9 @@ impl RuntimeSession {
                     return None;
                 }
                 let workflow = self.workflow(item.workflow_id())?;
+                if workflow.is_archived() {
+                    return None;
+                }
                 let instance = self.idle_workflow_runtime_instance(
                     workflow.id(),
                     item.endpoint_id(),
@@ -1280,6 +1287,9 @@ impl RuntimeSession {
             .filter_map(|item| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 let workflow = self.workflow(item.workflow_id())?;
+                if workflow.is_archived() {
+                    return None;
+                }
                 self.idle_workflow_runtime_instance(
                     workflow.id(),
                     item.endpoint_id(),

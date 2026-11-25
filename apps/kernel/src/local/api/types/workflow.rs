@@ -326,6 +326,9 @@ pub struct ClearWorkflowRunAttentionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListWorkflowsRequest {
     pub session_id: String,
+    /// Archived workflows are hidden unless the caller asks for them.
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1037,6 +1040,12 @@ pub enum WorkflowDesignOp {
     },
     WorkflowRemove {
         workflow_id: String,
+    },
+    /// Hide the workflow from lists and refuse new runs; its code, runs and
+    /// history stay readable. `archived: false` restores it.
+    WorkflowArchive {
+        workflow_id: String,
+        archived: bool,
     },
     SchemaAdd {
         workflow_id: String,

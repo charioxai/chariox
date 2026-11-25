@@ -443,6 +443,12 @@ fn meta_workflow_responsible_request(
     })
 }
 
+fn op_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos())
+}
+
 pub(super) fn meta_workflow_request(
     session: &crate::session::RuntimeSession,
     metaagent: &crate::agent::AgentInstance,
@@ -451,9 +457,40 @@ pub(super) fn meta_workflow_request(
     room_tools: bool,
 ) -> Result<LocalDaemonRequest, DaemonError> {
     match args.first().map(String::as_str) {
-        Some("list" | "ls") | None => Ok(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
-            session_id: session.id().to_string(),
-        })),
+        Some("list" | "ls") | None => {
+            let include_archived = match &args[args.len().min(1)..] {
+                [] => false,
+                [flag] if flag == "--archived" => true,
+                _ => return Err(meta_command_error("usage: workflow list [--archived]")),
+            };
+            Ok(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+                session_id: session.id().to_string(),
+                include_archived,
+            }))
+        }
+        Some(action @ ("archive" | "unarchive" | "delete" | "remove")) => {
+            let [_, workflow_ref] = args else {
+                return Err(meta_command_error(format!(
+                    "usage: workflow {action} <workflow-ref>"
+                )));
+            };
+            let workflow_id = workflow_ref.clone();
+            let op = match action {
+                "archive" | "unarchive" => crate::local::WorkflowDesignOp::WorkflowArchive {
+                    workflow_id,
+                    archived: action == "archive",
+                },
+                _ => crate::local::WorkflowDesignOp::WorkflowRemove { workflow_id },
+            };
+            Ok(LocalDaemonRequest::ApplyWorkflowDesignOp(
+                crate::local::ApplyWorkflowDesignOpRequest {
+                    session_id: session.id().to_string(),
+                    origin_client_id: metaagent.id().to_string(),
+                    op_id: format!("room-command-{}", op_nonce()),
+                    op,
+                },
+            ))
+        }
         Some("new" | "create") => {
             if args.len() > 2 {
                 return Err(meta_command_error("usage: workflow new [alias]"));
@@ -774,7 +811,7 @@ pub(super) fn meta_workflow_request(
             ))
         }
         _ => Err(meta_command_error(
-            "usage: workflow <list|new|resolve|alias|node|endpoint|edge|run|runs|get-run|cancel|resume> ...",
+            "usage: workflow <list|new|resolve|alias|archive|unarchive|delete|node|endpoint|edge|run|runs|get-run|cancel|resume> ...",
         )),
     }
 }

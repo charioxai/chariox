@@ -248,6 +248,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 452 (local 1015) carries the agent pane feed in the embedded local request and response unions.
 /// Peer 452 (local 1015) carries the owner's limits for machines acquired without asking: three `agents.*` user config keys.
 /// Peer 452 (local 1015) carries the Claude compaction row: terminal output kind `context_compacted`, a running, done or failed summary.
+/// Peer 452 (provisional, local 1015) follows the local workflow archive shapes.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

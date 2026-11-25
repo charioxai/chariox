@@ -654,4 +654,6 @@ pub use workspace::*;
 /// Local 1015 (relay peer 452, provisional): the owner's limits for machines agents acquire without asking are user config keys (`agents.offload_classes`, `agents.offload_max_machines`, `agents.offload_daily_cap_micros`).
 /// A Claude compaction is the history kind `context_compacted` (its text is the summary, empty when Claude wrote none), not a user prompt.
 /// Local 1015 (relay peer 452, provisional): a Claude compaction is one `context_compacted` terminal output row (running, done or failed), never a user prompt.
+/// 1015 (provisional, relay peer 452): `ListWorkflows` takes `include_archived`; a workflow definition
+/// carries `archived_at_ms` and `WorkflowDesignOp::WorkflowArchive` archives or unarchives it.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

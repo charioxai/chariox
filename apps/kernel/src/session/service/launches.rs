@@ -828,6 +828,11 @@ impl SessionService {
             let Some(workflow) = session.workflow(queued_prompt.workflow_id()).cloned() else {
                 continue;
             };
+            // An archived workflow's queued prompts wait for an unarchive. Its idle instance
+            // must not hide another workflow's prompt that still needs an instance.
+            if workflow.is_archived() {
+                continue;
+            }
             let Some(endpoint) = workflow.endpoint(queued_prompt.endpoint_id()).cloned() else {
                 continue;
             };
@@ -1077,6 +1082,15 @@ impl SessionService {
         workflow: &WorkflowDefinition,
         endpoint: &WorkflowEndpointDefinition,
     ) -> Result<(), DaemonError> {
+        if workflow.is_archived() {
+            let label = workflow.alias().unwrap_or(workflow.id());
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow.dispatch",
+                message: format!(
+                    "workflow `{label}` is archived; run `workflow unarchive {label}` to dispatch it again"
+                ),
+            });
+        }
         let entry_node_id = endpoint.entry_node_id();
         workflow
             .node(entry_node_id)

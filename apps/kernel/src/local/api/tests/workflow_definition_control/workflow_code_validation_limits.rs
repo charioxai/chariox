@@ -62,6 +62,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "entry-b" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected inline run");
     match listed {
@@ -97,6 +98,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "entry-b" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected missing endpoint run");
     match listed {
@@ -148,6 +150,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "entry-b" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected artifact run");
     match listed {
@@ -225,6 +228,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected inline queue run");
     match listed {
@@ -286,6 +290,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected artifact queue run");
     match listed {
@@ -399,6 +404,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected duplicate edge apply");
     match listed {
@@ -507,6 +513,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "ENTRY" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected duplicate endpoint apply");
     match listed {
@@ -621,6 +628,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed after rejected queue-limit apply");
     match listed {

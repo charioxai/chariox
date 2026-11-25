@@ -328,6 +328,7 @@ mod remote_spawn_deadline;
 mod room_admission;
 mod room_create;
 mod room_prompt_dispatch;
+mod room_workflow_archive;
 mod self_settings;
 mod subtree;
 
