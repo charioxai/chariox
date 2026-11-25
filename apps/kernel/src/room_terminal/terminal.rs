@@ -270,6 +270,7 @@ impl Terminal {
         // "its session" would hit whoever holds that number.
         self.session_sweep = None;
         self.record.ended = Some(outcome);
+        self.record.ended_at_ms = Some(crate::session::unix_epoch_ms());
         self.unsaved_since = Some(Instant::now());
     }
 
@@ -460,6 +461,27 @@ impl Terminal {
             scrollback_text: text.scrollback,
             screen_text: text.screen,
             ..self.record.clone()
+        }
+    }
+
+    /// Opened on the kernel itself for one command: what `chariox exec` runs. The kernel's own
+    /// terminals are all opened as the user (the owner's clients and a granted agent look the
+    /// same there), so the command is what marks it as one run with one reader.
+    pub(super) fn is_one_command(&self) -> bool {
+        self.record.command.is_some() && self.record.scope == super::TerminalScope::Kernel
+    }
+
+    /// How long after it ended the kernel removes this terminal by itself; `None` for the ones it
+    /// never does: a terminal a person opened or typed into is theirs to close, ended or not.
+    pub(super) fn kernel_cleanup_after(&self) -> Option<std::time::Duration> {
+        if self.is_one_command() {
+            Some(super::service::ONE_COMMAND_UNREAD_RETENTION)
+        } else if matches!(self.record.opened_by, super::TerminalActor::Agent(_))
+            && !self.record.user_interacted
+        {
+            Some(super::service::AGENT_ENDED_RETENTION)
+        } else {
+            None
         }
     }
 

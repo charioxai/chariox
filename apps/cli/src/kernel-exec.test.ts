@@ -282,3 +282,27 @@ test("--stdin on input that never ends is refused after the timeout and says how
   await assert.rejects(readExecInput(idle(), { timeoutSeconds: 0.05, wait: true }),
     (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_not_ended" && /<\/dev\/null/.test(error.message))
 })
+
+test("a terminal the kernel already removed after the last read counts as closed, not as an error", async () => {
+  const { send } = kernel("done\r\n", 0)
+  const removed = async (body: any) => {
+    const operation = body.KernelTerminal.operation.operation
+    if (operation === "close") throw Object.assign(new Error("this kernel has no terminal `t1`"), { code: "terminal_refused" })
+    if (operation === "list") return { RoomTerminal: { result: { result: "listed", terminals: [] } } }
+    return send(body)
+  }
+  const out = sink()
+  assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 30 }, removed, out.stream), 0)
+  assert.equal(out.text(), "done\n")
+})
+
+test("a close that fails while the terminal is still listed is named with the way to close it", async () => {
+  const { send } = kernel("done\r\n", 0)
+  const stuck = async (body: any) => {
+    const operation = body.KernelTerminal.operation.operation
+    if (operation === "close") throw new Error("kernel busy")
+    if (operation === "list") return { RoomTerminal: { result: { result: "listed", terminals: [terminal({ state: "running" }, 0)] } } }
+    return send(body)
+  }
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30 }, stuck, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_terminal_left_open")
+})

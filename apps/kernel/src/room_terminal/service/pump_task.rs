@@ -119,6 +119,18 @@ impl RoomTerminalService {
         owner: &TerminalOwner,
         removed: bool,
     ) -> Result<(), DaemonError> {
+        self.stop_owner_with(owner, removed, removed)
+    }
+
+    /// `end_released_jobs`: also end what the terminal's commands left running after it ended
+    /// (an explicit close or the Room's end does; the kernel tidying an ended terminal's record
+    /// does not, so a server an agent left running outlives the list entry).
+    pub(super) fn stop_owner_with(
+        &self,
+        owner: &TerminalOwner,
+        removed: bool,
+        end_released_jobs: bool,
+    ) -> Result<(), DaemonError> {
         let mut result = Ok(());
         let mut state = owner.lock();
         state.removed |= removed;
@@ -152,7 +164,7 @@ impl RoomTerminalService {
         drop(state);
         owner.pump_wake.notify_one();
         owner.output_changed.notify_waiters();
-        if removed {
+        if end_released_jobs {
             // The terminal's own process is gone; so is what its commands left running. The
             // pump released those jobs to the registry under this owner, which the PTY removal
             // above does not reach.

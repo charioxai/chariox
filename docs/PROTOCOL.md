@@ -6182,6 +6182,11 @@ an external agent working under the owner's kernel-access grant. A Room agent (i
 member, a peer kernel and a hosted service are refused, and a Room's terminal list never shows a kernel terminal.
 A kernel terminal lives until it is closed or the kernel stops; it survives web reloads, other clients and a hot
 reload (the same handover as a Room terminal). Closing it, or the kernel stopping, ends its whole process tree.
+A kernel terminal opened with a `command` (what `chariox exec` runs; every kernel terminal is opened as the user, so the
+command is what marks it) removes itself: once the command exited and a
+`read_output` reached its last byte it leaves the list and the store, and when no client read it, 60 s after it
+exited. A `close` that arrives after that answers that the kernel has no such terminal; `chariox exec` treats that as
+closed. That removal only drops the terminal's record: a process that left the command's session (`setsid nohup job &`) keeps running, as it does after the command ends, and stops with its Room, its agent or the kernel; an explicit `close` still ends it. See "Ended terminals" under Room terminals for every other one.
 `chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
 no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
 
@@ -6242,6 +6247,18 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
   always type. The state is `driver: free | busy { driven_by }` in every
   summary.
 - A tab the user typed in, resized or opened can be closed only by the user.
+- No limit on how many terminals a Room or the kernel holds: only the machine's own limits (descriptors, memory)
+  refuse an `open`, in words that say what to do. Nothing counts ended terminals.
+- Ended terminals (Miguel 11-24): the kernel never removes a terminal a person opened, or one a person typed into
+  (`user_interacted`), ended or not: like a program in a normal OS, only that person closes it. A terminal an agent
+  opened and no person used is removed from the list and the store 1 h after it ended (a `close` earlier removes it at
+  once). The clock is the recorded end time, so a terminal that ended before a kernel restart or hot reload is
+  removed on time too; one the restart ended starts its hour at the restart. The kernel's own one-command terminals
+  are the exception that follows the paragraph under Kernel terminals. Nothing counts ended terminals. No
+  serialized shape changes (the end time is only in the stored record); a client never assumes an ended agent
+  terminal stays. The retention numbers, 60 s and 1 h, are provisional constants in `room_terminal/service.rs`.
+  The kernel's removal drops only the record and the list entry: what the terminal's shell left running in the background
+  keeps running and stops with its Room, its agent or the kernel, as before. An explicit `close` ends it as always.
 - Closing a terminal, or its shell exiting, ends every process left in the shell's
   session (background jobs included). A process that left that session
   (`setsid nohup job >log 2>&1 </dev/null &`) keeps running after its shell or command
