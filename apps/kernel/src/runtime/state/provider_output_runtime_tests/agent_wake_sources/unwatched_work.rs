@@ -41,33 +41,69 @@ async fn say(team: &Team, text: &str) {
 /// A command the agent's shell left running in the background: detached from the shell's
 /// process group, carrying the run's marker like every process the provider starts. Ended by
 /// its exact PID when the test ends.
-struct Background(std::process::Child);
+struct Background {
+    pid: u32,
+    /// Set while the command is still this process's child; a detached one is the init's.
+    child: Option<std::process::Child>,
+}
 
 impl Background {
+    /// A command the agent's shell left behind: detached from the shell, which is gone, so it is
+    /// nobody's child but init's (a `nohup cmd &`).
     fn start(run: &str) -> Self {
         Self::start_owned_by(run, crate::provider::process_owner::current_marker())
     }
     /// A command of run `run` whose kernel is `owner`: provider run ids repeat from kernel to kernel.
     fn start_owned_by(run: &str, owner: Option<String>) -> Self {
-        Self(
-            std::process::Command::new("sleep")
-                .arg("120")
-                .env("CHARIOX_PROVIDER_RUN_ID", run)
-                .envs(owner.map(|owner| (crate::provider::process_owner::OWNER_ENV, owner)))
-                .process_group(0)
-                .spawn()
-                .expect("sleep starts"),
-        )
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("nohup sleep 120 >/dev/null 2>&1 & echo $!")
+            .env("CHARIOX_PROVIDER_RUN_ID", run)
+            .envs(owner.map(|owner| (crate::provider::process_owner::OWNER_ENV, owner)))
+            .output()
+            .expect("sh starts");
+        let pid = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .expect("the shell prints the command's pid");
+        Self { pid, child: None }
+    }
+    /// A process still below the kernel: what a provider starts and keeps (its own process, its
+    /// confinement wrapper, its helpers).
+    fn attached(run: &str) -> Self {
+        let child = std::process::Command::new("sleep")
+            .arg("120")
+            .env("CHARIOX_PROVIDER_RUN_ID", run)
+            .envs(
+                crate::provider::process_owner::current_marker()
+                    .map(|owner| (crate::provider::process_owner::OWNER_ENV, owner)),
+            )
+            .process_group(0)
+            .spawn()
+            .expect("sleep starts");
+        Self {
+            pid: child.id(),
+            child: Some(child),
+        }
     }
     fn pid(&self) -> u32 {
-        self.0.id()
+        self.pid
     }
 }
 
 impl Drop for Background {
+    /// Ends exactly this process, never a group or a name.
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        match self.child.as_mut() {
+            Some(child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            None => {
+                // SAFETY: one signal to a pid this test started and still owns the identity of.
+                unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+            }
+        }
     }
 }
 
@@ -209,6 +245,32 @@ async fn cell_1_a_command_of_another_kernels_run_with_the_same_id_is_not_adopted
     assert!(
         !adopted.contains(&foreign.pid()),
         "cell 1: another kernel's command was adopted: {adopted:?}"
+    );
+}
+
+/// Live finding (drill): the provider's own process and its confinement wrapper carry the run's
+/// marker and are still below the kernel. They are the provider's, never an agent's leftovers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cell_1_a_process_still_below_the_kernel_is_the_providers_and_is_not_adopted() {
+    let team = team_with("nowake-provider-own", None, false).await;
+    let provider_own = Background::attached(&team.child_run);
+    let left_behind = Background::start(&team.child_run);
+    say(&team, "Started it in the background.").await;
+
+    end_turn(&team).await.expect("the turn end is accepted");
+
+    let adopted: Vec<_> = wakes(&team)
+        .into_iter()
+        .filter(|w| w.kind == "adopted_process")
+        .filter_map(|w| w.pid)
+        .collect();
+    assert!(
+        adopted.contains(&left_behind.pid()),
+        "cell 1: the command left behind is adopted: {adopted:?}"
+    );
+    assert!(
+        !adopted.contains(&provider_own.pid()),
+        "cell 1: the provider's own process was adopted: {adopted:?}"
     );
 }
 
