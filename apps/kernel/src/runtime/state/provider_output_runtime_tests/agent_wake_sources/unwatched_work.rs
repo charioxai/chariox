@@ -45,10 +45,15 @@ struct Background(std::process::Child);
 
 impl Background {
     fn start(run: &str) -> Self {
+        Self::start_owned_by(run, crate::provider::process_owner::current_marker())
+    }
+    /// A command of run `run` whose kernel is `owner`: provider run ids repeat from kernel to kernel.
+    fn start_owned_by(run: &str, owner: Option<String>) -> Self {
         Self(
             std::process::Command::new("sleep")
                 .arg("120")
                 .env("CHARIOX_PROVIDER_RUN_ID", run)
+                .envs(owner.map(|owner| (crate::provider::process_owner::OWNER_ENV, owner)))
                 .process_group(0)
                 .spawn()
                 .expect("sleep starts"),
@@ -177,6 +182,33 @@ async fn cell_1_a_background_command_left_running_at_turn_end_is_adopted_as_a_pr
             .iter()
             .any(|event| event.source_id == wake_id),
         "cell 1: the end of the command is an event for the agent"
+    );
+}
+
+/// Live finding (drill): provider run ids repeat from kernel to kernel, so a process of another
+/// kernel's run with the same id must never be adopted. Only the kernel's own marker counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cell_1_a_command_of_another_kernels_run_with_the_same_id_is_not_adopted() {
+    let team = team_with("nowake-foreign-run", None, false).await;
+    let ours = Background::start(&team.child_run);
+    let foreign =
+        Background::start_owned_by(&team.child_run, Some("4242:1:other-boot:ns:home".into()));
+    say(&team, "Started it in the background.").await;
+
+    end_turn(&team).await.expect("the turn end is accepted");
+
+    let adopted: Vec<_> = wakes(&team)
+        .into_iter()
+        .filter(|w| w.kind == "adopted_process")
+        .filter_map(|w| w.pid)
+        .collect();
+    assert!(
+        adopted.contains(&ours.pid()),
+        "cell 1: ours is adopted: {adopted:?}"
+    );
+    assert!(
+        !adopted.contains(&foreign.pid()),
+        "cell 1: another kernel's command was adopted: {adopted:?}"
     );
 }
 
