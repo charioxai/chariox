@@ -33,7 +33,11 @@ async function withTabs(run) {
     const doc = await connection.send('DOM.getDocument', { depth: 0 }, sessionId);
     const found = await connection.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#code' }, sessionId);
     const node = (await connection.send('DOM.describeNode', { nodeId: found.nodeId }, sessionId)).node.backendNodeId;
-    return host.captureSecret({ target_id: stored.target_id, document_id: stored.document_id, tab_id: tab.tab_id, generation: host.generation, node_ref: `backend:${node}`, read: 'qr', expected_document_url: await evaluate(tab, 'location.href') }, {});
+    // The kernel's own entry: host.handle, as the Rust side calls it for chariox.vault.capture_browser (read=qr).
+    const reply = await host.handle({ id: 1, method: 'host.secret', params: { op: 'capture', tab_id: tab.tab_id, generation: host.generation, document_id: stored.document_id,
+      node_ref: `backend:${node}`, reveal_node_ref: null, read: 'qr', expected_document_url: await evaluate(tab, 'location.href') } });
+    if (!reply.ok) throw new Error(`${reply.error?.code}: ${reply.error?.message}`);
+    return reply.result.value;
   };
   try { await run({ host, open, qr, origin, evaluate }); }
   finally {
