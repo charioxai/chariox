@@ -154,7 +154,8 @@ fn agent_profile_turn_end_reports_pending_to_the_cli_and_requesting_agent() {
             Some("m-next")
         );
 
-        let refused = room_command(&world, "b", "agent settings s").await;
-        assert!(!refused.ok, "{refused:?}");
+        // Row 405 (agent parity): another of the owner's agents reads a peer's settings.
+        let peer = room_command(&world, "b", "agent settings s").await;
+        assert!(peer.ok, "{peer:?}");
     });
 }

@@ -150,6 +150,10 @@ pub(super) fn settings_target<'a>(
         actor.session_id(),
         reference.unwrap_or_else(|| actor.id()),
     )?;
-    crate::runtime::room_tool_admission::self_or_below(actor, target, agents)?;
+    // Row 405 (agent parity): the owner's agents read one another's settings; an agent of
+    // another account (a guest's) reads only itself and the agents below it.
+    if actor.owner_user_id() != target.owner_user_id() {
+        crate::runtime::room_tool_admission::self_or_below(actor, target, agents)?;
+    }
     Ok(target)
 }

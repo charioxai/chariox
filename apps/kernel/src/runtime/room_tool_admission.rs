@@ -47,7 +47,7 @@ pub(crate) fn resolve_agent<'a>(
 }
 
 /// The actor itself, or an agent below it. Row 405 leaves the settings read (`agent settings
-/// [<agent>]`) with this check; changes go through room admission.
+/// [<agent>]`) of another account's agent; changes go through room admission.
 pub(crate) fn self_or_below(
     actor: &AgentInstance,
     target: &AgentInstance,
