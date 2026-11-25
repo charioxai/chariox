@@ -74,7 +74,7 @@ async fn an_agent_of_the_owner_is_admitted_like_the_owner() {
 }
 
 #[tokio::test]
-async fn the_restart_tool_takes_no_arguments_and_serves_only_a_kernels_own_agents() {
+async fn the_restart_tool_serves_only_a_kernels_own_agents_and_names_a_bad_argument() {
     let router = router();
     let state = router.runtime_state();
     let stranger = state
@@ -85,15 +85,13 @@ async fn the_restart_tool_takes_no_arguments_and_serves_only_a_kernels_own_agent
         stranger.to_string().contains(OWNER_ONLY),
         "a caller with no run on this kernel is refused: {stranger}"
     );
-    let other_kernel = state
-        .kernel_restart_tool("no-such-run", serde_json::json!({"kernel": "b3"}))
+    let bad = state
+        .kernel_restart_tool("no-such-run", serde_json::json!({"nonsense": 1}))
         .await
         .unwrap_err();
     assert!(
-        other_kernel
-            .to_string()
-            .contains("kernels restart --kernel"),
-        "another kernel is restarted with the CLI: {other_kernel}"
+        bad.to_string().contains("one optional argument"),
+        "an unknown argument is named: {bad}"
     );
     assert_eq!(
         crate::runtime::state::kernel_restart_spec().name,
