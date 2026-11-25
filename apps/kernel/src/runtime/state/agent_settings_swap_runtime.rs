@@ -14,6 +14,41 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    /// A change that waited for a background command is announced once the process that took it
+    /// outputs: its run is not stale, and the change is still pending for its agent.
+    pub(super) fn announce_settings_taken_by_run(&self, session_id: &str, provider_run_id: &str) {
+        let Ok(run) = self.provider_store.get_run(provider_run_id) else {
+            return;
+        };
+        let Some(agent_id) = run.agent_instance_id() else {
+            return;
+        };
+        if run.settings_stale()
+            || run.state() == crate::provider::ProviderRunState::Ended
+            || !run.client_interface().is_chariox()
+        {
+            return;
+        }
+        if let Some((changes, by)) = self.pending_settings_notices.take(session_id, agent_id) {
+            self.announce_settings_change(session_id, agent_id, &changes, &by, false, false);
+        }
+    }
+
+    /// Whether a `run_in_background` call of the run has not ended: it is a child of the
+    /// provider's process, so ending that process ends the call and its notification turn.
+    pub(super) fn run_has_running_background_calls(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        Ok(crate::app::background_calls(
+            self.operational_history_store
+                .load_provider_tool_entries_for_run(session_id, provider_run_id)?,
+        ) == crate::app::BackgroundCalls::Running)
+    }
+}
+
 impl KernelRuntimeState {
     /// Called after each batch of a run's output: when the agent's settings changed while this
     /// process ran and its step is finished, ends the process and goes on with the same turn in
@@ -65,6 +100,12 @@ impl KernelRuntimeState {
             || owned.prompt_completion_settlement_pending(provider_run_id)
             || !owned.provider_run_has_active_prompt(session_id, &run)?
         {
+            return Ok(false);
+        }
+        // A background command is a child of this process: a new process would end it, and with
+        // it the provider's notification turn. The batch just applied may hold its launch row.
+        self.flush_provider_history(provider_run_id).await?;
+        if owned.run_has_running_background_calls(session_id, provider_run_id)? {
             return Ok(false);
         }
         self.swap_turn_process(session_id, &agent, &run, &prompt)

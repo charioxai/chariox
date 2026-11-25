@@ -131,7 +131,16 @@ impl DaemonApp {
                     && run.state() != ProviderRunState::Ended
             })
         {
-            if !self.provider_run_has_active_prompt(session_id, &stale_run)? {
+            // A background command is a child of this process, and the provider's notification
+            // turn for it comes from the same process: ending it would end both. The turn that
+            // starts runs on the old settings, and the change applies once the command ended.
+            let background_command_runs = crate::app::background_calls(
+                self.operational_history_store()
+                    .load_provider_tool_entries_for_run(session_id, stale_run.id())?,
+            ) == crate::app::BackgroundCalls::Running;
+            if !self.provider_run_has_active_prompt(session_id, &stale_run)?
+                && !background_command_runs
+            {
                 self.end_agent_provider_run(session_id, agent_id)?;
             }
         }
