@@ -1295,3 +1295,37 @@ async fn entries_are_named_by_description_in_use_env_write_file_and_copy_for_use
     .is_ok());
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_copy_retry_by_name_still_answers_when_the_copy_carries_the_same_label() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let _turn = elevated(&f);
+    unlock(&f);
+    let pushed = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "push", "argv": printing(SECRET), "host": "github.com",
+            "label": "deploy key", "extract": {"kind":"stdout"},
+            "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+    )
+    .await
+    .unwrap();
+    let source = pushed["credential_id"].as_str().unwrap().to_string();
+    let request = json!({"request_id":"api","from":"deploy key","label":"deploy key",
+        "use_binding":{"target":{"kind":"site","origin":"https://api.github.com"}}});
+    let first = call(&f, COPY_FOR_USE, request.clone()).await.unwrap();
+    assert_eq!(first["created"], true, "{first}");
+    assert_eq!(first["from"], source.as_str(), "{first}");
+    // The copy now shares the description; the identical request still names its source.
+    let again = call(&f, COPY_FOR_USE, request).await.unwrap();
+    assert_eq!(again["created"], false, "{again}");
+    assert_eq!(again["credential_id"], first["credential_id"], "{again}");
+    assert_eq!(again["from"], source.as_str(), "{again}");
+    // A new request by that name is now ambiguous and says so; the id still works.
+    let other = json!({"request_id":"api2","from":"deploy key",
+        "use_binding":{"target":{"kind":"site","origin":"https://api.github.com"}}});
+    let refused = call(&f, COPY_FOR_USE, other).await.unwrap_err().to_string();
+    assert!(refused.contains("more than one"), "{refused}");
+    f.state.shutdown_cleanup().await.unwrap();
+}

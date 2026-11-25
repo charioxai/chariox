@@ -106,7 +106,8 @@ impl KernelRuntimeState {
         mut args: CopyArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         args.from = self
-            .resolve_entry_refs([args.from.as_str()])?
+            .resolve_entry_refs(None, [args.from.as_str()], None)
+            .await?
             .pop()
             .unwrap_or_default();
         args.use_binding.target.validate()?;

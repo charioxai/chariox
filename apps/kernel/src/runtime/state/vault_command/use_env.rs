@@ -53,15 +53,18 @@ impl KernelRuntimeState {
         self.recheck_vault_command_context(&context)?;
         let mut args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
-        if context.home.is_none() {
+        {
             let names: Vec<String> = args.env.keys().cloned().collect();
             let mut ids = self
                 .resolve_entry_refs(
+                    context.home.as_ref(),
                     args.env
                         .values()
                         .map(String::as_str)
                         .chain(args.stdin.as_deref()),
-                )?
+                    None,
+                )
+                .await?
                 .into_iter();
             for name in names {
                 args.env.insert(name, ids.next().unwrap_or_default());

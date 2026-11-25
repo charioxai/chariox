@@ -205,10 +205,15 @@ impl KernelRuntimeState {
         self.recheck_vault_command_context(&context)?;
         let mut args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
-        if context.home.is_none() {
+        {
             let names: Vec<String> = args.values.keys().cloned().collect();
             let mut ids = self
-                .resolve_entry_refs(args.values.values().map(String::as_str))?
+                .resolve_entry_refs(
+                    context.home.as_ref(),
+                    args.values.values().map(String::as_str),
+                    None,
+                )
+                .await?
                 .into_iter();
             for name in names {
                 args.values.insert(name, ids.next().unwrap_or_default());
