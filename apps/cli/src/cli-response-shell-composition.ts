@@ -1,5 +1,6 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
 import { queuedJobsForAgent, remoteJobLinesForAgent, type QueuedJob } from "@chariox/kernel-client/queued-jobs"
+import { machineApprovalLinesForAgent } from "@chariox/kernel-client/machine-approval-receipts"
 import {
   sessionAgentRuntimeDisplayStateByAgent,
 } from "@chariox/kernel-client/session-runtime-status"
@@ -198,6 +199,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     queuedJobsForAgent: (agentId: string | null | undefined) => queuedJobsForAgent(deps.isAttached() ? deps.sessionState()?.processes : [], agentId),
     onQueuedJobAction: deps.onQueuedJobAction,
     remoteJobLinesForAgent: (agentId: string | null | undefined) => remoteJobLinesForAgent(deps.isAttached() ? deps.sessionState()?.jobs : [], agentId),
+    machineApprovalLinesForAgent: (agentId: string | null | undefined) => machineApprovalLinesForAgent(deps.isAttached() ? deps.sessionState()?.machine_approval_receipts : [], agentId),
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
     agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => agentTriggersForAgent(deps.sessionState(), agentId),

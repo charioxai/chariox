@@ -1,4 +1,5 @@
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import { withRuntimeInteractions } from "@chariox/kernel-client/machine-approval-receipts"
 import { sessionHasActiveGoalClock } from "@chariox/kernel-client/session-runtime-status"
 import { createEffect, onCleanup, onMount } from "solid-js"
 
@@ -500,11 +501,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const applyRuntimeInteractionsChanged = (
     sessionId: string,
     activeInteractions: Record<string, unknown>[],
+    machineApprovalReceipts: unknown,
   ) => {
-    applyDeltaSessionState(sessionId, (session) => ({
-      ...session,
-      active_interactions: activeInteractions as RuntimeInteraction[],
-    }))
+    applyDeltaSessionState(sessionId, (session) =>
+      withRuntimeInteractions(session, activeInteractions as RuntimeInteraction[], machineApprovalReceipts))
   }
   const applyWorkflowRunUpdated = (
     sessionId: string,

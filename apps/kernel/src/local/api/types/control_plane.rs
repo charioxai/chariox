@@ -74,6 +74,40 @@ pub enum ControlPlaneRequest {
     },
 }
 
+impl ControlPlaneRequest {
+    /// The capability revision a request was made against, when it carries one.
+    pub fn capability_revision(&self) -> Option<&str> {
+        match self {
+            Self::Acquire {
+                capability_revision,
+                ..
+            }
+            | Self::AcquireJob {
+                capability_revision,
+                ..
+            } => Some(capability_revision),
+            _ => None,
+        }
+    }
+
+    /// The same acquire request against another capability revision.
+    pub fn with_capability_revision(&self, revision: &str) -> Self {
+        let mut request = self.clone();
+        if let Self::Acquire {
+            capability_revision,
+            ..
+        }
+        | Self::AcquireJob {
+            capability_revision,
+            ..
+        } = &mut request
+        {
+            *capability_revision = revision.to_owned();
+        }
+        request
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneResponse {
