@@ -60,6 +60,8 @@ const HISTORY: Record<string, Chord> = { historyUndo: { kind: 'key', key: 'z', m
 const PICKED = new Set('date time datetime-local month week color range'.split(' '))
 const picked = (el: Element): boolean => el.localName === 'select' || el.closest('select') !== null || el.localName === 'input' && PICKED.has((el as HTMLInputElement).type)
 type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[]; fontStyle?: Mirror2FontStyle } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
+// The kernel's still for a canvas proven clear (kernel-browser-mirror2.mjs CLEAR_STILL: a 1x1 transparent PNG).
+const CLEAR_STILL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII='
 
 /** What a reply put on the wire: its deflated body and the base64 of the resources and tiles beside it. */
 function wireBytes(packet: Mirror2WirePacket): number {
@@ -110,6 +112,8 @@ export class BrowserMirror2Renderer {
   private tileUrls = new Map<string, string>()
   private placeholderTiles = new WeakSet<Element>() // tiles showing the black placeholder (neither still nor poster)
   private tileBoxes = new Map<string, Pick<Mirror2Tile, "x" | "y" | "width" | "height">>()
+  // YM-C1: tiles whose still is the kernel's clear still (a canvas proven clear): present (no placeholder), nothing painted.
+  private clearTiles = new Set<string>()
   private selects: Array<[Element, Mirror2Form]> = []
   private states: Element[] = [] // UA state to apply once this packet's DOM is attached
   private targeted = new WeakMap<Document, Element>() // per document, the element its fragment names (`:target`)
@@ -746,7 +750,7 @@ export class BrowserMirror2Renderer {
     this.dom.delete(id); this.records.delete(id); this.styled.delete(id); this.styled.delete(`${id}#style`); this.styled.delete(`${id}#adopted`)
     this.frameDocuments.delete(id)
     if (this.fontRequirements.delete(id)) this.fontRequirementsVersion++
-    const tile = this.tileUrls.get(id); if (tile) { URL.revokeObjectURL(tile); this.tileUrls.delete(id) }; this.tileBoxes.delete(id)
+    const tile = this.tileUrls.get(id); if (tile) { URL.revokeObjectURL(tile); this.tileUrls.delete(id) }; this.tileBoxes.delete(id); this.clearTiles.delete(id)
     if (node) this.ids.delete(node)
   }
   private forgetTree(node: Node): void {
@@ -975,7 +979,7 @@ export class BrowserMirror2Renderer {
   private reset(packet: Mirror2Packet, scrolls: Array<[Element, number, number]>): void {
     const doc = this.doc!
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frameDocuments.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
+    this.tileUrls.clear(); this.tileBoxes.clear(); this.clearTiles.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frameDocuments.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
     this.fontRequirements.clear(); this.fontRequirementsVersion++
     const records = packet.nodes ?? [], frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
     const root = records[0]!
@@ -1074,14 +1078,18 @@ export class BrowserMirror2Renderer {
     const old = this.tileUrls.get(tile.node_id); if (old) URL.revokeObjectURL(old)
     const url = URL.createObjectURL(new Blob([bytesOf(tile.data_base64) as Uint8Array<ArrayBuffer>], { type: 'image/png' })); this.tileUrls.set(tile.node_id, url)
     this.tileBoxes.set(tile.node_id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
-    const record = this.records.get(tile.node_id)
-    if (!old && record?.kind === 'tile') {
+    const record = this.records.get(tile.node_id), clear = tile.data_base64 === CLEAR_STILL, wasClear = this.clearTiles.has(tile.node_id)
+    if (clear) this.clearTiles.add(tile.node_id); else this.clearTiles.delete(tile.node_id)
+    // A clear still after a painted one (or the reverse) restores the author's style before the tile's layout and paint.
+    if ((!old || clear !== wasClear) && record?.kind === 'tile') {
       // Remove the placeholder (or a poster's) by restoring author CSS.
       this.restoreAuthored(record, element)
     } else this.paintTile(tile.node_id, element)
   }
   private paintTile(id: string, element: HTMLElement): void {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
+    // The clear still paints nothing: the author's background shows through the canvas, as it does natively.
+    if (this.clearTiles.has(id)) { paintTileInk(element, tile, null); return }
     const outside = tileOutsideBox(tile, this.records.get(id)?.size ?? [0, 0])
     paintTileInk(element, tile, outside ? url : null); if (outside) return
     const style = element.style, [left, top] = paddingOrigin(element)
@@ -1099,7 +1107,7 @@ export class BrowserMirror2Renderer {
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.absentFont); this.clearPlaceholders(); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
+    URL.revokeObjectURL(this.absentFont); this.clearPlaceholders(); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.clearTiles.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
   }
 }
 

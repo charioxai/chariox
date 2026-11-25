@@ -522,6 +522,59 @@ for (const device_scale_factor of [1, 2]) test(`T3: under a transparent video bo
   assert.equal(new Set(tiles.map(t => t.node_id)).size, 2, `both stills reach the viewer (${tiles.length} stills)`);
 }, { "/alpha.webm": alphaWebm }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// YM-C1 review: a WebGL canvas's buffer reads clear once composited (preserveDrawingBuffer false, the default), exactly as if
+// the page had cleared it. A transformed WebGL canvas whose pixels read clear after a real still keeps that still (its
+// content may still show natively); a 2D canvas the page cleared reads clear for real and shows the page through it.
+const glCleared = '<style>body{margin:0}canvas{display:block;width:240px;height:120px;transform:rotate(3deg);margin:20px}</style><canvas id="g" width="240" height="120"></canvas><canvas id="k" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl",{preserveDrawingBuffer:true});g.clearColor(1,0,0,1);g.clear(g.COLOR_BUFFER_BIT);const k=document.querySelector("#k").getContext("2d");k.fillStyle="#f00";k.fillRect(0,0,240,120);window.wipe=()=>{g.clearColor(0,0,0,0);g.clear(g.COLOR_BUFFER_BIT);k.clearRect(0,0,240,120);return true}</script>';
+test("YM-C1: a transformed WebGL canvas that read real pixels keeps its still when it reads clear; a cleared 2D canvas goes clear", () => mirrored(glCleared, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const clearOf = still => decodePng(still.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0);
+  const first = new Map();
+  for (let i = 0; i < 8 && first.size < 2; i++) for (const tile of (await next(1100)).tiles) first.set(tile.node_id, tile);
+  assert.equal(first.size, 2, "both canvases' stills reach the viewer");
+  // Document order: the WebGL canvas, then the 2D one.
+  const [gl, flat] = [...first.keys()].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  assert(![...first.values()].some(clearOf), "the first stills hold the red pixels");
+  await evaluate("wipe()");
+  const later = new Map();
+  for (let i = 0; i < 4; i++) for (const tile of (await next(1100)).tiles) later.set(tile.node_id, tile);
+  assert(later.has(flat) && clearOf(later.get(flat)), "the cleared 2D canvas shows the page through it");
+  assert(!later.has(gl), "the WebGL canvas keeps its still");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review 2: a default WebGL canvas (preserveDrawingBuffer false) reads clear from the start; untransformed, its still comes
+// from the rendered page (a real picture). Transformed later, its clear readback must not replace that still with a clear one.
+const glFallback = '<style>body{margin:0;background:#f0f}canvas{display:block;width:240px;height:120px;margin:20px}</style><canvas id="g" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl");const draw=()=>{g.clearColor(1,0,0,1);g.clear(g.COLOR_BUFFER_BIT);requestAnimationFrame(draw)};draw();window.turn=()=>{document.querySelector("#g").style.transform="rotate(3deg)";return true}</script>';
+test("YM-C1: a default WebGL canvas whose still came from the rendered page keeps it once transformed", () => mirrored(glFallback, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const clearOf = still => decodePng(still.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0);
+  let first = null;
+  for (let i = 0; i < 8 && !first; i++) first = (await next(1100)).tiles[0] ?? null;
+  assert(first && !clearOf(first), "the untransformed canvas gets a real still (rendered page)");
+  await evaluate("turn()");
+  const later = [];
+  for (let i = 0; i < 4; i++) later.push(...(await next(1100)).tiles.filter(t => t.node_id === first.node_id));
+  assert(!later.some(clearOf), `the transformed canvas keeps its still (${later.length} later stills, ${later.filter(clearOf).length} clear)`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review 3/4: a faded canvas over an authored CSS gradient. Undrawn, and again once a drawn picture is cleared, it travels as
+// the clear still (a 1x1 transparent PNG), which the viewer paints as nothing, so the gradient shows (renderer test); the red
+// still of its drawn state never stays after the clear.
+const fadedGradient = '<style>body{margin:0}canvas{display:block;width:240px;height:120px;margin:20px;opacity:.5;background-image:linear-gradient(red,blue)}</style><canvas id="g" width="240" height="120"></canvas><script>const g=document.getElementById("g").getContext("2d");function paint(){g.fillStyle="#f00";g.fillRect(0,0,240,120)}function wipe(){g.clearRect(0,0,240,120)}</script>';
+test("YM-C1: a faded canvas over an authored gradient travels as the clear still when undrawn and again once cleared", () => mirrored(fadedGradient, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const isClear = t => t.data_base64 === encodePng(1, 1, Buffer.alloc(4));
+  const lastOf = async (rounds, want) => { let last = null; for (let i = 0; i < rounds && !(last && want(last)); i++) for (const t of (await next(1100)).tiles) last = t; return last; };
+  const undrawn = await lastOf(4, isClear);
+  assert(undrawn && isClear(undrawn), "undrawn: the clear still");
+  await evaluate("paint()");
+  const painted = await lastOf(4, t => !isClear(t));
+  assert(painted && !isClear(painted), "drawn: a real still");
+  await evaluate("wipe()");
+  const cleared = await lastOf(4, isClear);
+  assert(cleared && isClear(cleared), "cleared: the clear still replaces the drawn one");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 // browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
 // compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
 // shows; a 2D canvas the page fills black stays black.

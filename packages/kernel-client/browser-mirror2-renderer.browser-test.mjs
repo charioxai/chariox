@@ -181,6 +181,27 @@ for (const authored of ['', 'background:rgb(12,34,56)', 'background-color:rgb(12
   } finally { await page.close(); }
 });
 
+// YM-C1 review 4: the kernel's clear still (its 1x1 transparent PNG, sent for a canvas proven clear) is a tile with nothing to
+// paint: the author's background (a gradient under a faded, undrawn or cleared canvas) shows as natively, never a black
+// placeholder, and a real still painted before it is removed.
+for (const before of ['none', 'red']) test(`YM-C1: a clear still keeps the authored background (before: ${before})`, async () => {
+  const page = await viewer();
+  try {
+    const clear = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=';
+    const red = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = c.height = 100; const x = c.getContext('2d'); x.fillStyle = '#f00'; x.fillRect(0, 0, 100, 100); return c.toDataURL('image/png').split(',')[1]; });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n5', parent: 'n3', kind: 'tile', tag: 'canvas', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:100px;opacity:.5;background-image:linear-gradient(rgb(0, 0, 255), rgb(0, 0, 255))' }, size: [100, 100] }]));
+    const look = () => page.evaluate(() => { const s = getComputedStyle(window.r.frame.contentDocument.querySelector('canvas')); return [s.backgroundImage, s.backgroundColor]; });
+    let sequence = 2;
+    if (before === 'red') { await apply(page, { ...delta(sequence++), tiles: [{ node_id: 'n5', x: 0, y: 0, width: 100, height: 100, data_base64: red }] }); assert.match((await look())[0], /^url\(/, 'fixture: the red still paints'); }
+    await apply(page, { ...delta(sequence++), tiles: [{ node_id: 'n5', x: 0, y: 0, width: 100, height: 100, data_base64: clear }] });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const [image, color] = await look();
+    assert.equal(image, 'linear-gradient(rgb(0, 0, 255), rgb(0, 0, 255))', 'the authored gradient shows, no still over it');
+    assert.notEqual(color, 'rgb(0, 0, 0)', 'no black placeholder');
+  } finally { await page.close(); }
+});
+
 // A video tile without a still (the kernel sends none for a transformed or cross-origin video, airbnb's icons) shows its poster,
 // what Chrome draws before playback, with the page beneath its transparent pixels; a still then replaces the poster.
 test('MP-08/MP-10: a video tile without a still shows its poster over the page beneath; a still replaces it uncovered; no poster stays black', async () => {

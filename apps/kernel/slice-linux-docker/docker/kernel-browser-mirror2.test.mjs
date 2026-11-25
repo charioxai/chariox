@@ -1284,6 +1284,21 @@ for (const display of [undefined, {}]) test(`MP-08/MP-10: an over-budget canvas 
   assert.equal(tiles.length,display?0:1);
 });
 
+// YM-C1 (riften.ai): a transformed, faded or stacked canvas the page never drew showed the viewer's black placeholder: its
+// own pixels read clear, and a distorted region gets no screenshot still (a headless kernel has no video lease either).
+for (const own of [{clear:true}, null]) test(`YM-C1: a distorted canvas whose pixels read ${own ? 'clear gets a transparent still' : 'unreadable keeps none'} (no screenshot)`, async () => {
+  const size={width:1192,height:666}, boxes=[{id:'n3',box:[48,99,98,98],distorted:'transform'}];
+  const {decodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),async screenshot(tab,clip){shots.push(clip);throw new Error('no screenshot expected');}};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>own;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,[]);
+  if (!own) { assert.equal(tiles.length,0); return; }
+  assert.equal(tiles.length,1);
+  assert.deepEqual([tiles[0].x,tiles[0].y,tiles[0].width,tiles[0].height],[0,0,98,98]);
+  const png=decodePng(tiles[0].data_base64,1); assert.ok(png.pixels.length>0 && png.pixels.every((v,i)=>i%4!==3||v===0),'every pixel is transparent');
+});
+
 for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {
   const policy = {}, tab = {tab_id:'t',target_id:'target',document_id:'doc'};
   let viewport = {width:1610,height:900};
@@ -1417,4 +1432,13 @@ test('T3: a cover skips the region under it only while its sent still is proven 
   stream.tilesAt = 0; packet = 3; const third = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
   assert(third.some(t => t.node_id === 'n3'), 'a cover with no still of its own this time covers nothing');
   assert(![...first, ...second, ...third].some(t => 'opaque' in t), 'the opacity proof stays in the kernel');
+});
+
+// YM-C1 review 4: the viewer recognises the kernel's clear still by its exact bytes and paints nothing for it (the author's
+// background shows): the kernel-client's literal is the kernel's CLEAR_STILL.
+test('YM-C1: the kernel-client knows the kernel clear still by its exact bytes', async () => {
+  const {encodePng} = await import('./kernel-browser-pixels.mjs'), {readFileSync} = await import('node:fs');
+  assert.match(readFileSync(new URL('./kernel-browser-mirror2.mjs', import.meta.url), 'utf8'), /^const CLEAR_STILL = encodePng\(1, 1, Buffer\.alloc\(4\)\);$/m);
+  const viewer = readFileSync(new URL('../../../../packages/kernel-client/src/browser-mirror2.ts', import.meta.url), 'utf8');
+  assert.equal(/^const CLEAR_STILL = '([^']+)'$/m.exec(viewer)?.[1], encodePng(1, 1, Buffer.alloc(4)));
 });
