@@ -248,7 +248,13 @@ impl KernelRuntimeState {
             // The home keeps the Vault: it answers a retry and unlocks before the command runs.
             Some(home) => {
                 if let Some(committed) = self
-                    .prepare_home_vault_capture(home, &args.request_id, &host, &args.use_binding)
+                    .prepare_home_vault_capture(
+                        home,
+                        &args.request_id,
+                        &host,
+                        &args.use_binding,
+                        &env_uses,
+                    )
                     .await?
                 {
                     return Ok(committed);

@@ -46,6 +46,7 @@ impl KernelRuntimeState {
         request_id: &str,
         host: &str,
         use_binding: &crate::config::VaultUseBinding,
+        env_uses: &[(String, crate::config::VaultUseTarget)],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
         let response = self
             .send_vault_request_to_home(
@@ -56,6 +57,7 @@ impl KernelRuntimeState {
                         request_id: request_id.to_string(),
                         host: host.to_string(),
                         use_binding: use_binding.clone(),
+                        env_uses: env_uses.to_vec(),
                     },
                 },
             )
@@ -177,8 +179,14 @@ impl KernelRuntimeState {
                     request_id,
                     host,
                     use_binding,
+                    env_uses,
                 } => {
                     check_capture_request(&request_id, None)?;
+                    // Before the unlock: an unknown entry or one made for another origin is
+                    // refused here, as a capture on this kernel refuses it.
+                    for (id, target) in &env_uses {
+                        state.preflight_workspace_vault_use(&actor.agent_id, id, target)?;
+                    }
                     let committed = state
                         .prepare_capture_in_vault(
                             &actor,

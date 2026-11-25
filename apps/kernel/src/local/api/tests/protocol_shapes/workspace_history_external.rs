@@ -853,6 +853,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
                 request_id: "deploy".to_string(),
                 host: "deploy.example.com".to_string(),
                 use_binding: capture_binding.clone(),
+                env_uses: Vec::new(),
             },
         };
     let capture_store_request =

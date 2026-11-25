@@ -641,6 +641,11 @@ pub enum HomeVaultCapture {
         request_id: String,
         host: String,
         use_binding: crate::config::VaultUseBinding,
+        /// The existing entries the worker's command runs with (credential id, command
+        /// environment target): the home refuses an unknown one or one made for another origin
+        /// before it unlocks.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env_uses: Vec<(String, crate::config::VaultUseTarget)>,
     },
     /// The value the worker captured, for the home to store in its Vault.
     Store {
