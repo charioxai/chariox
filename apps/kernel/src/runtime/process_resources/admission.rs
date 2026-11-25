@@ -969,7 +969,8 @@ impl Ledger {
             return None;
         }
         let lost = self.free_loss(members, room);
-        let writers = writers(members);
+        let mut writers = writers(members);
+        writers.extend(unplaced_writers(members, &lost));
         let mut chosen: Option<((bool, u64), &Writer, Filling)> = None;
         for writer in &writers {
             // A descriptor can close or be reused between samples.
@@ -979,7 +980,7 @@ impl Ledger {
                 continue;
             };
             // The rate the volume is really being filled at: what its free space lost.
-            let observed = lost.get(&writer.volume).copied().unwrap_or_default();
+            let observed = lost.get(&writer.volume).map_or(0, |(rate, _)| *rate);
             let below = disk.free < disk.floor / 2;
             let near_full =
                 observed > 0 && disk.free < observed.saturating_mul(FILL_HORIZON_SECONDS);
@@ -1028,9 +1029,9 @@ impl Ledger {
         &mut self,
         members: &[Arc<Mutex<Observation>>],
         room: &Room,
-    ) -> BTreeMap<u64, u64> {
+    ) -> BTreeMap<u64, (u64, PathBuf)> {
         let now = Instant::now();
-        let mut seen = BTreeMap::<u64, u64>::new();
+        let mut seen = BTreeMap::<u64, (u64, PathBuf)>::new();
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
             for output in observation.disk_writes.values().flatten() {
@@ -1040,7 +1041,7 @@ impl Ledger {
                 if let Some(disk) =
                     disk_room(room.volume, &output.path).filter(|disk| disk.id == output.id)
                 {
-                    seen.insert(output.id, disk.free);
+                    seen.insert(output.id, (disk.free, output.path.clone()));
                 }
             }
             // The volume each command works in is watched from the moment the command is
@@ -1051,13 +1052,14 @@ impl Ledger {
                 .filter_map(|entry| entry.seen.as_ref()?.cwd.as_deref())
             {
                 if let Some(disk) = disk_room(room.volume, cwd) {
-                    seen.entry(disk.id).or_insert(disk.free);
+                    seen.entry(disk.id)
+                        .or_insert_with(|| (disk.free, cwd.to_path_buf()));
                 }
             }
         }
         self.free_seen.retain(|id, _| seen.contains_key(id));
         let mut lost = BTreeMap::new();
-        for (id, free) in seen {
+        for (id, (free, path)) in seen {
             let history = self.free_seen.entry(id).or_default();
             history.push_back((now, free));
             while history
@@ -1075,7 +1077,7 @@ impl Ledger {
             } else {
                 0
             };
-            lost.insert(id, rate);
+            lost.insert(id, (rate, path));
         }
         lost
     }
@@ -1941,6 +1943,51 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
                     written,
                     deleted_open: command.deleted_open,
                 });
+            }
+        }
+    }
+    writers
+}
+
+/// Agent commands writing at a runaway rate whose output volume the samples
+/// never caught: a generator that closes each file and opens the next holds
+/// one open for a few milliseconds in every few hundred, and a file seen for
+/// the first time has no growth. Such a command writes to a watched volume
+/// that is losing room at a runaway rate itself, as far as anything can tell:
+/// the fastest of them is the one to stop when that volume is within the fill
+/// horizon (D84), as it would be had its file been caught open.
+fn unplaced_writers<'a>(
+    members: &'a [Arc<Mutex<Observation>>],
+    watched: &BTreeMap<u64, (u64, PathBuf)>,
+) -> Vec<Writer<'a>> {
+    let mut writers = Vec::new();
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        for command in &observation.commands {
+            let placed = observation
+                .disk_writes
+                .get(&command.pid)
+                .is_some_and(|outputs| outputs.iter().any(|output| output.receiving));
+            let holdable = observation
+                .admission
+                .get(&command.pid)
+                .is_some_and(|entry| entry.holdable);
+            if placed || !holdable || command.write_rate < RUNAWAY_WRITE {
+                continue;
+            }
+            for (volume, (lost, path)) in watched {
+                if *lost >= RUNAWAY_WRITE {
+                    writers.push(Writer {
+                        member,
+                        pid: command.pid,
+                        volume: *volume,
+                        path: path.clone(),
+                        rate: command.write_rate,
+                        grown: 0,
+                        written: command.writes,
+                        deleted_open: command.deleted_open,
+                    });
+                }
             }
         }
     }

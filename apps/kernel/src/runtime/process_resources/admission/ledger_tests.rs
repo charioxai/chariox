@@ -2050,9 +2050,9 @@ fn a_generator_closing_each_file_is_stopped_though_no_sample_caught_a_file_open(
         vec![(1, generator), (2, slow), (3, moderate)],
     );
     current.lock().unwrap().disk_writes.remove(&1);
-    // 2 GiB free losing 300 MiB/s: under seven seconds, and the volume really
-    // lost 75 MiB in the quarter second between the two passes.
-    let fillers = fillers_after_two_passes(2 * GIB, 75 * MIB, &current);
+    // 1.5 GiB free losing 300 MiB/s: the volume really lost 75 MiB in the
+    // quarter second between the two passes, and is under five seconds from full.
+    let fillers = fillers_after_two_passes(GIB + 512 * MIB, 75 * MIB, &current);
     assert_eq!(
         fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
         vec![1],
