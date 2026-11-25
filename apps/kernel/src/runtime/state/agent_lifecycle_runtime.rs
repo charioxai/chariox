@@ -2043,14 +2043,26 @@ impl KernelRuntimeState {
                 // restart or a hot reload (the in-memory hold for its background calls went with
                 // it, and no active prompt was left for recovery to end). Its parent hears that,
                 // typed and retryable, not a cancellation nobody asked for.
+                // The turn is already ended above; telling its parent is best effort, as in restart
+                // recovery. An agent that no longer exists must not abort the whole sweep.
                 if task.last_progress_at_ms < self.owned.agent_wakes.started_at_ms {
-                    self.announce_child_interrupted(
-                        &ended.room_id,
-                        &ended.agent_id,
-                        &ended.prompt_id,
-                        UNHELD_TASK_RESTART_REASON,
-                    )
-                    .await?;
+                    if let Err(error) = self
+                        .announce_child_interrupted(
+                            &ended.room_id,
+                            &ended.agent_id,
+                            &ended.prompt_id,
+                            UNHELD_TASK_RESTART_REASON,
+                        )
+                        .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "could not tell the parent about a turn the sweep ended as interrupted",
+                            serde_json::json!({"room_id": ended.room_id, "agent_id": ended.agent_id,
+                                "task_id": ended.task_id, "prompt_id": ended.prompt_id,
+                                "error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                        );
+                    }
                 }
                 return Ok(Some(ended));
             }
