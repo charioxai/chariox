@@ -204,11 +204,12 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
   } finally {
     try {
       if (terminalId !== undefined) {
+        const openTerminal = terminalId
         // The kernel removes a one-command terminal itself once its output was read to the end, so a close that finds
         // nothing is the expected answer: it counts as closed when the kernel's list no longer holds the terminal. A
         // terminal that is still listed and cannot be closed is named, with the way to close it.
         await send(closeRoomTerminalRequest(target, terminalId)).catch(async (error: unknown) => {
-          if (await isGone(send, target, terminalId)) return
+          if (await isGone(send, target, openTerminal)) return
           if (failed) process.stderr.write(`${JSON.stringify({ warning: { code: "exec_terminal_left_open", terminal_id: terminalId, message: String((error as Error)?.message ?? error), next_step: `chariox terminal close --terminal ${terminalId}` } })}\n`)
           else throw new CommandFailure("exec_terminal_left_open", `the command finished but its terminal could not be closed: ${String((error as Error)?.message ?? error)}`, { terminal_id: terminalId, next_step: `chariox terminal close --terminal ${terminalId}` })
         })

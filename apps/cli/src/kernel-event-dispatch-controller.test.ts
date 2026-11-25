@@ -482,6 +482,7 @@ test("kernel event dispatch applies runtime interaction deltas without resyncing
   await harness.controller.handleKernelEvent({
     event: "runtime_interactions_changed",
     session_id: "session-1",
+    machine_approval_receipts: [],
     active_interactions: [{
       id: "interaction-1",
       agent_id: "agent-1",
@@ -496,6 +497,20 @@ test("kernel event dispatch applies runtime interaction deltas without resyncing
     "activity:kernel_runtime_interactions_changed",
     "apply-runtime-interactions:session-1:1",
   ])
+})
+
+test("kernel event dispatch forwards machine approval receipts with the interactions, so an approved request stays visible", async () => {
+  const harness = createHarness()
+  const receipt = { id: "machine-acquisition-1", shown_in_agent_id: "agent-1", message: "Acquire small", state: "approving", expires_at_ms: null }
+
+  await harness.controller.handleKernelEvent({
+    event: "runtime_interactions_changed",
+    session_id: "session-1",
+    active_interactions: [],
+    machine_approval_receipts: [receipt],
+  })
+
+  assert.deepEqual(harness.receipts, [[receipt]])
 })
 
 test("kernel event dispatch handles replay gaps through notice, footer, and resync", async () => {
@@ -648,6 +663,7 @@ function createHarness(options: {
   recovery?: () => Promise<void>
 } = {}) {
   const calls: string[] = []
+  const receipts: unknown[] = []
   const snapshots: Array<{
     session: RuntimeSession
     providerRun: RuntimeProviderRun | null
@@ -689,8 +705,9 @@ function createHarness(options: {
       calls.push(`apply-session-metadata:${sessionId}:${Object.keys(metadata).sort().join(",")}`)
       return options.focusChanged ?? Object.prototype.hasOwnProperty.call(metadata, "focused_agent_id")
     },
-    applyRuntimeInteractionsChanged: (sessionId, activeInteractions) => {
+    applyRuntimeInteractionsChanged: (sessionId, activeInteractions, machineApprovalReceipts) => {
       calls.push(`apply-runtime-interactions:${sessionId}:${activeInteractions.length}`)
+      receipts.push(machineApprovalReceipts)
     },
     applyWorkflowRunUpdated: (sessionId, workflowRun) => {
       calls.push(`apply-workflow-run:${sessionId}:${workflowRun.id}`)
@@ -749,6 +766,7 @@ function createHarness(options: {
 
   return {
     calls,
+    receipts,
     controller,
     snapshots,
     terminalRecords,

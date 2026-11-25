@@ -498,3 +498,332 @@ fn the_service_request_id_is_scoped_to_the_kernel_and_agent() {
         super::choice::service_request_id("kernel", "agent", "r1")
     );
 }
+
+/// The card of an approval a try is waiting on, once the kernel raised it.
+async fn waiting_card(state: &KernelRuntimeState, room: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = state.owned.session_store.get_session(room).unwrap();
+            if let Some(card) = snapshot.active_interactions().first() {
+                break card.id().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owner's card is raised")
+}
+
+fn owner_of(state: &KernelRuntimeState, room: &str) -> String {
+    state
+        .owned
+        .session_store
+        .get_session(room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned()
+}
+
+/// The receipts of the Room, as a client reads them.
+fn receipts(state: &KernelRuntimeState, room: &str) -> Vec<crate::session::MachineApprovalReceipt> {
+    state
+        .owned
+        .session_store
+        .get_session(room)
+        .unwrap()
+        .machine_approval_receipts()
+        .to_vec()
+}
+
+/// Runs one try of `request` and answers its card with `choice`.
+async fn approve_with(
+    state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: &ControlPlaneRequest,
+    caps: &MachineAllocationCapability,
+    choice: &str,
+) -> Result<Approval, DaemonError> {
+    let room = command.session_id.clone().unwrap();
+    let gate = {
+        let (state, command, request, caps) = (
+            state.clone(),
+            command.clone(),
+            request.clone(),
+            caps.clone(),
+        );
+        tokio::spawn(async move {
+            state
+                .approve_machine_acquisition(&command, &request, Some(&caps))
+                .await
+        })
+    };
+    let id = waiting_card(state, &room).await;
+    state
+        .resolve_terminal_runtime_interaction(
+            &room,
+            &id,
+            choice,
+            None,
+            Some(&owner_of(state, &room)),
+        )
+        .await
+        .unwrap();
+    gate.await.unwrap()
+}
+
+#[tokio::test]
+async fn an_approved_request_stays_visible_as_a_receipt_until_the_service_answers() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    assert!(receipts(&state, &room).is_empty());
+    let approval = approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    assert!(matches!(approval, Approval::Owner), "{approval:?}");
+    // The card is gone and the request has not reached the service yet.
+    assert!(state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let held = receipts(&state, &room);
+    assert_eq!(held.len(), 1);
+    assert_eq!(
+        held[0].state,
+        crate::session::MachineApprovalReceiptState::Approving
+    );
+    assert!(held[0].id.starts_with("machine-acquisition-"));
+    assert!(held[0].shown_in_agent_id.is_some());
+    assert!(
+        held[0].message.contains("USD per minute"),
+        "{}",
+        held[0].message
+    );
+    state.machine_approval_sent(&command, &request);
+    assert_eq!(
+        receipts(&state, &room)[0].state,
+        crate::session::MachineApprovalReceiptState::Sent
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_approval_nobody_answers_leaves_an_expired_receipt() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    let gate = {
+        let (state, command, request, caps) = (
+            state.clone(),
+            command.clone(),
+            request.clone(),
+            caps.clone(),
+        );
+        tokio::spawn(async move {
+            state
+                .approve_machine_acquisition(&command, &request, Some(&caps))
+                .await
+        })
+    };
+    waiting_card(&state, &room).await;
+    tokio::time::sleep(Duration::from_secs(301)).await;
+    let error = gate.await.unwrap().unwrap_err().to_string();
+    assert!(error.contains("nobody answered"), "{error}");
+    let expired = receipts(&state, &room);
+    assert_eq!(expired.len(), 1);
+    assert_eq!(
+        expired[0].state,
+        crate::session::MachineApprovalReceiptState::Expired
+    );
+    assert!(expired[0].expires_at_ms.is_some());
+    // A denial leaves no receipt: the person said no.
+    let denied = {
+        let (state, command, mut request) = (state.clone(), command.clone(), request.clone());
+        if let ControlPlaneRequest::AcquireJob { request_id, .. } = &mut request {
+            *request_id = "request-2".into();
+        }
+        (state, command, request)
+    };
+    let denial = approve_with(&denied.0, &denied.1, &denied.2, &caps, "deny").await;
+    assert!(denial.unwrap_err().to_string().contains("denied"));
+    assert_eq!(receipts(&state, &room).len(), 1);
+}
+
+#[tokio::test]
+async fn an_approved_request_that_was_sent_replays_at_its_approved_revision_when_the_quote_changes()
+{
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    // Approved and sent; the service may have accepted it and lost the response.
+    let first = approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    assert!(matches!(first, Approval::Owner), "{first:?}");
+    state.machine_approval_sent(&command, &request);
+
+    // The rate and revision change before the retry: another quote, not another request.
+    let mut dearer = caps.clone();
+    dearer.revision = "v2".into();
+    dearer.job_offers[0].rate_per_minute.amount_micros = 900;
+    let retry = request.with_capability_revision("v2");
+    let replay = tokio::time::timeout(
+        Duration::from_secs(2),
+        state.approve_machine_acquisition(&command, &retry, Some(&dearer)),
+    )
+    .await
+    .expect("the owner is not asked again for a request already sent")
+    .unwrap();
+    assert!(
+        matches!(&replay, Approval::Replay { capability_revision } if capability_revision == "v1"),
+        "{replay:?}"
+    );
+    assert!(state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    // At its own revision it is a plain retry; the replayed request carries the approved one.
+    let plain = state
+        .approve_machine_acquisition(&command, &request, Some(&caps))
+        .await
+        .unwrap();
+    assert!(matches!(plain, Approval::Owner), "{plain:?}");
+    assert_eq!(request.capability_revision(), Some("v1"));
+    assert_eq!(retry.with_capability_revision("v1"), request);
+}
+
+#[tokio::test]
+async fn a_replay_belongs_to_one_request_a_different_request_asks_the_owner() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    let mut other = request.clone();
+    if let ControlPlaneRequest::AcquireJob { request_id, .. } = &mut other {
+        *request_id = "another-request".into();
+    }
+    let gate = {
+        let (state, command, other, caps) =
+            (state.clone(), command.clone(), other.clone(), caps.clone());
+        tokio::spawn(async move {
+            state
+                .approve_machine_acquisition(&command, &other, Some(&caps))
+                .await
+        })
+    };
+    let id = waiting_card(&state, &room).await;
+    assert!(
+        !gate.is_finished(),
+        "another request waits for its own decision"
+    );
+    state
+        .resolve_terminal_runtime_interaction(
+            &room,
+            &id,
+            "deny",
+            None,
+            Some(&owner_of(&state, &room)),
+        )
+        .await
+        .unwrap();
+    assert!(gate.await.unwrap().is_err());
+}
+
+#[test]
+fn the_first_use_of_an_approved_request_decides_every_later_try() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (state, _command, _request, _caps, _workspace) = runtime.block_on(async { fixture(false) });
+    let spend = |identity: &str, owner: &str, revision: &str| {
+        state
+            .owned
+            .spend_acquisition_send(identity, owner, revision)
+            .unwrap()
+    };
+    assert_eq!(spend("machine-use-a", "o", "v1"), "v1");
+    assert_eq!(
+        spend("machine-use-a", "o", "v2"),
+        "v1",
+        "the first use stays"
+    );
+    assert_eq!(
+        spend("machine-use-b", "o", "v3"),
+        "v3",
+        "another request is its own"
+    );
+    assert_eq!(
+        spend("machine-use-a", "p", "v4"),
+        "v4",
+        "another owner's use never settles this one"
+    );
+    // Tries that race agree on one revision.
+    let results: Vec<String> = std::thread::scope(|scope| {
+        (0..8)
+            .map(|n| {
+                let state = &state;
+                scope.spawn(move || {
+                    state
+                        .owned
+                        .spend_acquisition_send("machine-use-c", "o", &format!("v{n}"))
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    assert!(
+        results.iter().all(|result| result == &results[0]),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_approved_try_that_ends_before_the_post_withdraws_its_receipt() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    assert_eq!(receipts(&state, &room).len(), 1);
+    // The reauthorization recheck refused the try: the guard drops without posting.
+    drop(state.machine_approval_guard(&command, &request).unwrap());
+    assert!(receipts(&state, &room).is_empty());
+}
+
+#[tokio::test]
+async fn an_approved_try_cancelled_while_the_service_answers_settles_its_receipt_as_sent() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    let mut guard = state.machine_approval_guard(&command, &request).unwrap();
+    guard.posting();
+    // The caller is cancelled with the response delayed: the future and its guard drop.
+    drop(guard);
+    let held = receipts(&state, &room);
+    assert_eq!(held.len(), 1);
+    assert_eq!(
+        held[0].state,
+        crate::session::MachineApprovalReceiptState::Sent
+    );
+}
+
+#[tokio::test]
+async fn a_restart_withdraws_the_receipts_of_tries_it_interrupted() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    approve_with(&state, &command, &request, &caps, "approve")
+        .await
+        .unwrap();
+    assert_eq!(receipts(&state, &room).len(), 1);
+    state.withdraw_interrupted_machine_approvals();
+    assert!(receipts(&state, &room).is_empty());
+}

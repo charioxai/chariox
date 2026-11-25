@@ -24,6 +24,7 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
   remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
+  machineApprovalLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
@@ -55,6 +56,7 @@ export type AgentInteractionStripControllerDeps<
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
   remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
+  machineApprovalLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
@@ -92,6 +94,7 @@ export function createAgentInteractionStripController<
         ...(deps.queuedJobsForAgent ? { queuedJobsForAgent: deps.queuedJobsForAgent } : {}),
         ...(deps.onQueuedJobAction ? { onQueuedJobAction: deps.onQueuedJobAction } : {}),
         ...(deps.remoteJobLinesForAgent ? { remoteJobLinesForAgent: deps.remoteJobLinesForAgent } : {}),
+        ...(deps.machineApprovalLinesForAgent ? { machineApprovalLinesForAgent: deps.machineApprovalLinesForAgent } : {}),
         selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,
         agentTriggerStripItemsForAgent: deps.agentTriggerStripItemsForAgent,
