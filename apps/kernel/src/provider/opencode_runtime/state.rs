@@ -71,6 +71,7 @@ impl OpenCodeRuntimeState {
         session_id: String,
         event_subscription: OpenCodeEventSubscription,
     ) -> Self {
+        let port = super::stuck_tool::server_port(&base_url).unwrap_or(0);
         Self {
             base_url,
             prompt_client: None,
@@ -98,7 +99,7 @@ impl OpenCodeRuntimeState {
             unmatched_session_error: None,
             unmatched_session_error_idle_since: None,
             native_approval_origin: None,
-            running_tools: super::stuck_tool::RunningTools::new(),
+            running_tools: super::stuck_tool::RunningTools::new(port),
         }
     }
 

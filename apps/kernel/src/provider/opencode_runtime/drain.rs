@@ -14,7 +14,6 @@ use super::snapshot::{
     render_snapshot_output_chunks,
 };
 use super::state::OpenCodeEventDrainResult;
-use super::stuck_tool::server_port;
 use super::transcript::{
     format_session_status, render_session_error_transcript_update, render_stopped_command_update,
     session_status_merge_key,
@@ -664,13 +663,16 @@ fn end_turn_of_stopped_commands(
     if state.running_tools.is_empty() {
         return false;
     }
-    let Some(port) = server_port(&state.base_url) else {
-        return false;
-    };
-    let stopped = state.running_tools.stopped(port, std::time::Instant::now());
-    if stopped.is_empty() {
+    if state
+        .running_tools
+        .stopped(std::time::Instant::now())
+        .is_empty()
+    {
         return false;
     }
+    // The abort ends the whole session: a sibling command that still had its
+    // process is cancelled with it, and its row closes the same way.
+    let ended = state.running_tools.running();
     // A failed abort leaves the tools watched: the next poll asks again.
     if let Err(error) = crate::provider::opencode_binding::abort_opencode_session(run, state) {
         crate::logging::warn_with_fields(
@@ -683,9 +685,9 @@ fn end_turn_of_stopped_commands(
     crate::logging::info_with_fields(
         "provider.opencode.stopped_command",
         "ended the turn of a command whose process is gone",
-        serde_json::json!({"provider_run_id": run.id(), "commands": stopped.len()}),
+        serde_json::json!({"provider_run_id": run.id(), "commands": ended.len()}),
     );
-    for tool in stopped {
+    for tool in ended {
         chunks.push(OpenCodeOutputChunk {
             kind: TerminalOutputKind::ProviderTool,
             merge_key: Some(tool.part_id.clone()),

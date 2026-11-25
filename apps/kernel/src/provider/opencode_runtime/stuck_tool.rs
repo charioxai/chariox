@@ -64,6 +64,8 @@ pub(super) struct StoppedTool {
 }
 
 pub(super) struct RunningTools {
+    /// The port of the `opencode serve` the tools run on.
+    port: u16,
     tools: BTreeMap<String, RunningTool>,
     checked_at: Option<Instant>,
     children: Box<dyn ServerChildren>,
@@ -82,13 +84,20 @@ impl std::fmt::Debug for RunningTools {
 /// a second tool never pairs with the same process, in this session or another.
 static PAIRED: Mutex<BTreeMap<(u16, u32, u64), String>> = Mutex::new(BTreeMap::new());
 
+/// Every watched tool of every session by part id: its server's port, its
+/// command, and whether it has a process of its own yet. A tool takes a process only when no other
+/// unpaired tool could own the same one (the same command in another
+/// directory or another session looks identical from outside).
+static WATCHED: Mutex<BTreeMap<String, (u16, String, bool)>> = Mutex::new(BTreeMap::new());
+
 impl RunningTools {
-    pub(super) fn new() -> Self {
-        Self::with_children(Box::new(ProcFs))
+    pub(super) fn new(port: u16) -> Self {
+        Self::with_children(Box::new(ProcFs), port)
     }
 
-    pub(super) fn with_children(children: Box<dyn ServerChildren>) -> Self {
+    pub(super) fn with_children(children: Box<dyn ServerChildren>, port: u16) -> Self {
         Self {
+            port,
             tools: BTreeMap::new(),
             checked_at: None,
             children,
@@ -114,6 +123,11 @@ impl RunningTools {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        WATCHED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(part.id.clone())
+            .or_insert_with(|| (self.port, command.clone(), false));
         self.tools.entry(part.id.clone()).or_insert(RunningTool {
             command,
             input: state.input.clone(),
@@ -137,6 +151,17 @@ impl RunningTools {
         self.checked_at = None;
     }
 
+    /// Every tool followed, with its input: what an abort of the session ends.
+    pub(super) fn running(&self) -> Vec<StoppedTool> {
+        self.tools
+            .iter()
+            .map(|(part_id, tool)| StoppedTool {
+                part_id: part_id.clone(),
+                input: tool.input.clone(),
+            })
+            .collect()
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -151,7 +176,8 @@ impl RunningTools {
     }
 
     /// The tools whose process has been gone long enough, looked at once a second.
-    pub(super) fn stopped(&mut self, port: u16, now: Instant) -> Vec<StoppedTool> {
+    pub(super) fn stopped(&mut self, now: Instant) -> Vec<StoppedTool> {
+        let port = self.port;
         if self
             .tools
             .values()
@@ -170,6 +196,7 @@ impl RunningTools {
             return Vec::new();
         };
         let mut paired = PAIRED.lock().unwrap_or_else(|e| e.into_inner());
+        let mut watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
         // A claim on a process that ended is no claim.
         paired.retain(|(claimed_port, pid, started), _| {
             *claimed_port != port
@@ -178,11 +205,6 @@ impl RunningTools {
                     .any(|child| child.pid == *pid && child.started_ms == *started)
         });
         let mut stopped = Vec::new();
-        let unpaired_tools = self
-            .tools
-            .values()
-            .filter(|tool| tool.process.is_none())
-            .count();
         for (part_id, tool) in &mut self.tools {
             if now.saturating_duration_since(tool.seen) < FIRST_CHECK {
                 continue;
@@ -199,23 +221,37 @@ impl RunningTools {
                                 && !paired.contains_key(&(port, child.pid, child.started_ms))
                         })
                         .collect();
-                    let by_command = candidates
+                    let matching: Vec<&&ChildProcess> = candidates
                         .iter()
-                        .find(|child| runs_command(&child.argv, &tool.command));
-                    let chosen = match (by_command, candidates.as_slice()) {
-                        (Some(child), _) => Some(*child),
-                        (None, [only]) if unpaired_tools == 1 => Some(*only),
-                        _ => None,
-                    };
-                    match chosen {
-                        Some(child) => {
-                            tool.process = Some((child.pid, child.started_ms));
-                            paired.insert((port, child.pid, child.started_ms), part_id.clone());
-                            true
+                        .filter(|child| runs_command(&child.argv, &tool.command))
+                        .collect();
+                    // The process is this tool's only when it is the one
+                    // process running its command and no other unpaired tool,
+                    // in any session, could own it as well.
+                    let owned =
+                        match matching.as_slice() {
+                            [only] => !watched.iter().any(
+                                |(other, (other_port, command, has_process))| {
+                                    other != part_id
+                                        && *other_port == port
+                                        && !has_process
+                                        && runs_command(&only.argv, command)
+                                },
+                            ),
+                            _ => false,
+                        };
+                    if owned {
+                        let child = matching[0];
+                        tool.process = Some((child.pid, child.started_ms));
+                        paired.insert((port, child.pid, child.started_ms), part_id.clone());
+                        if let Some(entry) = watched.get_mut(part_id) {
+                            entry.2 = true;
                         }
-                        // Several processes and none of them provably this
-                        // tool's: leave it to OpenCode.
-                        None => !candidates.is_empty(),
+                        true
+                    } else {
+                        // Any process that might be this tool's leaves it to
+                        // OpenCode; with none at all, it has no process.
+                        !candidates.is_empty()
                     }
                 }
             };
@@ -248,6 +284,10 @@ fn release(part_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|_, paired_part| paired_part != part_id);
+    WATCHED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(part_id);
 }
 
 /// Whether a process is the one OpenCode started for `command`: the shell with

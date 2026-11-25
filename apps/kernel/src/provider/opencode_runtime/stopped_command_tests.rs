@@ -1,5 +1,5 @@
 //! A turn whose command lost its process ends through the drain.
-use super::stuck_tool::{server_port, ChildProcess, RunningTools, ServerChildren};
+use super::stuck_tool::{ChildProcess, RunningTools, ServerChildren};
 use super::*;
 use crate::terminal::TerminalOutputKind;
 use std::io::{Read, Write};
@@ -96,7 +96,10 @@ fn state(
         "session-1".to_string(),
         crate::provider::OpenCodeEventSubscription::for_tests(rx),
     );
-    state.running_tools = RunningTools::with_children(Box::new(Children(children)));
+    state.running_tools = RunningTools::with_children(
+        Box::new(Children(children)),
+        super::stuck_tool::server_port(&state.base_url).unwrap(),
+    );
     state.note_prompt_submitted("user-1".to_string());
     state
         .running_tools
@@ -194,8 +197,7 @@ fn aborting_for_one_stopped_command_closes_the_rows_of_its_siblings() {
         1,
     );
     // Both processes are seen and paired with their tools; then one is killed.
-    let port = server_port(&state.base_url).unwrap();
-    assert!(state.running_tools.stopped(port, Instant::now()).is_empty());
+    assert!(state.running_tools.stopped(Instant::now()).is_empty());
     *children.lock().unwrap() = vec![sibling];
     state.running_tools.backdate_gone(Duration::from_secs(10));
 
