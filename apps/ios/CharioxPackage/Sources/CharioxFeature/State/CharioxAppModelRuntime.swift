@@ -194,6 +194,11 @@ extension CharioxAppModel {
 
     for record in records where !record.text.isEmpty {
       let kind = TranscriptEntry.Kind(terminalKind: record.kind)
+      if kind == .compaction {
+        flushPending()
+        appendTranscript(kind: kind, agentID: record.agentID, text: record.text, mergeKey: record.mergeKey)
+        continue
+      }
       if pendingKind == kind, pendingAgentID == record.agentID {
         pendingText += record.text
       } else {
@@ -206,8 +211,16 @@ extension CharioxAppModel {
     flushPending()
   }
 
-  func appendTranscript(kind: TranscriptEntry.Kind, agentID: String?, text: String) {
+  func appendTranscript(kind: TranscriptEntry.Kind, agentID: String?, text: String, mergeKey: String? = nil) {
     guard !text.isEmpty else { return }
+    if kind == .compaction, let mergeKey,
+      let index = transcriptEntries.lastIndex(where: {
+        $0.kind == kind && $0.agentID == agentID && $0.mergeKey == mergeKey
+      })
+    {
+      transcriptEntries[index].text = text
+      return
+    }
     if kind.mergesAdjacentOutput,
       let lastIndex = transcriptEntries.indices.last,
       transcriptEntries[lastIndex].kind == kind,
@@ -217,7 +230,7 @@ extension CharioxAppModel {
       return
     }
     transcriptEntries.append(
-      TranscriptEntry(kind: kind, agentID: agentID, text: text)
+      TranscriptEntry(kind: kind, agentID: agentID, text: text, mergeKey: mergeKey)
     )
     if transcriptEntries.count > 500 {
       transcriptEntries.removeFirst(transcriptEntries.count - 500)

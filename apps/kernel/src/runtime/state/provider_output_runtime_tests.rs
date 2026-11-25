@@ -165,6 +165,7 @@ mod decisions;
 mod detached_jobs_teardown;
 mod detached_provider_run;
 mod diagnostics_timeouts;
+mod ended_run_compaction;
 mod external_queue;
 mod finished_child_cleanup;
 mod focus_recovery_tests;

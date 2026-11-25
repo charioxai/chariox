@@ -60,6 +60,9 @@ pub(crate) fn bounded_history_entry(mut entry: SessionHistoryEntry) -> Option<Se
         SessionHistoryEntryKind::ProviderStatus => {
             Some(crate::terminal::TerminalOutputKind::ProviderStatus)
         }
+        SessionHistoryEntryKind::ContextCompacted => {
+            Some(crate::terminal::TerminalOutputKind::ContextCompacted)
+        }
         SessionHistoryEntryKind::UserPrompt | SessionHistoryEntryKind::Notice => None,
     };
     if let Some(kind) = kind {

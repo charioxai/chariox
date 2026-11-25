@@ -212,6 +212,7 @@ fn terminal_output_kind_json(kind: &TerminalOutputKind) -> &'static str {
         TerminalOutputKind::ProviderTool => "provider_tool",
         TerminalOutputKind::ProviderError => "provider_error",
         TerminalOutputKind::ProviderStatus => "provider_status",
+        TerminalOutputKind::ContextCompacted => "context_compacted",
     }
 }
 

@@ -59,6 +59,7 @@
     "./session-history-fragments": "./dist/session-history-fragments.js",
     "./transcript-history-stitching": "./dist/transcript-history-stitching.js",
     "./transcript-kind-role": "./dist/transcript-kind-role.js",
+    "./context-compaction": "./dist/context-compaction.js",
     "./terminal-record-transcript": "./dist/terminal-record-transcript.js",
     "./terminal-output-sequences": "./dist/terminal-output-sequences.js",
     "./time": "./dist/time.js",

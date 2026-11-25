@@ -255,6 +255,15 @@ export function hydrateSessionHistoryTranscriptEntries(
           })
         }
         break
+      case "compaction":
+        // The running row and the finished row of one compaction share a merge key: the later state replaces.
+        appendTranscriptEntry("compaction", pageEntry.entry.text, {
+          ...entryOptions,
+          ...identityOptions,
+          ...observedOptions,
+          ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
+        })
+        break
       case "notice":
         appendTranscriptEntry("notice", pageEntry.entry.text, {
           ...entryOptions,

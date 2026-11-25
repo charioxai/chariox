@@ -284,7 +284,9 @@ fn page_entry_kind(kind: SessionHistoryEntryKind) -> Kind {
         SessionHistoryEntryKind::ProviderReasoning => Kind::Thinking,
         SessionHistoryEntryKind::ProviderTool => Kind::ToolCall,
         SessionHistoryEntryKind::ProviderError => Kind::Error,
-        SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::Notice => Kind::Notice,
+        SessionHistoryEntryKind::ProviderStatus
+        | SessionHistoryEntryKind::ContextCompacted
+        | SessionHistoryEntryKind::Notice => Kind::Notice,
     }
 }
 

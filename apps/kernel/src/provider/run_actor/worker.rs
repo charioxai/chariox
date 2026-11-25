@@ -217,6 +217,24 @@ impl ProviderRunWorkerDeps {
                     .lock()
                     .expect("provider output poll delay map poisoned")
                     .remove(&provider_run_id);
+                // Nothing polls this run again: what it still owes the history goes out now.
+                let closing_chunks = self
+                    .runtime_registry
+                    .take_claude_closing_chunks(&provider_run_id);
+                if !closing_chunks.is_empty() {
+                    push_finished_output_poll(
+                        &self.finished_output_polls,
+                        FinishedProviderOutputPollJob {
+                            prompt_identity: super::ProviderOutputPromptIdentity::InFlightPoll,
+                            provider_run_id: provider_run_id.clone(),
+                            result: Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                                chunks: closing_chunks,
+                                ..Default::default()
+                            })),
+                            settlement_retry_attempt: 0,
+                        },
+                    );
+                }
                 self.runtime_registry
                     .clear_runtime_state(&provider_run_id, true);
                 let _ = completion.send(());

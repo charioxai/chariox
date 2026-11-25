@@ -172,7 +172,43 @@ struct ClaudeTurn {
     last_context_window: Option<u64>,
     observed_context_model: Option<String>,
     main_stream_has_context: bool,
+    // The compactions this run has had and the one still running: the next program numbers the next
+    // row after them, so a reload never reuses the key of a row a client already shows. A predecessor
+    // program hands neither over.
+    #[serde(default)]
+    compactions: u64,
+    #[serde(default)]
+    compaction_started_at_ms: Option<u64>,
     start: ClaudeStartState,
+}
+
+impl ClaudeTurn {
+    /// The turn the state is in, taken out of it for the next program.
+    fn of(state: &mut ClaudeRuntimeState) -> Self {
+        Self {
+            session_id: state.session_id.clone(),
+            active_turn_id: state.active_turn_id.clone(),
+            active_prompt_message: state.active_prompt_message.clone(),
+            own_turn: state.own_turn,
+            background_notification_pending: state.background_notification_pending,
+            active_stream_message_id: state.active_stream_message_id.clone(),
+            next_turn_number: state.next_turn_number,
+            result_number: state.result_number,
+            emitted_text_by_block: std::mem::take(&mut state.emitted_text_by_block),
+            completed_text_blocks: std::mem::take(&mut state.completed_text_blocks),
+            tool_transcript: std::mem::take(&mut state.tool_transcript),
+            last_usage_file_contents: state.last_usage_file_contents.clone(),
+            last_context_tokens: state.last_context_tokens,
+            last_context_window: state.last_context_window,
+            observed_context_model: state.observed_context_model.clone(),
+            main_stream_has_context: state.main_stream_has_context,
+            compactions: state.compactions,
+            compaction_started_at_ms: state.compaction_started_at_ms,
+            start: state
+                .turn_watchdog
+                .start_state(std::time::Instant::now(), crate::session::unix_epoch_ms()),
+        }
+    }
 }
 
 impl std::fmt::Debug for ClaudeTurn {
@@ -265,27 +301,7 @@ pub(super) fn hand_over(
         context_file: state.context_file.clone(),
         settings_file: state.settings_file.clone(),
         usage_file: state.usage_file.clone(),
-        turn: ClaudeTurn {
-            session_id: state.session_id.clone(),
-            active_turn_id: state.active_turn_id.clone(),
-            active_prompt_message: state.active_prompt_message.clone(),
-            own_turn: state.own_turn,
-            background_notification_pending: state.background_notification_pending,
-            active_stream_message_id: state.active_stream_message_id.clone(),
-            next_turn_number: state.next_turn_number,
-            result_number: state.result_number,
-            emitted_text_by_block: std::mem::take(&mut state.emitted_text_by_block),
-            completed_text_blocks: std::mem::take(&mut state.completed_text_blocks),
-            tool_transcript: std::mem::take(&mut state.tool_transcript),
-            last_usage_file_contents: state.last_usage_file_contents.clone(),
-            last_context_tokens: state.last_context_tokens,
-            last_context_window: state.last_context_window,
-            observed_context_model: state.observed_context_model.clone(),
-            main_stream_has_context: state.main_stream_has_context,
-            start: state
-                .turn_watchdog
-                .start_state(std::time::Instant::now(), crate::session::unix_epoch_ms()),
-        },
+        turn: ClaudeTurn::of(&mut state),
         credentials: state.provider_credential_env.clone(),
     };
     // Nothing of this program may stop the process or close its pipes: the
@@ -380,6 +396,8 @@ impl Adopted {
         state.last_context_window = turn.last_context_window;
         state.observed_context_model = turn.observed_context_model;
         state.main_stream_has_context = turn.main_stream_has_context;
+        state.compactions = turn.compactions;
+        state.compaction_started_at_ms = turn.compaction_started_at_ms;
         AdoptedTurn {
             turn_id: turn.active_turn_id,
             prompt_message: turn.active_prompt_message,
@@ -395,4 +413,35 @@ pub(super) struct AdoptedTurn {
     pub(super) turn_id: Option<String>,
     pub(super) prompt_message: Option<Value>,
     pub(super) start: ClaudeStartState,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A completed compaction 0 and a running compaction 1 survive a hot reload: the boundary the next
+    // program reads settles row 1, and the row after it is 2, never a reused key.
+    #[test]
+    fn a_hot_reload_keeps_the_compaction_count_and_the_running_one() {
+        let (mut before, _batch) = super::super::tests::parser_state();
+        before.compactions = 1;
+        before.compaction_started_at_ms = Some(7_000);
+        let turn: ClaudeTurn =
+            serde_json::from_slice(&serde_json::to_vec(&ClaudeTurn::of(&mut before)).unwrap())
+                .unwrap();
+        let (mut after, _batch) = super::super::tests::parser_state();
+        assert_eq!(
+            (after.compactions, after.compaction_started_at_ms),
+            (0, None)
+        );
+        Adopted {
+            turn,
+            context_file: None,
+            settings_file: None,
+            usage_file: None,
+        }
+        .restore_turn(&mut after);
+        assert_eq!(after.compactions, 1);
+        assert_eq!(after.compaction_started_at_ms, Some(7_000));
+    }
 }

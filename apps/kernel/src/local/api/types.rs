@@ -652,4 +652,6 @@ pub use workspace::*;
 /// Local 1015 (relay peer 452): the agent pane feed. `GetPaneFeed` answers `PaneFeed`, the one kernel read model of what an
 /// agent's pane shows; `ReportPaneSettings` carries the settings a provider terminal changed (docs/PROTOCOL.md 3.3.2.1).
 /// Local 1015 (relay peer 452, provisional): the owner's limits for machines agents acquire without asking are user config keys (`agents.offload_classes`, `agents.offload_max_machines`, `agents.offload_daily_cap_micros`).
+/// A Claude compaction is the history kind `context_compacted` (its text is the summary, empty when Claude wrote none), not a user prompt.
+/// Local 1015 (relay peer 452, provisional): a Claude compaction is one `context_compacted` terminal output row (running, done or failed), never a user prompt.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

@@ -1775,6 +1775,21 @@ impl KernelRuntimeState {
         ) else {
             return;
         };
+        if let Err(error) = self
+            .with_app_side_effect(|app| {
+                app.settle_cancelled_claude_compaction_for_runtime(
+                    &dispatch.provider_run_id,
+                    prompt.id(),
+                )
+            })
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.claude_native",
+                "could not settle compaction for the cancelled prompt",
+                serde_json::json!({ "provider_run_id": dispatch.provider_run_id, "error": error.to_string() }),
+            );
+        }
         let settlement = self.owned.settle_stopped_agent_task(
             &dispatch.session_id,
             &agent_id,
