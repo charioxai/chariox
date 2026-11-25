@@ -4,7 +4,8 @@ use crate::local::{AgentDeadline, AgentDeadlineState};
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_deadlines(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(room_id,agent_id));
-        CREATE TABLE IF NOT EXISTS agent_deadline_intents(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,deadline_ms INTEGER NOT NULL,PRIMARY KEY(room_id,agent_id));").map_err(sql)?;
+        CREATE TABLE IF NOT EXISTS agent_deadline_intents(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,deadline_ms INTEGER NOT NULL,PRIMARY KEY(room_id,agent_id));
+        CREATE TABLE IF NOT EXISTS agent_deadline_revivals(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,revived_at_ms INTEGER NOT NULL,PRIMARY KEY(room_id,agent_id));").map_err(sql)?;
     deadline_clock::initialize(db)
 }
 
@@ -92,12 +93,15 @@ fn validate(
                 .into(),
         });
     }
+    // A finished agent can be given a new limit, but not while its cleanup is still pending.
     if get(db, room, agent)?.is_some_and(|old| {
-        old.state == AgentDeadlineState::Reached && deadline != Some(old.deadline_ms)
+        old.state == AgentDeadlineState::Reached
+            && old.stopped_at_ms.is_none()
+            && deadline != Some(old.deadline_ms)
     }) {
         return Err(DaemonError::MachineRequest {
-            code: "agent_deadline_reached".into(),
-            message: "agent deadline reached; start a new agent for new work".into(),
+            code: "agent_deadline_cleanup_pending".into(),
+            message: "the agent's deadline was reached and its cleanup is still running; retry the edit in a few seconds".into(),
         });
     }
     Ok(())
@@ -161,6 +165,24 @@ pub(super) fn set(
         )
         .map_err(sql)?;
     }
+    // The new limit replaces the one that ended this agent's run.
+    if get(db, &room, &agent)?.is_some_and(|old| {
+        old.state == AgentDeadlineState::Reached && deadline != Some(old.deadline_ms)
+    }) {
+        db.execute(
+            "DELETE FROM agent_deadlines WHERE room_id=?1 AND agent_id=?2",
+            params![room, agent],
+        )
+        .map_err(sql)?;
+    }
+    // An explicit edit of this agent's limit: a cleanup that an ancestor's reached limit runs
+    // after it must not stop the work this edit allows.
+    db.execute(
+        "INSERT INTO agent_deadline_revivals(room_id,agent_id,revived_at_ms) VALUES(?1,?2,?3) \
+         ON CONFLICT(room_id,agent_id) DO UPDATE SET revived_at_ms=excluded.revived_at_ms",
+        params![room, agent, sql_integer(crate::session::unix_epoch_ms())?],
+    )
+    .map_err(sql)?;
     let outcome = set_effective(db, &room, &agent, deadline)?;
     for (child_room, child, time) in inherited {
         set_effective(db, &child_room, &child, time)?;
@@ -223,6 +245,24 @@ impl DurableKernelStateStore {
     ) -> Result<(), DaemonError> {
         let db = self.lock_connection("agent.deadline")?;
         validate(&db, room, agent, deadline)
+    }
+    /// Whether an explicit edit of this agent's limit was made at or after `after_ms`.
+    pub(crate) fn agent_revived_since(
+        &self,
+        room: &str,
+        agent: &str,
+        after_ms: u64,
+    ) -> Result<bool, DaemonError> {
+        let db = self.lock_connection("agent.deadline")?;
+        let revived: Option<i64> = db
+            .query_row(
+                "SELECT revived_at_ms FROM agent_deadline_revivals WHERE room_id=?1 AND agent_id=?2",
+                params![room, agent],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        Ok(revived.is_some_and(|at| u64::try_from(at).is_ok_and(|at| at >= after_ms)))
     }
     /// The owner's explicit limit, separate from an earlier limit inherited from a parent.
     pub(crate) fn agent_deadline_intent(

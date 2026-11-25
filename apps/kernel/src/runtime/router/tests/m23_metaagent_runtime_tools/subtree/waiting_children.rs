@@ -5,9 +5,30 @@ use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
 
 /// `agent` finishes a turn that yielded on a timer armed at `armed_at_ms`.
 async fn yield_on_a_timer(world: &World, alias: &str, armed_at_ms: u64) {
+    yield_on_a_labelled_timer(world, alias, armed_at_ms, "ten minute timer").await;
+    let waiting = world
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .agent_waiting_tasks(&world.room)
+        .unwrap();
+    assert_eq!(waiting.len(), 1, "the settled turn waits: {waiting:?}");
+}
+
+/// The same, for a timer the agent named `label`; ids follow the alias, so many agents can wait.
+pub(super) async fn yield_on_a_labelled_timer(
+    world: &World,
+    alias: &str,
+    armed_at_ms: u64,
+    label: &str,
+) {
     let agent = world.ids[alias].as_str();
     let store = world.app.lock().await.durable_state_store();
-    let (prompt, task) = ("yielded-turn", "yielded-turn");
+    let turn = format!("{alias}-turn");
+    let wake_id = format!("{alias}-wake");
+    let registration = format!("completion-{wake_id}");
+    let (prompt, task) = (turn.as_str(), turn.as_str());
     store
         .agent_lifecycle(Operation::Begin {
             owner: "user-local".into(),
@@ -19,8 +40,8 @@ async fn yield_on_a_timer(world: &World, alias: &str, armed_at_ms: u64) {
         })
         .unwrap();
     let wake: AgentWake = serde_json::from_value(serde_json::json!({
-        "id": "timer-wake", "task_id": task, "room_id": world.room, "agent_id": agent,
-        "registration_id": "completion-timer-wake", "kind": "timer", "label": "ten minute timer",
+        "id": wake_id, "task_id": task, "room_id": world.room, "agent_id": agent,
+        "registration_id": registration, "kind": "timer", "label": label,
         "state": "scheduled", "created_at_ms": armed_at_ms, "verified_at_ms": null,
         "next_due_ms": armed_at_ms + 600_000, "interval_ms": null, "command": [],
         "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
@@ -40,7 +61,7 @@ async fn yield_on_a_timer(world: &World, alias: &str, armed_at_ms: u64) {
         .agent_lifecycle(Operation::Yield {
             task: task.into(),
             prompt: prompt.into(),
-            registrations: vec!["completion-timer-wake".into()],
+            registrations: vec![registration.clone()],
             cursor: 0,
             deadline: Some(armed_at_ms + 900_000),
             reason: "wait for the timer".into(),
@@ -58,8 +79,6 @@ async fn yield_on_a_timer(world: &World, alias: &str, armed_at_ms: u64) {
             now: armed_at_ms,
         })
         .unwrap();
-    let waiting = store.agent_waiting_tasks(&world.room).unwrap();
-    assert_eq!(waiting.len(), 1, "the settled turn waits: {waiting:?}");
 }
 
 #[test]
@@ -81,11 +100,12 @@ async fn waiting_children() {
             .find(|child| child["alias"] == alias)
             .unwrap_or_else(|| panic!("{alias} is listed"))
     };
-    let waiting = &row("s")["liveness"]["waiting_on"];
     assert_eq!(row("s")["state"], "waiting", "{:?}", row("s"));
-    assert_eq!(row("s")["has_active_prompt"], false);
-    assert_eq!(waiting["kind"], "timer");
-    assert_eq!(waiting["since_ms"], armed_at_ms);
+    let wait = row("s")["wait"].as_str().unwrap();
+    assert!(
+        wait.starts_with("timer") && wait.contains("ten minute timer"),
+        "{wait}"
+    );
     assert_ne!(
         row("b")["state"],
         "waiting",
@@ -103,8 +123,8 @@ async fn waiting_children() {
         .unwrap();
     assert!(inspected.ok, "{inspected:?}");
     assert_eq!(inspected.payload["agent"]["state"], "waiting");
-    assert_eq!(
-        inspected.payload["agent"]["liveness"]["waiting_on"],
-        *waiting
-    );
+    let detail = &inspected.payload["agent"]["liveness"]["waiting_on"];
+    // The list row is the short form of what the agent's own liveness says in full.
+    assert_eq!(detail["kind"], "timer");
+    assert_eq!(detail["since_ms"], armed_at_ms);
 }

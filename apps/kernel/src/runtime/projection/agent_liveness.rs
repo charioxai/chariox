@@ -35,7 +35,37 @@ pub struct AgentLiveness {
     pub stalled: bool,
 }
 
+/// The longest wait label a list row carries.
+const WAIT_LINE_LABEL_CHARS: usize = 24;
+
 impl AgentLiveness {
+    /// The one-line wait of a list row, for example `timer: check the build`; `None` for an
+    /// agent that waits on nothing. The whole wait (every source, whole command text) stays in
+    /// the agent's own `liveness`.
+    pub(crate) fn wait_line(&self) -> Option<String> {
+        let waiting = self.waiting_on.as_ref()?;
+        let text = self
+            .waiting_events
+            .first()
+            .map_or(waiting.detail.as_str(), |event| event.label.as_str());
+        let first_line = text.lines().next().unwrap_or_default();
+        let mut line: String = first_line.chars().take(WAIT_LINE_LABEL_CHARS).collect();
+        if line.is_empty() {
+            line = serde_json::to_value(waiting.kind)
+                .ok()
+                .and_then(|kind| kind.as_str().map(str::to_owned))
+                .unwrap_or_default();
+        }
+        if first_line.chars().count() > WAIT_LINE_LABEL_CHARS || text.trim_end().lines().count() > 1
+        {
+            line.push('…');
+        }
+        if self.waiting_events.len() > 1 {
+            line.push_str(&format!(" +{}", self.waiting_events.len() - 1));
+        }
+        Some(line)
+    }
+
     pub(crate) fn is_quiet(&self) -> bool {
         *self == Self::default()
     }

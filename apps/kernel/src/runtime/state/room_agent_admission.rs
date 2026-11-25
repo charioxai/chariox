@@ -143,11 +143,8 @@ impl KernelRuntimeState {
                     "only the owner or another authorized agent can change your deadline",
                 ));
             }
-            return self.authorize_peer_control(
-                &actor,
-                &target,
-                super::peer_rooms::PeerControl::Cancel,
-            );
+            self.authorize_peer_control(&actor, &target, super::peer_rooms::PeerControl::Cancel)?;
+            return self.ensure_actor_may_revive(&actor, &target);
         }
         // Who may change a deadline in another room may read it there.
         if let LocalDaemonRequest::GetAgentDeadline(r) = request {
@@ -460,3 +457,37 @@ impl KernelRuntimeState {
 #[cfg(test)]
 #[path = "room_agent_admission_tests.rs"]
 mod tests;
+
+impl KernelRuntimeState {
+    /// An agent whose own team limit ended cannot give another agent a new limit: only the
+    /// owner, or an ancestor still running, revives a finished agent.
+    fn ensure_actor_may_revive(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let store = &self.owned.durable_state_store;
+        let reached = |agent: &crate::agent::AgentInstance| -> Result<bool, DaemonError> {
+            Ok(store
+                .agent_deadline(agent.session_id(), agent.id())?
+                .is_some_and(|deadline| {
+                    deadline.state == crate::local::AgentDeadlineState::Reached
+                }))
+        };
+        if !reached(target)? {
+            return Ok(());
+        }
+        let agents = self.owned.agent_store.list_agents();
+        let mut under_ended = reached(actor)?;
+        for ancestor in crate::agent::authority_limit::ancestors(actor, &agents) {
+            under_ended |= reached(ancestor)?;
+        }
+        if !under_ended {
+            return Ok(());
+        }
+        let name = target.alias().unwrap_or_else(|| target.id());
+        Err(denied(format!(
+            "agent {name}'s time limit ended and yours ended too: only the owner, or an ancestor of {name} that is still running, can extend it (agent deadline {name} <duration>)"
+        )))
+    }
+}
