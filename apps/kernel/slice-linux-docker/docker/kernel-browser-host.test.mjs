@@ -3960,3 +3960,12 @@ test('row 548: three launches in a row that fail continue on a new Chromium obje
   await host.start(); assert.equal(host.launchFailures, 0);
   chromium.start = start;
 }));
+
+test("row 559/553 live: an unresized tab's snapshot page_size is the viewport the input check uses, not the display geometry", () => using(async ({host}) => {
+  const tab = await host.request({op: "open", url: "https://example.com"});
+  host.viewport = () => ({css_width: 1024, css_height: 700, device_scale_factor: 1});
+  const read = async () => (await host.handle({id: 1, method: "host.browser", params: {op: "snapshot", tab_id: tab.tab_id, generation: host.generation}})).result;
+  assert.deepEqual((await read()).page_size, {css_width: 1024, css_height: 700});
+  host.layouts.set(tab.tab_id, {width: 1280, height: 1324, subscriptionId: 'resize'});
+  assert.deepEqual((await read()).page_size, {css_width: 1280, css_height: 1324}, 'a resized tab keeps its own layout');
+}));

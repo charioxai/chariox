@@ -483,6 +483,8 @@ export class KernelBrowserHost {
   viewport() { return hostViewport(!this.chromium.desktop && (featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY') || featureOn('CHARIOX_KERNEL_BROWSER_MIRROR'))); }
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout until an explicit shared-window resize takes precedence; null restores the canonical page.
+  // The size an agent's pointer input is checked against: the tab's own layout once resized, else the host viewport (not the display geometry).
+  inputPageSize(tabId) { const l = this.layouts.get(tabId); if (l) return { width: l.width, height: l.height }; const v = this.viewport(); return { width: v.css_width, height: v.css_height }; }
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
   noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) { this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); this.timing?.event?.('page_layout_changed', { width_delta: now.width - before.width, height_delta: now.height - before.height }); this.mirror?.v2?.layoutChanged?.(tabId); } }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
@@ -1390,7 +1392,7 @@ export class KernelBrowserHost {
     if (command.op === "snapshot") {
       const snapshot = await this.browser.snapshot(binding);
       rememberCardReferences(this, scope, tab, snapshot);
-      const page = this.pageSize(tab.tab_id);
+      const page = this.inputPageSize(tab.tab_id);
       return this.observe({ generation: this.generation, snapshot, page_size: { css_width: page.width, css_height: page.height } }, tab, scope);
     }
     if (command.op === "input") {
