@@ -7,6 +7,8 @@ use super::*;
 /// What the host keeps for one running agent of an owner.
 pub(super) struct AgentPresence {
     pub(super) fence: Arc<BrowserCancellation>,
+    /// Held by an App call from its last check through its submission; ending the run waits for it.
+    pub(super) gate: Arc<Mutex<()>>,
     pub(super) scope: String,
 }
 
@@ -14,6 +16,7 @@ impl AgentPresence {
     fn new() -> Self {
         Self {
             fence: Arc::new(BrowserCancellation::default()),
+            gate: Arc::default(),
             scope: format!("agent-{:032x}", rand::random::<u128>()),
         }
     }
@@ -75,14 +78,14 @@ impl KernelBrowserHost {
     /// The fence the next call of this agent runs under.
     pub(crate) fn run_fence(&self, user: &str, agent: &str) -> AgentRunFence {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        AgentRunFence(
-            state
-                .presence
-                .entry((user.into(), agent.into()))
-                .or_insert_with(AgentPresence::new)
-                .fence
-                .clone(),
-        )
+        let presence = state
+            .presence
+            .entry((user.into(), agent.into()))
+            .or_insert_with(AgentPresence::new);
+        AgentRunFence {
+            cancellation: presence.fence.clone(),
+            gate: presence.gate.clone(),
+        }
     }
     /// An agent names a Tab or starts, stops or opens; it never names a stream, which only the
     /// person's viewer owns.
@@ -126,15 +129,23 @@ impl KernelBrowserHost {
             .cloned()
             .collect();
         let mut retired = Vec::new();
+        let mut gates = Vec::new();
         for key in keys {
             if let Some(presence) = state.presence.remove(&key) {
                 presence.fence.request_cancel();
+                gates.push(presence.gate);
                 retired.push((state.browsers.get(&key.0).cloned(), presence.scope));
             }
         }
         state.loaded.retain(|(_, id, _)| id != agent);
         let models: Vec<_> = state.actors.values().cloned().collect();
         drop(state);
+        // Cancellation is already requested, so no further submission starts. An App call that
+        // passed its last check holds its gate until it has submitted: wait for it here, so the
+        // run has ended only when nothing of it can still enter an App worker.
+        for gate in gates {
+            drop(gate.lock().unwrap_or_else(|e| e.into_inner()));
+        }
         // Take the actor models after releasing the host lock: authority callbacks hold a
         // model while they read the host.
         for model in models {
@@ -198,25 +209,6 @@ impl KernelBrowserHost {
                 }
             });
         }
-    }
-    /// The Room Computer switches of `user` changed.
-    pub(crate) fn access_projection_changed(&self, user: &str) {
-        *self
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .access_cursors
-            .entry(user.into())
-            .or_default() += 1;
-    }
-    pub(crate) fn access_cursor(&self, user: &str) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .access_cursors
-            .get(user)
-            .copied()
-            .unwrap_or(0)
     }
     /// A cancelled run fence fails the call it admitted.
     pub(crate) fn check_admission(

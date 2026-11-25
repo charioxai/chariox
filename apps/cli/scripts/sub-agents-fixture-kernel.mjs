@@ -37,7 +37,7 @@ const answers = {
   AttachToSession: () => ({ SessionAttached: { attachment: { id: "attachment-1", session_id: session.id } } }),
   GetPromptInputHistory: () => ({ PromptInputHistory: { entries: [] } }),
   CloudRelayStatus: () => ({ CloudRelayStatus: { profile: null } }),
-  KernelBrowser: () => ({ KernelBrowser: { result: { op: "list_grants", grants: [] } } }),
+  KernelBrowser: () => ({ KernelBrowser: { result: { state: "stopped", tabs: [] } } }),
   GetCredentialVaultStatus: () => ({ CredentialVaultStatus: { status: { path: "/fixture/vault", unlocked: false, expires_at_ms: null }, unlock: {} } }),
   ListDescendants: () => ({ AgentTree: { tree: readTree() } }),
 }

@@ -183,9 +183,10 @@ The owner's agents use the owner's kernel browser, Computer and App views with n
 grant, focus, epoch or lifetime; see
 [MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md). The loader
 tools take no arguments and `chariox.kernel_browser_share` is gone. The owner
-terminal's `KernelBrowser` commands `list_grants`, `subscribe_grants` and
-`revoke_grants` now carry only the Room Computer switches: the
-`user_domain_grants_changed` snapshot holds `cursor` and `room_computer`. Browser
+terminal's `KernelBrowser` commands `list_grants`, `subscribe_grants`, `revoke_grants`
+and `grant_room_computer`, the per-agent Room Computer switches, are gone with the
+`user_domain_grants_changed` snapshot (local 1015). `grant_leased_computer` and
+`revoke_leased_computer` answer `{agent_id, leased_computer}`. Browser
 and App window projections no longer carry `kernel_id`, `kernel_name`,
 `focused_agent_kernel_id` or `reachable_by_focused_agent`, and `UserAppView.access`
 is removed. Vault, protected regions, sensitive approvals and App/passkey
@@ -5021,7 +5022,7 @@ flow, Notes and presented-glyph DPR1/2 drills from MULTIDOMAIN_DOM_MIRRORING.md.
 These tests supplement exact-head review and real hosted acceptance.
 ### MP-08 / MP-10 / MP-11: Room Computer access (local 461, peer 92)
 
-Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Drill: `node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir>` (real kernel and TUI, dev-stub agents). Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission. Room permission changes advance the existing owner Access cursor; the kernel captures permissions and cursor together so delayed projections cannot restore stale access.
+Room membership grants Computer control by default, and the owner has no per-agent switch for it (local 1015 removed `revoke_grants`, `grant_room_computer`, `list_grants` and `subscribe_grants`). The kernel checks only that the agent is not archived at input admission; queued dispatch and active cancellation still end with the agent's run, and workers retain the existing authenticated Room peer binding.
 
 Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
 
@@ -5215,7 +5216,7 @@ establish repaint or stability acceptance.
 The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",
 agent_id,target:{surface_id,generation}}` for the agent's bound ordinary Linux
 desktop worker. `revoke_leased_computer` names the same agent; ordinary Access
-revoke also retires it. The TUI exposes `/access grant-computer <agent-id>
+revoke is gone (local 1015). The TUI exposes `/access grant-computer <agent-id>
 <surface-id> <generation>` and `/access revoke-computer <agent-id>`, requiring
 local500 and worker peer109 before sending the new contract.
 

@@ -38,7 +38,6 @@ impl KernelRuntimeState {
                     agents: self.owned.agent_store.clone(),
                     slices: self.owned.slice_store.clone(),
                     metaagent_events: self.owned.metaagent_events.clone(),
-                    room_computer_revoked: self.owned.room_computer_revoked.clone(),
                 },
                 policy,
             ),

@@ -674,4 +674,9 @@ pub use workspace::*;
 /// the connected service stops the machine then. Absent keeps the machine until it is released.
 /// Local 1015 (relay peer 452): file slices between kernels travel as bytes (`data_base64` lifted out of the
 /// peer plaintext), and peer requests and replies are binary relay frames between kernels that offer them.
+/// Local 1015 (provisional; the relay peer is unchanged): the owner's agents need no per-agent Room Computer switch.
+/// `grant_room_computer`, `revoke_grants`, `list_grants` and `subscribe_grants` are gone, and so is the
+/// `user_domain_grants_changed` snapshot; `grant_leased_computer` and `revoke_leased_computer` answer
+/// `{agent_id, leased_computer}`. A person-card restart recovery starts the browser with `card_recovery`, which an
+/// explicit stop refuses.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

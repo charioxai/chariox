@@ -255,8 +255,6 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     client: deps.client,
     appendNotice: deps.appendNotice,
   })
-  accessCommands.start()
-  onCleanup(() => accessCommands.stop())
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingNewProjectName = false
   let pendingProjectRenameId: string | null = null

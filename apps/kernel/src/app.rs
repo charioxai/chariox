@@ -196,7 +196,6 @@ pub struct DaemonApp {
     pub(crate) dictation: Arc<crate::dictation::DictationService>,
     pub(crate) private_assessment_dispatch:
         Option<crate::runtime::state::PrivateAssessmentDispatch>,
-    pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
@@ -439,7 +438,6 @@ impl DaemonApp {
             dictation: crate::dictation::DictationService::new(
                 config.private_runtime_state_root().join("dictation"),
             ),
-            room_computer_revoked: Default::default(),
             private_assessment_dispatch: None,
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),

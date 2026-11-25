@@ -97,6 +97,45 @@ impl KernelRuntimeState {
             .map_err(|_| region_error("browser region observation is invalid"))
     }
 
+    /// After a kernel restart the card's Tab is back with a new document: ask the controller to
+    /// bind the card to the Tab's whole page.
+    async fn rebind_card_region(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        card_id: &str,
+        tab_id: &str,
+    ) -> Result<RegionObservation, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(region_error(
+                "browser region agent does not belong to this room",
+            ));
+        }
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id":tab_id, "rebind":true});
+        let result = self
+            .kernel_browser_operation(&user, Some(agent_id), "host.browser", params)
+            .await?;
+        serde_json::from_value(result)
+            .map_err(|_| region_error("browser region observation is invalid"))
+    }
+
+    /// The kernel restarted and ended its browser: the card's page comes back when the browser
+    /// starts again, the same way an agent's own read would start it.
+    async fn start_card_browser(&self, agent_id: &str) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        self.kernel_browser_operation(
+            &user,
+            Some(agent_id),
+            "host.browser",
+            serde_json::json!({"op":"start","card_recovery":true}),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// The App's confirmation preview, found by the browser host in the App's own Tab; the
     /// agent and the App name no element.
     pub(super) async fn resolve_app_confirmation_view(
@@ -253,6 +292,36 @@ impl KernelRuntimeState {
                     }
                 }
                 Ok(RegionObservation::ConditionMet { reason }) => {
+                    // A restart is not the person finishing: a plain card keeps its Tab and is
+                    // bound again to the page the browser brought back.
+                    if reason == "Browser restarted"
+                        && !app_confirmation
+                        && previous.verification.is_none()
+                        && previous.done_text.is_none()
+                    {
+                        match self
+                            .rebind_card_region(room, agent, id, &previous.tab_id)
+                            .await
+                        {
+                            Ok(RegionObservation::Present { region }) => {
+                                failures.observed();
+                                if let Err(error) = self
+                                    .owned
+                                    .rebind_browser_region_card(room, id, previous, *region)
+                                {
+                                    tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card rebind retained for retry");
+                                    tokio::time::sleep(Duration::from_millis(250)).await;
+                                }
+                                continue;
+                            }
+                            Ok(_) | Err(_) => {
+                                if !failures.exhausted() {
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                     if self.close_browser_region_card(room, id, reason).is_ok() {
                         return;
                     }
@@ -284,6 +353,17 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     tracing::debug!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card observation will retry");
+                    // The controller is stopped after a restart: start it, then observe again.
+                    // A browser the person stopped on purpose stays stopped: the start is refused,
+                    // and the card ends with the failure budget like any other unreachable page.
+                    if !app_confirmation
+                        && error.to_string().contains("browser_unavailable")
+                        && self.start_card_browser(agent).await.is_ok()
+                    {
+                        failures.observed();
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
                     // A different owner is the only refusal: the agent's own access needs no grant,
                     // so a restart or a reload never closes a card that shows a live page.
                     let foreign = matches!(
@@ -373,6 +453,50 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// The card's Tab came back with a new document after a restart: bind the card to it. The
+    /// card keeps its identity and its Tab; only a plain card (no proof, no awaited text) rebinds.
+    pub(super) fn rebind_browser_region_card(
+        &self,
+        room: &str,
+        id: &str,
+        expected: &RuntimeInteractionBrowserRegion,
+        region: RuntimeInteractionBrowserRegion,
+    ) -> Result<(), DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| region_error("interaction store unavailable"))?;
+        let activity = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(room)?;
+        let Some(card) = session.active_interactions().iter().find(|i| i.id() == id) else {
+            return Ok(());
+        };
+        if card.view().is_none_or(|v| v.browser_region != *expected) {
+            return Ok(());
+        }
+        if region.tab_id != expected.tab_id
+            || region.verification.is_some()
+            || expected.verification.is_some()
+            || region.done_text != expected.done_text
+        {
+            return Err(region_error("browser card rebind changed its Tab or its proof"));
+        }
+        session.update_active_interaction_view(
+            id,
+            RuntimeInteractionView {
+                browser_region: region,
+            },
+        );
+        sessions.restore_session(session);
+        drop(sessions);
+        activity.record();
+        self.session_snapshot(room)?;
+        self.terminal_stream.notify_terminal_projection_change(room);
+        Ok(())
+    }
+
     pub(super) fn update_browser_region_card(
         &self,
         room: &str,
