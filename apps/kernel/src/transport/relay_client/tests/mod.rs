@@ -7,6 +7,7 @@ mod cloud_terminal_pairing;
 mod idle_traffic;
 mod kernel_protocol;
 mod leased_prompt_run_change;
+mod old_worker_terminals;
 mod ordinary_lease_caller;
 mod peer_events;
 mod peer_machine;
