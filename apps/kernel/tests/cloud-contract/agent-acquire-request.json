@@ -4,6 +4,7 @@
   "request": {
     "action": "acquire",
     "capability_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "request_id": "kernel-acquire-1"
+    "request_id": "kernel-acquire-1",
+    "timeout_s": 300
   }
 }

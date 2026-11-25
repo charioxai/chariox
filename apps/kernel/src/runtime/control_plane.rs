@@ -375,6 +375,7 @@ mod tests {
             request_id: "one".into(),
             class_id: None,
             region: None,
+            timeout_s: None,
         };
         let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
             .await
@@ -397,6 +398,7 @@ mod tests {
             request_id: "kernel-acquire-1".into(),
             class_id: None,
             region: None,
+            timeout_s: Some(300),
         };
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../tests/cloud-contract/agent-acquire-request.json"

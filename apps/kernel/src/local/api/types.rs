@@ -668,4 +668,6 @@ pub use workspace::*;
 /// settings read.
 /// Local 1015 (relay peer 452, provisional): `SetProjectEnvironmentSecret` takes a `source` (a typed value, a Vault entry id, or
 /// `unlink`).
+/// Provisional 1015 (relay peer 452): a machine acquire request may carry `timeout_s`, the rental's hard stop in seconds;
+/// the connected service stops the machine then. Absent keeps the machine until it is released.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
