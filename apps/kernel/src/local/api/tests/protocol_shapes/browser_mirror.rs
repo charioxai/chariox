@@ -33,6 +33,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             font_absent: None,
             viewport_first: None,
             visited_links: None,
+            layout_delta: None,
             layout_width: None,
             layout_height: None,
         },
@@ -57,6 +58,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             font_absent: None,
             viewport_first: None,
             visited_links: None,
+            layout_delta: None,
             layout_width: None,
             layout_height: None,
         },
@@ -405,6 +407,35 @@ fn browser_mirror2_visited_links_629_shape_is_pinned() {
         fixture["subscribe"]
     );
     for name in ["subscribed", "remark_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn browser_mirror2_layout_delta_1015_shape_is_pinned() {
+    // MP-08/MP-10: local 1015 (relay peer unchanged): a subscription that asks for `layout_delta` and holds a complete
+    // snapshot follows a page size change by an ordinary delta whose header names the new `css_width`/`css_height`;
+    // the page's own reaction follows as ops. Without it the stream still re-snapshots (resetReason 'layout').
+    let bytes = include_bytes!("browser-mirror2-layout-delta-1015.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "e259ae19cbbe732177e24e0985fd7d7f5bc0a15312ea1996a5032a755fe10461"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["subscribed", "resized_delta", "reaction_delta"] {
         let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), wire);
