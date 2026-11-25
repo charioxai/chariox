@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchProviderRunRequest {
@@ -99,6 +100,50 @@ pub struct UpdateAgentConfigRequest {
     /// Why an agent asked for the change; shown with the change in history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetAgentSettingsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub agent: String,
+}
+
+/// The settings an owner can inspect, including on a sub-agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSettings {
+    pub id: String,
+    pub session_id: String,
+    pub agent_ref: String,
+    pub alias: Option<String>,
+    pub provider: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub account_profile: String,
+    pub execution_mode_override: Option<AgentExecutionMode>,
+    pub permission_level_override: Option<AgentPermissionLevel>,
+    pub worktree_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_profile: Option<crate::agent::PendingAgentProfile>,
+}
+
+impl From<&crate::agent::AgentInstance> for AgentSettings {
+    fn from(agent: &crate::agent::AgentInstance) -> Self {
+        Self {
+            id: agent.id().to_string(),
+            session_id: agent.session_id().to_string(),
+            agent_ref: agent.agent_ref().to_string(),
+            alias: agent.alias().map(str::to_string),
+            provider: agent.provider().to_string(),
+            model: agent.model().map(str::to_string),
+            effort: agent.effort().map(str::to_string),
+            account_profile: agent.provider_account_profile().to_string(),
+            execution_mode_override: agent.execution_mode_override(),
+            permission_level_override: agent.permission_level_override(),
+            worktree_id: agent.worktree_id().map(str::to_string),
+            pending_profile: agent.pending_profile().cloned(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

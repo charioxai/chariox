@@ -32,7 +32,8 @@ pub(crate) fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusPro
         LocalDaemonRequest::UpdateAgentConfig(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
-        LocalDaemonRequest::UpdateAgentProfile(request) => {
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => {
             FocusProjectionRefresh::SnapshotSession {
                 session_id: request.session_id.clone(),
             }
@@ -148,6 +149,7 @@ pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> Sessio
         | LocalDaemonRequest::AliasAgent(_)
         | LocalDaemonRequest::UpdateAgentConfig(_)
         | LocalDaemonRequest::UpdateAgentProfile(_)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(_)
         | LocalDaemonRequest::UpdateAgentSubstitutes(_)
         | LocalDaemonRequest::HideAgent(_)
         | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,

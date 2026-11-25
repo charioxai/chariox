@@ -23,7 +23,8 @@ impl KernelRuntimeState {
                 LocalDaemonRequest::AliasAgent(r) => Some(&r.agent_id),
                 LocalDaemonRequest::DestroyAgent(r) => Some(&r.agent_id),
                 LocalDaemonRequest::UpdateAgentConfig(r) => Some(&r.agent_id),
-                LocalDaemonRequest::UpdateAgentProfile(r) => Some(&r.agent_id),
+                LocalDaemonRequest::UpdateAgentProfile(r)
+                | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(r) => Some(&r.agent_id),
                 LocalDaemonRequest::UpdateAgentSubstitutes(r) => Some(&r.agent_id),
                 _ => None,
             };

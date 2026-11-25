@@ -44,6 +44,31 @@ impl CommandRouter {
         }
         let args = tokens.get(2..).unwrap_or_default();
         Ok(match tokens.get(1).map(String::as_str) {
+            Some("settings") if args.first().is_none_or(|arg| arg != "set") => {
+                let result = match args {
+                    [] | [_] => super::settings_args::settings_target(
+                        caller,
+                        &self.runtime_state.list_agents(),
+                        args.first().map(String::as_str),
+                    )
+                    .map(|agent| {
+                        serde_json::json!({
+                            "type": "AgentSettings",
+                            "agent": super::summary::summarize_meta_agent(agent),
+                            "settings": super::result::agent_settings_details(agent),
+                            "pending": agent.pending_profile(),
+                        })
+                    }),
+                    _ => Err(meta_command_error("usage: agent settings [<agent>]")),
+                };
+                Some(match result {
+                    Ok(response) => RuntimeToolResult {
+                        ok: true,
+                        payload: serde_json::json!({ "command": command, "response": response }),
+                    },
+                    Err(error) => meta_command_failure_result(command, error),
+                })
+            }
             Some("deadline") if args.iter().any(|arg| arg == "--room") => {
                 let result = async {
                     // A read names no time; a set names the new one or `none`.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor } from "./agent-command-table.js"
-import { eventsMcpRoutes, failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withKernel } from "./kernels-command.js"
+import { eventsMcpRoutes, failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withAgentKernel, withKernel } from "./kernels-command.js"
 import { Readable, Writable } from "node:stream"
 import { runExec } from "./exec-command.js"
 import type { WebSocket } from "ws"
@@ -366,4 +366,18 @@ test("exec place without a target kernel is a usage error and sends nothing", as
   } finally { process.stderr.write = write; process.exitCode = code; await kernel.close() }
   assert.equal(sent, 0)
   assert.match(written.join(""), /"code":"usage"/)
+})
+
+test("an owner's settings command on the ordinary endpoint sends its command id, so a retry replays the first result", async () => {
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, { response: { Pong: {} } }))
+  const previous = process.env.CHARIOX_KERNEL_URL
+  process.env.CHARIOX_KERNEL_URL = kernel.path
+  try {
+    await withAgentKernel({ socket: undefined, commandId: "owner-retry-1" }, send => send({ Ping: {} }))
+    assert.equal(kernel.frames.at(-1)!.command_id, "owner-retry-1")
+  } finally {
+    if (previous === undefined) delete process.env.CHARIOX_KERNEL_URL
+    else process.env.CHARIOX_KERNEL_URL = previous
+    await kernel.close()
+  }
 })
