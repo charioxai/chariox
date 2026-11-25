@@ -61,6 +61,8 @@ export function backendProviderLabel(providerId: BackendProviderId) {
   }
 }
 
+// Placeholder shown while no kernel answers. The kernel owns the Claude model list and default
+// (its catalogue replaces this one on connect), so the fallback names no Claude model.
 export function fallbackProviderCatalog(options: {
   source?: "local_fallback"
   unavailableReason?: string
@@ -102,52 +104,12 @@ export function fallbackProviderCatalog(options: {
           },
         },
       },
-      {
-        id: "claude-headless",
-        name: "Claude headless",
-        remote_machine_aliases: [],
-        models: {
-          "claude-sonnet-4-6": {
-            id: "claude-sonnet-4-6",
-            name: "Sonnet 4.6",
-            status: "active",
-            variants: {
-              low: {},
-              medium: {},
-              high: {},
-              xhigh: {},
-              max: {},
-            },
-          },
-        },
-      },
-      {
-        id: "claude-p",
-        name: "Claude -p",
-        remote_machine_aliases: [],
-        models: {
-          "claude-sonnet-4-6": {
-            id: "claude-sonnet-4-6",
-            name: "Sonnet 4.6",
-            status: "active",
-            variants: {
-              low: {},
-              medium: {},
-              high: {},
-              xhigh: {},
-              max: {},
-            },
-          },
-        },
-      },
     ],
     default: {
       codex: "gpt-5.4",
       opencode: "gpt-5.4",
-      "claude-headless": "claude-sonnet-4-6",
-      "claude-p": "claude-sonnet-4-6",
     },
-    connected: ["codex", "opencode", "claude-headless", "claude-p"],
+    connected: ["codex", "opencode"],
     ...(options.source ? { source: options.source } : {}),
     ...(options.unavailableReason ? { unavailable_reason: options.unavailableReason } : {}),
   } satisfies ProviderCatalog

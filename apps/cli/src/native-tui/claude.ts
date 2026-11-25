@@ -61,7 +61,8 @@ type NativeClaudeOptions = {
   sliceRef?: string
   alias?: string
   agentAlias?: string
-  model: string
+  // Unset until the person passes --model: the kernel then picks its own default.
+  model?: string
   effort: string
   mode: "build" | "plan"
   permissions: "required" | "yolo"
@@ -98,7 +99,6 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
 export function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
   const options: NativeClaudeOptions = {
     clientId: `chariox-claude-native-${process.pid}`,
-    model: "claude-sonnet-4-6",
     effort: "low",
     mode: "build",
     permissions: "required",
@@ -233,7 +233,7 @@ function printNativeClaudeUsage() {
     "  --slice <ref>                    Run the Chariox agent/provider on a home-managed slice worker",
     "  --alias <name>                   Alias for a newly-created session",
     "  --agent-alias <name>             Alias for the Claude native agent",
-    "  --model <model>                  Claude model argument (default claude-sonnet-4-6)",
+    "  --model <model>                  Claude model (default: the kernel's default model)",
     "  --effort <effort>                Claude effort argument (default low)",
     "  --mode <build|plan>              Chariox agent mode (default build)",
     "  --permissions <required|yolo>    Claude permission mode mapping (default required)",
@@ -259,7 +259,7 @@ async function runClaudeRemoteRendered(
       ? null
       : await createNativeSession(client, workspace, worktree, options.alias, {
         provider: "claude",
-        model: options.model,
+        model: options.model ?? null,
         effort: options.effort,
         execution_mode: options.mode,
         permission_level: options.permissions,
@@ -292,8 +292,11 @@ async function runClaudeRemoteRendered(
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
+    // The kernel chose the model on the provider that runs the agent, or refused the spawn.
+    const model = agent.model?.trim()
+    if (!model) throw new Error(`The kernel chose no Claude model for agent ${agent.id}. Pass one with --model.`)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps)
-    const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
+    const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
     const readiness = createClaudeRemoteRenderedReadiness()
     // MP-08/MP-11: trust/onboarding can end the official provider. Release the
