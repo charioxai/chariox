@@ -220,7 +220,8 @@ fn cross_room_spawn_from_a_child_keeps_the_same_tree() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|child| child["alias"] == "px" && child["depth"] == 2));
+            .any(|child| child["alias"] == "px" && child["parent"] == world.ids["b"].as_str()));
+        // #1580 compacts the rows: a grandchild is named by its parent, no depth number.
     });
 }
 

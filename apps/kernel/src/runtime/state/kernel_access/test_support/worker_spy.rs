@@ -91,7 +91,7 @@ impl WorkerSpy {
                         RelayEnvelope::DaemonRegister { registration, .. } => {
                             let RelayEnvelope::DaemonPeerRequest { request_id, encrypted_request, .. } = receive(&mut socket).await else { panic!("expected peer request") };
                             let decoded = relay_crypto::decrypt_payload_for_private_key(&worker.relay_private_key, &encrypted_request).unwrap();
-                            let request: RelayPeerRequest = serde_json::from_slice(&decoded.plaintext).unwrap();
+                            let request: RelayPeerRequest = serde_json::from_slice(&crate::transport::framed_plaintext::open(&decoded.plaintext).unwrap().0).unwrap();
                             if !matches!(&request, RelayPeerRequest::DrainLeasedRuntimeProjection { .. }) {
                                 counter.fetch_add(1, Ordering::SeqCst);
                             }

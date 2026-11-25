@@ -119,7 +119,13 @@ async fn a_leased_merged_notification_points_to_its_home_answer_receipt() {
         held[0].payload["outcome"]["answered_in_turn"]["prompt_id"],
         prompt.id()
     );
-    assert!(held[0].payload["public_answer"].is_null());
+    // #1647: a completion without a text answer carries a pointer to the child's turn, never a copy of an answer.
+    assert!(
+        held[0].payload["public_answer"]["excerpt"]
+            .as_str()
+            .is_some_and(|excerpt| excerpt.contains("chariox.history.turn")),
+        "{events:?}"
+    );
     assert_eq!(
         events
             .iter()

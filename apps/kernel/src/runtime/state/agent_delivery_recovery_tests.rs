@@ -753,13 +753,17 @@ async fn a_steer_skipped_at_the_native_write_is_delivered_again() {
         let (room, child) = (f.room.clone(), f.child.clone());
         async move { runtime.deliver_agent_inbox(&room, &child).await }
     });
-    for _ in 0..50 {
-        if f.state_of(steer.sequence) == "submitting" {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(f.state_of(steer.sequence), "submitting");
+    // #1634 records a delivery as submitting only once it holds the lane, so a steer that waits for the lane
+    // stays pending; give the delivery task time to reach the wait either way.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        matches!(
+            f.state_of(steer.sequence).as_str(),
+            "pending" | "submitting"
+        ),
+        "the steer waits for the lane without being lost: {}",
+        f.state_of(steer.sequence)
+    );
     // The running turn ends while the steer waits for the lane.
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
     f.runtime

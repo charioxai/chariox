@@ -1692,9 +1692,12 @@ async fn a_merged_notification_settles_its_held_delivery_by_the_answer_turn_rece
     assert_eq!(target["prompt_id"], message_prompt);
     assert_eq!(target["agent_id"], team.child);
     assert_eq!(target["session_id"], team.room);
+    // #1647: a completion without a text answer carries a pointer to the child's turn, never a copy of an answer.
     assert!(
-        held[0].payload["public_answer"].is_null(),
-        "the reference must not copy the combined answer"
+        held[0].payload["public_answer"]["excerpt"]
+            .as_str()
+            .is_some_and(|excerpt| excerpt.contains("chariox.history.turn")),
+        "the reference must not copy the combined answer: {events:?}"
     );
     let answers = events
         .iter()
@@ -1859,7 +1862,13 @@ async fn restart_recovers_a_merged_notification_receipt(
     assert_eq!(outcome["answered_in_turn"]["prompt_id"], message_prompt);
     assert_eq!(outcome["answered_in_turn"]["session_id"], team.room);
     assert_eq!(outcome["answered_in_turn"]["agent_id"], team.child);
-    assert!(held[0].payload["public_answer"].is_null());
+    // #1647: a completion without a text answer carries a pointer to the child's turn, never a copy of an answer.
+    assert!(
+        held[0].payload["public_answer"]["excerpt"]
+            .as_str()
+            .is_some_and(|excerpt| excerpt.contains("chariox.history.turn")),
+        "{events:?}"
+    );
     if !held_already_terminal {
         let history = team
             .runtime
