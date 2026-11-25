@@ -1831,6 +1831,8 @@ mod agent_process_output;
 mod agent_process_watch;
 #[cfg(test)]
 mod agent_reply_tests;
+#[cfg(test)]
+mod agent_start_retry_tests;
 mod agent_task_cancellation;
 #[cfg(test)]
 mod agent_task_cancellation_sweep_tests;

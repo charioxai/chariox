@@ -11,6 +11,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             sequence,
             ..
         }
+        | Operation::StartFailed {
+            room,
+            agent,
+            sequence,
+            ..
+        }
         | Operation::BindSubmission {
             room,
             agent,
@@ -40,6 +46,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 agent,
                 sequence: member,
                 state,
+                now,
+            },
+            Operation::StartFailed {
+                room,
+                agent,
+                error,
+                waits_on_owner,
+                now,
+                ..
+            } => Operation::StartFailed {
+                room,
+                agent,
+                sequence: member,
+                error,
+                waits_on_owner,
                 now,
             },
             Operation::BindSubmission {
@@ -472,6 +493,32 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                 )? {
                     e = acked;
                 }
+            }
+            Ok(Outcome::Event(e))
+        }
+        Operation::StartFailed {
+            room,
+            agent,
+            sequence,
+            error,
+            waits_on_owner,
+            now,
+        } => {
+            let Outcome::Event(e) = apply_row(
+                tx,
+                Operation::Receipt {
+                    room,
+                    agent,
+                    sequence,
+                    state: "rejected".into(),
+                    now,
+                },
+            )?
+            else {
+                unreachable!()
+            };
+            if e.state == "pending" {
+                super::start_failures::record(tx, e.sequence, &error, waits_on_owner, now)?;
             }
             Ok(Outcome::Event(e))
         }

@@ -237,6 +237,16 @@ impl KernelRuntimeState {
         if event.state != "pending" {
             return Ok(());
         }
+        // A start that failed is tried again at the time its failure named, not at every sweep.
+        if active.is_none()
+            && self
+                .owned
+                .durable_state_store
+                .agent_start_failure(event.sequence)?
+                .is_some_and(|failure| failure.retry_at_ms > crate::session::unix_epoch_ms())
+        {
+            return Ok(());
+        }
         // An explicitly stopped agent stays stopped: messages, urgent ones too,
         // stay pending and visible until the owner prompts it again.
         if active.is_none()
@@ -531,9 +541,32 @@ impl KernelRuntimeState {
                             &e,
                         )?;
                     }
-                    let state = ledger::delivery_receipt_state(None, false);
-                    self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-                    if !crate::error::is_agent_deadline_refusal(&e) {
+                    // A start that will be tried again has not failed for whoever waits on it:
+                    // a reply request or a delegate obligation ends only when the attempts are
+                    // spent (or the refusal is final), not at the first refused start.
+                    let mut start_will_be_retried = false;
+                    // Refusals that waiting cannot change are final at once: a deadline that has
+                    // ended, a declined Vault unlock, and a provider account that is not signed
+                    // in. A usage limit is not final: it resets.
+                    if crate::error::is_agent_deadline_refusal(&e)
+                        || matches!(
+                            &e,
+                            DaemonError::VaultUnlock {
+                                code: "vault_unlock_declined",
+                                ..
+                            } | DaemonError::ProviderProfileRefused {
+                                reason: crate::error::ProviderProfileRefusal::Unauthenticated,
+                                ..
+                            }
+                        )
+                    {
+                        let state = ledger::delivery_receipt_state(None, false);
+                        self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
+                    } else {
+                        start_will_be_retried =
+                            self.record_agent_start_failure(room, agent, event.sequence, &e)?;
+                    }
+                    if !crate::error::is_agent_deadline_refusal(&e) && !start_will_be_retried {
                         self.owned
                             .settle_failed_delegate_start(room, agent, &e.to_string())?;
                     }
@@ -919,6 +952,66 @@ impl KernelRuntimeState {
                 serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
             );
         }
+    }
+    /// The agent could not start for this delivery: it stays pending, says when it tries again,
+    /// and the sweep ends it only after the attempts are spent.
+    /// Returns whether the delivery will be tried again: attempts remain, or the start waits on
+    /// the owner. Only a spent budget lets the sweep end it.
+    pub(super) fn record_agent_start_failure(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+        error: &DaemonError,
+    ) -> Result<bool, DaemonError> {
+        // A locked Vault waits for the person, whose unlock card is open and was announced in the
+        // pane when it opened: no attempt is spent and nothing more is said per retry.
+        let waits_on_owner = super::runtime_vault_unlock_state::is_vault_unlock_card_open(error)
+            || matches!(
+                error,
+                DaemonError::VaultUnlock {
+                    code: "vault_locked",
+                    ..
+                }
+            );
+        let Outcome::Event(event) =
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::StartFailed {
+                    room: room.into(),
+                    agent: agent.into(),
+                    sequence,
+                    error: error.to_string(),
+                    waits_on_owner,
+                    now: crate::session::unix_epoch_ms(),
+                })?
+        else {
+            unreachable!()
+        };
+        self.owned.record_wake_refused(&event);
+        let failure = self
+            .owned
+            .durable_state_store
+            .agent_start_failure(sequence)?;
+        let retried = waits_on_owner
+            || failure.as_ref().is_some_and(|failure| {
+                failure.attempts
+                    < crate::durable_state::agent_lifecycle::start_failures::START_ATTEMPTS
+            });
+        // The open unlock card was announced when it opened: a retry against the same card says
+        // nothing more, or an owner who is away fills the pane with notices.
+        if let Some(failure) = failure.filter(|_| !waits_on_owner) {
+            self.owned.record_notice_for_agent(
+                room,
+                None,
+                Some(agent),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(room),
+                crate::durable_state::agent_lifecycle::start_failures::retry_notice(&failure),
+            );
+        }
+        Ok(retried)
     }
     pub(super) fn record_agent_delivery_receipt(
         &self,

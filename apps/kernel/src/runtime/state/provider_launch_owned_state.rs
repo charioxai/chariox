@@ -1908,6 +1908,55 @@ mod tests {
             .expect("vault unlock interaction should be visible")
             .clone();
         assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
+        // The pane says at once that the start waits on the Vault and names the account; a retry
+        // that joins the open card says nothing more.
+        let vault_notices = || {
+            runtime
+                .owned
+                .operational_history_store
+                .load_session_history_entries(session.id(), Some(agent.id()))
+                .expect("notices should load")
+                .into_iter()
+                .filter(|entry| entry.text.contains("Vault locked: unlock to start"))
+                .map(|entry| entry.text)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            vault_notices(),
+            vec![format!(
+                "Vault locked: unlock to start (account {}).",
+                "Vaulted Claude"
+            )]
+        );
+        runtime.say_launch_waits_on_vault(session.id(), agent.id(), "Vaulted Claude", &vault_path);
+        assert_eq!(vault_notices().len(), 1, "told once, not on every retry");
+        // Another agent of the Room that needs the Vault joins the same open card: it is told
+        // nothing more, however often it retries.
+        let joiner_notices = || {
+            runtime
+                .owned
+                .operational_history_store
+                .load_session_history_entries(session.id(), Some(workflow_agent.id()))
+                .expect("notices should load")
+                .into_iter()
+                .filter(|entry| entry.text.contains("Vault locked: unlock to start"))
+                .count()
+        };
+        // The agent was told once while it polled the locked Vault, before it joined the card.
+        let told_before_joining = joiner_notices();
+        for _ in 0..3 {
+            runtime.say_launch_waits_on_vault(
+                session.id(),
+                workflow_agent.id(),
+                "Vaulted Claude",
+                &vault_path,
+            );
+        }
+        assert_eq!(
+            joiner_notices(),
+            told_before_joining,
+            "joining the Room's open card adds no notice"
+        );
         resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
         let prepared = preparation
             .await
