@@ -534,3 +534,14 @@ test('MP-08/MP-11: history keys preserve navigation edges and document admission
  await assert.rejects(inputHostTab(browser,tab,{kind:'key',key:'BrowserForward'}),{code:'stale_document_reference'});
  assert(!sent.some(x=>x.method==='Page.navigateToHistoryEntry'));
 });
+
+test("row 553: a click anywhere inside the tab's own page size is accepted, and the refusal names that size", async () => {
+  // A tab laid out 1280 x 1324 (a resized viewer); the canonical state viewport is 1280 x 800.
+  const viewport = { css_width: 1280, css_height: 1324 };
+  const accepted = fixture();
+  await inputHostTab(accepted.browser, tab, { kind: "click", x: 640, y: 1219 }, { viewport });
+  assert(accepted.sent.some(({ method }) => method === "Input.dispatchMouseEvent"));
+  const refused = fixture();
+  await assert.rejects(inputHostTab(refused.browser, tab, { kind: "click", x: 640, y: 1324 }, { viewport }), /1280x1324/);
+  assert(!refused.sent.some(({ method }) => method.startsWith("Input.")));
+});

@@ -763,6 +763,7 @@ mod kernel_browser_favicons;
 mod kernel_browser_find;
 mod kernel_browser_mirror;
 mod kernel_browser_qr;
+mod kernel_browser_reply;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
