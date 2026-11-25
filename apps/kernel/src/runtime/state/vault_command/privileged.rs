@@ -30,13 +30,12 @@ struct RunArgs {
 pub(crate) fn privileged_run_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PRIVILEGED_RUN.into(),
-        description: "Run one command (argv, no shell) as root with sudo on this machine, outside your sandbox. The kernel types the sudo password from the Vault entry credential_id; you never see it, and it appears as [vault:<credential_id>] in the returned status, exit_code, stdout and stderr. The entry is the owner's sudo password for this machine: a command_stdin entry for the machine origin the refusal names when it does not match.".into(),
+        description: "Run one command (argv, no shell) as root with sudo on this machine, outside your sandbox. The kernel types the sudo password from Vault entry credential_id; you never see it ([vault:id] in results). The entry is the owner's command_stdin entry for this machine; a refusal names its origin.".into(),
         input_schema: serde_json::json!({"type":"object","required":["argv","credential_id"],"properties":{
-            "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64,
-                "description":"The program and its arguments, run as root"},
-            "credential_id":{"type":"string","description":"Vault entry holding the sudo password of this machine"},
-            "machine":{"type":"string","description":"this (default): the machine you run on"},
-            "timeout_seconds":{"type":"integer","minimum":1,"maximum":MAX_TIMEOUT_SECONDS,"default":DEFAULT_TIMEOUT_SECONDS}},
+            "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},
+            "credential_id":{"type":"string"},
+            "machine":{"type":"string","description":"this (default)"},
+            "timeout_seconds":{"type":"integer","minimum":1,"maximum":MAX_TIMEOUT_SECONDS}},
             "additionalProperties":false}),
     }
 }

@@ -23,6 +23,7 @@ pub(in crate::runtime::state) use copy::site_bearer_use;
 pub(crate) use copy::{copy_for_use_spec, VAULT_COPY_FOR_USE};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
 pub(crate) use home::HomeVaultCaptureAnswer;
+#[cfg(test)]
 pub(in crate::runtime::state) use privileged::sudo_refusal;
 pub(crate) use privileged::{privileged_run_spec, PRIVILEGED_RUN};
 pub(crate) use remove::{remove_capture_spec, VAULT_REMOVE_CAPTURE};

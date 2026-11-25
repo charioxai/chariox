@@ -5,7 +5,7 @@
 use super::tests::{fixture, Fixture};
 use super::vault_tests::{call, names, unlock};
 use super::*;
-use serde_json::{json, Value};
+use serde_json::json;
 
 // The public tool names, pinned literally so these tests also run on the base.
 const RUN: &str = "chariox.privileged.run";
