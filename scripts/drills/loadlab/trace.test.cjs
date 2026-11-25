@@ -56,7 +56,7 @@ test('T4: malformed input names its file and line', () => {
   const fixture = readFileSync(join(__dirname, 'fixtures/orch.jsonl'), 'utf8')
   assert.equal(parseTrace(fixture).turns.length, 1)
   for (const [contents, error] of [
-    [fixture.replace('"generator"', '"recorded"'), /fixture.jsonl: line 1: invalid or missing source/],
+    [fixture.replace('"generator"', '"live"'), /fixture.jsonl: line 1: invalid or missing source/],
     [fixture.replace('"chars":80', '"chars":'), /fixture.jsonl: line 3: invalid JSON/],
     [fixture.replace('"t":40', '"t":1'), /fixture.jsonl: line 5: step time moved backwards/],
     [fixture.replace('"outcome":"completed"', '"outcome":"ok"'), /fixture.jsonl: line 6: invalid or missing outcome/],

@@ -49,7 +49,7 @@ function parseTrace(input, filename = 'trace') {
     if (!record || typeof record !== 'object' || Array.isArray(record)) fail('expected a JSON object')
     if (index === 0) {
       fields(record, {
-        v: oneOf(1), source: oneOf('generator'), seed: isInteger, agent: agentName,
+        v: oneOf(1), source: oneOf('generator', 'recorded'), seed: isInteger, agent: agentName,
         notes: value => typeof value === 'string' && value.length <= 1024,
       }, fail)
       header = record
