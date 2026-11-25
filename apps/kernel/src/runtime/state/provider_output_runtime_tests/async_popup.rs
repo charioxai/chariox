@@ -172,6 +172,57 @@ async fn async_popup_browser_region_projects_movement_and_closes_exactly_once_on
     assert_eq!(told[0]["reply"], "Browser document changed");
 }
 
+/// After a kernel restart the card's Tab is back with a new document: the card keeps its identity
+/// and its Tab and is bound to the new page; it never changes Tab or takes on a proof.
+#[tokio::test]
+async fn a_browser_region_card_is_bound_again_to_the_page_a_restart_brought_back() {
+    let f = fixture("async-popup-region-rebind", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let initial = browser_region();
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(id).unwrap();
+        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: initial.clone(),
+        }));
+        sessions.restore_session(session);
+    }
+    let mut fresh = initial.clone();
+    fresh.generation += 2;
+    fresh.document_id = "document-after-restart".into();
+    fresh.reference = "backend:77".into();
+    fresh.rect.x = 0;
+    fresh.rect.y = 0;
+    let mut other_tab = fresh.clone();
+    other_tab.tab_id = "another-tab".into();
+    assert!(f
+        .runtime
+        .owned
+        .rebind_browser_region_card(&f.room, id, &initial, other_tab)
+        .is_err());
+    f.runtime
+        .owned
+        .rebind_browser_region_card(&f.room, id, &initial, fresh.clone())
+        .unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    let card = &session.active_interactions()[0];
+    assert_eq!(card.id(), id, "the same card");
+    assert_eq!(card.view().unwrap().browser_region, fresh);
+    assert!(card.choice("continue").is_some());
+    // The ordinary movement update still refuses a new document.
+    let mut elsewhere = fresh.clone();
+    elsewhere.document_id = "another-document".into();
+    assert!(f
+        .runtime
+        .owned
+        .update_browser_region_card(&f.room, id, &fresh, elsewhere)
+        .is_err());
+}
+
 /// Kept, not a gate: the browser-region card is the person's step (CAPTCHA, consent, one-time
 /// code). The owner answers it, it closes, and no browser-access card ever stands beside it.
 #[tokio::test]

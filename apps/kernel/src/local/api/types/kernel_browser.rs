@@ -37,13 +37,6 @@ pub enum KernelBrowserCommand {
     Computer {
         command: KernelComputerCommand,
     },
-    /// MP-08 / MP-11 (local 461): explicit `null` restores every owned agent after
-    /// "revoke all"; the field is required so an omitted agent cannot restore everyone.
-    GrantRoomComputer {
-        #[serde(deserialize_with = "Option::deserialize")]
-        agent_id: Option<String>,
-    },
-    ListGrants,
     /// Protocol 556: `State` that waits (<= 2000 ms) until the browser state differs from the one
     /// `after` names (the `revision` of the caller's last read; empty reads at once). Replaces a poll.
     StateWait {
@@ -53,13 +46,6 @@ pub enum KernelBrowserCommand {
         /// Protocol 1012: the `favicon_hash` values whose PNG the viewer holds (<= 128); such an icon is named, not sent.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         known_favicons: Vec<String>,
-    },
-    SubscribeGrants {
-        after: u64,
-        wait_ms: u32,
-    },
-    RevokeGrants {
-        agent_id: Option<String>,
     },
     /// MP-08/MP-10: protocol 482 `wire: 2` selects the author-CSS snapshot
     /// plus delta mirror; absent keeps the 443 computed-style packets.

@@ -61,7 +61,6 @@ impl KernelRuntimeState {
                 agent_id: agent_id.into(),
             });
         }
-        self.require_room_computer_access(agent_id)?;
         self.recover_active_room_for_computer_input(session_id)
             .await?;
         let _execution_guard = self

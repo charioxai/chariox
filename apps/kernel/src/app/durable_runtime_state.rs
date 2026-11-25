@@ -971,7 +971,6 @@ impl DaemonApp {
                     &self.agents,
                     &self.slices,
                     &self.metaagent_events,
-                    &self.room_computer_revoked,
                 );
                 self.durable_state.save_snapshot(
                     sequence,

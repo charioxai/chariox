@@ -51,10 +51,6 @@ impl KernelRuntimeState {
             KernelBrowserCommand::Stop
                 | KernelBrowserCommand::GrantLeasedComputer { .. }
                 | KernelBrowserCommand::RevokeLeasedComputer { .. }
-                | KernelBrowserCommand::GrantRoomComputer { .. }
-                | KernelBrowserCommand::ListGrants
-                | KernelBrowserCommand::SubscribeGrants { .. }
-                | KernelBrowserCommand::RevokeGrants { .. }
         ) {
             return Ok(None);
         }
@@ -78,10 +74,6 @@ impl KernelRuntimeState {
             KernelBrowserCommand::Stop
                 | KernelBrowserCommand::GrantLeasedComputer { .. }
                 | KernelBrowserCommand::RevokeLeasedComputer { .. }
-                | KernelBrowserCommand::GrantRoomComputer { .. }
-                | KernelBrowserCommand::ListGrants
-                | KernelBrowserCommand::SubscribeGrants { .. }
-                | KernelBrowserCommand::RevokeGrants { .. }
         ) {
             return Ok(());
         }

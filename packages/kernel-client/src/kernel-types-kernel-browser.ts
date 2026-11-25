@@ -19,13 +19,9 @@ export type KernelBrowserPlainCommand =
 
   | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
   | { op: "revoke_leased_computer"; agent_id: string }
-  | { op: "grant_room_computer"; agent_id: string | null }
   | { op: "computer"; command: KernelComputerCommand }
-  | { op: "list_grants" }
-  | { op: "subscribe_grants"; after: number; wait_ms: number }
   // Protocol 556: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
   | { op: "state_wait"; after: string; wait_ms: number; known_favicons?: string[] }
-  | { op: "revoke_grants"; agent_id: string | null }
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; known_fonts?: string[]; wait_ms?: number; resend?: true; flush?: true }
   | { op: "mirror_close"; subscription_id: string; generation: number }
@@ -66,10 +62,8 @@ export type KernelBrowserFrame = {
   generation: number; tab_id: string; mime_type: "image/png" | "image/jpeg";
   data_base64: string; width: number; height: number; sequence?: number
 }
-export type UserDomainGrantEvent = {
-  event: "user_domain_grants_changed"; cursor: number
-  room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]
-}
+// Local 1015: the answer to a leased desktop grant or revoke.
+export type KernelLeasedComputerResult = { agent_id: string; leased_computer: boolean }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
 export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_hash?: string | null; favicon_png_base64?: string; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; opener_tab_id?: string; taken_over?: boolean }
@@ -100,7 +94,7 @@ export type KernelBrowserResult = {
   unchanged?: true
   // Protocol 630/233: absent on older kernels.
   dialogs?: KernelBrowserDialog[]
-} | KernelBrowserRoomDownloads | KernelBrowserRevealResult | KernelBrowserFrame | UserDomainGrantEvent
+} | KernelBrowserRoomDownloads | KernelBrowserRevealResult | KernelBrowserFrame | KernelLeasedComputerResult
 
 // MP-08 / MP-11: local446; same typed surface for MCP and terminal transports.
 export type KernelDesktopTarget = { surface_id: string; generation: string }

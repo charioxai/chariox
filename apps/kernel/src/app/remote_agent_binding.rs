@@ -712,11 +712,8 @@ impl DaemonApp {
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
-            let destroyed = self.agents.destroy_agent(agent.id(), &mut sessions);
+            let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
             drop(sessions);
-            if destroyed.is_ok() {
-                self.forget_room_computer_access(agent.id());
-            }
         }
         remote_setup
     }

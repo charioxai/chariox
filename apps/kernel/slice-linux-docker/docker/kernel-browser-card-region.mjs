@@ -162,9 +162,29 @@ async function confirmationReference(host, scope, command) {
   return ref;
 }
 
+// After the kernel restarted, a plain card keeps its Tab (the browser brings it back) but
+// its document, generation and element are new. The card is bound again to the Tab's whole
+// page, so the person sees the page fresh and finishes it there. A card that waits for a
+// response, page text or a verification never rebinds: its proof belongs to one document.
+async function rebindCardRegion(host, command, scope, key) {
+  if (!key || command.verification !== undefined || command.done_text !== undefined || command.app_confirmation === true || command.release === true) throw new UserDomainRefusal('stale_reference');
+  const tab = await host.displayTarget({ tab_id: command.tab_id, generation: host.generation });
+  const connection = await host.browser.ensureConnection();
+  const sessionId = await host.browser.ensureTargetSession(connection, tab.target_id);
+  const { root } = await connection.send('DOM.getDocument', { depth: 0 }, sessionId);
+  const { nodeId } = await connection.send('DOM.querySelector', { nodeId: root.nodeId, selector: 'body' }, sessionId);
+  if (!nodeId) throw new UserDomainRefusal('stale_reference');
+  const { node } = await connection.send('DOM.describeNode', { nodeId }, sessionId);
+  const ref = `backend:${node.backendNodeId}`;
+  forgetCardAnchor(host, key);
+  rememberCardReferences(host, scope, tab, { dom_nodes: [{ document_index: 0, node_ref: ref }] });
+  return resolveCardRegion(host, { op: command.op, card_id: command.card_id, tab_id: command.tab_id, ref }, scope);
+}
+
 export async function resolveCardRegion(host, command, scope, signal) {
   pruneCardAnchors(host);
   const key = typeof command.card_id === 'string' ? `${scope}\0${command.card_id}` : null;
+  if (command.rebind === true) return rebindCardRegion(host, command, scope, key);
   let anchor = key ? host.cardAnchors.get(key) : null;
   if (command.app_confirmation === true) {
     if (!key || command.release === true) throw new UserDomainRefusal('stale_reference');
@@ -180,9 +200,13 @@ export async function resolveCardRegion(host, command, scope, signal) {
   // A card that waits for a response or for page text ends only when that happens: losing its element first is not completion.
   const gone = async reason => {
     if (anchor?.verification?.receipt?.result === 'accepted') return completion();
-    if (anchor?.verification || command.done_text !== undefined) return {state:'unavailable',reason};
+    // The command names the proof even when the controller lost the anchor (a restart): no receipt, no completion.
+    if (anchor?.verification || command.verification !== undefined || command.done_text !== undefined) return {state:'unavailable',reason};
     return {state:'condition_met',reason};
   };
+  // A card bound under an earlier controller generation outlives a restart only by rebinding: tell the
+  // kernel the browser restarted before the empty reference memory reads as a changed document.
+  if (command.generation !== undefined && command.generation !== host.generation) return gone('Browser restarted');
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
     const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
     if (tab.document_id !== command.document_id) return gone('Browser document changed');
