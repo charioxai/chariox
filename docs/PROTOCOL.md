@@ -4184,7 +4184,10 @@ Workflow trigger and deployment direction:
   Every use checks the process identity again to prevent PID reuse.
 
   An unapproved Unix peer can only send `RequestKernelAccess` with
-  `holder_pid` and optional `term` (protocol 568 replaces `lifetime_minutes`; protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
+  optional `holder_pid`, `term`, `no_wait` and `reason`. The reason is display text.
+  A dedicated Room agent's card names the agent and its Room from the provider record.
+  Pending status reports when the owner request expires. Denial and expiry have distinct outcomes.
+  The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
   passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to this kernel and your other kernels. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
   `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
@@ -4220,8 +4223,9 @@ Workflow trigger and deployment direction:
   kernel: every ordinary session/global request a terminal can make, including
   session creation/attachment, agent prompts/spawns, workflows, App installs and
   bindings, routine approvals and Vault use through kernel-owned flows.
-  Kernel-launched agents receive no external authority even if the holder is
-  their ancestor. Normal ownership and membership checks still apply.
+  A kernel-launched agent receives authority only from a grant the owner approved
+  for its own dedicated provider process. It does not inherit an outside grant
+  held above the kernel. Normal ownership and membership checks still apply.
   The holder cannot answer critical/passkey-required approvals or payments,
   mint/extend grants, change the passkey/access configuration, read/export
   secrets, or issue kernel-peer requests. Protocol 568 lets the holder reach the

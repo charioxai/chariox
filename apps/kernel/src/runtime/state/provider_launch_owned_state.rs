@@ -263,6 +263,7 @@ impl KernelRuntimeOwnedState {
             .agent_id
             .as_deref()
             .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
+        request.local_access_socket = agent.as_ref().map(|_| config.local_socket_path.clone());
         let effective_config = match agent.as_ref() {
             Some(agent) => {
                 self.agent_store
