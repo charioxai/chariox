@@ -70,7 +70,12 @@ impl KernelRuntimeState {
         .without_timeout()
         .with_related_agent_id(agent.to_owned());
         let rx = self
-            .create_kernel_operation_interaction(room, session.owner_user_id(), card)
+            .create_kernel_operation_interaction(
+                super::CardKind::OwnerControl,
+                session.id(),
+                session.owner_user_id(),
+                card,
+            )
             .await?;
 
         // This card and an independent extension can cross. The setter closes cards it sees,
