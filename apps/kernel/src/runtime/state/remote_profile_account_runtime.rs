@@ -43,6 +43,7 @@ impl KernelRuntimeState {
             }
             // Cloud-owner aliases are local registry details, not lease owners.
             materialization.profile.owner_user_id = agent.owner_user_id().to_string();
+            let credentialless = materialization.is_credentialless_opencode();
             let response = self
                 .send_remote_profile_request(
                     config,
@@ -66,7 +67,7 @@ impl KernelRuntimeState {
                     && !account_profile.trim().is_empty()
                     && account_profile != "default" =>
                 {
-                    Ok(account_profile)
+                    Ok((account_profile, credentialless))
                 }
                 _ => Err(DaemonError::LocalTransport {
                     operation: "materialize remote profile account",
@@ -78,10 +79,9 @@ impl KernelRuntimeState {
         }
         .await;
         // The home's record says "installed" only for the copy it made; a login the worker already held is asked about again.
-        let status = if result
-            .as_ref()
-            .is_ok_and(|confirmed| confirmed != &update.account_profile)
-        {
+        let status = if result.as_ref().is_ok_and(|(confirmed, credentialless)| {
+            *credentialless || confirmed != &update.account_profile
+        }) {
             Ok(())
         } else {
             registry
@@ -106,7 +106,7 @@ impl KernelRuntimeState {
                 .map(|_| ())
         };
         // Never destroy an existing lease or discard queued work on failure.
-        let confirmed = result?;
+        let (confirmed, _) = result?;
         status?;
         Ok(confirmed)
     }

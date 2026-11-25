@@ -483,3 +483,44 @@ fn a_home_claude_replica_defers_its_account_check_to_the_home_launch_credential(
         .require_authenticated("owner", "claude", &local.profile_id, None, "submit prompt")
         .is_err());
 }
+
+#[test]
+fn opencode_auth_store_without_services_counts_as_signed_out() {
+    let source = ProfileFixture::new();
+    let auth = source.path("XDG_DATA_HOME", "opencode/auth.json");
+    // No file at all: signed out.
+    assert!(source.export().unwrap().is_credentialless_opencode());
+    assert!(source
+        .registry
+        .opencode_profile_has_no_credentials("owner", &source.profile_id)
+        .unwrap());
+    // An empty native store has no connected service: the same as no file.
+    for empty in ["{}", " {\n}\n"] {
+        fs::write(&auth, empty).unwrap();
+        let exported = source.export().unwrap();
+        assert_eq!(exported.files.len(), 1, "the empty store is still exported");
+        assert!(exported.is_credentialless_opencode(), "{empty:?}");
+        assert!(source
+            .registry
+            .opencode_profile_has_no_credentials("owner", &source.profile_id)
+            .unwrap());
+    }
+    // A real login, or a store that is not plainly empty, keeps its validation.
+    for held in [
+        br#"{"opencode":{"type":"api","key":"synthetic-key"}}"#.as_slice(),
+        b"not json".as_slice(),
+        b"[]".as_slice(),
+        b"null".as_slice(),
+    ] {
+        fs::write(&auth, held).unwrap();
+        assert!(
+            !source.export().unwrap().is_credentialless_opencode(),
+            "{}",
+            String::from_utf8_lossy(held)
+        );
+        assert!(!source
+            .registry
+            .opencode_profile_has_no_credentials("owner", &source.profile_id)
+            .unwrap());
+    }
+}

@@ -170,6 +170,51 @@ fn empty_native_defaults_start_servers_only_when_a_provider_is_requested() {
     );
 }
 
+/// OpenCode's free models need no account, so an installed signed-out OpenCode is
+/// offered in a client's broad catalog read. Offering them takes its server: the
+/// kernel's own warm-up must not start it, the first client read does.
+#[test]
+fn an_installed_signed_out_opencode_starts_its_server_for_the_first_client_read_not_the_warm_up() {
+    crate::test_support::isolated_env_test!();
+    let machine = Machine::new("account-free-opencode");
+    let starts = machine.home.join("server-starts");
+    let executable = machine.home.join("fake-bin").join("opencode");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'test version' ;;\n  serve) echo serve >> '{}' ; exit 1 ;;\n  *) exit 1 ;;\nesac\n",
+            starts.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+    let harness = LocalRouterTestHarness::new();
+
+    harness.run_provider_discovery_pass();
+
+    assert!(
+        harness.warmed_default_catalog().is_some(),
+        "the warm-up still has a copy ready before any client asks"
+    );
+    assert!(
+        !starts.exists(),
+        "warming the catalog must not start OpenCode's server"
+    );
+
+    // The warmed copy is never fresh, so a client's read revalidates it, and that
+    // read (not the warm-up) is what starts the account-free OpenCode server.
+    let _ = harness.dispatch(request(serde_json::json!({"GetProviderCatalog": {}})));
+    let started = std::time::Instant::now();
+    while !starts.exists() && started.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        starts.exists(),
+        "a client's broad catalog read starts the installed account-free OpenCode server"
+    );
+}
+
 #[test]
 fn a_second_kernel_on_the_machine_reuses_the_same_login_at_its_first_start() {
     crate::test_support::isolated_env_test!();
