@@ -677,7 +677,7 @@ pub use workspace::*;
 /// Local 1015 (provisional; the relay peer is unchanged): the owner's agents need no per-agent Room Computer switch.
 /// `grant_room_computer`, `revoke_grants`, `list_grants` and `subscribe_grants` are gone, and so is the
 /// `user_domain_grants_changed` snapshot; `grant_leased_computer` and `revoke_leased_computer` answer
-/// `{agent_id, leased_computer}`. A person-card restart recovery starts the browser with `card_recovery`, which an
+/// `{agent_id, leased_computer}`. A person-card restart recovery starts the browser with `unless_stopped`, which an
 /// explicit stop refuses.
 /// Local 1015: the mirror v2 header carries `media_playing`, whether a mirrored video or audio element plays (muted or
 /// not), so the viewer never evicts that Tab (row 486); absent means nothing plays.

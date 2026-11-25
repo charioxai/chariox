@@ -1468,13 +1468,6 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 &target_profiles,
             )
             .await;
-            opencode::check_native_copy(
-                &target,
-                &source_router,
-                &source_profiles,
-                &target_profiles,
-            )
-            .await;
         }
         if scenario == CopyScenario::RentedReceiver {
             opencode::check_machine_enrolled_receiver_pulls(

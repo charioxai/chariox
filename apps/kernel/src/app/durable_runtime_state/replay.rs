@@ -17,7 +17,6 @@ use crate::session::{
 };
 use crate::slice::SliceStore;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
 use std::time::Instant;
 
 const DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT: usize = 20;
@@ -112,7 +111,6 @@ pub(super) struct ReplayState<'a> {
     agents: &'a AgentServiceStore,
     slices: &'a SliceStore,
     prompt_state_owner: &'a PromptStateOwner,
-    room_computer_revoked: &'a Mutex<BTreeSet<String>>,
     metaagent_events: &'a MetaagentEventStore,
     session_projection: &'a SessionStateProjectionStore,
     agent_runtime_projection: &'a AgentRuntimeProjectionStore,
@@ -133,7 +131,6 @@ pub(in crate::app) fn check_durable_replay(
         agents: &AgentServiceStore::new(AgentService::new().with_durable_state(store.clone())),
         slices: &SliceStore::default(),
         prompt_state_owner: &PromptStateOwner::default(),
-        room_computer_revoked: &Mutex::default(),
         metaagent_events: &MetaagentEventStore::default(),
         session_projection: &SessionStateProjectionStore::default(),
         agent_runtime_projection: &AgentRuntimeProjectionStore::default(),
@@ -153,7 +150,6 @@ impl<'a> ReplayState<'a> {
             agents: &app.agents,
             slices: &app.slices,
             prompt_state_owner: &app.prompt_state_owner,
-            room_computer_revoked: &app.room_computer_revoked,
             metaagent_events: &app.metaagent_events,
             session_projection: &app.session_projection,
             agent_runtime_projection: &app.agent_runtime_projection,
@@ -314,14 +310,6 @@ impl<'a> ReplayState<'a> {
             self.mark_agent_external_provider_sessions_attached(&agent);
             self.agents.restore_agent(agent);
         }
-        *self
-            .room_computer_revoked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = snapshot
-            .room_computer_revoked
-            .into_iter()
-            .filter(|id| restored_agent_ids.contains(id))
-            .collect();
         self.metaagent_events
             .restore_snapshot(MetaagentEventSnapshot {
                 records: snapshot
@@ -647,40 +635,6 @@ impl<'a> ReplayState<'a> {
                     let session = self.sessions.get_session(session.id())?;
                     self.prompt_state_owner.restore_session_state(&session);
                     self.update_session_projection(session);
-                }
-            }
-            "agent.room_computer_access_updated" => {
-                let owner: String = decode_durable_payload_field(
-                    event,
-                    "owner_id",
-                    "durable_state.restore_computer_access",
-                )?;
-                if owner != self.daemon_id {
-                    return Ok(());
-                }
-                let ids: Vec<String> = decode_durable_payload_field(
-                    event,
-                    "agent_ids",
-                    "durable_state.restore_computer_access",
-                )?;
-                let allowed: bool = decode_durable_payload_field(
-                    event,
-                    "allowed",
-                    "durable_state.restore_computer_access",
-                )?;
-                let mut revoked = self
-                    .room_computer_revoked
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                for id in ids {
-                    if self.agents.get_agent(&id).is_err() {
-                        continue;
-                    }
-                    if allowed {
-                        revoked.remove(&id);
-                    } else {
-                        revoked.insert(id);
-                    }
                 }
             }
             "agent.created" => {
