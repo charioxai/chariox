@@ -26,7 +26,7 @@
   "docker/browser-controller-capture.mjs": "c8144940645649e301ae0ab2367198856fb69d89b944c05f72ee577fc83c811f",
   "docker/browser-controller-cursor.mjs": "3d1f0d3aa44935dfebaeeb38eed576222cf7c47337b0dc0f666afa2e7b113fda",
   "docker/browser-controller-notes.mjs": "bbf2150d3325c12ce90750fc42c5512b0d2cc30d125e9c7ba537f3722fc23f58",
-  "docker/browser-controller-response-bodies.mjs": "0b400ed8e183de06658ad1516ee0a63dc21d92af0e4cb6b2535f1c747191f515",
+  "docker/browser-controller-response-bodies.mjs": "8527a8aea4cbd22223394b7917d7432f4b5a8f6bade3237d79897a3c9dc7c6da",
   "docker/browser-controller-web-bot-auth.mjs": "d7573da7de194cf9984f3b35d8d0363707bffeee9e3ef343ae24d5fa043083c7",
   "docker/browser-focus-world.mjs": "32cf3edd8e9679cc500dbf67602825361f1eb25a1ac1dfbb73571ca2a22af132",
   "docker/browser-memory.mjs": "1a045d270dc129a4a625f0163f52defd176037086808910a83b5ce177152c874",
