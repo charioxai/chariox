@@ -65,16 +65,16 @@ fn retain_finished(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), 
 }
 
 impl DurableKernelStateStore {
-    /// Liveness needs only live sources of waiting tasks. Finished commands can
-    /// carry large arguments and stay retained after their agents have left.
-    pub(crate) fn agent_waiting_wakes(&self, room: &str) -> Result<Vec<AgentWake>, DaemonError> {
+    /// Liveness needs only the live sources of a room, whether their task still waits or has
+    /// settled (a process, job or timer outlives its turn). Finished commands can carry large
+    /// arguments and stay retained after their agents have left.
+    pub(crate) fn agent_live_wakes(&self, room: &str) -> Result<Vec<AgentWake>, DaemonError> {
         let payloads = {
             let db = self.lock_connection("agent.lifecycle.waiting_wakes")?;
-            // Choosing the room index scans retained payloads before the task join.
+            // The room's armed-wake index reads live payloads only, not the retained history.
             let mut q = db.prepare_cached(
-                "SELECT payload FROM agent_wakes INDEXED BY agent_wakes_live_task \
-                 WHERE task_id IN (SELECT task_id FROM agent_tasks WHERE room_id=?1 AND state='waiting') \
-                 AND room_id=?1 AND json_extract(payload,'$.state') IN ('scheduled','starting','running') \
+                "SELECT payload FROM agent_wakes INDEXED BY agent_wakes_room_armed \
+                 WHERE room_id=?1 AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling') \
                  ORDER BY rowid",
             ).map_err(sql)?;
             let rows = q

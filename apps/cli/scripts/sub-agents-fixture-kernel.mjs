@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // MP-08 / MP-09 / MP-10 / MP-11 A6/A7 (TUI): a fixture kernel feed for the sub-agents drill. It serves one room with one
-// agent and answers ListDescendants from <dir>/tree.json; a change of that file pushes a room-change event, as the
+// agent and answers ListDescendants from <dir>/tree.json; a change of that file pushes an agent_tree_changed event, as the
 // kernel's own tree change would. Usage: node sub-agents-fixture-kernel.mjs <port> <dir>
 import { watch, readFileSync, appendFileSync } from "node:fs"
 import path from "node:path"
@@ -60,6 +60,6 @@ wss.on("connection", socket => socket.on("message", bytes => {
 }))
 watch(dir, (_, file) => {
   if (file !== "tree.json") return
-  for (const socket of wss.clients) socket.send(JSON.stringify({ type: "event", event_id: ++eventId, event: { event: "agent_activity_changed", session_id: session.id, agent_activity: {}, agent_activity_revision: eventId } }))
+  for (const socket of wss.clients) socket.send(JSON.stringify({ type: "event", event_id: ++eventId, event: { event: "agent_tree_changed", session_id: session.id, root: agent.id, rev: readTree().rev } }))
 })
 console.log("listening", port)
