@@ -29,10 +29,13 @@ fn wake_disposition(
     // Row 554: a kernel backstop covers the idle interval after a stated wait. A turn that came
     // after the one that armed it ended that interval, and the wait was met or given up.
     // The firing of a one-shot timer reports its label inside `public_answer`.
-    if [&event.payload["public_answer"]["label"], &event.payload["label"]]
-        .into_iter()
-        .filter_map(|label| label.as_str())
-        .any(|label| label.starts_with(super::stranded_agent::BACKSTOP_LABEL))
+    if [
+        &event.payload["public_answer"]["label"],
+        &event.payload["label"],
+    ]
+    .into_iter()
+    .filter_map(|label| label.as_str())
+    .any(|label| label.starts_with(super::stranded_agent::BACKSTOP_LABEL))
         && event.payload["task_id"].as_str().is_some_and(|armed_by| {
             tasks
                 .iter()

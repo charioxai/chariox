@@ -24,6 +24,9 @@ const skipBackstopWait = flags.get("--skip-backstop-wait") === "1"
 // A pre-reload timer longer than the provider process's idle limit (5 min) is the case under test; shorter keeps a diagnostic run brief.
 const longMs = Number(flags.get("--long-ms") ?? 1800000)
 const onlyLong = flags.get("--only-long") === "1"
+// A Vault unlock that lapses before the wake is due: the delivery is refused with an unlock card, and an unlock then starts the agent.
+const vaultMinutes = Number(flags.get("--vault-minutes") ?? 0)
+const reunlockAfterS = Number(flags.get("--reunlock-after-s") ?? 0)
 const k = await startDrillKernel({ label: "nowake554", binary: need("--kernel-binary"), stateRoot: need("--state-root"), evidence, extraEnv: { CHARIOX_ROOM_AGENT_TOOLS: "1" } })
 const results = []
 let exitCode = 0
@@ -39,7 +42,10 @@ const live = wake => ["scheduled", "starting", "running"].includes(wake.state)
 try {
   const passphrase = randomBytes(32).toString("hex")
   await k.rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase } } })
-  await k.rpc({ UnlockCredentialVault: { passphrase, duration: { kind: "until_kernel_stops" }, surface: "terminal" } })
+  // Creating a Vault leaves it unlocked with the default 30-minute lease, and an unlock of an unlocked Vault keeps that lease
+  // ("already_unlocked"): lock it first, so the unlock below is the lease the drill asks for.
+  await k.rpc({ LockCredentialVault: null })
+  await k.rpc({ UnlockCredentialVault: { passphrase, duration: vaultMinutes ? { kind: "minutes", minutes: vaultMinutes } : { kind: "until_kernel_stops" }, surface: "terminal" } })
   await k.rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(tokenFile, "utf8").trim(), overwrite: true } })
   const profile = (await k.rpc({ GetProviderAccountProfile: { provider: "claude", account_profile: "default" } })).ProviderAccountProfile.profile.profile_id
   k.note("account-stored", { profile })
@@ -197,6 +203,16 @@ try {
   const woken = async (b, id) => {
     if (!b) return
     const due = b.wake.next_due_ms
+    if (reunlockAfterS && id.startsWith("5b")) {
+      // Lock the Vault now, as a lapsed unlock does, so the due wake finds it locked.
+      await k.rpc({ LockCredentialVault: null })
+      k.note("vault-locked", {})
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, due + reunlockAfterS * 1000 - Date.now())))
+      const stillPending = done(await turnsOf(b.r.R, b.r.agent)).length < 2
+      cell("5c-the-lapsed-vault-held-the-wake", stillPending ? true : null, { note: "the wake is not delivered while the Vault is locked" })
+      await k.rpc({ UnlockCredentialVault: { passphrase, duration: { kind: "until_kernel_stops" }, surface: "terminal" } })
+      k.note("vault-unlocked-again", {})
+    }
     const ok = await until(async () => done(await turnsOf(b.r.R, b.r.agent)).length >= 2, "the backstop wakes the agent", Math.max(60000, due - Date.now() + 300000)).then(() => true, () => false)
     save(`turns-${id}-final.json`, await turnsOf(b.r.R, b.r.agent))
     cell(id, ok, { late_s: Math.round((Date.now() - due) / 1000) })

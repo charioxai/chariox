@@ -9,6 +9,7 @@ use super::super::child_finished::{team_with, Team};
 use super::*;
 use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::terminal::TerminalOutputKind;
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt as _;
 
 fn text_chunk(text: &str) -> ProviderPromptChunk {
@@ -68,6 +69,7 @@ impl Background {
             .expect("the shell prints the command's pid");
         Self { pid, child: None }
     }
+    #[cfg(target_os = "linux")]
     /// A process still below the kernel: what a provider starts and keeps (its own process, its
     /// confinement wrapper, its helpers).
     fn attached(run: &str) -> Self {
@@ -86,6 +88,7 @@ impl Background {
             child: Some(child),
         }
     }
+    #[cfg(target_os = "linux")]
     fn pid(&self) -> u32 {
         self.pid
     }
@@ -145,6 +148,8 @@ fn notices(team: &Team) -> String {
 
 /// Cell 1: an agent starts a background command and ends its turn without a watch. The kernel
 /// adopts the command as a process wake and says which.
+// Adoption reads /proc: the cell is Linux's.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cell_1_a_background_command_left_running_at_turn_end_is_adopted_as_a_process_wake() {
     let team = team_with("nowake-adopt", None, false).await;
@@ -223,6 +228,8 @@ async fn cell_1_a_background_command_left_running_at_turn_end_is_adopted_as_a_pr
 
 /// Live finding (drill): provider run ids repeat from kernel to kernel, so a process of another
 /// kernel's run with the same id must never be adopted. Only the kernel's own marker counts.
+// Adoption reads /proc: the cell is Linux's.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cell_1_a_command_of_another_kernels_run_with_the_same_id_is_not_adopted() {
     let team = team_with("nowake-foreign-run", None, false).await;
@@ -250,6 +257,8 @@ async fn cell_1_a_command_of_another_kernels_run_with_the_same_id_is_not_adopted
 
 /// Live finding (drill): the provider's own process and its confinement wrapper carry the run's
 /// marker and are still below the kernel. They are the provider's, never an agent's leftovers.
+// Adoption reads /proc: the cell is Linux's.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cell_1_a_process_still_below_the_kernel_is_the_providers_and_is_not_adopted() {
     let team = team_with("nowake-provider-own", None, false).await;
