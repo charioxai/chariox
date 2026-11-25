@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod account_kernels;
 mod account_transfer;
 mod agent_deadline;
 mod agent_lifecycle;
@@ -72,6 +73,7 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use account_kernels::*;
 pub use account_transfer::*;
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
@@ -659,4 +661,7 @@ pub use workspace::*;
 /// Local 1015: an agent's kernel access request can carry a reason for the owner's card (`RequestKernelAccess.reason`).
 /// Local 1015 (relay peer 452): a Room decision's choices and reply carry an optional `description`; Dismiss on a task
 /// card hides it from the Room while the task keeps waiting, and Stop ends the task.
+/// Local 1015 (provisional; the landing renumbers): the owner's agents list the account's linked kernels and unlink one
+/// (`CloudAccountKernels` `list` / `unlink` → `AccountKernelsListed` / `AccountKernelUnlinked`); a kernel's rows carry
+/// `target_id`, `kernel_id`, `name`, `status` and `last_seen_at`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
