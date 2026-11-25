@@ -126,9 +126,10 @@ struct LiveReply {
     streamed: VecDeque<Streamed>,
     /// Rows taken of the blocks handed over: the terminal may draw them again.
     finished: VecDeque<Vec<String>>,
-    /// The transcript text of blocks completed while no reader had them in memory: a redraw of such a block shows
-    /// more rows than the reader had taken when it was lost, and is recognized by its text instead.
-    completed: VecDeque<String>,
+    /// The rows taken of blocks completed while no reader had them in memory, with the transcript text that completed
+    /// them: a redraw of such a block shows more rows than the reader had taken when it was lost, so it is the rows taken
+    /// exactly, followed by more drawn from that text.
+    completed: VecDeque<(Vec<String>, String)>,
     /// Which reader this is. Block identities are persisted (they are merge keys), and a reader lost to a restart or to
     /// the run registry's eviction counts its blocks from 1 again: the reader's own number keeps its keys from ever
     /// being the earlier reader's.
@@ -218,11 +219,12 @@ impl LiveReply {
                 self.finished.push_back(block.rows.clone());
             }
             if let Some(text) = &block.completed {
-                if !self.completed.contains(text) {
+                let kept = (block.rows.clone(), text.clone());
+                if !self.completed.contains(&kept) {
                     if self.completed.len() >= KEPT_BLOCKS {
                         self.completed.pop_front();
                     }
-                    self.completed.push_back(text.clone());
+                    self.completed.push_back(kept);
                 }
             }
         }
@@ -326,7 +328,7 @@ impl LiveReply {
                 || self
                     .left_over_text
                     .as_deref()
-                    .is_some_and(|text| drawn_from(&drawn_text(&rows), text))
+                    .is_some_and(|text| grown_from(&rows, left_over, text))
             {
                 return None;
             }
@@ -353,10 +355,10 @@ impl LiveReply {
                         .finished
                         .iter()
                         .any(|rows_taken| repeats(&rows, rows_taken, 1))
-                    || (!self.completed.is_empty() && {
-                        let drawn = drawn_text(&rows);
-                        self.completed.iter().any(|text| drawn_from(&drawn, text))
-                    })
+                    || self
+                        .completed
+                        .iter()
+                        .any(|(taken, text)| grown_from(&rows, taken, text))
                     || !confirmed_row(&confirmed, &rows, 0)
                 {
                     return None;
@@ -555,6 +557,18 @@ fn drawn_text(rows: &[Row]) -> String {
         .map(|row| row.text.as_str())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Whether the screen shows a block completed by `text` whose first rows the reader had taken: those rows exactly (a
+/// code symbol is a symbol), then more, drawn from the text the terminal shows without markup and without most symbols.
+fn grown_from(rows: &[Row], taken: &[String], text: &str) -> bool {
+    !taken.is_empty()
+        && rows.len() >= taken.len()
+        && rows
+            .iter()
+            .zip(taken)
+            .all(|(row, taken)| row.text == *taken)
+        && drawn_from(&drawn_text(rows), text)
 }
 
 /// Whether the previous read showed row `index` too: a row repeated on the
