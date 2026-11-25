@@ -66,6 +66,11 @@ impl KernelRuntimeOwnedState {
             .mutation
             .lock()
             .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        if interaction.native_origin().is_some() && *self.provider_decisions_closed.borrow() {
+            return Err(interaction_error(
+                "The kernel is stopping. Retry after it starts again.",
+            ));
+        }
         self.pending_interactions.prune_abandoned_kernel_owners();
         if kernel_operation_owner.is_some() {
             self.reclaim_kernel_decisions_locked(false);

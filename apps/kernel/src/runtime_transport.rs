@@ -790,6 +790,14 @@ where
                 contended_claim_task.abort();
                 created_peer_release_task.abort();
                 pump_task.abort();
+                crate::shutdown::stage("provider decisions");
+                if let Err(error) = router.runtime_state().close_provider_decisions_for_shutdown() {
+                    crate::logging::error_with_fields(
+                        "daemon.shutdown",
+                        "could not withdraw provider decisions during shutdown",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                }
                 crate::shutdown::stage("provider output pump");
                 // Output already taken from a provider must reach history:
                 // a hot-reloaded turn continues after it in the new program.

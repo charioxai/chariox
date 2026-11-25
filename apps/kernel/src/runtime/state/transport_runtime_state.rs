@@ -515,11 +515,7 @@ impl KernelRuntimeState {
             let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
         }
         crate::shutdown::stage("session interactions");
-        let sessions = self.owned.session_store.read().list_sessions();
-        for session in sessions {
-            self.owned
-                .withdraw_agent_interactions_for_shutdown(session.id())?;
-        }
+        self.close_provider_decisions_for_shutdown()?;
         {
             crate::shutdown::stage("App publishers");
             let publishers = self.app_control().publishers().clone();
