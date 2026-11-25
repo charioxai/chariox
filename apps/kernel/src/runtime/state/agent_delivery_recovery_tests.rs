@@ -794,3 +794,63 @@ async fn a_steer_skipped_at_the_native_write_is_delivered_again() {
         "redelivery keeps the original inbox occurrence"
     );
 }
+
+impl Fixture {
+    fn deadline_cards(&self) -> usize {
+        self.runtime
+            .owned
+            .session_store
+            .get_session(&self.room)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .filter(|card| super::agent_deadline_cards::is_deadline_card(card.id()))
+            .count()
+    }
+
+    async fn expire_the_limit(&self) -> u64 {
+        let now = crate::session::unix_epoch_ms();
+        self.runtime
+            .set_agent_deadline(
+                "local",
+                crate::local::SetAgentDeadlineRequest {
+                    session_id: self.room.clone(),
+                    agent_id: self.child.clone(),
+                    deadline_ms: Some(now - 1),
+                },
+            )
+            .await
+            .unwrap();
+        now
+    }
+}
+
+/// A message queued before the limit ended is retired by the deadline sweep; the owner is told.
+#[tokio::test]
+async fn a_message_retired_by_the_deadline_sweep_raises_the_recovery_card() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let message = f.message("queued-before-expiry", false, false);
+    let now = f.expire_the_limit().await;
+    assert_eq!(f.deadline_cards(), 0);
+    f.runtime.tick_agent_deadlines(now).await.unwrap();
+    assert_eq!(f.state_of(message.sequence), "failed");
+    assert_eq!(f.deadline_cards(), 1);
+    f.runtime.tick_agent_deadlines(now + 1).await.unwrap();
+    assert_eq!(f.deadline_cards(), 1, "one card per ended limit");
+}
+
+/// A message queued before the limit ended is delivered after it: the attempt is refused first.
+#[tokio::test]
+async fn a_delivery_attempt_refused_by_the_ended_limit_raises_the_recovery_card() {
+    let f = Fixture::with_child_provider("dev-stub");
+    f.message("delivered-after-expiry", false, false);
+    f.expire_the_limit().await;
+    assert_eq!(f.deadline_cards(), 0);
+    let error = f
+        .runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap_err();
+    assert!(crate::error::is_agent_deadline_refusal(&error), "{error}");
+    assert_eq!(f.deadline_cards(), 1);
+}
