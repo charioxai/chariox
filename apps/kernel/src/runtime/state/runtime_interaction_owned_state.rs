@@ -1011,7 +1011,16 @@ impl KernelRuntimeOwnedState {
                     }) {
                         return Ok(());
                     }
-                    session.remove_active_interaction(interaction_id);
+                    if let Some(interaction) = session.remove_active_interaction(interaction_id) {
+                        if matches!(&settlement, Settlement::ConditionMet(_)) {
+                            let resolution = settlement.resolution(&interaction);
+                            self.publish_outside_interaction(
+                                session_id,
+                                &interaction,
+                                settlement.phase(&resolution),
+                            )?;
+                        }
+                    }
                     sessions.restore_session(session);
                     drop(sessions);
                     activity_mutation.record();
@@ -1094,14 +1103,7 @@ impl KernelRuntimeOwnedState {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         };
         let resolution = settlement.resolution(&interaction);
-        self.publish_outside_interaction(
-            session_id,
-            &interaction,
-            InteractionPhase::Resolved(crate::local::EventResolution {
-                via: settlement.via(),
-                choice_id: resolution.choice_id.clone(),
-            }),
-        )?;
+        self.publish_outside_interaction(session_id, &interaction, settlement.phase(&resolution))?;
         // The provider continues its turn with the timeout reply, so the goal leaves the wait.
         self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         consume();
@@ -1164,6 +1166,17 @@ impl Settlement {
                 choice_id: None,
                 reply: Some(reason.clone()),
             },
+        }
+    }
+
+    fn phase(&self, resolution: &super::PendingInteractionResolution) -> InteractionPhase<'_> {
+        let event = crate::local::EventResolution {
+            via: self.via(),
+            choice_id: resolution.choice_id.clone(),
+        };
+        match self {
+            Self::ConditionMet(reason) => InteractionPhase::Recovered(event, reason),
+            _ => InteractionPhase::Resolved(event),
         }
     }
 

@@ -29,6 +29,18 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.set_agent_deadline_inner(caller_user_id, request, None)
+            .await
+    }
+
+    /// `expected_expired_limit`: the limit a recovery card was raised for; the edit is refused when
+    /// the agent's limit is no longer that one, so a late answer cannot overwrite a newer limit.
+    pub(super) async fn set_agent_deadline_inner(
+        &self,
+        caller_user_id: &str,
+        request: SetAgentDeadlineRequest,
+        expected_expired_limit: Option<u64>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let _rearm = self.owned.agent_deadline_rearm.lock().await;
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         self.authorize_current_external_command()?;
@@ -43,6 +55,20 @@ impl KernelRuntimeState {
                 session_id: request.session_id,
                 agent_id: request.agent_id,
             });
+        }
+        let previous = self
+            .owned
+            .durable_state_store
+            .agent_deadline(&request.session_id, &request.agent_id)?;
+        if expected_expired_limit.is_some_and(|expected| {
+            previous
+                .as_ref()
+                .is_none_or(|deadline| deadline.deadline_ms != expected)
+        }) {
+            return Err(refusal(
+                "agent_deadline_changed",
+                "The agent’s time limit already changed.",
+            ));
         }
         self.owned
             .durable_state_store
@@ -66,6 +92,17 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
+        // An extension of an ended limit, by the card or independently, resolves the open card.
+        if let Some(previous) = previous.filter(|previous| {
+            (previous.state == AgentDeadlineState::Reached
+                || previous.deadline_ms <= crate::session::unix_epoch_ms())
+                && deadline.as_ref().is_none_or(|current| {
+                    current.state == AgentDeadlineState::Armed
+                        && current.deadline_ms > crate::session::unix_epoch_ms()
+                })
+        }) {
+            self.owned.close_deadline_card(&previous)?;
+        }
         self.publish_changed_agent_trees();
         Ok(LocalDaemonResponse::AgentDeadline { deadline })
     }
@@ -177,6 +214,9 @@ impl KernelRuntimeState {
             }
             // What the limit stops is read before the cleanup removes it, and kept across retries.
             let work = self.deadline_work_at_reach(&deadline);
+            // Messages the limit retires were never refused by a delivery; the owner is told once.
+            let retires_messages = deadline.reached_at_ms.is_none()
+                && self.has_pending_agent_message(&deadline.session_id, &deadline.agent_id);
             // Fence every due agent before awaiting any physical cleanup.
             self.owned
                 .durable_state_store
@@ -186,6 +226,10 @@ impl KernelRuntimeState {
                     now,
                     stopped: false,
                 })?;
+            if retires_messages {
+                self.show_deadline_refusal(&deadline.session_id, &deadline.agent_id)
+                    .await;
+            }
             due.push((deadline, work));
         }
         let outcomes =

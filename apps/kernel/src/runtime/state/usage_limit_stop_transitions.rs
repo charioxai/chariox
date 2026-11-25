@@ -20,6 +20,7 @@
 //! |                | not sent (a kernel that went away took the claim)    |                                              |
 //! | `Settle`       | exactly the stop the scheduler selected, Resuming,   | none (the resumed turn ended without the     |
 //! |                | sent, and past `RESUME_SETTLE_MS`                    | limit: the agent is back)                    |
+//! | `Reset`        | exactly the first unanswered stop, known reset due   | none (without resuming the stopped turn)     |
 //! | `Drop`         | any stop of the stopped turn that was cancelled      | none                                         |
 //! | `Continued`    | Asking, Armed or Declined, and the agent's turn runs | none (the agent went on, on another account: |
 //! |                | on an account other than the stop's                  | the stop is over, whatever route it took)    |
@@ -108,6 +109,11 @@ pub(super) enum StopEvent<'a> {
     },
     /// The resumed turn ended without the limit: the agent is back.
     Settle {
+        selected: &'a UsageLimitStop,
+        now: u64,
+    },
+    /// The provider's reset time arrived without a later refusal.
+    Reset {
         selected: &'a UsageLimitStop,
         now: u64,
     },
@@ -232,6 +238,11 @@ pub(super) fn transition(
                 sent: true,
             },
         ) if held == *selected && now.saturating_sub(*since_ms) > RESUME_SETTLE_MS => Some(None),
+        (StopEvent::Reset { selected, now }, Asking)
+            if held == *selected && held.reset_reached(*now) =>
+        {
+            Some(None)
+        }
         (StopEvent::Drop { prompt_id }, _) if held.prompt_id == *prompt_id => Some(None),
         (
             StopEvent::Continued {
