@@ -105,6 +105,10 @@ pub(super) fn left_running(
         return Vec::new();
     };
     let own = std::process::id();
+    // What is still below the kernel is the provider's: its process, its confinement wrapper, its
+    // helpers. Only what the agent's shell left behind has lost that parent.
+    let mut roots = provider_pids.clone();
+    roots.insert(own);
     let pids: Vec<u32> = listing
         .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
         .collect();
@@ -114,7 +118,7 @@ pub(super) fn left_running(
         .collect();
     let below_provider = |mut pid: u32| {
         for _ in 0..64 {
-            if provider_pids.contains(&pid) {
+            if roots.contains(&pid) {
                 return true;
             }
             match parents.get(&pid) {
@@ -126,7 +130,7 @@ pub(super) fn left_running(
     };
     let mut found: Vec<Background> = pids
         .into_iter()
-        .filter(|pid| *pid != own && !skip.contains(pid) && !provider_pids.contains(pid))
+        .filter(|pid| !roots.contains(pid) && !skip.contains(pid))
         .filter_map(|pid| {
             let identity = stat(pid).filter(|s| !s.ended)?;
             // Provider run ids repeat from kernel to kernel: the run's marker counts with its kernel's.
