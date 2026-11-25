@@ -170,6 +170,28 @@ test('546 a verification card survives its Tab navigating: it is bound to the ne
   assert.equal(again.region.verification, undefined, 'no proof is carried to a page where its input is gone');
   assert.equal(host.cardAnchors.get('agent:a\0verification-nav')?.verification, undefined);
 }));
+test('546 a second navigation while the card is being rebound leaves it rebindable: the next rebind binds the newest page', () => withHost(async ({ host, snapshot, region, state }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'multi-step' })).state, 'present');
+  state.document_id = 'doc-2';
+  assert.equal((await region({ card_id: 'multi-step', generation: 1, document_id: 'doc' })).reason, 'Browser document changed');
+  const connection = await host.browser.ensureConnection(), base = connection.send;
+  let redirected = false;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') { if (!redirected) { redirected = true; state.document_id = 'doc-3'; } return { node: { backendNodeId: 77 } }; }
+    return base(method, params, session);
+  };
+  // The page redirects again after the new anchor was installed: the rebind reports the change (never throws, never completes).
+  const interrupted = await region({ card_id: 'multi-step', ref: undefined, rebind: true });
+  assert.notEqual(interrupted.state, 'present');
+  assert.equal(interrupted.reason, 'Browser document changed');
+  // The kernel retries the rebind itself (the old reference is stale by now); it binds the newest page.
+  const again = await region({ card_id: 'multi-step', ref: undefined, rebind: true });
+  assert.equal(again.state, 'present');
+  assert.equal(again.region.document_id, 'doc-3');
+}));
 test('a verification card whose proof was lost with the restart settles unavailable, never as a completed card', () => withHost(async ({ host, snapshot, region }) => {
   const verification = { challenge_id: 'challenge-one', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
   await snapshot();

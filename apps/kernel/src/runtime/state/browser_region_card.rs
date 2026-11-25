@@ -333,55 +333,59 @@ impl KernelRuntimeState {
         reason: &str,
         failures: &mut ObservationFailures,
     ) -> PageChangeFlow {
-        match self
-            .rebind_card_region(
-                room,
-                agent,
-                id,
-                &previous.tab_id,
-                previous.done_text.as_deref(),
-            )
-            .await
-        {
-            Ok(RegionObservation::Present { region }) => {
-                failures.observed();
-                if let Err(error) = self
-                    .owned
-                    .rebind_browser_region_card(room, id, previous, *region)
-                {
-                    tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card rebind retained for retry");
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-                PageChangeFlow::Continue
-            }
-            // The text the card waits for is on the page now: the card's condition is met.
-            Ok(RegionObservation::ConditionMet { reason }) if previous.done_text.is_some() => {
-                if self.close_browser_region_card(room, id, reason).is_ok() {
-                    return PageChangeFlow::Done;
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                PageChangeFlow::Continue
-            }
-            Ok(_) | Err(_) => {
-                if !failures.exhausted() {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+        // The rebind itself is retried: a second navigation during it leaves the old reference stale, so going back
+        // to the outer poll would settle the card unavailable while the person is still signing in.
+        loop {
+            match self
+                .rebind_card_region(
+                    room,
+                    agent,
+                    id,
+                    &previous.tab_id,
+                    previous.done_text.as_deref(),
+                )
+                .await
+            {
+                Ok(RegionObservation::Present { region }) => {
+                    failures.observed();
+                    if let Err(error) = self
+                        .owned
+                        .rebind_browser_region_card(room, id, previous, *region)
+                    {
+                        tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card rebind retained for retry");
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
                     return PageChangeFlow::Continue;
                 }
-                // The page change is not the person finishing, and the page was never shown again: the agent
-                // is told the card is unavailable, never that its step is done.
-                let message = if reason == "Browser restarted" {
-                    "Browser restarted and the page could not be shown again; take a fresh snapshot and ask again"
-                } else {
-                    "The page changed and could not be shown again; take a fresh snapshot and ask again"
-                };
-                if self
-                    .close_unavailable_browser_region_card(room, id, message.into())
-                    .is_ok()
-                {
-                    return PageChangeFlow::Done;
+                // The text the card waits for is on the page now: the card's condition is met.
+                Ok(RegionObservation::ConditionMet { reason }) if previous.done_text.is_some() => {
+                    if self.close_browser_region_card(room, id, reason).is_ok() {
+                        return PageChangeFlow::Done;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    return PageChangeFlow::Continue;
                 }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                PageChangeFlow::Continue
+                Ok(_) | Err(_) => {
+                    if !failures.exhausted() {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    // The page change is not the person finishing, and the page was never shown again: the agent
+                    // is told the card is unavailable, never that its step is done.
+                    let message = if reason == "Browser restarted" {
+                        "Browser restarted and the page could not be shown again; take a fresh snapshot and ask again"
+                    } else {
+                        "The page changed and could not be shown again; take a fresh snapshot and ask again"
+                    };
+                    if self
+                        .close_unavailable_browser_region_card(room, id, message.into())
+                        .is_ok()
+                    {
+                        return PageChangeFlow::Done;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    return PageChangeFlow::Continue;
+                }
             }
         }
     }
