@@ -27,3 +27,37 @@ test("offload setting defaults Off, writes the kernel and reads back its confirm
   assert.equal(off.ok, true)
   assert.match(off.message ?? "", /: Off/)
 })
+
+test("offload limits change one key each, unset back to the defaults, and the summary names them", async () => {
+  const agents: Record<string, unknown> = { offload_without_asking: true }
+  const requests: Record<string, unknown>[] = []
+  const client = { send: async (request: Record<string, unknown>) => {
+    requests.push(request)
+    const set = request.SetUserConfigValue as { path: string; value: string } | undefined
+    const unset = request.UnsetUserConfigValue as { path: string } | undefined
+    if (set) agents[set.path.replace("agents.", "")] = set.path.endsWith("classes") ? set.value.split(",") : set.path.endsWith("asking") ? set.value === "true" : Number(set.value)
+    if (unset) delete agents[unset.path.replace("agents.", "")]
+    const config = { version: 1, agents: { ...agents } }
+    return set || unset ? { UserConfigUpdated: { path: "settings", config } } : { UserConfig: { path: "settings", config } }
+  } }
+  const run = (line: string) => executeConfigCommand(parseShellCommand(line), { client })
+  assert.match((await run("config agents-offload")).message ?? "", /On \(classes: the smallest offered; at most 4 at the same time; no daily cap\)/)
+  await run("config agents-offload classes small,medium")
+  await run("config agents-offload max 2")
+  const capped = await run("config agents-offload cap 5.25")
+  assert.deepEqual(requests.filter(r => r.SetUserConfigValue).map(r => r.SetUserConfigValue), [
+    { path: "agents.offload_classes", value: "small,medium" },
+    { path: "agents.offload_max_machines", value: "2" },
+    { path: "agents.offload_daily_cap_micros", value: "5250000" },
+  ])
+  assert.match(capped.message ?? "", /classes: small, medium; at most 2 at the same time; at most 5.25 per day/)
+  await run("config agents-offload classes smallest")
+  await run("config agents-offload max default")
+  const reset = await run("config agents-offload cap none")
+  assert.match(reset.message ?? "", /classes: the smallest offered; at most 4 at the same time; no daily cap/)
+  for (const bad of ["config agents-offload cap 5.1234567", "config agents-offload cap -1", "config agents-offload max", "config agents-offload fast"]) {
+    const refused = await run(bad)
+    assert.equal(refused.ok, false, bad)
+    assert.match(refused.message ?? "", /usage: config agents-offload/)
+  }
+})

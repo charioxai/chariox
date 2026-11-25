@@ -103,11 +103,31 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
             let (status, response) = match request["action"].as_str().unwrap() {
                 "capabilities" => {
                     let answer = next_capability_failure.lock().unwrap().pop_front();
+                    // One guard for both fields: a second lock in the same statement would wait on the first.
+                    let listed_now = listed.lock().unwrap().clone();
                     let capability = MachineAllocationCapability {
                         revision: "v1".into(),
                         actions: vec!["acquire".into()],
-                        offer: None,
-                        offers: listed.lock().unwrap().clone(),
+                        // A service that lists no options still has its one default machine.
+                        offer: listed_now.is_empty().then(|| {
+                            crate::local::MachineAcquisitionOffer {
+                                machine_type: "small".into(),
+                                vcpu: 2,
+                                ram_gb: 4.0,
+                                disk_gb: 40,
+                                location: "north".into(),
+                                terms: crate::local::MachineAcquisitionTerms {
+                                    amount: "0.06".into(),
+                                    currency: "EUR".into(),
+                                    period: crate::local::MachineAcquisitionPeriod::Hour,
+                                },
+                                rate_per_minute: Some(crate::local::JobMachineRate {
+                                    amount_micros: 1_000,
+                                    currency: "EUR".into(),
+                                }),
+                            }
+                        }),
+                        offers: listed_now,
                         job_offers: vec![],
                         job_default_class_id: None,
                     };
@@ -207,6 +227,18 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                         }
                     }
                 }
+                // The kernel reconciles the machines it recorded against the service's whole list.
+                "list" => (
+                    "200 OK",
+                    serde_json::json!({"kind":"machines","saved_states":[],
+                        "machines": accepted.values()
+                            .filter(|(_, _, id)| !released.contains(id))
+                            .map(|(_, _, id)| serde_json::json!({
+                                "allocation_ref":id,"name":id,"state":"ready","revision":1,
+                                "since":"2026-11-19T00:00:00Z","kernel_id":null,"machine_id":null,
+                                "available_actions":["stop","release"]}))
+                            .collect::<Vec<_>>()}),
+                ),
                 "get" | "release" => {
                     let allocation_ref = request["allocation_ref"].as_str().unwrap();
                     assert!(accepted.values().any(|(_, _, id)| id == allocation_ref));
@@ -271,6 +303,11 @@ async fn agent_kernel(
     let worktree = crate::test_support::TestWorktree::new("machine-tool");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.agents.offload_without_asking = Some(true);
+    // These tests are about which option an acquire takes, not about the owner's limits: every
+    // class the stand-in service lists is allowed.
+    config.user_config.agents.offload_classes = Some(vec!["small".into(), "big".into()]);
+    // One test acquires more machines than the default maximum allows without asking.
+    config.user_config.agents.offload_max_machines = Some(100);
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
