@@ -8406,6 +8406,20 @@ their tree. The second returns pending card ids, complete question text, button 
 text input metadata, and `answerable` with a refusal reason under the caller's current authority.
 No Vault value is returned.
 
+`chariox.room.run_command` also admits `room card <card-id> [room-id]` (the room defaults to the
+caller's own): why a pending card does not take the person's input. A card without a browser view
+returns `browser: null`. A browser card returns `browser.bound` (the Tab, element ref, generation,
+document id and origin it was raised on), `browser.tab` (what the kernel's browser model knows of
+that Tab now: `tab_known`, its generation and document id, and `input_held_by`, the actors that hold
+the Tab's input with kind and label), `browser.input` (`last_taken` and `last_refused`, each with
+kind, time, age and the generation and document the input carried; a refusal adds its reason, a
+policy refusal as its stable `user_domain_*` code with its meaning) and `browser.findings`, each a
+`code` and a sentence (`tab_gone`, `generation_changed`, `document_changed`, `input_held`,
+`last_input_refused`, `no_input_seen`, `browser_unreadable`). The kernel keeps the last input taken
+and the last refused per Tab, by kind only: typed text and coordinates are never kept. It is read
+only, needs no sudo, follows the same room authority as `room cards`, and changes no serialized
+shape.
+
 `agent answer <interaction> <choice-id|text> --room <room-id>` answers a non-secret card in
 any room of the same owner on this kernel, including the caller's own room. It requires no
 sudo beyond the authority needed at home. The kernel rechecks the live caller, the user who
