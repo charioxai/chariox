@@ -63,6 +63,7 @@ export class MirrorService {
     if(command.font_absent!==undefined&&(command.font_absent!==true||command.font_requirements!==true))throw new Error('MP-11: mirror font negotiation');
     if(command.viewport_first!==undefined&&(command.viewport_first!==true||command.wire!==2))throw new Error('MP-08: mirror viewport-first negotiation');
     if(command.visited_links!==undefined&&(command.visited_links!==true||command.wire!==2))throw new Error('MP-08: mirror visited-links negotiation');
+    if(command.layout_delta!==undefined&&(command.layout_delta!==true||command.wire!==2))throw new Error('MP-08: mirror layout-delta negotiation');
     // VAUDIT S3 / AU-03: only the kernel names the owner (typed client commands cannot carry it), as for the desktop.
     if(command.audience!==undefined&&command.audience!=='owner')throw new Error('MP-11: mirror audience is kernel-owned');
     const audience=command.audience==='owner'?'owner':'masked';
@@ -86,11 +87,11 @@ export class MirrorService {
       const current=()=>this.host.browser.documentIdsByTarget?.get(tab.target_id)===tab.document_id?null:assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
       await current();
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
-      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,audience,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,density:command.device_scale_factor,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,viewportFirst:command.viewport_first===true,visitedLinks:command.visited_links===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
+      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,audience,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,density:command.device_scale_factor,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,viewportFirst:command.viewport_first===true,visitedLinks:command.visited_links===true,layoutDelta:command.layout_delta===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
 
       catch(error){await releaseRender().catch(()=>{});throw error;}
       this.v2.begin(this.streams.get(subscription_id),scope,this.host.generation);
-      return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{}),...(command.font_absent===true?{font_absent:true}:{}),...(command.viewport_first===true?{viewport_first:true}:{}),...(command.visited_links===true?{visited_links:true}:{})};}
+      return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{}),...(command.font_absent===true?{font_absent:true}:{}),...(command.viewport_first===true?{viewport_first:true}:{}),...(command.visited_links===true?{visited_links:true}:{}),...(command.layout_delta===true?{layout_delta:true}:{})};}
     this.streams.set(subscription_id,{scope,audience,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
     } catch(error) {await this.host.releaseLayout?.(tab.tab_id,subscription_id);throw error;}

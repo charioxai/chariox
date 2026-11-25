@@ -681,4 +681,6 @@ pub use workspace::*;
 /// explicit stop refuses.
 /// Local 1015: the mirror v2 header carries `media_playing`, whether a mirrored video or audio element plays (muted or
 /// not), so the viewer never evicts that Tab (row 486); absent means nothing plays.
+/// Local 1015 (relay peer unchanged): a mirror v2 subscription may ask for `layout_delta`; its complete snapshot then
+/// follows a page size change by an ordinary delta whose header carries `css_width`/`css_height`, not a layout reset.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
