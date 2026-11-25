@@ -1762,7 +1762,7 @@ test('Row 426: a region operation during a waiting credit runs at once and does 
   const documents = new Map([['T', 'D1']]);
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
   const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
@@ -1800,7 +1800,7 @@ test('Row 426: credits queued behind a waiting one neither delay a region operat
   const documents = new Map([['T', 'D1']]);
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
   const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
@@ -1841,7 +1841,7 @@ test('Row 426: packets issued while a credit queued do not make it a `behind` re
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
   let release;
-  const stream = { tab_id: 't', world, issued: 12, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: new Promise(resolve => { release = resolve; }), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
+  const stream = { tab_id: 't', world, issued: 12, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: new Promise(resolve => { release = resolve; }), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
   const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
@@ -1864,3 +1864,40 @@ test('Row 426: packets issued while a credit queued do not make it a `behind` re
   assert.equal(lost.reset, true);
 });
 
+
+// Row 497 on #1690's design (union14): a playing region checks its lease for every frame. Five checks 60 ms apart during one
+// quiet credit's long poll each run at once, never hurry it, and spend no sequence: the credit answers once, at its own wait.
+test('Row 497 on Row 426: repeated region lease checks during one long poll run at once and spend no sequence', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  let woken = null;
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.endsWith('.wake()')) { woken?.(); return null; }
+    if (expression.includes('waitDrain')) { const ms = Number(/waitDrain\((\d+)/.exec(expression)?.[1] ?? 500); await new Promise(resolve => { woken = resolve; setTimeout(resolve, ms); }); woken = null; }
+    return quiet;
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const started = Date.now(); let answered = null;
+  const credit = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 900 }, 'scope').then(packet => { answered = Date.now() - started; return packet; });
+  const checks = [];
+  for (let i = 0; i < 5; i++) { await new Promise(resolve => setTimeout(resolve, 60)); const asked = Date.now(); await mirror.regions.locked(stream, async () => { checks.push(Date.now() - asked); return true; }); }
+  assert.equal(answered, null, 'the credit is still waiting after five lease checks');
+  assert.equal(stream.hurry, 0, 'no check hurried the long poll');
+  assert.equal(stream.issued, 1, 'no sequence spent for the checks');
+  assert.ok(Math.max(...checks) < 100, `each check ran at once (${checks} ms)`);
+  const packet = await credit;
+  assert.ok(answered >= 850, `the credit answered at its own wait (${answered} ms)`);
+  assert.equal(stream.issued, 2, 'one answer, one sequence');
+  assert.ok(!packet.reset && !packet.ops?.length, 'an ordinary empty answer at the wait, not a reset');
+  assert.equal(stream.regionWaiting, 0, 'nothing left waiting');
+});
