@@ -389,12 +389,18 @@ impl KernelRuntimeState {
         request_id: &str,
         host: &str,
         use_binding: &crate::config::VaultUseBinding,
+        env_uses: &[(String, crate::config::VaultUseTarget)],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
         let handle = captured_handle(actor, request_id);
         let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, actor, host, use_binding).map(Some);
+        }
+        // A new capture only: an unknown entry or one made for another origin is refused before
+        // the unlock, as on this kernel; a retry above never reads its inputs again.
+        for (id, target) in env_uses {
+            self.preflight_workspace_vault_use(&actor.agent_id, id, target)?;
         }
         // A retry after a failed command keeps the unlock the first attempt held: a fresh
         // guard on the still open Vault does not lock, and replacing the held one would lock now.
