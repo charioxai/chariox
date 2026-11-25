@@ -1,4 +1,5 @@
-//! One owner decision before an agent can start charged work.
+//! One owner decision before an agent can start charged work, unless the owner allowed it without
+//! asking within limits (`without_asking`).
 use super::*;
 use crate::durable_state::acquire_choices::AcquireOption;
 use crate::local::{ControlPlaneRequest, MachineAllocationCapability};
@@ -48,35 +49,36 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+/// How an acquisition was allowed to go ahead.
+#[derive(Debug)]
+pub(crate) enum Approval {
+    /// The person asked, the owner approved it, or the owner's /sudo covers it.
+    Owner,
+    /// Within the owner's limits for acquiring without asking, or a retry of a request admitted
+    /// before; the service's answer settles it (`settle_acquisition`).
+    WithoutAsking(without_asking::AcquisitionHold),
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn approve_machine_acquisition(
         &self,
         command: &KernelCommand,
         request: &ControlPlaneRequest,
         capability: Option<&MachineAllocationCapability>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Approval, DaemonError> {
         if !matches!(
             request,
             ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
         ) {
-            return Ok(());
+            return Ok(Approval::Owner);
         }
         let agent_request = command.external_grant_id().is_some()
             || command.reach_caller_id().is_some()
             || command.caller.metaagent_id.is_some()
             || command.caller.connection_class
                 == Some(crate::local::KernelConnectionClass::KernelAgent);
-        if !agent_request
-            || self
-                .owned
-                .config_projection
-                .snapshot()
-                .user_config
-                .agents
-                .offload_without_asking
-                == Some(true)
-        {
-            return Ok(());
+        if !agent_request {
+            return Ok(Approval::Owner);
         }
         let reach = command
             .reach_caller_id()
@@ -92,7 +94,7 @@ impl KernelRuntimeState {
         // The owner authorized this agent's task with /sudo; its remote work needs no second decision.
         if let Some(agent) = agent {
             if self.sudo_task_authorizes_agent(&room, agent).await {
-                return Ok(());
+                return Ok(Approval::Owner);
             }
         }
         let session = self.owned.session_store.get_session(&room)?;
@@ -119,8 +121,18 @@ impl KernelRuntimeState {
             .iter()
             .any(|event| event.payload["owner"] == session.owner_user_id())
         {
-            return Ok(());
+            return Ok(Approval::Owner);
         }
+        let outside_limits = match self.admit_without_asking(
+            &room,
+            agent.unwrap_or_default(),
+            request,
+            capability,
+        )? {
+            without_asking::Admission::Within(hold) => return Ok(Approval::WithoutAsking(hold)),
+            without_asking::Admission::Off => None,
+            without_asking::Admission::Outside(reason) => Some(reason),
+        };
         let description = match (request, capability) {
             (
                 ControlPlaneRequest::AcquireJob {
@@ -187,6 +199,10 @@ impl KernelRuntimeState {
                 ))
             }
         };
+        let description = match outside_limits {
+            Some(reason) => format!("{description} Asked because {reason}."),
+            None => description,
+        };
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
@@ -214,25 +230,42 @@ impl KernelRuntimeState {
             .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
             .await?;
         let mut pending = PendingAcquisition(Some((self.clone(), room.clone(), id.clone())));
-        let answer = match tokio::time::timeout(Duration::from_secs(300), receiver).await {
-            Ok(Ok(answer)) => answer,
-            _ => {
-                self.timeout_runtime_interaction(&room, &id).await?;
-                return Err(acquisition_error(
-                    "acquisition_denied",
-                    "The owner did not approve this request, so it was not sent to the service",
-                ));
+        let asked = std::time::Instant::now();
+        let waited = tokio::time::timeout(Duration::from_secs(300), receiver).await;
+        // Only an answer is the owner's decision; every other end says what closed the card.
+        let unanswered = match waited {
+            Ok(Ok(answer)) if answer.status == "answered" => {
+                pending.0 = None;
+                if answer.choice_id.as_deref() != Some("approve") {
+                    return Err(acquisition_error(
+                        "acquisition_denied",
+                        "The owner denied this request, so it was not sent to the service; nothing was allocated or charged",
+                    ));
+                }
+                None
             }
+            Ok(Ok(answer)) => Some(match answer.reply {
+                Some(reason) => format!("it could not be answered: {reason}"),
+                None => format!("nobody answered it within {} s", asked.elapsed().as_secs()),
+            }),
+            Ok(Err(_)) => Some(format!(
+                "the kernel withdrew it after {} s, before anyone answered",
+                asked.elapsed().as_secs()
+            )),
+            Err(_) => Some(format!(
+                "nobody answered it within {} s",
+                asked.elapsed().as_secs()
+            )),
         };
-        pending.0 = None;
-        if answer.status != "answered" || answer.choice_id.as_deref() != Some("approve") {
+        if let Some(why) = unanswered {
+            self.timeout_runtime_interaction(&room, &id).await?;
             return Err(acquisition_error(
-                "acquisition_denied",
-                "The owner denied this request, so it was not sent to the service",
+                "acquisition_unanswered",
+                &format!("The owner's card {id} for this request closed without a decision: {why}. It was not sent to the service and nothing was allocated or charged; retry with the same request_id when the owner can answer."),
             ));
         }
         self.owned.durable_state_store.append_event("compute.acquisition_approved", Some(id), serde_json::json!({"owner":session.owner_user_id(),"approved_at_ms":crate::session::unix_epoch_ms()}))?;
-        Ok(())
+        Ok(Approval::Owner)
     }
 }
 /// Dropping a waiting job withdraws its decision before an agent can leave a stale stripe.
@@ -266,7 +299,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire machines without asking: within the owner's limits (allowed classes, machines at the same time, daily spending) it goes ahead with no card and the Room records its class, rate and cost; outside them the owner's card says why, and the call waits up to 5 minutes for the owner's answer. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
@@ -364,6 +397,12 @@ impl KernelRuntimeState {
                     Ok(result) => result,
                     Err(error) => {
                         self.close_acquire_option(&reach.agent_id, &request_id, &option, &error)?;
+                        // The agent retries with its own request_id, not the service's derived one.
+                        let error = without_asking::name_agent_request(
+                            error,
+                            &service_request_id,
+                            &request_id,
+                        );
                         return Err(choice::acquire_refusal(
                             error,
                             &capability,
@@ -478,3 +517,6 @@ mod choice;
 mod tests;
 #[cfg(test)]
 mod tool_tests;
+pub(crate) mod without_asking;
+#[cfg(test)]
+mod without_asking_tests;

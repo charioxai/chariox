@@ -246,6 +246,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 451 carries the local 1014 terminal `stdin` of a program.
 /// Provisional peer 452 (local 1015): the relay issuer requests of a self-hosted kernel.
 /// Peer 452 (local 1015) carries the agent pane feed in the embedded local request and response unions.
+/// Peer 452 (local 1015) carries the owner's limits for machines acquired without asking: three `agents.*` user config keys.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

@@ -651,4 +651,5 @@ pub use workspace::*;
 /// `ConfigureRelayIssuer` and `IssueRelayClientToken`; terminal pairing links carry a pairing-only kernel-signed token.
 /// Local 1015 (relay peer 452): the agent pane feed. `GetPaneFeed` answers `PaneFeed`, the one kernel read model of what an
 /// agent's pane shows; `ReportPaneSettings` carries the settings a provider terminal changed (docs/PROTOCOL.md 3.3.2.1).
+/// Local 1015 (relay peer 452, provisional): the owner's limits for machines agents acquire without asking are user config keys (`agents.offload_classes`, `agents.offload_max_machines`, `agents.offload_daily_cap_micros`).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

@@ -635,11 +635,26 @@ impl UsageLimitResume {
     }
 }
 
+/// Machines acquired without asking at the same time when the owner set no number.
+pub const DEFAULT_OFFLOAD_MAX_MACHINES: u32 = 4;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserAgentsConfig {
-    /// Off by default: the owner may allow agents to offload jobs and acquire machines without a decision each time.
+    /// Off by default: the owner may allow agents to offload jobs and acquire machines without a decision each time,
+    /// within the limits below; a request outside them still asks the owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offload_without_asking: Option<bool>,
+    /// The machine classes agents may acquire without asking; absent allows only the smallest class offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload_classes: Option<Vec<String>>,
+    /// At most this many machines acquired without asking at the same time; absent is
+    /// `DEFAULT_OFFLOAD_MAX_MACHINES`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload_max_machines: Option<u32>,
+    /// What machines acquired without asking may cost per UTC day, in millionths of the account's
+    /// currency; absent is no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload_daily_cap_micros: Option<u64>,
     /// Asks by default: the owner may let the kernel resume agents stopped by a usage limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_limit_resume: Option<UsageLimitResume>,
