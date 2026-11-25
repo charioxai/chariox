@@ -651,7 +651,9 @@ fn test_peer_response_kind(
         request,
     )
     .ok()
-    .and_then(|payload| serde_json::from_slice::<RelayPeerRequest>(&payload.plaintext).ok())
+    .and_then(|payload| {
+        crate::transport::relay_peer::open_peer_plaintext::<RelayPeerRequest>(&payload.plaintext).ok()
+    })
     .map(|request| match request {
         RelayPeerRequest::RoomBrowserController {
             command:

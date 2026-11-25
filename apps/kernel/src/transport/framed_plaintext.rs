@@ -21,11 +21,24 @@ const MAX_DEPTH: usize = 4;
 /// as it is, so the receiver learns that this sender reads framed answers.
 pub(crate) fn frame(json: &[u8]) -> Vec<u8> {
     let (header, payload) = lift(json).unwrap_or_else(|| (json.to_vec(), Vec::new()));
+    assemble(&header, &payload)
+}
+
+/// The plaintext between two kernels that both read the framed form: framed only when there
+/// are bytes to carry, otherwise the JSON as it is (a reader takes either).
+pub(crate) fn frame_bytes_only(json: &[u8]) -> Vec<u8> {
+    match lift(json) {
+        Some((header, payload)) if !payload.is_empty() => assemble(&header, &payload),
+        _ => json.to_vec(),
+    }
+}
+
+fn assemble(header: &[u8], payload: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(8 + header.len() + payload.len());
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&(header.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(&header);
-    bytes.extend_from_slice(&payload);
+    bytes.extend_from_slice(header);
+    bytes.extend_from_slice(payload);
     bytes
 }
 
