@@ -72,7 +72,9 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             return Ok(());
         }
         kernel_arguments::Command::Version => {
-            println!("chariox-kernel {}", env!("CARGO_PKG_VERSION"));
+            let version =
+                option_env!("CHARIOX_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+            println!("chariox-kernel {version}");
             return Ok(());
         }
         kernel_arguments::Command::ProtocolVersion => {
