@@ -15,7 +15,7 @@ use super::snapshot::{
 };
 use super::state::OpenCodeEventDrainResult;
 use super::transcript::{
-    format_session_status, render_session_error_transcript_update, render_stopped_command_update,
+    format_session_status, render_session_error_transcript_update, render_stopped_tool_update,
     session_status_merge_key,
 };
 use super::{OpenCodeAssistantCompletion, OpenCodeOutputChunk, OpenCodeRuntimeState};
@@ -571,6 +571,10 @@ pub(in crate::provider) fn drain_opencode_events(
         );
     }
 
+    if prompt_completed {
+        // The turn is over: no tool of it is open any more.
+        state.running_tools.clear();
+    }
     Ok(OpenCodeEventDrainResult {
         chunks,
         completions,
@@ -670,8 +674,8 @@ fn end_turn_of_stopped_commands(
     {
         return false;
     }
-    // The abort ends the whole session: a sibling command that still had its
-    // process is cancelled with it, and its row closes the same way.
+    // The abort ends the whole session: every tool still open is cancelled
+    // with it, whatever its kind, and its row closes the same way.
     let ended = state.running_tools.running();
     // A failed abort leaves the tools watched: the next poll asks again.
     if let Err(error) = crate::provider::opencode_binding::abort_opencode_session(run, state) {
@@ -691,7 +695,7 @@ fn end_turn_of_stopped_commands(
         chunks.push(OpenCodeOutputChunk {
             kind: TerminalOutputKind::ProviderTool,
             merge_key: Some(tool.part_id.clone()),
-            bytes: render_stopped_command_update(&tool.part_id, tool.input).into_bytes(),
+            bytes: render_stopped_tool_update(&tool.part_id, &tool.tool, tool.input).into_bytes(),
         });
     }
     true

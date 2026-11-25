@@ -21,6 +21,8 @@ use crate::provider::opencode_client::OpenCodePart;
 
 /// The result a stopped command shows in the transcript.
 pub(super) const STOPPED_COMMAND: &str = "The command was stopped.";
+/// The result any other tool shows when the abort of its session ended it.
+pub(super) const STOPPED_TOOL: &str = "The tool was stopped.";
 
 /// A tool younger than this is not looked at: most commands end by then.
 const FIRST_CHECK: Duration = Duration::from_secs(2);
@@ -57,16 +59,22 @@ struct RunningTool {
 }
 
 /// A tool whose process is gone: its row is replaced by a stopped result.
+/// A tool row of the turn that has no final state yet, of any kind of tool.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct StoppedTool {
+pub(super) struct OpenRow {
     pub part_id: String,
+    pub tool: String,
     pub input: Value,
 }
 
 pub(super) struct RunningTools {
     /// The port of the `opencode serve` the tools run on.
     port: u16,
+    /// The bash commands whose process is watched.
     tools: BTreeMap<String, RunningTool>,
+    /// Every tool row still open, whatever the tool: an abort of the session
+    /// ends them all.
+    open_rows: BTreeMap<String, (String, Value)>,
     checked_at: Option<Instant>,
     children: Box<dyn ServerChildren>,
 }
@@ -99,19 +107,30 @@ impl RunningTools {
         Self {
             port,
             tools: BTreeMap::new(),
+            open_rows: BTreeMap::new(),
             checked_at: None,
             children,
         }
     }
 
-    /// Follows a tool part: a bash tool is running until its part says otherwise.
+    /// Follows a tool part: its row is open until its part reaches a final
+    /// state, and a bash tool is watched while it is running.
     pub(super) fn note(&mut self, part: &OpenCodePart, now: Instant, now_ms: u64) {
-        if part.kind != "tool" || part.tool != "bash" {
+        if part.kind != "tool" {
             return;
         }
         let Some(state) = part.state.as_ref() else {
             return;
         };
+        if matches!(state.status.as_str(), "completed" | "error") {
+            self.open_rows.remove(&part.id);
+        } else {
+            self.open_rows
+                .insert(part.id.clone(), (part.tool.clone(), state.input.clone()));
+        }
+        if part.tool != "bash" {
+            return;
+        }
         if state.status != "running" {
             self.tools.remove(&part.id);
             release(&part.id);
@@ -151,13 +170,14 @@ impl RunningTools {
         self.checked_at = None;
     }
 
-    /// Every tool followed, with its input: what an abort of the session ends.
-    pub(super) fn running(&self) -> Vec<StoppedTool> {
-        self.tools
+    /// Every open tool row with its tool and input: what an abort of the session ends.
+    pub(super) fn running(&self) -> Vec<OpenRow> {
+        self.open_rows
             .iter()
-            .map(|(part_id, tool)| StoppedTool {
+            .map(|(part_id, (tool, input))| OpenRow {
                 part_id: part_id.clone(),
-                input: tool.input.clone(),
+                tool: tool.clone(),
+                input: input.clone(),
             })
             .collect()
     }
@@ -172,11 +192,12 @@ impl RunningTools {
             release(part_id);
         }
         self.tools.clear();
+        self.open_rows.clear();
         self.checked_at = None;
     }
 
     /// The tools whose process has been gone long enough, looked at once a second.
-    pub(super) fn stopped(&mut self, now: Instant) -> Vec<StoppedTool> {
+    pub(super) fn stopped(&mut self, now: Instant) -> Vec<String> {
         let port = self.port;
         if self
             .tools
@@ -261,10 +282,7 @@ impl RunningTools {
             }
             let since = *tool.gone_since.get_or_insert(now);
             if now.saturating_duration_since(since) >= GONE_FOR {
-                stopped.push(StoppedTool {
-                    part_id: part_id.clone(),
-                    input: tool.input.clone(),
-                });
+                stopped.push(part_id.clone());
             }
         }
         stopped

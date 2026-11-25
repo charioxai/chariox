@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use super::{ChildProcess, RunningTools, ServerChildren, StoppedTool};
+use super::{ChildProcess, OpenRow, RunningTools, ServerChildren};
 use crate::provider::opencode_client::OpenCodePart;
 
 /// The children the fake server has right now.
@@ -67,13 +67,7 @@ fn a_command_killed_while_opencode_shows_it_running_is_stopped_after_five_second
     server.set(Some(Vec::new()));
     assert!(running.stopped(at(base, 4)).is_empty(), "gone for 0 s");
     assert!(running.stopped(at(base, 8)).is_empty(), "gone for 4 s");
-    assert_eq!(
-        running.stopped(at(base, 9)),
-        vec![StoppedTool {
-            part_id: "prt_kill".into(),
-            input: json!({"command": COMMAND}),
-        }]
-    );
+    assert_eq!(running.stopped(at(base, 9)), vec!["prt_kill".to_string()]);
 }
 
 #[test]
@@ -311,4 +305,70 @@ fn a_lone_unrelated_child_is_not_taken_as_this_tools_process() {
     server.set(Some(Vec::new()));
     assert!(running.stopped(at(base, 4)).is_empty());
     assert_eq!(running.stopped(at(base, 10)).len(), 1);
+}
+
+/// Review of #1745, round 2: an abort ends every tool of the session, so every
+/// open tool row is followed, whatever the tool.
+#[test]
+fn every_open_tool_row_is_followed_until_its_part_is_final() {
+    let base = Instant::now();
+    let server = Server::with(Vec::new());
+    let mut running = tools(&server, 41_030);
+    let tool_part = |id: &str, tool: &str, status: &str, input| -> OpenCodePart {
+        serde_json::from_value(json!({
+            "id": id, "sessionID": "s", "messageID": "m", "type": "tool", "tool": tool,
+            "state": {"status": status, "input": input, "time": {"start": 1_000}},
+        }))
+        .unwrap()
+    };
+    running.note(
+        &tool_part("prt_f", "webfetch", "running", json!({"url": "u"})),
+        base,
+        1_000,
+    );
+    running.note(
+        &tool_part("prt_t", "task", "pending", json!({})),
+        base,
+        1_000,
+    );
+    running.note(
+        &tool_part("prt_r", "read", "pending", json!({"filePath": "p"})),
+        base,
+        1_000,
+    );
+    running.note(
+        &tool_part("prt_b", "bash", "running", json!({"command": "ls"})),
+        base,
+        1_000,
+    );
+    running.note(
+        &tool_part("prt_r", "read", "completed", json!({"filePath": "p"})),
+        base,
+        1_000,
+    );
+    running.note(&tool_part("prt_x", "grep", "error", json!({})), base, 1_000);
+    // A part that is not a tool is no row.
+    let text: OpenCodePart = serde_json::from_value(
+        json!({"id": "prt_text", "sessionID": "s", "messageID": "m", "type": "text"}),
+    )
+    .unwrap();
+    running.note(&text, base, 1_000);
+
+    let row = |id: &str, tool: &str, input| OpenRow {
+        part_id: id.into(),
+        tool: tool.into(),
+        input,
+    };
+    assert_eq!(
+        running.running(),
+        vec![
+            row("prt_b", "bash", json!({"command": "ls"})),
+            row("prt_f", "webfetch", json!({"url": "u"})),
+            row("prt_t", "task", json!({})),
+        ]
+    );
+    // Only the bash tool is watched for its process.
+    assert!(!running.is_empty());
+    running.clear();
+    assert!(running.running().is_empty() && running.is_empty());
 }
