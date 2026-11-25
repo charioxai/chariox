@@ -1,13 +1,13 @@
-//! Local 1063: the owner's limits for machines agents acquire without asking are user config keys.
+//! Local 1015: the owner's limits for machines agents acquire without asking are user config keys.
 use super::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn machines_without_asking_1063_snapshot_and_hash() {
-    let bytes = include_bytes!("machines-without-asking-1063.json");
+fn machines_without_asking_1015_snapshot_and_hash() {
+    let bytes = include_bytes!("machines-without-asking-1015.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a53f127a0b2aa80d22a7b60991360469db4a035d9648994ed271a114eb9c933c"
+        "2b546dc0db0b366fc7328fab10dcd0034c2417866dacce0dd6c2215cbcee0e4e"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

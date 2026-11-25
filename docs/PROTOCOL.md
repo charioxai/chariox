@@ -7589,7 +7589,7 @@ list, so a change of stock or rate needs a fresh decision. Agents use the same l
 `chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
 card names the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
-### Machines without asking — local 1063
+### Machines without asking — local 1015 (relay peer 452)
 
 One owner setting decides whether an agent's machine acquisition (`chariox.machines.acquire`, and the
 machine `chariox.jobs.run` offloads to) waits for the owner's card: `agents.offload_without_asking`, with
