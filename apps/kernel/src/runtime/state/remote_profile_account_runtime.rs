@@ -245,13 +245,14 @@ impl KernelRuntimeState {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         // The existing Vault unlock card, held until the owner answers it; the guard closes the
         // Vault again after the copy when the unlock policy is "ask every time".
-        let mut _unlock = self
-            .ensure_vault_unlocked_for_agent(
+        let mut unlock = Some(
+            self.ensure_vault_unlocked_for_agent(
                 agent.session_id(),
                 agent_id,
                 "copy the Claude account to the worker",
             )
-            .await?;
+            .await?,
+        );
         let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         // The owner's token comes first: no token, no copy. Without one the kernel runs the
         // official sign-in in the existing card and the copy goes on when the person finishes it.
@@ -269,24 +270,32 @@ impl KernelRuntimeState {
             if has_token {
                 break;
             }
-            if signed_in
-                || !self
-                    .sign_in_claude_for_agent(agent_id, home_profile_id)
-                    .await?
+            if signed_in {
+                return Err(failure(TRANSFER_SIGN_IN_REQUIRED));
+            }
+            // Release the unlock before the sign-in: its guard closes the Vault when it ends, and a
+            // guard still held after the next unlock would close that one too.
+            drop(unlock.take());
+            if !self
+                .sign_in_claude_for_agent(agent_id, home_profile_id)
+                .await?
             {
                 return Err(failure(TRANSFER_SIGN_IN_REQUIRED));
             }
             signed_in = true;
             // Storing the new token can close the Vault again (the "ask every time" policy), so
             // the unlock is taken again, with its own card, before the token is read.
-            _unlock = self
-                .ensure_vault_unlocked_for_agent(
+            unlock = Some(
+                self.ensure_vault_unlocked_for_agent(
                     agent.session_id(),
                     agent_id,
                     "copy the Claude account to the worker",
                 )
-                .await?;
+                .await?,
+            );
         }
+        // Held until the copy returns.
+        let _unlock = unlock;
         let discovery = crate::transport::relay_discovery::metadata_discovery_config(&config)
             .await
             .map_err(|_| failure(TRANSFER_TARGET_NOT_OWNED))?;
