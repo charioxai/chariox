@@ -101,6 +101,7 @@ impl Fixture {
                     prompt_id: None,
                     target_prompt_id: None,
                     provider_run_id: None,
+                    arrived_at_ms: None,
                     attempted_at_ms: None,
                     submit_epoch: None,
                     resumed_at_ms: None,

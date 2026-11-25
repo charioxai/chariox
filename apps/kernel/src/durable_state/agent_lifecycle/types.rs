@@ -43,6 +43,18 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// A queued notification can give its prompt to a retained task before it starts work.
+    pub(crate) fn is_unstarted_prompt_task(&self) -> bool {
+        self.task_id == self.prompt_id
+            && self.state == ExecutionState::Working
+            && self.revision == 1
+            && self.provider_run_id.is_none()
+            && self.goal.is_none()
+            && self.obligations.is_empty()
+            && self.wait.is_none()
+            && self.pending_prompt_id.is_none()
+    }
+
     /// A goal or an obligation still needing resolution: work a later turn must not abandon. A
     /// settled obligation and a retained wait or wake prompt are only its record.
     pub(crate) fn owns_unfinished_work(&self) -> bool {
@@ -181,6 +193,8 @@ pub(crate) struct InboxEvent {
     pub prompt_id: Option<String>,
     pub target_prompt_id: Option<String>,
     pub provider_run_id: Option<String>,
+    #[serde(default)]
+    pub arrived_at_ms: Option<u64>,
     pub attempted_at_ms: Option<u64>,
     pub submit_epoch: Option<u64>,
     /// When the owner last sent this delivery again; it keeps a leased resend's prompt id fresh.
