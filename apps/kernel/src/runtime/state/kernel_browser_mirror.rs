@@ -12,13 +12,17 @@ impl KernelRuntimeState {
         &self,
         caller: &KernelCommand,
         command: KernelBrowserCommand,
+        download_room: Option<&str>,
     ) -> Result<Value, DaemonError> {
         if !crate::runtime::kernel_browser_features::mirror_enabled() {
             return Err(host_error("MP-08: DOM mirroring disabled".into()));
         }
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let input = matches!(command, KernelBrowserCommand::MirrorInput { .. });
-        let params = mirror_host_params(command, &actor, &caller.command_id)?;
+        let mut params = mirror_host_params(command, &actor, &caller.command_id)?;
+        if let Some(room) = download_room {
+            params["_download_session"] = json!(room);
+        }
         let admission = self
             .owned
             .kernel_browser_host

@@ -7,15 +7,25 @@ import { assertBrowserDownloadHeadroom } from './browser-controller-files.mjs';
 
 const identity = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const bytes = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+const safeName = suggested => {
+  const name = path.basename(String(suggested ?? '').replaceAll('\\', '/')).replace(/[\x00-\x1f\x7f]/g, '').trim();
+  let filename = '';
+  for (const char of name) {
+    if (Buffer.byteLength(filename + char) > 255) break;
+    filename += char;
+  }
+  return !filename || filename === '.' || filename === '..' ? 'download' : filename;
+};
 const sessionKey = session => createHash('sha256').update(session).digest('hex');
 const failure = (code, message) => Object.assign(new Error(message), {code});
 
 export class HostDownloads {
-  constructor({ ownerRoot, notify, maxFileBytes = 256 * 1024 * 1024, maxSessionBytes = 1024 * 1024 * 1024 } = {}) {
+  constructor({ ownerRoot, notify, completed, maxFileBytes = 256 * 1024 * 1024, maxSessionBytes = 1024 * 1024 * 1024 } = {}) {
     if (typeof ownerRoot !== 'string' || !ownerRoot) throw new Error('browser download owner root required');
     this.directory = path.join(userInfo().homedir, '.local/share/chariox/browser-downloads', sessionKey(ownerRoot));
     this.root = this.directory;
     this.notify = notify ?? (() => {});
+    this.completed = completed ?? (() => {});
     this.maxFileBytes = maxFileBytes;
     this.maxSessionBytes = maxSessionBytes;
     this.records = new Map();
@@ -54,7 +64,7 @@ export class HostDownloads {
       if (this.records.has(guid)) return;
       const target = this.browser.targetsByFrame?.get(params.frameId);
       const binding = this.bindings.get(target) ?? {tab_id:null,session:"browser-viewer"};
-      const name = path.basename(String(params.suggestedFilename ?? 'download').replaceAll('\\','/')).slice(0,255) || 'download';
+      const name = safeName(params.suggestedFilename);
       const record = {download_id:guid,...binding,name,state:'in_progress',bytes:0,path:null,reserved:0,reason:null};
       if (this.records.size >= 200) {
         // Keep one bounded refusal receipt so reaching the record cap is visible in state.
@@ -98,9 +108,9 @@ export class HostDownloads {
       if (state === 'completed' && !record.reason) {
         const source = path.join(this.spool,record.download_id), metadata = await lstat(source);
         if (!metadata.isFile() || metadata.size !== record.bytes) throw failure('download_file_invalid','download file is unavailable');
-        const directory = path.join(this.root,sessionKey(record.session));
+        const directory = path.join(this.root,sessionKey(record.session),record.download_id);
         await mkdir(directory,{recursive:true,mode:0o700});
-        const destination = path.join(directory,record.download_id);
+        const destination = path.join(directory,record.name);
         try {await rename(source,destination);} catch(error) {
           if(error.code!=='EXDEV')throw error;
           await copyFile(source,destination,1); await unlink(source);
@@ -108,6 +118,7 @@ export class HostDownloads {
         await chmod(destination,0o600);
         record.path = destination;
         record.state = 'done';
+        this.completed();
       } else {
         await this.removeBytes(record);
         record.state = record.reason === 'cancelled' ? 'cancelled' : 'failed';
@@ -117,6 +128,11 @@ export class HostDownloads {
       record.state = 'failed'; record.reason = 'storage_unavailable'; record.path = null;
       await this.removeBytes(record);
     } finally { record.finishing = false; this.notify(); }
+  }
+  completedFor(session) {
+    return [...this.records.values()]
+      .filter(record => record.session === session && record.state === 'done' && record.path)
+      .map(({download_id,name,path}) => ({download_id,name,path}));
   }
   state() {
     return [...this.records.values(),...(this.rejection ? [this.rejection] : [])].filter(record => record.tab_id !== null).map(({download_id,tab_id,name,state,bytes,path,reason}) => ({download_id,tab_id,name,state,bytes,path,...(reason ? {reason} : {})}));
@@ -141,6 +157,7 @@ export class HostDownloads {
     await this.settle();
     for (const record of records) { await this.removeBytes(record); this.records.delete(record.download_id); }
     await rm(path.join(this.root,sessionKey(session)),{recursive:true,force:true});
+    this.completed();
     this.notify();
   }
   async close() {
@@ -149,5 +166,6 @@ export class HostDownloads {
     if (this.spool && this.spool !== path.join(this.root ?? '', 'incoming')) await rm(this.spool,{recursive:true,force:true});
     if (this.root) await rm(this.root,{recursive:true,force:true});
     this.root = null; this.records.clear(); this.bindings.clear(); this.endedSessions.clear(); this.rejection = null;
+    this.completed();
   }
 }

@@ -76,6 +76,7 @@ pub(super) async fn handle_daemon_request(
                 command_result_cache,
                 display_subscriptions,
                 local_browser,
+                false,
             )
             .await
         }
@@ -93,6 +94,7 @@ pub(super) async fn handle_prepared_daemon_request(
     command_result_cache: &Arc<CommandResultCache>,
     display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
     local_browser: Option<&Arc<super::LocalBrowserDirect>>,
+    same_computer: bool,
 ) -> RelayRequestOutcome {
     let received_at_ms = crate::session::unix_epoch_ms();
     let PreparedDaemonRequest {
@@ -276,6 +278,7 @@ pub(super) async fn handle_prepared_daemon_request(
                         request.request,
                         request.command_id.clone(),
                         command_result_cache,
+                        same_computer,
                     )
                     .await
                 }
@@ -1113,6 +1116,7 @@ async fn dispatch_on_behalf_of(
             request,
             command_id,
             command_result_cache,
+            false,
         )
         .await;
     }
@@ -1152,6 +1156,7 @@ async fn dispatch_on_behalf_of(
                     request,
                     Some(command_id.clone()),
                     command_result_cache,
+                    false,
                 )
                 .await
             };
@@ -1227,6 +1232,7 @@ async fn dispatch_relay_client_request(
     request: LocalDaemonRequest,
     command_id: Option<String>,
     command_result_cache: &CommandResultCache,
+    same_computer: bool,
 ) -> RelayDispatchOutcome {
     let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
     let command_id = command_id.unwrap_or_else(|| {
@@ -1235,7 +1241,7 @@ async fn dispatch_relay_client_request(
             crate::session::unix_epoch_ms()
         )
     });
-    let command = KernelCommand::from_local_request_with_caller(
+    let mut command = KernelCommand::from_local_request_with_caller(
         command_id.clone(),
         KernelCommandSource::RelayClient,
         caller,
@@ -1243,6 +1249,7 @@ async fn dispatch_relay_client_request(
         None,
         &request,
     );
+    command.same_computer = same_computer;
     // MD-3: replay must not bypass current terminal admission. Caller identity
     // comes from relay authentication, never the request or command ID.
     if matches!(

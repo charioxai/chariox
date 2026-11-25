@@ -543,6 +543,7 @@ pub(super) async fn serve_connection(
             KernelConnectionClass::Unauthenticated,
             Some(peer),
             None,
+            true,
         )
         .await;
     }

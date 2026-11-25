@@ -133,12 +133,18 @@ export async function regionInputTarget(host,command,scope,signal) {
  if(!target||!host.tabs.has(target.tab_id)||!target.document_id)refuse();
  return {tab_id:target.tab_id,document_id:target.document_id,region_document_id:stream.regionLease.document_id};
 }
+function bindDownloadRoom(host,stream,command) {
+ const tab=host.tabs.get(stream.regionSource?.tab?.tab_id??stream.tab_id);
+ if(tab)host.downloads.bind(tab,command._download_session);
+}
 export async function regionInput(host,command,scope,signal) {
  const browserAtStart=host.browser;
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
  // Protocol 560: the window display is view-only; the mirror and the band own input.
  if(stream.regionTarget.kind==='browser_window')refuse();
  if(!await slowMark(host.timing,'input_wait region_admit',streamAdmitted(stream)))refuse();
+ // The person's Room owns any download this input starts, whichever dispatch path carries it.
+ bindDownloadRoom(host,stream,command);
  if(stream.regionTarget.kind==='visible_page')return (await import('./kernel-browser-page-display.mjs')).inputVisiblePage(host,stream,command,scope,signal);
  if(chromeUi(stream.regionTarget)) {
   if(typeof host.arbiter?.input!=='function')refuse();
