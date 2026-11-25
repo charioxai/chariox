@@ -843,7 +843,7 @@ async fn a_message_retired_by_the_deadline_sweep_raises_the_recovery_card() {
 #[tokio::test]
 async fn a_delivery_attempt_refused_by_the_ended_limit_raises_the_recovery_card() {
     let f = Fixture::with_child_provider("dev-stub");
-    f.message("delivered-after-expiry", false, false);
+    f.message("delivered-after-expiry", true, false);
     f.expire_the_limit().await;
     assert_eq!(f.deadline_cards(), 0);
     let error = f
