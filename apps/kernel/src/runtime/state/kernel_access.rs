@@ -842,10 +842,11 @@ impl KernelRuntimeState {
     ) -> Result<KernelAccessStatus, DaemonError> {
         let (holder, _) = self.access_requester(peer, holder_pid)?;
         self.sweep_kernel_access();
-        // Without a named holder, a grant that covers the caller is its access too.
+        // A grant that covers the holder is its access too: the caller when no holder is named,
+        // otherwise the named process, which is the caller or one of its ancestors.
         let covering = match holder_pid {
             None => self.access_grants_for(peer).ok().unwrap_or_default(),
-            Some(_) => Vec::new(),
+            Some(_) => self.access_grants_for(&holder).ok().unwrap_or_default(),
         };
         let state = self
             .owned

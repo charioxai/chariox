@@ -535,15 +535,30 @@ mod tests {
 
     #[test]
     fn process_exits_and_transport_losses_are_typed_without_any_text() {
+        // A known exit status is named in the outcome; it is the one crash path that does.
+        let exited = ProviderRunTermination::process_exit(17, 1)
+            .failure
+            .expect("typed crash");
+        assert_eq!(exited.kind, TurnOutcomeKind::ProviderCrashed);
+        assert!(exited.retryable);
+        assert_eq!(exited.reason, "Provider CLI exited with status 17.");
         for termination in [
-            ProviderRunTermination::process_exit(17, 1),
             ProviderRunTermination::signal("SIGKILL", 1),
             ProviderRunTermination::unknown_process_exit(1),
         ] {
             let failure = termination.failure.expect("typed crash");
             assert_eq!(failure.kind, TurnOutcomeKind::ProviderCrashed);
             assert!(failure.retryable);
+            // The exit status and signal stay in the termination record and the log.
+            assert_eq!(failure.reason, "The provider process stopped unexpectedly.");
         }
+        // A lost host or an unobserved exit carries a written explanation, which the person and
+        // the parent agent need: only a raw exit status or signal is replaced by the calm text.
+        let lost = ProviderRunTermination::host_lost("The machine hosting the run was lost", 1)
+            .failure
+            .expect("typed crash");
+        assert_eq!(lost.kind, TurnOutcomeKind::ProviderCrashed);
+        assert_eq!(lost.reason, "The machine hosting the run was lost");
         let failure = ProviderRunTermination::transport_failure("relay closed", 1)
             .failure
             .expect("typed network loss");
