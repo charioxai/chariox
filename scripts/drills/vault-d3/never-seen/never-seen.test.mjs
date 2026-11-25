@@ -99,3 +99,22 @@ test("OCR control: a value drawn in a screenshot and inside a provider jsonl ima
   const { types, ocr } = await syntheticControl({ ocr: true })
   assert.equal(ocr, true, JSON.stringify(types))
 })
+
+test("surface matrix: each surface finds its own live decoy, a real secret leaking into one surface is named, a blind surface is BLOCKED", async () => {
+  const { surfaceMatrix, surfaceVerdicts } = await import("./surface-scan.mjs")
+  const dir = await mkdtemp(join(tmpdir(), "ns-surf-"))
+  try {
+    const decoyA = "DECOY_logs_0123456789abcdef", decoyB = "DECOY_work_fedcba9876543210", decoyC = "DECOY_blind_00112233445566", real = "REAL_secret_value_1234567890"
+    for (const d of ["logs", "work", "blind"]) await mkdir(join(dir, d))
+    await writeFile(join(dir, "logs", "a.ndjson"), JSON.stringify({ m: decoyA }) + "\n")
+    await writeFile(join(dir, "work", "note.txt"), `${decoyB}\nleak: ${real}\n`)
+    await writeFile(join(dir, "blind", "x.log"), "nothing planted here\n")
+    const surfaces = ["logs", "work", "blind"], groups = [{ label: "dA", value: decoyA, role: "decoy" }, { label: "dB", value: decoyB, role: "decoy" }, { label: "dC", value: decoyC, role: "decoy" }, { label: "real", value: real, role: "real" }]
+    const { matrix } = await surfaceMatrix({ surfaces: surfaces.map(label => ({ label, path: join(dir, label) })), groups })
+    const v = Object.fromEntries(surfaceVerdicts({ surfaces, matrix, groups, decoyOf: { logs: "dA", work: "dB", blind: "dC" } }).map(x => [x.surface, x]))
+    assert.equal(v.logs.verdict, "PASS")
+    assert.equal(v.work.verdict, "FAIL"); assert.equal(v.work.leaks[0].group, "real")
+    assert.equal(v.blind.verdict, "BLOCKED")
+    assert.ok(!JSON.stringify(matrix).includes(real))
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})

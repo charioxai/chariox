@@ -31,7 +31,7 @@ export async function scanFile(path, needles, { maxHits = 20 } = {}) {
           const at = window.indexOf(needle.bytes, from)
           if (at < 0) break
           // A hit fully inside the carried overlap was already counted by the previous window.
-          if (at + needle.bytes.length > carry.length) hits.push({ form: needle.name, offset: base + at })
+          if (at + needle.bytes.length > carry.length) hits.push({ form: needle.name, offset: base + at, ...(needle.group ? { group: needle.group } : {}) })
           from = at + 1
           if (hits.length >= maxHits) return { hits, bytes }
         }
@@ -64,7 +64,7 @@ const isImage = buffer => buffer.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 
 
 function textHits(text, needles) {
   const hay = Buffer.from(text, "utf8"), hits = []
-  for (const needle of needles) { let from = 0; for (;;) { const at = hay.indexOf(needle.bytes, from); if (at < 0) break; hits.push({ form: needle.name, offset: at }); from = at + 1 } }
+  for (const needle of needles) { let from = 0; for (;;) { const at = hay.indexOf(needle.bytes, from); if (at < 0) break; hits.push({ form: needle.name, offset: at, ...(needle.group ? { group: needle.group } : {}) }); from = at + 1 } }
   return hits
 }
 
@@ -103,7 +103,7 @@ async function scanProc(needles) {
     let data
     try { data = await readFile(entry.path) } catch { continue }
     result.files++; result.bytes += data.length
-    for (const needle of needles) if (data.includes(needle.bytes)) result.hits.push({ form: needle.name, offset: 0, path: `/proc/<pid ${entry.pid}>/${entry.name}` })
+    for (const needle of needles) if (data.includes(needle.bytes)) result.hits.push({ form: needle.name, offset: 0, ...(needle.group ? { group: needle.group } : {}), path: `/proc/<pid ${entry.pid}>/${entry.name}` })
   }
   return result
 }

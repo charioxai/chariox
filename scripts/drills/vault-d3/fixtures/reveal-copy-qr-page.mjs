@@ -23,6 +23,7 @@ export async function startRevealCopyQr({ stateDir, net = {} } = {}) {
   const base32 = n => Array.from(randomBytes(n), b => "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[b % 32]).join("")
   const tokens = { reveal: newToken("rev"), copy: newToken("cpy"), qr: base32(26) }
   const log = []
+  let decoy = ""  // set by the drill (POST /setdecoy): drawn on a canvas only, so it reaches a viewer as pixels, never as a text node
   const note = event => log.push({ at: Date.now(), ...event })
   // A QR capture returns what the code encodes: the whole otpauth URI. /verify?kind=qr accepts that payload (it contains the seed).
   const qrPayload = `otpauth://totp/Fixture:owned?secret=${tokens.qr}&issuer=Fixture`
@@ -51,6 +52,9 @@ document.getElementById('copy').onclick=async()=>{await navigator.clipboard.writ
       note({ kind: "verify", block: kind, ok: !!ok, presented_sha8: sha8((req.headers.authorization ?? "").replace(/^Bearer /, "")) })
       return reply(ok ? 200 : 401, { ok: !!ok })
     }
+    if (url.pathname === "/setdecoy" && req.method === "POST") { decoy = url.searchParams.get("d") ?? ""; return reply(200, { ok: true }) }
+    if (url.pathname === "/decoy") return reply(200, page("Decoy", `<main style="max-width:1200px"><h1>Frame decoy</h1><canvas id="c" width="1100" height="140" style="border:1px solid #999"></canvas></main><script>fetch('/decoyvalue').then(r=>r.text()).then(t=>{const g=document.getElementById('c').getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,1100,140);g.fillStyle='#000';g.font='bold 44px monospace';g.fillText(t,20,85)})</script>`), "text/html")
+    if (url.pathname === "/decoyvalue") return reply(200, decoy, "text/plain")
     if (url.pathname === "/show" && req.method === "POST") { const kind = url.searchParams.get("kind"); if (!["reveal", "copy"].includes(kind)) return reply(400, {}); note({ kind: "shown", block: kind }); return reply(200, { value: tokens[kind] }) }
     if (url.pathname === "/state") return reply(200, { log, issued_sha8: Object.fromEntries(Object.entries(tokens).map(([k, v]) => [k, sha8(v)])) })
     return false
