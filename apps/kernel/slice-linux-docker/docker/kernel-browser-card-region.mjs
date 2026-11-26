@@ -318,7 +318,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
   if (command.generation !== undefined && command.generation !== host.generation) return gone('Browser restarted');
   // Row 666: the open card's Tab closed (a sign-in popup closes itself when the person is done): the card ends now like
   // any card whose Tab closed, never as an element that is no longer available. A new card on a closed Tab is refused.
-  if (anchor && host.tabs.size > 0 && !host.tabs.has(command.tab_id)) return gone('Browser tab closed');
+  if (anchor && !host.tabs.has(command.tab_id)) return gone('Browser tab closed');
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
     const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
     if (tab.document_id !== command.document_id) return gone('Browser document changed');
