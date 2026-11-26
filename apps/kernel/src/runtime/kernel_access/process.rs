@@ -112,6 +112,65 @@ pub(crate) fn ancestry(peer: &ProcessIdentity) -> io::Result<Vec<ProcessIdentity
     Ok(chain)
 }
 
+/// The processes running now that sit below `root` in the OS process tree, nearest first,
+/// by identity. A process the OS can't read, or that exits while it is read, is left out.
+pub(crate) fn descendants(root: &ProcessIdentity) -> Vec<ProcessIdentity> {
+    let mut children: std::collections::HashMap<u32, Vec<ProcessIdentity>> = Default::default();
+    for pid in all_pids() {
+        if let Ok((process, parent)) = inspect(pid) {
+            children.entry(parent).or_default().push(process);
+        }
+    }
+    let mut found = Vec::new();
+    let mut queue = std::collections::VecDeque::from([root.pid]);
+    while let Some(parent) = queue.pop_front() {
+        for child in children.remove(&parent).unwrap_or_default() {
+            if child.pid != root.pid && !found.contains(&child) {
+                queue.push_back(child.pid);
+                found.push(child);
+            }
+        }
+    }
+    found
+}
+
+#[cfg(target_os = "linux")]
+fn all_pids() -> Vec<u32> {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn all_pids() -> Vec<u32> {
+    let wanted = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if wanted <= 0 {
+        return Vec::new();
+    }
+    // Room for processes that start between the two calls.
+    let mut pids = vec![0i32; wanted as usize + 64];
+    // libproc answers with a count of pids, not bytes.
+    let count = unsafe {
+        libc::proc_listallpids(
+            pids.as_mut_ptr() as *mut _,
+            (pids.len() * std::mem::size_of::<i32>()) as i32,
+        )
+    };
+    pids.truncate(usize::try_from(count).unwrap_or(0));
+    pids.into_iter()
+        .filter(|pid| *pid > 0)
+        .map(|pid| pid as u32)
+        .collect()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn all_pids() -> Vec<u32> {
+    Vec::new()
+}
+
 pub(crate) fn holder(peer: &ProcessIdentity, pid: u32) -> io::Result<ProcessIdentity> {
     let result = ancestry(peer)?
         .into_iter()
@@ -429,6 +488,7 @@ pub(crate) mod fault {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     #[tokio::test]
     async fn peer_identity_is_os_verified_and_reused_pid_or_version_fails() {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
@@ -445,6 +505,44 @@ mod tests {
         different_exec.version = different_exec.version.wrapping_add(1);
         assert!(!different_exec.alive());
         assert!(holder(&identity, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn descendants_name_running_children_and_grandchildren_by_identity() {
+        let me = inspect(std::process::id()).unwrap().0;
+        // `sh` stays the child; the `sleep` it starts is the grandchild.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        let child_id = inspect(child.id()).unwrap().0;
+        let found = std::time::Instant::now();
+        let grandchild = loop {
+            let below = descendants(&me);
+            assert!(below.contains(&child_id));
+            if let Some(grandchild) = below.iter().find(|p| p.executable.ends_with("sleep")) {
+                break grandchild.clone();
+            }
+            assert!(found.elapsed() < Duration::from_secs(5), "no grandchild");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(!descendants(&me).contains(&me));
+        assert!(descendants(&grandchild).is_empty());
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::process::Command::new("kill")
+            .arg(grandchild.pid.to_string())
+            .status();
+    }
+
+    #[test]
+    fn every_running_process_is_listed_once_by_its_own_pid() {
+        let listed = all_pids();
+        assert!(listed.contains(&std::process::id()));
+        let mut unique = listed.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), listed.len());
     }
 
     #[test]
