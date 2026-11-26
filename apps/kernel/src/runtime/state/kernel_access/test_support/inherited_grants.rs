@@ -83,7 +83,7 @@ async fn a_peer_under_two_grant_holders_uses_the_nearest_holders_grant() {
                     expires_at_ms: None,
                 },
                 holder,
-                adopted: 0,
+                adopted: Vec::new(),
                 clock: None,
             },
         );

@@ -28,7 +28,7 @@ fn state_with_live_grant() -> (KernelRuntimeState, String) {
                 expires_at_ms: None,
             },
             holder,
-            adopted: 0,
+            adopted: Vec::new(),
             clock: None,
         },
     );

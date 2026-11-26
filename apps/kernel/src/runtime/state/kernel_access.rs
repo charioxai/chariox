@@ -243,6 +243,7 @@ impl KernelRuntimeState {
                 summary,
                 holder,
                 covered,
+                adopted,
                 end,
             } = recorded;
             if let Some((outcome, reason)) = end {
@@ -261,6 +262,10 @@ impl KernelRuntimeState {
                         .into_iter()
                         .filter(|process| !process.gone())
                         .collect();
+                    let adopted = adopted
+                        .into_iter()
+                        .filter(|process| covered.contains(process))
+                        .collect();
                     self.owned
                         .kernel_access
                         .lock()
@@ -271,9 +276,7 @@ impl KernelRuntimeState {
                             Grant {
                                 summary,
                                 holder,
-                                // Which of them came from the holder's tree is not recorded:
-                                // the slack is bounded by `MAX_ADOPTED`.
-                                adopted: covered.len().min(cover::MAX_ADOPTED),
+                                adopted,
                                 covered,
                                 clock: None,
                             },
@@ -939,14 +942,14 @@ impl KernelRuntimeState {
         reason: Option<&str>,
     ) -> Result<(), DaemonError> {
         self.audit_access_of_holder(&summary, Some(&holder), "granted", reason)?;
-        let covered = self.cover_running_descendants(&summary, &holder);
+        let adopted = self.cover_running_descendants(&summary, &holder);
         state.grants.insert(
             id,
             Grant {
                 summary,
                 holder,
-                adopted: covered.len(),
-                covered,
+                covered: adopted.clone(),
+                adopted,
                 clock,
             },
         );
@@ -1149,6 +1152,8 @@ struct RecordedGrant {
     summary: KernelAccessGrant,
     holder: Option<ProcessIdentity>,
     covered: Vec<ProcessIdentity>,
+    /// The covered processes the grant took from the holder's tree when it landed.
+    adopted: Vec<ProcessIdentity>,
     end: Option<(String, String)>,
 }
 
@@ -1171,6 +1176,7 @@ fn recorded_access_grants(
                             summary,
                             holder,
                             covered: Vec::new(),
+                            adopted: Vec::new(),
                             end: None,
                         },
                     );
@@ -1182,6 +1188,10 @@ fn recorded_access_grants(
                     serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
                 ) {
                     grant.covered.retain(|known| *known != process);
+                    grant.adopted.retain(|known| *known != process);
+                    if event.payload["reason"].as_str() == Some(cover::ADOPTED) {
+                        grant.adopted.push(process.clone());
+                    }
                     grant.covered.push(process);
                 }
             }
@@ -1191,6 +1201,7 @@ fn recorded_access_grants(
                     serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
                 ) {
                     grant.covered.retain(|known| *known != process);
+                    grant.adopted.retain(|known| *known != process);
                     if grant.end.is_some() && grant.covered.is_empty() {
                         recorded.remove(&id);
                     }

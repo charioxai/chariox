@@ -548,3 +548,115 @@ async fn a_covered_process_named_by_its_own_command_is_granted() {
     assert_eq!(named.unwrap().state, KernelAccessHolderState::Granted);
     assert!(outside, "a pid outside the caller's chain stays refused");
 }
+
+/// A holder shell, not started by the test process, with two `sleep`s already under it. When
+/// `dir/go` appears it starts 18 more and lists their pids in `dir/late`.
+fn holder_with_early_and_late_children(dir: &std::path::Path) -> ProcessIdentity {
+    let script = format!(
+        "echo $$ > {d}/holder; sleep 600 & sleep 600 & echo ready > {d}/ready; \
+         while [ ! -f {d}/go ]; do sleep 0.05; done; \
+         i=0; while [ $i -lt 18 ]; do sleep 600 & echo $! >> {d}/late; i=$((i+1)); done; wait",
+        d = dir.display()
+    );
+    let status = Command::new("sh")
+        .args(["-c", "sh -c \"$0\" >/dev/null 2>&1 &"])
+        .arg(script)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let started = Instant::now();
+    while !dir.join("ready").exists() {
+        assert!(started.elapsed() < Duration::from_secs(5), "holder not ready");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pid = std::fs::read_to_string(dir.join("holder")).unwrap();
+    process::inspect(pid.trim().parse().unwrap()).unwrap().0
+}
+
+fn late_pids(dir: &std::path::Path) -> Vec<u32> {
+    let started = Instant::now();
+    loop {
+        let pids: Vec<u32> = std::fs::read_to_string(dir.join("late"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.parse().ok())
+            .collect();
+        if pids.len() == 18 {
+            return pids;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "late children");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// The holder's tree at grant time is covered by identity and uses none of the 16 named
+// covers; when those processes exit they free no extra named covers either.
+#[test]
+fn adopted_processes_use_no_named_cover_and_their_exit_frees_none() {
+    let root = crate::test_support::TestWorktree::new("cover-adopted");
+    let holder = holder_with_early_and_late_children(root.path());
+    let router = kernel(&root);
+    let state = router.runtime_state();
+    let mut access = state.owned.kernel_access.lock().unwrap();
+    state
+        .admit_grant(&mut access, "cover".into(), summary(&holder), holder.clone(), None)
+        .unwrap();
+    let adopted = access.grants["cover"].adopted.clone();
+    assert!(adopted.len() >= 2, "{adopted:?}");
+    assert_eq!(access.grants["cover"].covered, adopted);
+    drop(access);
+    for process in &adopted {
+        kill_pid(process.pid);
+    }
+    std::fs::write(root.path().join("go"), "").unwrap();
+    let late = late_pids(root.path());
+    for pid in &late[..16] {
+        state
+            .cover_kernel_access_process(&holder, None, &CoverKernelAccessProcessRequest { pid: *pid, start: None })
+            .unwrap();
+    }
+    let refused = state
+        .cover_kernel_access_process(&holder, None, &CoverKernelAccessProcessRequest { pid: late[16], start: None })
+        .unwrap_err();
+    assert!(Refusal::exact(&refused) == Some(Refusal::CoverLimit), "{refused:?}");
+    for pid in late {
+        kill_pid(pid);
+    }
+    kill_pid(holder.pid);
+}
+
+// After a restart a process named later is still named, not adopted.
+#[test]
+fn a_restart_keeps_adopted_and_named_covers_apart() {
+    let root = crate::test_support::TestWorktree::new("cover-adopted-restart");
+    let holder = holder_with_early_and_late_children(root.path());
+    let adopted = {
+        let router = kernel(&root);
+        let state = router.runtime_state();
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "cover".into(), summary(&holder), holder.clone(), None)
+            .unwrap();
+        let adopted = access.grants["cover"].adopted.clone();
+        drop(access);
+        std::fs::write(root.path().join("go"), "").unwrap();
+        let late = late_pids(root.path());
+        state
+            .cover_kernel_access_process(&holder, None, &CoverKernelAccessProcessRequest { pid: late[0], start: None })
+            .unwrap();
+        state.end_kernel_access_for_shutdown().unwrap();
+        adopted
+    };
+    let router = kernel(&root);
+    let state = router.runtime_state();
+    assert_eq!(state.restore_kernel_access_grants().unwrap(), 1);
+    let access = state.owned.kernel_access.lock().unwrap();
+    let grant = &access.grants["cover"];
+    assert_eq!(grant.adopted.len(), adopted.len(), "{:?}", grant.adopted);
+    assert!(grant.covered.len() > grant.adopted.len());
+    drop(access);
+    for pid in late_pids(root.path()) {
+        kill_pid(pid);
+    }
+    kill_pid(holder.pid);
+}

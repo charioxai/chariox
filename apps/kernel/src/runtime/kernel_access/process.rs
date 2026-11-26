@@ -152,13 +152,14 @@ fn all_pids() -> Vec<u32> {
     }
     // Room for processes that start between the two calls.
     let mut pids = vec![0i32; wanted as usize + 64];
-    let bytes = unsafe {
+    // libproc answers with a count of pids, not bytes.
+    let count = unsafe {
         libc::proc_listallpids(
             pids.as_mut_ptr() as *mut _,
             (pids.len() * std::mem::size_of::<i32>()) as i32,
         )
     };
-    pids.truncate(usize::try_from(bytes).unwrap_or(0) / std::mem::size_of::<i32>());
+    pids.truncate(usize::try_from(count).unwrap_or(0));
     pids.into_iter()
         .filter(|pid| *pid > 0)
         .map(|pid| pid as u32)
@@ -530,6 +531,16 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::process::Command::new("kill").arg(grandchild.pid.to_string()).status();
+    }
+
+    #[test]
+    fn every_running_process_is_listed_once_by_its_own_pid() {
+        let listed = all_pids();
+        assert!(listed.contains(&std::process::id()));
+        let mut unique = listed.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), listed.len());
     }
 
     #[test]

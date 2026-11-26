@@ -78,7 +78,7 @@ fn grant(
             expires_at_ms: None,
         },
         holder: holder.clone(),
-        adopted: 0,
+        adopted: Vec::new(),
         clock,
     }
 }

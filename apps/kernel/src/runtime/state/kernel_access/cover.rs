@@ -11,6 +11,10 @@ pub(crate) const MAX_COVERED: usize = 16;
 /// the moment it lands, so they stay covered when their parent exits later.
 pub(crate) const MAX_ADOPTED: usize = 48;
 
+/// The audit reason of a cover taken from the holder's tree, so a restart can tell it from
+/// a process named later.
+pub(crate) const ADOPTED: &str = "adopted";
+
 impl KernelRuntimeState {
     /// Covers `request.pid` for the grant `peer` is already covered by. The target must be
     /// a live process the grant covers now (the holder, a covered process, or a descendant
@@ -77,8 +81,13 @@ impl KernelRuntimeState {
         if !live.covered.contains(&target) {
             live.covered.retain(|process| !process.gone());
             // The holder's tree at grant time is covered too (`adopted`); it does not use up
-            // the limit of processes named later.
-            if live.covered.len() >= MAX_COVERED + live.adopted.min(MAX_ADOPTED) {
+            // the limit of processes named later, and its exits do not add to it.
+            let named = live
+                .covered
+                .iter()
+                .filter(|process| !live.adopted.contains(process))
+                .count();
+            if named >= MAX_COVERED {
                 return Err(Refusal::CoverLimit.error());
             }
             // Recorded before it is live: a cover that failed to persist is refused, and
@@ -113,7 +122,7 @@ impl KernelRuntimeState {
             // Recorded before it is live, as for a named cover.
             if target.uid == holder.uid
                 && reached
-                && self.audit_cover(grant, &target, "covered", None).is_ok()
+                && self.audit_cover(grant, &target, "covered", Some(ADOPTED)).is_ok()
             {
                 covered.push(target);
             }
