@@ -242,6 +242,17 @@ test('MP-08/MP-11 removing the element or replacing its document settles conditi
   assert.deepEqual(await region({ generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser document changed' });
 }));
 
+test('666 a card whose Tab closed (a sign-in popup closing itself when the person is done) ends at once: a plain card as done, a card waiting for page text as unavailable', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'popup-plain' })).state, 'present');
+  assert.equal((await region({ card_id: 'popup-text', done_text: 'Signed in' })).state, 'present');
+  const closed = () => { throw new UserDomainRefusal('stale_reference', 'display_retired'); };
+  host.tabs.delete('one'); host.tabs.set('opener', { tab_id: 'opener', target_id: 'opener-target', document_id: 'o' }); host.displayTarget = closed;
+  assert.deepEqual(await region({ card_id: 'popup-plain', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
+  assert.deepEqual(await region({ card_id: 'popup-text', done_text: 'Signed in', generation: 1, document_id: 'doc' }), { state: 'unavailable', reason: 'Browser tab closed' });
+  await assert.rejects(region({ card_id: 'new-card' }), error => error instanceof UserDomainRefusal, 'a new card on a closed Tab is still refused');
+}));
+
 test('546 an element that went away with a navigation is a changed document, not a removed element', () => withHost(async ({ snapshot, region, node, state }) => {
   await snapshot();
   node.isConnected = false; state.document_id = 'replacement';
