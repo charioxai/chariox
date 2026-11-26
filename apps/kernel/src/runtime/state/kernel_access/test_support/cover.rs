@@ -618,7 +618,11 @@ fn adopted_processes_use_no_named_cover_and_their_exit_frees_none() {
     let refused = state
         .cover_kernel_access_process(&holder, None, &CoverKernelAccessProcessRequest { pid: late[16], start: None })
         .unwrap_err();
-    assert!(Refusal::exact(&refused) == Some(Refusal::CoverLimit), "{refused:?}");
+    assert!(
+        crate::runtime::kernel_access::Refusal::exact(&refused)
+            == Some(crate::runtime::kernel_access::Refusal::CoverLimit),
+        "{refused:?}"
+    );
     for pid in late {
         kill_pid(pid);
     }
@@ -652,7 +656,9 @@ fn a_restart_keeps_adopted_and_named_covers_apart() {
     assert_eq!(state.restore_kernel_access_grants().unwrap(), 1);
     let access = state.owned.kernel_access.lock().unwrap();
     let grant = &access.grants["cover"];
-    assert_eq!(grant.adopted.len(), adopted.len(), "{:?}", grant.adopted);
+    // A transient `sleep` of the holder's wait loop may have ended since.
+    let alive = adopted.iter().filter(|process| process.alive()).count();
+    assert_eq!(grant.adopted.len(), alive, "{:?}", grant.adopted);
     assert!(grant.covered.len() > grant.adopted.len());
     drop(access);
     for pid in late_pids(root.path()) {
