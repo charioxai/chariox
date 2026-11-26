@@ -70,7 +70,11 @@ const fold = async (id, tries = 100) => {
     // A Tab moved in behind the shown one keeps the size of the window it came from and is not laid out in this one:
     // it paints nothing, so no view or screenshot of it can start. Select it once and put the shown Tab back in the
     // same step (as for a Tab Chrome activates on opening), which lays it out at this window's size.
-    if (!(await chrome.tabs.get(id)).active) await chrome.tabs.update(id, { active: true }).catch(() => {});
+    // A person's selection made during either wait is newer than this fold and keeps the view.
+    const moved = await chrome.tabs.get(id);
+    if (epoch !== selectionEpoch) return;
+    if (!moved.active) await chrome.tabs.update(id, { active: true }).catch(() => {});
+    if (epoch !== selectionEpoch) return;
     await chrome.tabs.update(previous, { active: true }).catch(() => {});
   }
 };

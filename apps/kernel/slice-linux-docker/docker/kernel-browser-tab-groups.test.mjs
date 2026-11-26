@@ -216,7 +216,7 @@ test('MP-08/MP-10 real headless favicon cache does not require metadata headers'
 });
 
 // Miguel 11-04: agents never change the Tab the person sees.
-const activation = async ({ tabs, shown, windows, move }) => {
+const activation = async ({ tabs, shown, windows, move, get, update }) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-activation-'));
   const source = await readFile(path.join(await writeTabGroupsExtension(root), 'sw.js'), 'utf8');
   await rm(root, { recursive: true, force: true });
@@ -228,8 +228,8 @@ const activation = async ({ tabs, shown, windows, move }) => {
       onCreated: { addListener: fn => { listeners.created = fn; } }, onAttached: { addListener: fn => { listeners.attached = fn; } },
       onActivated: { addListener: fn => { listeners.activated = fn; } },
       query: async () => shown.map(([windowId, id]) => ({ id, windowId, active: true })),
-      get: async id => tabs.get(id), move: async (id, value) => { await move?.(); calls.push(['move', id, value]); },
-      update: async (id, value) => calls.push(['update', id, value]),
+      get: async id => { await get?.(id); return tabs.get(id); }, move: async (id, value) => { await move?.(); calls.push(['move', id, value]); },
+      update: async (id, value) => { calls.push(['update', id, value]); await update?.(id); },
     },
   };
   const worker = {};
@@ -376,6 +376,24 @@ test('BTAB-01 a person selection made while a popup fold is moving is not undone
   release();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }]], 'the finished move activates and focuses nothing');
+});
+
+// Row 664 review: the fold's own select-then-put-back steps wait too; a person's selection made during them wins.
+for (const wait of ['get', 'update'])
+test(`BTAB-01 a person selection made while a fold lays out a moved popup (${wait}) is not undone`, async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 10 }], [9, { id: 9, windowId: 11, active: false, openerTabId: 1 }]]);
+  let release, entered; const held = new Promise(resolve => { release = resolve; }), reached = new Promise(resolve => { entered = resolve; });
+  // fold reads the popup once before its move; hold the read (or selection) that follows the move.
+  let seen = 0; const hold = id => id === 9 && (wait === 'update' || ++seen === 2) ? (entered(), held) : undefined;
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }], [wait]: hold });
+  await worker.charioxTabs.openingInput('target-1', true);
+  listeners.created(tabs.get(9));
+  await reached;
+  await worker.charioxTabs.personSelection();
+  release();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const expected = [['move', 9, { windowId: 10, index: -1 }], ...(wait === 'update' ? [['update', 9, { active: true }]] : [])];
+  assert.deepEqual(calls, expected, 'the shown Tab is not put back over the person\'s newer choice');
 });
 
 test('BTAB-01 a watched popup does not take the view back from a person selection made during its fold', async () => {
