@@ -738,8 +738,10 @@ struct FakeUserSession {
 }
 
 impl FakeUserSession {
-    fn new(kernel: &DummyKernelHome) -> Self {
-        let runtime = kernel.home.parent().unwrap().join("run-user");
+    fn new(_kernel: &DummyKernelHome) -> Self {
+        // A socket path must fit in SUN_LEN, which the test's temp folder may not.
+        let runtime = PathBuf::from("/tmp").join(format!("sm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
         std::fs::create_dir_all(runtime.join("systemd")).unwrap();
         let listeners = [runtime.join("systemd/private"), runtime.join("bus")]
             .iter()
@@ -761,6 +763,7 @@ impl Drop for FakeUserSession {
     fn drop(&mut self) {
         std::env::remove_var("XDG_RUNTIME_DIR");
         std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
+        let _ = std::fs::remove_dir_all(&self.runtime);
     }
 }
 
