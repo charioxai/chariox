@@ -370,9 +370,10 @@ fn protected_config(path: &str) -> bool {
     ]
     .iter()
     .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
-        // The machine acquisition toggle spends the owner's money: only the owner turns it (row 405).
+        // Acquiring machines without asking spends the owner's money: only the owner turns it on and
+        // sets its limits (classes, machine count, daily cap) (row 405).
         || path == "agents"
-        || path == "agents.offload_without_asking"
+        || path.starts_with("agents.offload_")
 }
 
 fn carries_passkey(request: &LocalDaemonRequest) -> bool {
