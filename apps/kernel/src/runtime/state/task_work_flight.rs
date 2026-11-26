@@ -277,7 +277,7 @@ impl KernelRuntimeState {
             }
         });
         let wait = TASK_WAIT.min(*patience);
-        let started = Instant::now();
+        let started = tokio::time::Instant::now();
         let outcome = tokio::time::timeout(wait, answered).await;
         *patience = patience.saturating_sub(started.elapsed());
         match outcome {
