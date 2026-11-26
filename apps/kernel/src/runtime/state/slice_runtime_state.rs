@@ -69,6 +69,11 @@ impl KernelRuntimeState {
                 message: "This machine cannot run slices: its Chariox release has no slice service. Create the slice on a machine that runs slices.".to_string(),
             });
         }
+        let config = self.owned.config_projection.snapshot();
+        self.refuse_unhostable_slice_worker(
+            request.worker_kernel_ref.as_deref(),
+            &request.backend,
+        )?;
         self.validate_slice_development_selection(
             request.development.as_ref(),
             &request.backend,
@@ -76,7 +81,6 @@ impl KernelRuntimeState {
             request.worktree_id.as_deref(),
             request.source_slice_ref.as_deref(),
         )?;
-        let config = self.owned.config_projection.snapshot();
         let development_storage_parent = (request.development.is_some()
             && request.backend == crate::slice::SliceBackendKind::LocalDocker)
             .then(|| self.prepare_slice_development_storage_parent(&config))
@@ -129,6 +133,36 @@ impl KernelRuntimeState {
         self.append_slice_durable_event("slice.created", &slice)?;
         self.record_slice_audit_event(&slice, "create", "completed", None, None)?;
         Ok(slice)
+    }
+
+    /// Cloud-hosted slice workers register under the identity this kernel mints, so a request that
+    /// names another worker could only fail at start, after leaving a record that blocks that
+    /// machine. Refuse before any record exists.
+    pub(crate) fn refuse_unhostable_slice_worker(
+        &self,
+        worker_kernel_ref: Option<&str>,
+        backend: &crate::slice::SliceBackendKind,
+    ) -> Result<(), DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        let config = &config;
+        let Some(worker) = worker_kernel_ref.filter(|worker| !worker.trim().is_empty()) else {
+            return Ok(());
+        };
+        if *backend != crate::slice::SliceBackendKind::LocalDocker
+            || !crate::runtime::cloud_relay_control::hosted_slice_launch(config)
+            || crate::slice::machine_scoped_slice_worker_ref(worker, &config.host_machine_id)
+        {
+            return Ok(());
+        }
+        crate::logging::warn_with_fields(
+            "daemon.slice",
+            "refused a hosted slice naming another worker kernel",
+            serde_json::json!({ "worker_kernel_ref": worker, "machine_id": config.host_machine_id }),
+        );
+        Err(DaemonError::MachineRequest {
+            code: "slice_placement_unavailable".to_string(),
+            message: "A new slice runs on this machine and cannot be placed on another one. To run the agent on that machine, spawn it there without --slice; to use a slice, spawn with --slice new and no --kernel.".to_string(),
+        })
     }
 
     pub(crate) fn resolve_slice(
