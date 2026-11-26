@@ -408,3 +408,47 @@ test("a terminal that cannot be closed is named with its kernel, so the way to c
   } finally { process.stderr.write = realWrite }
   assert.match(written.join(""), /chariox terminal close --kernel nelpx --terminal t1/)
 })
+
+test("a retry after a drop waits only for what is left of --timeout, not a fresh full wait", async () => {
+  const { send } = kernel("ok\r\n", 0)
+  const waits: number[] = []
+  let dropped = false
+  const flaky = async (body: any) => {
+    if (operationOf(body) === "wait") {
+      waits.push(body.KernelTerminal.operation.timeout_ms)
+      if (!dropped) { dropped = true; throw blip("kernel_connection_lost") }
+    }
+    return send(body)
+  }
+  assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 3, retryStepMs: 1500, notice: () => {} }, flaky, sink().stream), 0)
+  assert.equal(waits.length, 2)
+  assert.ok(waits[0]! <= 3000 && waits[0]! > 2500, `first wait ${waits[0]}`)
+  assert.ok(waits[1]! <= 1600, `the retry asks for what is left (about 1500 ms), not ${waits[1]}`)
+})
+
+test("a retry that never answers ends at --timeout with the command left running", async () => {
+  const { sent, send } = kernel("x", 0)
+  let waits = 0
+  const stalled = async (body: any) => {
+    if (operationOf(body) === "wait") {
+      if (waits++ === 0) throw blip("kernel_connection_lost")
+      return new Promise<never>(() => {})
+    }
+    return send(body)
+  }
+  const started = Date.now()
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 1, retryStepMs: 20, kernel: "nelpx", notice: () => {} }, stalled, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_link_lost")
+  assert.ok(Date.now() - started < 2500, `ended after ${Date.now() - started} ms`)
+  assert.equal(sent.some(body => operationOf(body) === "close"), false)
+})
+
+test("the pause between tries never runs past --timeout", async () => {
+  const { send } = kernel("x", 0)
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") throw blip("kernel_offline")
+    return send(body)
+  }
+  const started = Date.now()
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 1, retryStepMs: 5000, notice: () => {} }, down, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_link_lost")
+  assert.ok(Date.now() - started < 2000, `ended after ${Date.now() - started} ms`)
+})
