@@ -113,7 +113,7 @@ pub(super) enum Timeout {
     /// Nothing newer holds the agent: the task times out as before.
     Own,
     /// A newer waiting task took its sources over.
-    Folded(Vec<String>),
+    Folded,
     /// A newer task is working and will wait or end; no turn for this timeout.
     Quiet,
 }
@@ -154,5 +154,5 @@ pub(super) fn timed_out(
     }
     newer.revision += 1;
     save(tx, &newer)?;
-    Ok(Timeout::Folded(moved))
+    Ok(Timeout::Folded)
 }

@@ -371,7 +371,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         match super::folded_waits::timed_out(tx, &t)? {
                             super::folded_waits::Timeout::Own => {}
                             super::folded_waits::Timeout::Quiet => continue,
-                            super::folded_waits::Timeout::Folded(_) => {
+                            super::folded_waits::Timeout::Folded => {
                                 folded = true;
                                 changed.push(load(tx, &t.task_id)?);
                                 continue;
