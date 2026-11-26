@@ -211,10 +211,12 @@ try {
     if (watcher) await attempt("7-after", async () => {
       await reattach(watcher)
       if (cold) {
-        const told = await until(async () => done(await turnsOf(watcher.R, watcher.agent)).slice(1).some(turn => /process_lost/.test(text(turn))), "the agent is told the watch was lost", 420000).then(() => true, () => false)
+        // The whole turn, not the short summary: the report's tail is long and its last sentence is the one under test.
+        const whole = turn => JSON.stringify(turn)
+        const told = await until(async () => done(await turnsOf(watcher.R, watcher.agent)).slice(1).some(turn => /process_lost/.test(whole(turn))), "the agent is told the watch was lost", 420000).then(() => true, () => false)
         const turns = done(await turnsOf(watcher.R, watcher.agent))
         save("turns-7-cold.json", turns)
-        const next = turns.slice(1).some(turn => /start it again and watch the new one/.test(text(turn)))
+        const next = turns.slice(1).some(turn => /start it again and watch the new one/.test(whole(turn)))
         cell("c-a-watch-armed-before-a-cold-restart-is-reported-lost-to-the-agent", told, { process_lost: told })
         cell("c-the-report-says-what-to-do-next", told ? next : null, { start_it_again: next })
       } else {
