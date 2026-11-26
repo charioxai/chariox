@@ -911,17 +911,30 @@ impl KernelBrowserActors {
             .controller_binding(&tab)
             .ok()
             .map(|binding| binding.document_id.clone());
-        let holders = self
-            .ledger
-            .ownership()
+        // A takeover of the desktop holds the input of every Tab, so it refuses a card's input
+        // as the Tab's own takeover does: both are named, once per person, with what they hold.
+        let mut held: Vec<(String, Vec<&'static str>)> = Vec::new();
+        for owner in self.ledger.ownership() {
+            let holds = match &owner.target {
+                InputTarget::BrowserTab(owned) if owned == &tab => "tab",
+                InputTarget::Desktop => "desktop",
+                _ => continue,
+            };
+            match held.iter_mut().find(|(actor, _)| *actor == owner.actor_id) {
+                Some((_, holds_all)) => holds_all.push(holds),
+                None => held.push((owner.actor_id.clone(), vec![holds])),
+            }
+        }
+        let holders = held
             .into_iter()
-            .filter(|owner| matches!(&owner.target, InputTarget::BrowserTab(held) if held == &tab))
-            .map(|owner| {
-                let actor = self.actors.get(&owner.actor_id);
+            .map(|(actor_id, mut holds)| {
+                holds.sort_by_key(|held| *held == "desktop");
+                let actor = self.actors.get(&actor_id);
                 serde_json::json!({
-                    "actor_id": owner.actor_id,
+                    "actor_id": actor_id,
                     "kind": actor.map(|actor| actor.kind),
                     "label": actor.map(|actor| actor.display_label.as_str()),
+                    "holds": holds,
                 })
             })
             .collect::<Vec<_>>();

@@ -429,9 +429,17 @@ fn card_findings(
                 findings.push(finding(
                     "input_held",
                     format!(
-                        "this Tab's input is held by {} ({})",
+                        "this Tab's input is held by {} ({}){}",
                         holder["label"].as_str().unwrap_or("an actor"),
-                        holder["kind"].as_str().unwrap_or("unknown kind")
+                        holder["kind"].as_str().unwrap_or("unknown kind"),
+                        if holder["holds"]
+                            .as_array()
+                            .is_some_and(|holds| holds.iter().any(|held| held == "desktop"))
+                        {
+                            ", through a takeover of the desktop"
+                        } else {
+                            ""
+                        }
                     ),
                 ));
             }
