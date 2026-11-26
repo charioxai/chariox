@@ -139,9 +139,13 @@ impl KernelBrowserHost {
     pub(crate) fn for_database(root: PathBuf, database: &std::path::Path) -> std::io::Result<Self> {
         let app_storage_root = chariox_app_runtime::worker_process::wasm::storage::root(database)
             .map_err(std::io::Error::other)?;
+        let root = root.join("kernel-browser");
         Ok(Self {
-            inner: Arc::new(Mutex::new(HostState::default())),
-            root: root.join("kernel-browser"),
+            inner: Arc::new(Mutex::new(HostState {
+                loaded: presence::read_loaded(&root),
+                ..HostState::default()
+            })),
+            root,
             app_storage_root,
             authority_epoch: Arc::default(),
             web_bot_auth_revision: Arc::default(),
@@ -1380,6 +1384,27 @@ mod tests {
             assert!(new.is_loaded_for("owner", "agent", capability));
             assert!(!new.is_loaded_for("owner", "other", capability));
         }
+    }
+
+    /// Row 664: a cold restart (a new host over the same root, no handover) keeps the tools an
+    /// agent listed; an ended run's listing does not come back.
+    #[test]
+    fn row664_a_cold_restart_keeps_the_user_domain_tools_an_agent_loaded() {
+        use KernelBrowserCapability::{Browser, Computer};
+        let root = tempfile::tempdir().unwrap();
+        let before = KernelBrowserHost::new(root.path().to_path_buf());
+        before.load_for("owner", "agent", Browser);
+        before.load_for("owner", "ended", Computer);
+        before.revoke_agent("ended");
+        drop(before);
+
+        let after = KernelBrowserHost::new(root.path().to_path_buf());
+        assert!(after.is_loaded_for("owner", "agent", Browser));
+        assert!(!after.is_loaded_for("owner", "agent", Computer));
+        assert!(!after.is_loaded_for("owner", "ended", Computer));
+        after.revoke_agent("agent");
+        let later = KernelBrowserHost::new(root.path().to_path_buf());
+        assert!(!later.is_loaded("owner", "agent"));
     }
 
     /// Review 6010087630 P2: ending a run waits for an App call that passed its last check
