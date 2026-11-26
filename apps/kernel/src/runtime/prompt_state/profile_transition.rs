@@ -26,10 +26,9 @@ impl AgentProfileTransitionClaim {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.key != PromptStateKey::new(session.id(), agent_id)
             || !owner
                 .profile_transitions
@@ -53,10 +52,9 @@ impl AgentProfileTransitionClaim {
 
 impl Drop for AgentProfileTransitionClaim {
     fn drop(&mut self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state
             .profile_transitions
             .get(&self.key)
@@ -86,10 +84,9 @@ impl PromptStateOwner {
 
     /// A turn is running, or queued work is being prepared to start one.
     pub(crate) fn agent_turn_busy(&self, session: &RuntimeSession, agent_id: &str) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
         state.queue_promotions.contains(&key)
             || state
@@ -104,10 +101,9 @@ impl PromptStateOwner {
         agent_id: &str,
         moving: bool,
     ) -> Result<AgentProfileTransitionClaim, DaemonError> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
         if state.profile_transitions.contains_key(&key)
             || (!moving && state.execution_transition_pending(&key))
@@ -332,12 +328,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["second", "third"]
         );
-        assert!(!owner
-            .state
-            .lock()
-            .unwrap()
-            .profile_transitions
-            .contains_key(&PromptStateKey::new(session.id(), "agent-1")));
+        assert!(
+            !crate::runtime::checked_lock::lock_watched("prompt_state_owner", &owner.state)
+                .unwrap()
+                .profile_transitions
+                .contains_key(&PromptStateKey::new(session.id(), "agent-1"))
+        );
     }
 
     #[test]
