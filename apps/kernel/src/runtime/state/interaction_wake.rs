@@ -376,7 +376,9 @@ impl KernelRuntimeOwnedState {
         }
         // A secret card's answer is the secret itself: the kernel stored it under the entry the card
         // names, so the agent reads the entry and that it was stored, never the value.
-        let secret_entry = interaction.secret_request().map(|request| request.credential.id.clone());
+        let secret_entry = interaction
+            .secret_request()
+            .map(|request| request.credential.id.clone());
         let reply = if secret_entry.is_some() {
             None
         } else {

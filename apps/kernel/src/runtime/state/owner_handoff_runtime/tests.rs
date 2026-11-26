@@ -790,7 +790,13 @@ async fn row666_a_handoff_card_shows_the_live_page_and_the_page_never_settles_it
         },
     };
     state
-        .register_handoff_interaction(&room, DEFAULT_LOCAL_USER_ID, h.clone(), 900, Some(view.clone()))
+        .register_handoff_interaction(
+            &room,
+            DEFAULT_LOCAL_USER_ID,
+            h.clone(),
+            900,
+            Some(view.clone()),
+        )
         .await
         .unwrap();
     let id = RuntimeHandoff::interaction_id(&h.obligation_id);
@@ -806,7 +812,11 @@ async fn row666_a_handoff_card_shows_the_live_page_and_the_page_never_settles_it
             .cloned()
     };
     let shown = card(&state).expect("the hand-off card is open");
-    assert_eq!(shown.view(), Some(&view), "the person sees the live page of the hand-off target");
+    assert_eq!(
+        shown.view(),
+        Some(&view),
+        "the person sees the live page of the hand-off target"
+    );
     assert_eq!(shown.handoff(), Some(&h));
     state
         .close_unavailable_browser_region_card(&room, &id, "Browser element disappeared".into())
@@ -814,7 +824,10 @@ async fn row666_a_handoff_card_shows_the_live_page_and_the_page_never_settles_it
     state
         .close_browser_region_card(&room, &id, "Browser document changed".into())
         .unwrap();
-    assert!(card(&state).is_some(), "what the page does never settles a hand-off");
+    assert!(
+        card(&state).is_some(),
+        "what the page does never settles a hand-off"
+    );
     // A hand-off whose page view cannot be shown (or a future one without a browser target) stays the plain card.
     let plain = handoff();
     let plain_id = register(&state, &room, &plain).await;

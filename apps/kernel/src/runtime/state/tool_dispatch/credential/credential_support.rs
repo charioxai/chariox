@@ -178,7 +178,10 @@ impl KernelRuntimeState {
         let digest = Sha256::digest(
             serde_json::to_vec(&(session_id, agent_id, entry_id)).expect("identities serialize"),
         );
-        let base: String = digest[..12].iter().map(|byte| format!("{byte:02x}")).collect();
+        let base: String = digest[..12]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         let mut id = None;
         for generation in 0..1000u32 {
             let candidate = format!("credential-secret-{base}-{generation}");

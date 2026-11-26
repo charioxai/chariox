@@ -263,7 +263,13 @@ impl KernelRuntimeState {
             }
         };
         let registered = self
-            .register_handoff_interaction(agent.session_id(), &owner, handoff.clone(), timeout_sec, view)
+            .register_handoff_interaction(
+                agent.session_id(),
+                &owner,
+                handoff.clone(),
+                timeout_sec,
+                view,
+            )
             .await;
         crate::runtime::room_dispatch_registration::reject_if_failed(
             &self.owned.durable_state_store,

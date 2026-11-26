@@ -486,12 +486,14 @@ impl KernelRuntimeState {
                 (Err(_), _) => LostWatch::Unconfirmed,
             };
             let report = lost_watch_report(&wake, now, outcome);
-            self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
-                id: wake.id.clone(),
-                exit_code: None,
-                tail: format!("process_lost: {report}{orphans}"),
-                now,
-            })?;
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::ProcessExited {
+                    id: wake.id.clone(),
+                    exit_code: None,
+                    tail: format!("process_lost: {report}{orphans}"),
+                    now,
+                })?;
             self.wake_notice(&wake, format!("Wake alert: {report}{orphans}"));
             self.schedule_wake_delivery(&wake);
         }
@@ -650,10 +652,7 @@ impl KernelRuntimeState {
 /// was down, and (as #1757's `LOST_NEXT_STEP`) what to do.
 fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
     let seen = wake.verified_at_ms.unwrap_or(wake.created_at_ms);
-    let (secs, clock) = (
-        now.saturating_sub(seen) / 1000,
-        (seen / 1000) % 86_400,
-    );
+    let (secs, clock) = (now.saturating_sub(seen) / 1000, (seen / 1000) % 86_400);
     let ago = match secs {
         0..=89 => format!("{secs} s"),
         90..=5_399 => format!("{} min", secs / 60),
@@ -679,7 +678,8 @@ fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
             "check for it and stop what remains before starting it again",
         ),
     };
-    const CHECK_FIRST: &str = "check for what remains first; only then start it again and watch the new one";
+    const CHECK_FIRST: &str =
+        "check for what remains first; only then start it again and watch the new one";
     format!(
         "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {state}; {next}",
         wake.label,

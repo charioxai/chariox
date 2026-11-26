@@ -153,9 +153,7 @@ impl KernelRuntimeState {
                 };
                 // Row 539: inside a running turn the ask returns its ids at once and the answer wakes
                 // the agent; a retry for the same entry joins the card that is already open.
-                if let Ok(task) =
-                    self.asking_task_for_turn(provider_run.session_id(), &agent_id)
-                {
+                if let Ok(task) = self.asking_task_for_turn(provider_run.session_id(), &agent_id) {
                     return self
                         .raise_secret_card(
                             &task,

@@ -13,13 +13,13 @@ use std::sync::Mutex as StdMutex;
 
 mod accepted_yield;
 mod assessment_inbox;
-mod lost_process;
 #[cfg(unix)]
 mod handed_over_run;
+mod lost_process;
 mod mcp_paging;
+mod stale_waits;
 #[cfg(unix)]
 mod unwatched_work;
-mod stale_waits;
 mod watch_open;
 
 const KIND: &str = "test-source";

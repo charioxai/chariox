@@ -538,7 +538,12 @@ impl KernelRuntimeState {
 
     /// Row 666: a hand-off card shows the live page, but only the hand-off decides how it ends (the person's Done in
     /// browser or Cancel, its expiry, or the agent): what the page does never settles it. The watcher stops here.
-    fn leaves_handoff_open(&self, session: &crate::session::RuntimeSession, id: &str, reason: &str) -> bool {
+    fn leaves_handoff_open(
+        &self,
+        session: &crate::session::RuntimeSession,
+        id: &str,
+        reason: &str,
+    ) -> bool {
         let handoff = session
             .active_interactions()
             .iter()

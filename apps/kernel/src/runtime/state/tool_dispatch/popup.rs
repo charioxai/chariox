@@ -237,13 +237,9 @@ impl KernelRuntimeState {
                 || args.until.is_some()
                 || args.custom_choice.is_some()
                 || args.default_on_timeout.is_some()
-                || args
-                    .choices
-                    .iter()
-                    .any(|choice| {
-                        choice.id != CANCEL_CHOICE_ID
-                            && !duplicates_cancel(&choice.id, &choice.label)
-                    }))
+                || args.choices.iter().any(|choice| {
+                    choice.id != CANCEL_CHOICE_ID && !duplicates_cancel(&choice.id, &choice.label)
+                }))
         {
             return Err(popup_error("verification cards require wait:false and only Cancel; no until, custom reply or default"));
         }

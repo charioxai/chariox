@@ -495,7 +495,11 @@ impl KernelRuntimeState {
                 Some((reservation, guard, undo)) => (Some(reservation), Some(guard), Some(undo)),
                 None => (None, None, None),
             }
-        } else if self.owned.pending_interactions.secret_store_in_progress(interaction_id) {
+        } else if self
+            .owned
+            .pending_interactions
+            .secret_store_in_progress(interaction_id)
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "credential secret card",
                 message: "The secret is being stored; answer again in a moment".into(),
@@ -503,7 +507,8 @@ impl KernelRuntimeState {
         } else {
             (None, None, None)
         };
-        let resolved = self.owned
+        let resolved = self
+            .owned
             .resolve_attributed_terminal_runtime_interaction(
                 session_id,
                 interaction_id,
@@ -641,7 +646,9 @@ impl KernelRuntimeState {
             custom_choice,
             secret,
         )?;
-        let reservation = self.owned.reserve_secret_store(session_id, interaction_id)?;
+        let reservation = self
+            .owned
+            .reserve_secret_store(session_id, interaction_id)?;
         let user_config = self.owned.config_projection.snapshot().user_config;
         let service = crate::secret::RuntimeSecretService::with_vault_config(
             crate::credential::load_user_credentials()?,

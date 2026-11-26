@@ -123,10 +123,14 @@ fn secret_cards(f: &Fixture) -> Vec<String> {
 }
 
 fn inbox_text(f: &Fixture) -> String {
-    serde_json::to_string(&f.store().agent_inbox(&f.room, &f.agent, 0).unwrap()
-        .into_iter()
-        .map(|event| event.payload)
-        .collect::<Vec<_>>())
+    serde_json::to_string(
+        &f.store()
+            .agent_inbox(&f.room, &f.agent, 0)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.payload)
+            .collect::<Vec<_>>(),
+    )
     .unwrap()
 }
 
@@ -135,11 +139,7 @@ async fn answer_secret(f: &Fixture, id: &str, choice: &str, reply: Option<&str>)
 }
 
 /// The answer on the fixture's own runtime, so a lock the test holds on it is the one the save waits on.
-async fn answer_on_fixture_runtime(
-    f: &Fixture,
-    id: &str,
-    reply: &str,
-) -> Result<(), DaemonError> {
+async fn answer_on_fixture_runtime(f: &Fixture, id: &str, reply: &str) -> Result<(), DaemonError> {
     f.runtime
         .answer_terminal_runtime_interaction(
             &f.room,
@@ -298,7 +298,10 @@ fn the_agent_withdraws_its_open_secret_request_and_the_card_closes() {
         .unwrap()
         .payload;
         assert_eq!(withdrawn["settled"], true);
-        assert!(secret_cards(&f).is_empty(), "the card is gone for every client");
+        assert!(
+            secret_cards(&f).is_empty(),
+            "the card is gone for every client"
+        );
         // Nothing can answer it any more, and the secret goes nowhere.
         assert!(!inbox_text(&f).contains(CANARY));
         let retry = ask_secret(&f, "cf-mailbox-token").await.unwrap();
@@ -318,7 +321,10 @@ fn a_slow_answer_after_a_reload_still_reaches_the_vault() {
         let asked = ask_secret(&f, "cf-mailbox-token").await.unwrap();
         let id = asked["interaction_id"].as_str().unwrap().to_string();
         let wake = f.store().agent_wake(&id).unwrap().unwrap();
-        assert!(wake.next_due_ms.is_none(), "an ask has no deadline unless the agent set one");
+        assert!(
+            wake.next_due_ms.is_none(),
+            "an ask has no deadline unless the agent set one"
+        );
         f.wait_on(&task, &wake.registration_id);
         // Lose only process-local responders, as a restart does.
         f.runtime.owned.pending_interactions.write().remove(&id);
@@ -375,9 +381,10 @@ fn a_blocking_ask_is_stored_once_with_the_default_overwrite() {
             };
             answer_secret(&f, &id, "secret", Some(CANARY)).await;
         };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(ask, answer) })
-            .await
-            .expect("the blocking ask ends once the person answers");
+        let (result, ()) =
+            tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(ask, answer) })
+                .await
+                .expect("the blocking ask ends once the person answers");
         let payload = result.expect("a successful answer is not an error").payload;
         assert_eq!(payload["status"], "stored");
         assert!(crate::credential::CharioxCredentialRegistry::user()
@@ -401,7 +408,9 @@ fn an_answer_after_the_deadline_leaves_the_vault_unchanged() {
             .unwrap();
         let id = asked["interaction_id"].as_str().unwrap().to_string();
         tokio::time::sleep(Duration::from_millis(1300)).await;
-        assert!(answer_secret_result(&f, &id, "secret", Some(CANARY)).await.is_err());
+        assert!(answer_secret_result(&f, &id, "secret", Some(CANARY))
+            .await
+            .is_err());
         assert!(crate::credential::CharioxCredentialRegistry::user()
             .unwrap()
             .get("cf-expired-token")
@@ -432,7 +441,10 @@ fn a_store_in_progress_holds_the_card_against_timeout_cancel_and_withdraw() {
             .to_owned();
         let reservation = f.runtime.owned.reserve_secret_store(&f.room, &id).unwrap();
         assert!(f.runtime.owned.reserve_secret_store(&f.room, &id).is_err());
-        f.runtime.owned.timeout_runtime_interaction(&f.room, &id).unwrap();
+        f.runtime
+            .owned
+            .timeout_runtime_interaction(&f.room, &id)
+            .unwrap();
         assert!(answer_secret_result(&f, &id, "cancel", None).await.is_err());
         let withdraw = call(
             &f,
@@ -484,7 +496,10 @@ fn an_accepted_answer_commits_when_the_save_crosses_the_deadline() {
             (result, started.elapsed())
         };
         let ((), (answered, took)) = tokio::join!(hold, answer);
-        assert!(took >= Duration::from_millis(1500), "the save really waited on the Vault lock: {took:?}");
+        assert!(
+            took >= Duration::from_millis(1500),
+            "the save really waited on the Vault lock: {took:?}"
+        );
         answered.expect("the answer was accepted before the deadline and must commit");
         assert!(secret_cards(&f).is_empty());
         assert!(crate::credential::CharioxCredentialRegistry::user()
@@ -543,7 +558,12 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
         let id = asked["interaction_id"].as_str().unwrap().to_string();
         let service = crate::secret::RuntimeSecretService::with_vault_config(
             vec![],
-            &f.runtime.owned.config_projection.snapshot().user_config.credential_vault,
+            &f.runtime
+                .owned
+                .config_projection
+                .snapshot()
+                .user_config
+                .credential_vault,
         )
         .unwrap();
         let hold = async {
@@ -573,7 +593,10 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
                 .unwrap();
         };
         let ((), answered, ()) = tokio::join!(hold, answer, destroy);
-        assert!(answered.is_err(), "an answer for a withdrawn card is refused");
+        assert!(
+            answered.is_err(),
+            "an answer for a withdrawn card is refused"
+        );
         assert!(crate::credential::CharioxCredentialRegistry::user()
             .unwrap()
             .get("cf-destroyed-token")
@@ -605,14 +628,21 @@ fn a_refused_overwrite_keeps_an_update_made_while_it_waited() {
         assert_ne!(id, first_id);
         let service = crate::secret::RuntimeSecretService::with_vault_config(
             vec![],
-            &f.runtime.owned.config_projection.snapshot().user_config.credential_vault,
+            &f.runtime
+                .owned
+                .config_projection
+                .snapshot()
+                .user_config
+                .credential_vault,
         )
         .unwrap();
         let hold = async {
             let guard = f.runtime.vault_observation_mutation_guard().await;
             tokio::time::sleep(Duration::from_millis(700)).await;
             // Another operation updates the entry while the answer waits for the lock.
-            service.set_vault_secret("cf-overwrite-token", "value-y-intervening").unwrap();
+            service
+                .set_vault_secret("cf-overwrite-token", "value-y-intervening")
+                .unwrap();
             tokio::time::sleep(Duration::from_millis(600)).await;
             drop(guard);
         };
@@ -642,7 +672,11 @@ fn a_refused_overwrite_keeps_an_update_made_while_it_waited() {
             .vault_secret_for_dictation("cf-overwrite-token")
             .unwrap()
             .expect("the entry still holds a value");
-        assert_eq!(kept.as_str(), "value-y-intervening", "the other update survives the rollback");
+        assert_eq!(
+            kept.as_str(),
+            "value-y-intervening",
+            "the other update survives the rollback"
+        );
         assert!(crate::credential::CharioxCredentialRegistry::user()
             .unwrap()
             .get("cf-overwrite-token")

@@ -26,7 +26,8 @@ fn a_secret_card_names_its_entry_and_an_old_client_ignores_it() {
     });
     let card: crate::session::RuntimeInteraction = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(
-        card.secret_request().map(|request| request.credential.id.as_str()),
+        card.secret_request()
+            .map(|request| request.credential.id.as_str()),
         Some("cf-mailbox-token")
     );
     assert_eq!(serde_json::to_value(&card).unwrap(), wire);

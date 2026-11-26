@@ -1810,7 +1810,11 @@ async fn row655_a_cancel_choice_with_another_id_leaves_one_cancel() {
         .filter(|choice| choice.label().trim().eq_ignore_ascii_case("cancel"))
         .map(|choice| choice.id().to_owned())
         .collect();
-    assert_eq!(cancels, vec!["cancel".to_owned()], "exactly one Cancel, the card's own");
+    assert_eq!(
+        cancels,
+        vec!["cancel".to_owned()],
+        "exactly one Cancel, the card's own"
+    );
     assert!(card.choice("done").is_some());
     assert!(card.choice("cancel_note").is_none());
 }
@@ -1862,7 +1866,10 @@ fn row574_a_plain_browser_card_gets_a_done_choice_and_a_self_closing_one_does_no
         )
     };
     let ids = |choices: &[crate::session::RuntimeInteractionChoice]| {
-        choices.iter().map(|c| c.id().to_owned()).collect::<Vec<_>>()
+        choices
+            .iter()
+            .map(|c| c.id().to_owned())
+            .collect::<Vec<_>>()
     };
     let mut plain = vec![cancel()];
     super::super::tool_dispatch::add_person_done(Some(&view(None)), &mut plain);
@@ -1870,14 +1877,26 @@ fn row574_a_plain_browser_card_gets_a_done_choice_and_a_self_closing_one_does_no
     assert_eq!(plain[1].label(), "Done");
     let mut waiting = vec![cancel()];
     super::super::tool_dispatch::add_person_done(Some(&view(Some("Signed in"))), &mut waiting);
-    assert_eq!(ids(&waiting), ["cancel"], "a done_text card closes by itself");
+    assert_eq!(
+        ids(&waiting),
+        ["cancel"],
+        "a done_text card closes by itself"
+    );
     let mut own = vec![
         crate::session::RuntimeInteractionChoice::new("finished", " done ", "finished", None),
         cancel(),
     ];
     super::super::tool_dispatch::add_person_done(Some(&view(None)), &mut own);
-    assert_eq!(ids(&own), ["finished", "cancel"], "the agent's own Done is kept, not doubled");
+    assert_eq!(
+        ids(&own),
+        ["finished", "cancel"],
+        "the agent's own Done is kept, not doubled"
+    );
     let mut no_view = vec![cancel()];
     super::super::tool_dispatch::add_person_done(None, &mut no_view);
-    assert_eq!(ids(&no_view), ["cancel"], "a question without a page gets no Done");
+    assert_eq!(
+        ids(&no_view),
+        ["cancel"],
+        "a question without a page gets no Done"
+    );
 }

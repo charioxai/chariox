@@ -26,7 +26,9 @@ pub use agent_liveness::{
     AgentLiveness, AgentWaitEvent, AgentWaitKind, AgentWaitingOn, SilentAgentHealth,
 };
 pub(crate) use agent_runtime_projection::{AgentRuntimeProjection, AgentRuntimeProjectionStore};
-pub(crate) use config_projection::{same_cloud_enrollment, DaemonConfigProjectionStore, RenewalSave};
+pub(crate) use config_projection::{
+    same_cloud_enrollment, DaemonConfigProjectionStore, RenewalSave,
+};
 pub use daemon_health_model::{
     ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
     ProjectionInvariantHealthSnapshot, ProjectionInvariantMismatch, ProviderCatalogHealthSnapshot,

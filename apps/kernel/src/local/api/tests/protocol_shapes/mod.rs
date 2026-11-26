@@ -172,8 +172,8 @@ mod vault_use;
 
 mod agent_release_notes;
 mod async_questions;
-mod secret_card;
 mod provider_login;
+mod secret_card;
 mod session_activity;
 
 mod event_follow;

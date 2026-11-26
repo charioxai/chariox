@@ -53,10 +53,7 @@ fn lost_report_with(
     let answer = &events[0].payload["public_answer"];
     assert_eq!(answer["process_lost"], true, "{:?}", events[0]);
     (
-        answer["output_tail"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
+        answer["output_tail"].as_str().unwrap().to_owned(),
         f.notices(),
     )
 }
@@ -149,7 +146,11 @@ async fn a_watch_whose_cleanup_is_unconfirmed_does_not_claim_the_job_is_gone() {
             text.contains("stop what remains before starting it again"),
             "{what} tells the owner to resolve survivors before restarting: {text}"
         );
-        for claim in ["is gone", "ended while the kernel was down", "stopped it and"] {
+        for claim in [
+            "is gone",
+            "ended while the kernel was down",
+            "stopped it and",
+        ] {
             assert!(
                 !text.contains(claim),
                 "{what} must not claim `{claim}` without evidence: {text}"
@@ -162,7 +163,12 @@ async fn a_watch_whose_cleanup_is_unconfirmed_does_not_claim_the_job_is_gone() {
 // their wake marker and have no live outside parent: an Ok result cannot show
 // that nothing is left. The report must say what was found and tell the owner
 // to check before starting the work again; it must not say the work is gone.
-async fn unisolated_report(name: &str, reap: impl FnOnce(&std::collections::BTreeMap<String, u64>) -> std::io::Result<std::collections::BTreeMap<String, usize>>) -> (String, String) {
+async fn unisolated_report(
+    name: &str,
+    reap: impl FnOnce(
+        &std::collections::BTreeMap<String, u64>,
+    ) -> std::io::Result<std::collections::BTreeMap<String, usize>>,
+) -> (String, String) {
     let f = fixture(name, false).await;
     watched_before_the_restart(&f, "watch-e", HOUR_MS);
     lost_report_with(&f, false, reap)
@@ -180,7 +186,10 @@ fn assert_check_before_restart(tail: &str, notice: &str) {
         let restart = text
             .find("start it again")
             .unwrap_or_else(|| panic!("{what} still says what to do after the check: {text}"));
-        assert!(check < restart, "{what} puts the check before the restart: {text}");
+        assert!(
+            check < restart,
+            "{what} puts the check before the restart: {text}"
+        );
         assert!(
             !text.contains("is gone"),
             "{what} must not say the work is gone when termination is not established: {text}"
@@ -194,13 +203,17 @@ async fn an_unisolated_scan_that_stopped_processes_does_not_claim_the_job_is_gon
         Ok(wakes.keys().map(|id| (id.clone(), 1)).collect())
     })
     .await;
-    assert!(tail.contains("stopped the processes it could attribute"), "{tail}");
+    assert!(
+        tail.contains("stopped the processes it could attribute"),
+        "{tail}"
+    );
     assert_check_before_restart(&tail, &notice);
 }
 
 #[tokio::test]
 async fn an_unisolated_scan_that_found_nothing_does_not_claim_the_job_is_gone() {
-    let (tail, notice) = unisolated_report("lost-process-unisolated-none", |_| Ok(Default::default())).await;
+    let (tail, notice) =
+        unisolated_report("lost-process-unisolated-none", |_| Ok(Default::default())).await;
     assert!(tail.contains("no process of it was found"), "{tail}");
     assert_check_before_restart(&tail, &notice);
 }

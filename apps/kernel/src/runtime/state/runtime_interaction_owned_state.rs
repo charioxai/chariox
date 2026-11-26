@@ -493,7 +493,9 @@ impl KernelRuntimeOwnedState {
         // Row 539: an answer being stored in the Vault is the only one that may settle its card, and its
         // reservation (made inside its deadline, under this mutation) carries it past the deadline; any
         // other answer, such as a cancel, waits for the store and is checked here under the same lock.
-        let reserved_secret = self.pending_interactions.secret_store_in_progress(interaction_id);
+        let reserved_secret = self
+            .pending_interactions
+            .secret_store_in_progress(interaction_id);
         if reserved_secret && choice_id != "secret" {
             return Err(interaction_error(
                 "The secret is being stored; answer again in a moment",
@@ -991,7 +993,10 @@ impl KernelRuntimeOwnedState {
         settlement: Settlement,
     ) -> Result<(), DaemonError> {
         // An answer that is being stored in the Vault settles the card itself; a timeout waits for it.
-        if self.pending_interactions.secret_store_in_progress(interaction_id) {
+        if self
+            .pending_interactions
+            .secret_store_in_progress(interaction_id)
+        {
             return Ok(());
         }
         crate::logging::debug_with_fields(
@@ -1351,7 +1356,9 @@ impl KernelRuntimeOwnedState {
             .pending_interactions
             .write()
             .get(interaction_id)
-            .is_some_and(|pending| pending.session_id == session_id && pending.belongs_to(&self.session_store));
+            .is_some_and(|pending| {
+                pending.session_id == session_id && pending.belongs_to(&self.session_store)
+            });
         let card = self
             .session_store
             .get_session(session_id)?
@@ -1364,7 +1371,9 @@ impl KernelRuntimeOwnedState {
         };
         if card.timeout_sec().is_some_and(|seconds| {
             crate::session::unix_epoch_ms()
-                >= card.requested_at_ms().saturating_add(seconds.saturating_mul(1000))
+                >= card
+                    .requested_at_ms()
+                    .saturating_add(seconds.saturating_mul(1000))
         }) {
             return Err(interaction_error("This secret request expired"));
         }
