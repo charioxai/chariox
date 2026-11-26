@@ -223,11 +223,14 @@ async fn a_browser_region_card_is_bound_again_to_the_page_a_restart_brought_back
         .is_err());
 }
 
-/// A restarted plain card whose page cannot be shown again is not the person finishing: after the
-/// observation budget the agent is told the card is unavailable, never `condition_met`.
-#[tokio::test]
-async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable_not_done() {
-    let f = fixture("async-popup-region-rebind-fails", true).await;
+/// Rows 546 and 548: a person card survives any kernel restart while its Tab can be restored; when the Tab cannot be
+/// restored (the page cannot be shown again) it ends, after the observation budget, with a plain reason: the agent is
+/// told the card is unavailable, never `condition_met`. Whatever the card waits for.
+async fn a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+    name: &str,
+    region: crate::session::RuntimeInteractionBrowserRegion,
+) {
+    let f = fixture(name, true).await;
     f.begin(&f.prompt_id);
     let result = ask(&f, serde_json::json!({})).await;
     let id = result["interaction_id"].as_str().unwrap().to_owned();
@@ -236,11 +239,12 @@ async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(&id).unwrap();
         session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
-            browser_region: browser_region(),
+            browser_region: region,
         }));
         sessions.restore_session(session);
     }
-    // The controller answers every poll "Browser restarted" and refuses every rebind.
+    // The controller answers every poll "Browser restarted" (unavailable for a card that waits for text or a proof, as the real
+    // controller does) and refuses every rebind: the Tab cannot be restored.
     let agent = f.runtime.owned.agent_store.get_agent(&f.agent).unwrap();
     let user = f
         .runtime
@@ -290,6 +294,44 @@ async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable
     );
     f.runtime.shutdown_cleanup().await.unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable_not_done() {
+    a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+        "async-popup-region-rebind-fails",
+        browser_region(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_restarted_done_text_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason() {
+    let mut region = browser_region();
+    region.done_text = Some("Welcome home".into());
+    a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+        "async-popup-region-rebind-fails-text",
+        region,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_restarted_verification_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason() {
+    let mut region = browser_region();
+    region.verification = Some(
+        serde_json::from_value(serde_json::json!({
+            "challenge_id": "c",
+            "url": "https://example.com/verify",
+            "accepted_json_pointer": "/accepted"
+        }))
+        .expect("verification config"),
+    );
+    a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+        "async-popup-region-rebind-fails-proof",
+        region,
+    )
+    .await;
 }
 
 /// Kept, not a gate: the browser-region card is the person's step (CAPTCHA, consent, one-time
