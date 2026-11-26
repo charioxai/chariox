@@ -350,6 +350,90 @@ async fn a_renewal_save_after_undo_remove_recovers_once_storage_answers() {
     assert_eq!(app.config().relay_token.as_deref(), Some("after-undo"));
 }
 
+/// Row 563 review (f1ccb33): T1 then T2 installed over durable T0; only T1's save lands first.
+/// T2 stays projected through T1's publish and an unrelated one, and T2's save is accepted
+/// afterwards, also when T0 carried the Undo Remove mark that T1's save cleared.
+#[tokio::test]
+async fn an_intermediate_renewal_save_keeps_the_newest_renewal_projected_and_saveable() {
+    for removal_pending in [false, true] {
+        let root = crate::test_support::TestWorktree::new("relay-renew-intermediate-save");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+        config.relay_url = Some("wss://relay.example.test".into());
+        config.relay_token = Some("t0".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            api_url: "http://127.0.0.1:9".into(),
+            relay_url: "wss://relay.example.test".into(),
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-enrollment".into()),
+            token_expires_at_ms: Some(1_000),
+            kernel_removal_pending: removal_pending,
+            ..Default::default()
+        });
+        let durable = config.cloud_relay.clone().unwrap();
+        let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let projection = app.config_projection_store();
+        let app = Arc::new(tokio::sync::Mutex::new(app));
+        let router =
+            crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 1);
+        let state = router.runtime_state();
+        let mut t1 = durable.clone();
+        t1.kernel_removal_pending = false;
+        t1.token_expires_at_ms = Some(9_000);
+        let mut t2 = t1.clone();
+        t2.token_expires_at_ms = Some(19_000);
+        // What the executor passes as `expected` for each save: the baseline at install time.
+        let expected_t1 = durable.clone();
+        projection
+            .install_cloud_relay_renewal(&projection.snapshot(), t1.clone(), "t1".into())
+            .unwrap();
+        let mut expected_t2 = projection.snapshot().cloud_relay.unwrap();
+        expected_t2.kernel_removal_pending =
+            projection.unsaved_renewal_removal_baseline().unwrap();
+        projection
+            .install_cloud_relay_renewal(&projection.snapshot(), t2.clone(), "t2".into())
+            .unwrap();
+
+        state
+            .finish_cloud_relay_renewal(expected_t1, Some((t1, "t1".into())))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.lock().await.config().relay_token.as_deref(),
+            Some("t1"),
+            "removal_pending={removal_pending}: T1's save lands"
+        );
+        assert_eq!(
+            projection.snapshot().relay_token.as_deref(),
+            Some("t2"),
+            "removal_pending={removal_pending}: T1's publish keeps T2 projected"
+        );
+        let mut unrelated = app.lock().await.config().clone();
+        unrelated.runtime_mcp_port = 4321;
+        projection.update(unrelated);
+        assert_eq!(
+            projection.snapshot().relay_token.as_deref(),
+            Some("t2"),
+            "removal_pending={removal_pending}: an unrelated publish keeps T2 projected"
+        );
+
+        state
+            .finish_cloud_relay_renewal(expected_t2, Some((t2, "t2".into())))
+            .await
+            .unwrap();
+        let app = app.lock().await;
+        assert_eq!(
+            app.config().relay_token.as_deref(),
+            Some("t2"),
+            "removal_pending={removal_pending}: T2's save lands after T1's"
+        );
+        let saved = app.config().cloud_relay.clone().unwrap();
+        assert!(!saved.kernel_removal_pending);
+        assert_eq!(saved.token_expires_at_ms, Some(19_000));
+        assert_eq!(projection.snapshot().relay_token.as_deref(), Some("t2"));
+    }
+}
+
 /// The body is a long async test: it overflows the default 2 MiB test stack in a debug build, so
 /// it runs on a large-stack thread like the other long relay tests.
 #[test]
