@@ -415,11 +415,15 @@ export async function resolveCardRegion(host, command, scope, signal) {
       const holdsFrame = child || (objectId && (await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: "function() { return this.localName === 'iframe' || typeof this.querySelector === 'function' && !!this.querySelector('iframe'); }", arguments: [{ value: null }], returnByValue: true }, sessionId)).result?.value === true);
       const extra = !holdsFrame ? [] : await widgetRects(connection, sessionId, tab, command.ref, child, child ? null : objectId, world.contextId, box.viewport_width, box.viewport_height, box.rect);
       if (extra.length) {
-        const { x, y, width: w, height: h } = box.rect, vw = box.viewport_width, vh = box.viewport_height;
-        const left = Math.max(0, Math.floor(Math.min(x, ...extra.map(r => r.left - 16))));
-        const top = Math.max(0, Math.floor(Math.min(y, ...extra.map(r => r.top - 16))));
-        const right = Math.min(vw, Math.ceil(Math.max(x + w, ...extra.map(r => r.right + 16))));
-        const bottom = Math.min(vh, Math.ceil(Math.max(y + h, ...extra.map(r => r.bottom + 16))));
+        // A page element that holds a widget (the agent named the page's main element, as its instructions say) is
+        // framed on the widget it holds, so the challenge shows at a readable scale; the card still scrolls over the
+        // whole page. An element inside the widget is framed with the rest of the widget.
+        const own = child ? [box.rect] : [];
+        const vw = box.viewport_width, vh = box.viewport_height;
+        const left = Math.max(0, Math.floor(Math.min(...own.map(r => r.x), ...extra.map(r => r.left - 16))));
+        const top = Math.max(0, Math.floor(Math.min(...own.map(r => r.y), ...extra.map(r => r.top - 16))));
+        const right = Math.min(vw, Math.ceil(Math.max(...own.map(r => r.x + r.width), ...extra.map(r => r.right + 16))));
+        const bottom = Math.min(vh, Math.ceil(Math.max(...own.map(r => r.y + r.height), ...extra.map(r => r.bottom + 16))));
         box = { ...box, rect: { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) } };
       }
     }

@@ -552,9 +552,10 @@ test('666 a reCAPTCHA-style widget: a page element holding the anchor frame grow
     if (method === 'DOM.getBoxModel') { const f = Object.values(frames).find(v => v.owner === params.backendNodeId); if (f) return { model: { content: f.box, border: f.box } }; }
     return original(method, params, session);
   };
-  state.box = { left: 30, top: 90, right: 354, bottom: 188 };
+  state.box = { left: 0, top: 0, right: 1280, bottom: 790 };
   await snapshot();
   let last = (await region({ card_id: 'r' })).region;
+  assert.ok(last.rect.width < 400 && last.rect.height < 200, `a page-wide element holding the widget is framed on the widget: ${JSON.stringify(last.rect)}`);
   const after = r => ({ generation: 1, document_id: 'doc', card_id: 'r', after: { rect: r.rect, viewport_width: r.viewport_width, viewport_height: r.viewport_height } });
   for (let round = 0; round < 3; round++) {
     open = true;
