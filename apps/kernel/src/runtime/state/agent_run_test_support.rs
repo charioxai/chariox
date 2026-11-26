@@ -14,6 +14,80 @@ impl KernelRuntimeState {
         self.owned.agent_run_waiters.discard_paused_claim();
     }
 
+    /// `agent`'s admitted turn begins, arms a timer it never waits on and is blocked; returns the
+    /// task id.
+    pub(crate) fn block_admitted_task_for_test(&self, room: &str, agent: &str) -> String {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        let owned = &self.owned;
+        let store = &owned.durable_state_store;
+        let prompt = owned
+            .session_store
+            .get_session(room)
+            .unwrap()
+            .active_prompt_for_agent(agent)
+            .unwrap()
+            .id()
+            .to_owned();
+        let run = owned.provider_store.get_run_for_agent(room, agent).unwrap();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: room.into(),
+                agent: agent.into(),
+                prompt: prompt.clone(),
+                run: Some(run.id().into()),
+                now: 1,
+            })
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(room), Some(agent))
+            .unwrap()
+            .pop()
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        let wake_id = format!("wake-blk-{agent}");
+        let wake = serde_json::from_value(serde_json::json!({
+            "id": wake_id, "task_id": task.task_id, "room_id": task.room_id,
+            "agent_id": task.agent_id, "registration_id": format!("completion-{wake_id}"),
+            "kind": "timer", "label": "wait for review", "state": "scheduled",
+            "created_at_ms": now, "verified_at_ms": null, "next_due_ms": now + 3_600_000,
+            "interval_ms": null, "command": [], "match_text": null, "matched_at_ms": null,
+            "pid": null, "exit_code": null, "fire_count": 0, "missed_fires": 0,
+            "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
+            "last_delivered_at_ms": null, "last_acknowledged_at_ms": null, "alerted_sequence": null
+        }))
+        .unwrap();
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: prompt.clone(),
+                wake,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Block {
+                task: task.task_id.clone(),
+                prompt,
+                reason: "Repeated invalid turn end; owner must resume or cancel".into(),
+            })
+            .unwrap();
+        let task = store.agent_task(&task.task_id).unwrap().unwrap();
+        assert_eq!(task.state, ExecutionState::Blocked);
+        task.task_id
+    }
+
+    pub(crate) fn task_state_for_test(
+        &self,
+        task: &str,
+    ) -> crate::durable_state::agent_lifecycle::ExecutionState {
+        self.owned
+            .durable_state_store
+            .agent_task(task)
+            .unwrap()
+            .unwrap()
+            .state
+    }
+
     pub(crate) fn worker_brief_recorded_for_test(
         &self,
         room: &str,

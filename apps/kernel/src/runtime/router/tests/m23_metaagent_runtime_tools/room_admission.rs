@@ -1927,6 +1927,103 @@ async fn resume_in_other_room() {
     }
 }
 
+// Row 405 (review of #1695): `agent resume` and `agent resume cancel` of a BLOCKED peer's task,
+// through the Room command itself (parser, router, admission, settlement), for an agent in
+// another Room of the same owner. A peer whose permission is lower than the target's is refused
+// and the task stays blocked.
+#[test]
+fn room_admission_resumes_and_cancels_a_blocked_peer_in_another_room() {
+    run_large_stack_async_test("room-blocked-peer", blocked_peer_in_other_room);
+}
+
+async fn blocked_peer_in_other_room() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    use crate::provider::AgentPermissionLevel::{Required, Yolo};
+    let env = TestMetaRuntimeEnv::new("room-blocked-peer");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut room = |name: &str| {
+        let workspace = env.root.join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap()
+    };
+    let (orchestrator_room, orchestrator) = room("orchestrator");
+    let (other, to_resume) = room("blocked");
+    let mut peer = |alias: &str| {
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(other.id(), "dev-stub").with_alias(alias))
+            .unwrap()
+    };
+    let to_cancel = peer("to-cancel");
+    let above = peer("above");
+    for agent in [to_resume.id(), to_cancel.id(), above.id()] {
+        crate::test_support::admit_room_test_turn(&mut app, other.id(), agent);
+    }
+    for (agent, level) in [
+        (orchestrator.id(), Required),
+        (to_resume.id(), Required),
+        (to_cancel.id(), Required),
+        (above.id(), Yolo),
+    ] {
+        app.agents()
+            .update_agent_config(agent, None, Some(Some(level)), None, None)
+            .unwrap();
+    }
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            orchestrator_room.id(),
+            format!("metaagent:{}:commands", orchestrator.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        orchestrator_room.id(),
+        orchestrator.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_owned();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let runtime = &router.runtime_state;
+    let block = |agent: &str| runtime.block_admitted_task_for_test(other.id(), agent);
+    let state = |task: &str| runtime.task_state_for_test(task);
+    let (resume_task, cancel_task, held_task) = (
+        block(to_resume.id()),
+        block(to_cancel.id()),
+        block(above.id()),
+    );
+    // A peer of the same permission resumes one and cancels the other, in another Room.
+    let command = format!("agent resume {} --room {}", to_resume.id(), other.id());
+    let result = room_command(&router, &auth, &command).await;
+    assert!(result.ok, "{command}: {result:?}");
+    assert_ne!(state(&resume_task), ExecutionState::Blocked, "{command}");
+    let command = format!(
+        "agent resume cancel {} --room {}",
+        to_cancel.id(),
+        other.id()
+    );
+    let result = room_command(&router, &auth, &command).await;
+    assert!(result.ok, "{command}: {result:?}");
+    assert_eq!(state(&cancel_task), ExecutionState::Cancelled, "{command}");
+    // A peer with less permission than the target settles nothing.
+    for command in ["agent resume cancel", "agent resume"] {
+        let command = format!("{command} {} --room {}", above.id(), other.id());
+        let result = room_command(&router, &auth, &command).await;
+        assert!(!result.ok, "{command}: {result:?}");
+        assert_eq!(state(&held_task), ExecutionState::Blocked, "{command}");
+    }
+}
+
 // PA11 (row 363): after a handover, an orchestrator controls a predecessor's agents in the same
 // room (re-parents, renames, deletes) with no card: owner authority, not tree position.
 #[test]
