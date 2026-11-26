@@ -11,11 +11,10 @@ pub(crate) const TOOL: &str = "chariox.kernels.restart";
 pub(crate) fn kernel_restart_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: TOOL.into(),
-        description: "Restart this kernel as a hot reload: your terminals and running agents carry on, the Vault keeps its unlock and its deadline, \
-                      and every client reconnects. The answer says the restart was accepted, or why it was refused and the kernel keeps running. \
-                      Pass `kernel` (a name from `chariox kernels`) to restart another kernel of the owner instead."
+        description: "Hot-reload this kernel, or another kernel of the owner named in `kernel`: terminals, agents and the Vault unlock carry on. \
+                      The answer says it was accepted, or why it was refused."
             .into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"kernel":{"type":"string","minLength":1,"maxLength":128,"description":"Another kernel of the owner, by the name `chariox kernels` lists. Omit it to restart this kernel."}},"additionalProperties":false}),
+        input_schema: serde_json::json!({"type":"object","properties":{"kernel":{"type":"string","minLength":1,"maxLength":128,"description":"A name from `chariox kernels`; omit for this kernel."}},"additionalProperties":false}),
     }
 }
 
