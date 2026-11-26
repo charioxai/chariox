@@ -896,7 +896,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                     );
                     // The advised recovery's last step: the remote launch that was
                     // refused retries with the home account's native refresh-token
-                    // login still on disk, and runs on the copied login. The copy
+                    // login still on disk, and runs on the copied login. The launch
+                    // carries the setup token, never the native refresh credential
+                    // beside it (row 274). The copy
                     // sits under the worker's account owner `local`; the lease is
                     // owned by `local` or by the configured Cloud user, and a
                     // foreign Cloud user's lease never reaches it.
@@ -908,7 +910,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                         let mut materialization = source_profiles
                             .export_materialization("local", "claude", &profile.profile_id)
                             .unwrap();
-                        assert!(materialization
+                        assert!(!materialization
                             .files
                             .iter()
                             .any(|file| file.relative_path == ".credentials.json"));
@@ -939,9 +941,18 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                             });
                             assert_eq!(worker_profile.profile_id, installed);
                         } else {
-                            let error =
-                                launch.expect_err("a foreign Cloud user must not reach the copy");
-                            assert!(error.to_string().contains("native Claude login"), "{error}");
+                            // No native login crosses with the setup token (row 274), so
+                            // nothing refuses the foreign user's lease: its worker gets an
+                            // account of its own that holds no credential, never the copy.
+                            let foreign = launch.expect(
+                                "a foreign Cloud user's launch makes an account of its own",
+                            );
+                            assert_ne!(foreign.profile_id, installed);
+                            assert_eq!(foreign.owner_user_id, lease_owner);
+                            assert_ne!(
+                                foreign.auth_state,
+                                crate::account_profile::ProviderAccountAuthState::Authenticated
+                            );
                         }
                     }
                     let remaining = source_request(

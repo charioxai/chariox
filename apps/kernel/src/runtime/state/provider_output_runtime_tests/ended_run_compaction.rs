@@ -93,7 +93,13 @@ sys.stdin.read()
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 
-    // The run is ended while it is still compacting; its pump then runs once more.
+    // The run is ended while it is still compacting; its pump then runs once more. The ending
+    // waits for the run's actor to queue the closing row as production does: the short wait the
+    // tests use by default drops that row on a runner too busy to answer within it.
+    app.lock()
+        .await
+        .providers_mut()
+        .wait_for_terminate_like_production_in_tests();
     let ended = app
         .lock()
         .await

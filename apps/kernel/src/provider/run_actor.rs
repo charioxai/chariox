@@ -65,6 +65,9 @@ pub(crate) struct ProviderRunActorMailbox {
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
     #[cfg(test)]
     manual_output_polls: Arc<std::sync::atomic::AtomicBool>,
+    /// Test seam: a terminate waits for its actor's acknowledgement as long as production does.
+    #[cfg(test)]
+    production_terminate_wait: Arc<std::sync::atomic::AtomicBool>,
     blocking_executor_permits: Arc<Semaphore>,
 }
 
@@ -87,6 +90,8 @@ impl Default for ProviderRunActorMailbox {
             output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(test)]
             manual_output_polls: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            production_terminate_wait: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocking_executor_permits: Arc::new(Semaphore::new(64)),
         }
     }
@@ -105,6 +110,14 @@ struct ProviderRunActorCompletionSignalState {
 }
 
 impl ProviderRunActorMailbox {
+    /// A test that needs the closing output of a terminated run waits for the actor as production
+    /// does; the short default only keeps the tests of an actor that never answers quick.
+    #[cfg(test)]
+    pub(crate) fn wait_for_terminate_like_production_in_tests(&self) {
+        self.production_terminate_wait
+            .store(true, Ordering::Relaxed);
+    }
+
     #[cfg(test)]
     pub(crate) fn use_manual_output_polls_for_tests(&self) {
         self.manual_output_polls.store(true, Ordering::Relaxed);
