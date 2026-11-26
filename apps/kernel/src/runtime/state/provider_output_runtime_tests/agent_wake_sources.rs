@@ -19,6 +19,7 @@ mod handed_over_run;
 mod mcp_paging;
 #[cfg(unix)]
 mod unwatched_work;
+mod stale_waits;
 mod watch_open;
 
 const KIND: &str = "test-source";
