@@ -1478,8 +1478,9 @@ impl DaemonApp {
         kernel_or_machine_ref: &str,
         relay_config: &DaemonConfig,
     ) -> bool {
-        relay_config.relay_url == self.config.relay_url
-            && (relay_config.relay_token == self.config.relay_token
+        let current = self.config_projection.snapshot();
+        relay_config.relay_url == current.relay_url
+            && (relay_config.relay_token == current.relay_token
                 || self.hosted_shared_slice_uses_connected_relay(kernel_or_machine_ref))
     }
 
