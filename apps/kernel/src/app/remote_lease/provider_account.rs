@@ -40,13 +40,26 @@ impl RemoteLeaseRuntime<'_> {
             provider,
             account_profile,
         )?;
-        registry
+        let missing = || {
+            DaemonError::LocalTransport {
+            operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
+            message: format!("the selected {provider} account is unavailable on the worker; connect or select an available account before changing the profile"),
+        }
+        };
+        let profile = registry
             .get(&account_owner, provider, account_profile)
-            .map(|profile| profile.profile_id)
-            .map_err(|_| DaemonError::LocalTransport {
-                operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
-                message: format!("the selected {provider} account is unavailable on the worker; connect or select an available account before changing the profile"),
-            })
+            .map_err(|_| missing())?;
+        // Row 577: a leased Claude agent runs from the worker's copy. Without it, the replica the
+        // home registered here under its own id holds no login and is not the account: answering
+        // "missing" lets the home copy the account again. The worker's own accounts keep their
+        // existing answers.
+        if crate::provider::canonical_provider_family(provider) == Some("claude")
+            && profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
+            && registry.is_materialized_replica(&account_owner, provider, &profile.profile_id)?
+        {
+            return Err(missing());
+        }
+        Ok(profile.profile_id)
     }
 
     /// The worker's profile id for the copy the lease's home kernel made of its account

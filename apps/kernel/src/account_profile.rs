@@ -1404,6 +1404,22 @@ impl ProviderAccountProfileRegistry {
         )
     }
 
+    /// Whether `profile_id` is a replica another kernel registered here, not an account of this
+    /// kernel's own.
+    pub(crate) fn is_materialized_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(
+            find_stored_profile(&document, owner_user_id, provider, profile_id)
+                .is_some_and(|profile| profile.materialized_replica),
+        )
+    }
+
     pub(crate) fn require_authenticated(
         &self,
         owner_user_id: &str,
