@@ -21,6 +21,21 @@ struct PendingRenewal {
     base_relay_url: Option<String>,
     base_relay_token: Option<String>,
     base_removal_pending: bool,
+    /// Earlier renewals of this chain whose saves have not landed, oldest first. A save of one
+    /// of them moves the baseline forward; it does not end the newer renewal.
+    unsaved_earlier: Vec<String>,
+}
+
+/// How a renewal's delayed save stands against the projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RenewalSave {
+    /// No unsaved renewal is tracked: the save is judged on the app's config alone.
+    Untracked,
+    /// The renewal is still in the unsaved chain; the app and the disk carry this removal mark.
+    Unsaved { base_removal_pending: bool },
+    /// A newer renewal was saved, or a decision (private relay, removal, new enrollment) ended
+    /// the chain: this save must not land.
+    Superseded,
 }
 
 /// The same Cloud enrollment: a renewal changes only the token's expiry and the removal-pending mark.
@@ -142,27 +157,35 @@ impl DaemonConfigProjectionStore {
                 .expect("daemon config renewal lock should not be poisoned");
             // Renewals chained over unsaved ones keep the first baseline: it is what the app and
             // the disk still carry until a save lands.
-            let (base_relay_url, base_relay_token, base_removal_pending) = match pending.as_ref() {
-                Some(existing) => (
-                    existing.base_relay_url.clone(),
-                    existing.base_relay_token.clone(),
-                    existing.base_removal_pending,
-                ),
-                None => (
-                    previous.relay_url.clone(),
-                    previous.relay_token.clone(),
-                    previous
-                        .cloud_relay
-                        .as_ref()
-                        .is_some_and(|profile| profile.kernel_removal_pending),
-                ),
-            };
+            let (base_relay_url, base_relay_token, base_removal_pending, unsaved_earlier) =
+                match pending.take() {
+                    Some(existing) => {
+                        let mut unsaved_earlier = existing.unsaved_earlier;
+                        unsaved_earlier.push(existing.token);
+                        (
+                            existing.base_relay_url,
+                            existing.base_relay_token,
+                            existing.base_removal_pending,
+                            unsaved_earlier,
+                        )
+                    }
+                    None => (
+                        previous.relay_url.clone(),
+                        previous.relay_token.clone(),
+                        previous
+                            .cloud_relay
+                            .as_ref()
+                            .is_some_and(|profile| profile.kernel_removal_pending),
+                        Vec::new(),
+                    ),
+                };
             *pending = Some(PendingRenewal {
                 token,
                 profile,
                 base_relay_url,
                 base_relay_token,
                 base_removal_pending,
+                unsaved_earlier,
             });
             config.clone()
         };
@@ -178,6 +201,27 @@ impl DaemonConfigProjectionStore {
             .expect("daemon config renewal lock should not be poisoned")
             .as_ref()
             .map(|renewal| renewal.base_removal_pending)
+    }
+
+    /// Asked under the app lock by a renewal's delayed save, before it writes `token`.
+    pub(crate) fn renewal_save(&self, token: &str) -> RenewalSave {
+        match self
+            .renewal
+            .lock()
+            .expect("daemon config renewal lock should not be poisoned")
+            .as_ref()
+        {
+            None => RenewalSave::Untracked,
+            Some(renewal)
+                if renewal.token == token
+                    || renewal.unsaved_earlier.iter().any(|earlier| earlier == token) =>
+            {
+                RenewalSave::Unsaved {
+                    base_removal_pending: renewal.base_removal_pending,
+                }
+            }
+            Some(_) => RenewalSave::Superseded,
+        }
     }
 
     fn notify_observers(&self, config: &DaemonConfig) {
@@ -201,7 +245,32 @@ impl DaemonConfigProjectionStore {
                 .renewal
                 .lock()
                 .expect("daemon config renewal lock should not be poisoned");
-            if let Some(renewal) = pending.as_ref() {
+            if let Some(renewal) = pending.as_mut() {
+                let saved_earlier = config
+                    .relay_token
+                    .as_ref()
+                    .and_then(|token| {
+                        renewal
+                            .unsaved_earlier
+                            .iter()
+                            .position(|earlier| earlier == token)
+                    })
+                    .filter(|_| {
+                        config.relay_url.as_deref() == Some(renewal.profile.relay_url.as_str())
+                            && config.cloud_relay.as_ref().is_some_and(|profile| {
+                                same_cloud_enrollment(profile, &renewal.profile)
+                            })
+                    });
+                if let Some(position) = saved_earlier {
+                    // An earlier renewal of the chain was saved: that is the new baseline.
+                    renewal.base_relay_url = config.relay_url.clone();
+                    renewal.base_relay_token = config.relay_token.clone();
+                    renewal.base_removal_pending = config
+                        .cloud_relay
+                        .as_ref()
+                        .is_some_and(|profile| profile.kernel_removal_pending);
+                    renewal.unsaved_earlier.drain(..=position);
+                }
                 let stale_publish = config.relay_url == renewal.base_relay_url
                     && config.relay_token == renewal.base_relay_token
                     && config.cloud_relay.as_ref().is_some_and(|profile| {
