@@ -487,18 +487,23 @@ impl KernelRuntimeState {
             .await?;
         // Row 539: a secret card's answer goes into the Vault entry it names before the card closes;
         // a refused store leaves the card open, and the agent only ever reads that it was stored.
-        let _reservation = if choice_id == "secret" {
-            self.store_card_secret(session_id, interaction_id, custom_reply, agent.is_some())
+        let (_reservation, undo) = if choice_id == "secret" {
+            match self
+                .store_card_secret(session_id, interaction_id, custom_reply, agent.is_some())
                 .await?
+            {
+                Some((reservation, undo)) => (Some(reservation), Some(undo)),
+                None => (None, None),
+            }
         } else if self.owned.pending_interactions.secret_store_in_progress(interaction_id) {
             return Err(DaemonError::LocalTransport {
                 operation: "credential secret card",
                 message: "The secret is being stored; answer again in a moment".into(),
             });
         } else {
-            None
+            (None, None)
         };
-        self.owned
+        let resolved = self.owned
             .resolve_attributed_terminal_runtime_interaction(
                 session_id,
                 interaction_id,
@@ -512,7 +517,12 @@ impl KernelRuntimeState {
             .map_err(|error| {
                 self.owned
                     .closed_interaction_error(session_id, interaction_id, error)
-            })?;
+            });
+        // A rejected answer leaves the Vault as it was, whichever path closed the card first.
+        if let (Err(_), Some(undo)) = (&resolved, undo) {
+            undo.restore();
+        }
+        resolved?;
         self.audit_interaction_answered(
             session_id,
             interaction_id,
@@ -591,7 +601,13 @@ impl KernelRuntimeState {
         interaction_id: &str,
         custom_reply: Option<&str>,
         answered_by_agent: bool,
-    ) -> Result<Option<super::runtime_interaction_owned_state::SecretStoreReservation>, DaemonError> {
+    ) -> Result<
+        Option<(
+            super::runtime_interaction_owned_state::SecretStoreReservation,
+            SecretUndo,
+        )>,
+        DaemonError,
+    > {
         if session_id.is_empty() {
             return Ok(None);
         }
@@ -631,6 +647,7 @@ impl KernelRuntimeState {
             &user_config.credential_vault,
         )?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
+        let undo = SecretUndo::capture(&service, &registry, &request.credential)?;
         self.upsert_observed_vault_credential(
             &service,
             &registry,
@@ -639,6 +656,64 @@ impl KernelRuntimeState {
             request.overwrite,
         )
         .await?;
-        Ok(Some(reservation))
+        Ok(Some((reservation, undo)))
+    }
+}
+
+/// What the Vault held for a secret card's entry before its answer was stored, so an answer the card
+/// then refuses (its asking agent was destroyed, its Room ended) leaves the Vault as it was.
+struct SecretUndo {
+    service: crate::secret::RuntimeSecretService,
+    registry: crate::credential::CharioxCredentialRegistry,
+    credential_id: String,
+    vault_key: Option<String>,
+    previous_entry: Option<crate::config::UserCredentialConfig>,
+    previous_value: Option<zeroize::Zeroizing<String>>,
+}
+
+impl SecretUndo {
+    fn capture(
+        service: &crate::secret::RuntimeSecretService,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        credential: &crate::config::UserCredentialConfig,
+    ) -> Result<Self, DaemonError> {
+        let vault_key = match &credential.source {
+            crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
+            _ => None,
+        };
+        let previous_value = match &vault_key {
+            Some(key) => service.vault_secret_for_dictation(key)?,
+            None => None,
+        };
+        Ok(Self {
+            service: service.clone(),
+            registry: registry.clone(),
+            credential_id: credential.id.clone(),
+            vault_key,
+            previous_entry: registry.get(&credential.id)?,
+            previous_value,
+        })
+    }
+
+    fn restore(self) {
+        let outcome = (|| -> Result<(), DaemonError> {
+            match (&self.vault_key, &self.previous_value) {
+                (Some(key), Some(value)) => self.service.set_vault_secret(key, value.as_str())?,
+                (Some(key), None) => self.service.delete_vault_secret(key)?,
+                (None, _) => {}
+            }
+            match self.previous_entry {
+                Some(entry) => {
+                    self.registry.upsert(entry)?;
+                }
+                None => {
+                    self.registry.remove(&self.credential_id)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = outcome {
+            tracing::error!(%error, "a refused secret answer could not be taken back from the Vault");
+        }
     }
 }

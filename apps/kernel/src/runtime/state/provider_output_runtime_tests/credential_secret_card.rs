@@ -507,3 +507,49 @@ fn a_cancel_that_reaches_the_resolver_during_a_store_is_refused_there() {
         assert!(secret_cards(&f).is_empty());
     });
 }
+
+/// Review P2: the asking agent is destroyed while the real save is blocked; the card is withdrawn, the
+/// answer is refused, and the Vault ends as it was.
+#[test]
+fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-destroyed", true).await;
+        let _home = Home::new(&f, "destroyed");
+        f.begin(&f.prompt_id);
+        let asked = ask_secret(&f, "cf-destroyed-token").await.unwrap();
+        let id = asked["interaction_id"].as_str().unwrap().to_string();
+        let service = crate::secret::RuntimeSecretService::with_vault_config(
+            vec![],
+            &f.runtime.owned.config_projection.snapshot().user_config.credential_vault,
+        )
+        .unwrap();
+        let hold = async {
+            let guard = f.runtime.vault_observation_mutation_guard().await;
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            drop(guard);
+        };
+        let answer = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            answer_secret_result(&f, &id, "secret", Some(CANARY)).await
+        };
+        let destroy = async {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            f.runtime
+                .owned
+                .withdraw_agent_interactions(&f.room, Some(&f.agent))
+                .unwrap();
+        };
+        let ((), answered, ()) = tokio::join!(hold, answer, destroy);
+        assert!(answered.is_err(), "an answer for a withdrawn card is refused");
+        assert!(crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .get("cf-destroyed-token")
+            .unwrap()
+            .is_none());
+        assert!(service
+            .vault_secret_for_dictation("cf-destroyed-token")
+            .unwrap()
+            .is_none());
+        assert!(!inbox_text(&f).contains(CANARY));
+    });
+}
