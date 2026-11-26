@@ -284,6 +284,10 @@ impl CommandRouter {
             .runtime_tool_specs_for_current_grants(auth_token)
     }
 
+    pub(crate) fn lean_loads(&self) -> &crate::transport::mcp_server::LeanLoads {
+        &self.lean_loads
+    }
+
     pub(crate) fn runtime_mcp_provider_run(
         &self,
         auth_token: &str,

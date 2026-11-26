@@ -44,3 +44,18 @@ test('"*" where the base had a list is red; an always-load key elsewhere is red;
   assert.match(red.text, /tool_loading\.rs:0: does not read/)
   r.dispose()
 })
+
+test('"deferred-by-provider" is a shrink from "*" and from a list; the way back up is red', () => {
+  const r = makeRepo({ ...base(), [LIST]: `${JSON.stringify({ claude: { agent: ['chariox.agents.run'] }, codex: { agent: '*' } })}\n` })
+  r.write(LIST, `${JSON.stringify({ claude: { agent: ['chariox.agents.run'] }, codex: { agent: 'deferred-by-provider' } })}\n`)
+  r.commit('codex defers by itself')
+  assert.equal(r.run(check.name).status, 0)
+  const up = r.commit.bind(r)
+  const deferred = r.git('rev-parse', 'HEAD')
+  r.write(LIST, `${JSON.stringify({ claude: { agent: ['chariox.agents.run'] }, codex: { agent: ['chariox.vault.use_env'] } })}\n`)
+  up('codex loads vault upfront')
+  const red = r.run(check.name, { base: deferred })
+  assert.equal(red.status, 1)
+  assert.match(red.text, /codex\.agent gains chariox\.vault\.use_env/)
+  r.dispose()
+})
