@@ -2641,12 +2641,10 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
                 result["tab_count"].as_u64().is_some_and(|n| n >= 1),
                 "capturing Tabs must preserve the tab count key on {command_name}"
             );
-            if command_name != "open" {
-                assert_eq!(
-                    result["tab"]["tab_id"], "host-tab-new",
-                    "the acted tab keeps its opaque identity on {command_name}"
-                );
-            }
+            assert_eq!(
+                result["tab"]["tab_id"], "host-tab-new",
+                "the acted tab keeps its opaque identity on {command_name}"
+            );
         }
     }
     let stopped = call(
@@ -2753,9 +2751,6 @@ async fn vflag_capture_inventory_schema_collisions_preserve_outer_runtime_result
                 result["tab_count"].as_u64().is_some_and(|n| n >= 1),
                 "{operation} keeps the fixed tab count key"
             );
-            if operation == "open" {
-                continue;
-            }
             result["tab"].clone()
         };
         assert_eq!(tab["tab_id"], "host-tab-new");
