@@ -11,11 +11,10 @@ pub(crate) const TOOL: &str = "chariox.kernels.restart";
 pub(crate) fn kernel_restart_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: TOOL.into(),
-        description: "Restart this kernel as a hot reload: your terminals and running agents carry on, the Vault keeps its unlock and its deadline, \
-                      and every client reconnects. The answer says the restart was accepted, or why it was refused and the kernel keeps running. \
-                      Pass `kernel` (a name from `chariox kernels`) to restart another kernel of the owner instead."
+        description: "Hot-reload this kernel, or another kernel of the owner named in `kernel`: terminals, agents and the Vault unlock carry on. \
+                      The answer says it was accepted, or why it was refused."
             .into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"kernel":{"type":"string","minLength":1,"maxLength":128,"description":"Another kernel of the owner, by the name `chariox kernels` lists. Omit it to restart this kernel."}},"additionalProperties":false}),
+        input_schema: serde_json::json!({"type":"object","properties":{"kernel":{"type":"string","minLength":1,"maxLength":128,"description":"A name from `chariox kernels`; omit for this kernel."}},"additionalProperties":false}),
     }
 }
 
@@ -72,20 +71,22 @@ impl KernelRuntimeState {
                 "Only the owner of this kernel or its agents can restart it.",
             ));
         };
+        // This kernel or another one: the caller is a running agent of this kernel's owner, by the same reach check the
+        // gateway grant is made from. An agent of another person running here, or a leased agent, has none.
+        let reach = self
+            .reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))
+            .ok_or_else(|| {
+                refuse(
+                    "kernel_restart_owner_only",
+                    "Only a running agent of this kernel's owner can restart a kernel of the owner. Ask the owner to restart it (chariox kernels restart).",
+                )
+            })?;
         if let Some(kernel) = arguments.kernel {
             let command_id = format!("restart-kernel-{:032x}", rand::random::<u128>());
             #[cfg(test)]
             if let Some(grant) = super::job_compute::stand_in_kernel(&kernel) {
                 return restart_through(&*grant, &kernel, command_id).await;
             }
-            let reach = self
-                .reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))
-                .ok_or_else(|| {
-                    refuse(
-                        "kernel_restart_owner_only",
-                        "Only a running agent of the kernel owner can restart another kernel of the owner.",
-                    )
-                })?;
             let router = self.job_router.as_ref().ok_or_else(|| {
                 refuse(
                     "kernel_gateway_unavailable",
