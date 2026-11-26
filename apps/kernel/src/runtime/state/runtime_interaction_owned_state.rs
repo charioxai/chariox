@@ -979,6 +979,10 @@ impl KernelRuntimeOwnedState {
         expected: Option<&super::PendingInteraction>,
         settlement: Settlement,
     ) -> Result<(), DaemonError> {
+        // An answer that is being stored in the Vault settles the card itself; a timeout waits for it.
+        if self.pending_interactions.secret_store_in_progress(interaction_id) {
+            return Ok(());
+        }
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "timeout runtime interaction requested",
@@ -1298,5 +1302,72 @@ mod tests {
         assert_eq!(resolution.status, "answered");
         assert_eq!(resolution.choice_id.as_deref(), Some("no"));
         assert_eq!(resolution.reply.as_deref(), Some("User picked no."));
+    }
+}
+
+/// Holds one secret card for the store of its answer; dropping it releases the card.
+pub(in crate::runtime::state) struct SecretStoreReservation {
+    store: super::PendingInteractionStore,
+    interaction_id: String,
+}
+
+impl Drop for SecretStoreReservation {
+    fn drop(&mut self) {
+        self.store
+            .storing_secrets
+            .lock()
+            .expect("secret store set poisoned")
+            .remove(&self.interaction_id);
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// Row 539: a secret answer is stored only for a card that is still open and inside its deadline,
+    /// and only once. Reserving it under the interaction mutation keeps a timeout or a withdrawal from
+    /// settling the card between the store and the answer: whichever reaches the card first wins, and a
+    /// rejected answer never reaches the Vault.
+    pub(in crate::runtime::state) fn reserve_secret_store(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Result<SecretStoreReservation, DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        let live = self
+            .pending_interactions
+            .write()
+            .get(interaction_id)
+            .is_some_and(|pending| pending.session_id == session_id && pending.belongs_to(&self.session_store));
+        let card = self
+            .session_store
+            .get_session(session_id)?
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == interaction_id)
+            .cloned();
+        let Some(card) = card.filter(|_| live) else {
+            return Err(interaction_error("This secret request is no longer open"));
+        };
+        if card.timeout_sec().is_some_and(|seconds| {
+            crate::session::unix_epoch_ms()
+                >= card.requested_at_ms().saturating_add(seconds.saturating_mul(1000))
+        }) {
+            return Err(interaction_error("This secret request expired"));
+        }
+        let mut storing = self
+            .pending_interactions
+            .storing_secrets
+            .lock()
+            .expect("secret store set poisoned");
+        if !storing.insert(interaction_id.to_owned()) {
+            return Err(interaction_error("This secret is already being stored"));
+        }
+        Ok(SecretStoreReservation {
+            store: self.pending_interactions.clone(),
+            interaction_id: interaction_id.to_owned(),
+        })
     }
 }

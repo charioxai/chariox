@@ -119,8 +119,8 @@ impl KernelRuntimeState {
                     credential: credential.clone(),
                     overwrite: args.overwrite,
                 };
-                let build_interaction = |id: String| {
-                    crate::session::RuntimeInteraction::new(
+                let build_interaction = |id: String, kernel_stores: bool| {
+                    let card = crate::session::RuntimeInteraction::new(
                         id,
                         agent_id.as_str(),
                         crate::session::RuntimeInteractionKind::Choice,
@@ -142,8 +142,14 @@ impl KernelRuntimeState {
                         )),
                         args.prompt.timeout_sec,
                         Some("cancel".to_string()),
-                    )
-                    .with_secret_request(secret_request.clone())
+                    );
+                    // Only the card of a running turn is stored by the kernel when answered; the
+                    // blocking form below stores once, in its own consumer.
+                    if kernel_stores {
+                        card.with_secret_request(secret_request.clone())
+                    } else {
+                        card
+                    }
                 };
                 // Row 539: inside a running turn the ask returns its ids at once and the answer wakes
                 // the agent; a retry for the same entry joins the card that is already open.
@@ -156,15 +162,18 @@ impl KernelRuntimeState {
                             provider_run.session_id(),
                             &agent_id,
                             &credential.id,
-                            build_interaction,
+                            |id| build_interaction(id, true),
                         )
                         .await;
                 }
-                let interaction = build_interaction(format!(
-                    "credential-secret-{}-{}",
-                    agent_id,
-                    crate::session::unix_epoch_ms()
-                ));
+                let interaction = build_interaction(
+                    format!(
+                        "credential-secret-{}-{}",
+                        agent_id,
+                        crate::session::unix_epoch_ms()
+                    ),
+                    false,
+                );
                 let interaction =
                     interaction.with_native_origin(self.owned.capture_native_interaction_origin(
                         provider_run.session_id(),

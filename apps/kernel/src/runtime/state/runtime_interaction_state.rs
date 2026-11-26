@@ -487,10 +487,17 @@ impl KernelRuntimeState {
             .await?;
         // Row 539: a secret card's answer goes into the Vault entry it names before the card closes;
         // a refused store leaves the card open, and the agent only ever reads that it was stored.
-        if choice_id == "secret" {
+        let _reservation = if choice_id == "secret" {
             self.store_card_secret(session_id, interaction_id, custom_reply, agent.is_some())
-                .await?;
-        }
+                .await?
+        } else if self.owned.pending_interactions.secret_store_in_progress(interaction_id) {
+            return Err(DaemonError::LocalTransport {
+                operation: "credential secret card",
+                message: "The secret is being stored; answer again in a moment".into(),
+            });
+        } else {
+            None
+        };
         self.owned
             .resolve_attributed_terminal_runtime_interaction(
                 session_id,
@@ -584,9 +591,9 @@ impl KernelRuntimeState {
         interaction_id: &str,
         custom_reply: Option<&str>,
         answered_by_agent: bool,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<super::runtime_interaction_owned_state::SecretStoreReservation>, DaemonError> {
         if session_id.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let Some(card) = self
             .owned
@@ -597,11 +604,11 @@ impl KernelRuntimeState {
             .find(|card| card.id() == interaction_id)
             .cloned()
         else {
-            return Ok(());
+            return Ok(None);
         };
         let (Some(request), Some(custom_choice)) = (card.secret_request(), card.custom_choice())
         else {
-            return Ok(());
+            return Ok(None);
         };
         if answered_by_agent {
             return Err(DaemonError::LocalTransport {
@@ -617,6 +624,7 @@ impl KernelRuntimeState {
             custom_choice,
             secret,
         )?;
+        let reservation = self.owned.reserve_secret_store(session_id, interaction_id)?;
         let user_config = self.owned.config_projection.snapshot().user_config;
         let service = crate::secret::RuntimeSecretService::with_vault_config(
             crate::credential::load_user_credentials()?,
@@ -631,6 +639,6 @@ impl KernelRuntimeState {
             request.overwrite,
         )
         .await?;
-        Ok(())
+        Ok(Some(reservation))
     }
 }

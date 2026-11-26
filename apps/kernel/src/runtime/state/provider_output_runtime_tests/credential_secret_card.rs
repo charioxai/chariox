@@ -5,7 +5,11 @@ use super::*;
 const CANARY: &str = "canary-secret-7f3a91c2e4b8d5a6";
 
 fn secret_request(entry: &str) -> serde_json::Value {
-    serde_json::json!({
+    secret_request_with(entry, None)
+}
+
+fn secret_request_with(entry: &str, timeout_sec: Option<u64>) -> serde_json::Value {
+    let mut request = serde_json::json!({
         "credential": {
             "id": entry,
             "description": "Cloudflare mailbox token",
@@ -14,7 +18,11 @@ fn secret_request(entry: &str) -> serde_json::Value {
             "injection": {"kind": "env", "name": "CF_TOKEN"}
         },
         "prompt": {"title": "Mailbox token", "message": "Paste the Cloudflare mailbox token."}
-    })
+    });
+    if let Some(seconds) = timeout_sec {
+        request["prompt"]["timeout_sec"] = seconds.into();
+    }
+    request
 }
 
 /// The Room's Vault is already unlocked, so the only card is the secret's own, not the Room's unlock card.
@@ -68,6 +76,13 @@ impl Drop for Home {
 }
 
 async fn ask_secret(f: &Fixture, entry: &str) -> Result<serde_json::Value, DaemonError> {
+    ask_secret_with(f, secret_request(entry)).await
+}
+
+async fn ask_secret_with(
+    f: &Fixture,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, DaemonError> {
     let token = f
         .runtime
         .owned
@@ -82,7 +97,7 @@ async fn ask_secret(f: &Fixture, entry: &str) -> Result<serde_json::Value, Daemo
         f.runtime.dispatch_authenticated_runtime_tool_call(
             &token,
             crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL,
-            secret_request(entry),
+            request,
         ),
     )
     .await
@@ -116,6 +131,15 @@ fn inbox_text(f: &Fixture) -> String {
 }
 
 async fn answer_secret(f: &Fixture, id: &str, choice: &str, reply: Option<&str>) {
+    answer_secret_result(f, id, choice, reply).await.unwrap();
+}
+
+async fn answer_secret_result(
+    f: &Fixture,
+    id: &str,
+    choice: &str,
+    reply: Option<&str>,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
     use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(f.app.clone(), 8);
     let mut caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
@@ -141,7 +165,7 @@ async fn answer_secret(f: &Fixture, id: &str, choice: &str, reply: Option<&str>)
         None,
         &request,
     );
-    router.dispatch(command, request).await.unwrap();
+    router.dispatch(command, request).await
 }
 
 /// Runs the body on a thread with the kernel runtime's stack: the credential tool future is deep in a debug build.
@@ -299,5 +323,119 @@ fn a_slow_answer_after_a_reload_still_reaches_the_vault() {
             .unwrap()
             .is_some());
         assert!(!inbox_text(&f).contains(CANARY));
+    });
+}
+
+/// Review P1: a blocking ask (no running turn) is stored once, by its own consumer, with the default overwrite.
+#[test]
+fn a_blocking_ask_is_stored_once_with_the_default_overwrite() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-blocking", false).await;
+        let _home = Home::new(&f, "blocking");
+        let token = f
+            .runtime
+            .owned
+            .provider_store
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned();
+        let ask = f.runtime.dispatch_authenticated_runtime_tool_call(
+            &token,
+            crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL,
+            secret_request("cf-blocking-token"),
+        );
+        let answer = async {
+            let id = loop {
+                if let Some(id) = secret_cards(&f).first() {
+                    break id.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            answer_secret(&f, &id, "secret", Some(CANARY)).await;
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(ask, answer) })
+            .await
+            .expect("the blocking ask ends once the person answers");
+        let payload = result.expect("a successful answer is not an error").payload;
+        assert_eq!(payload["status"], "stored");
+        assert!(crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .get("cf-blocking-token")
+            .unwrap()
+            .is_some());
+        assert!(!inbox_text(&f).contains(CANARY));
+    });
+}
+
+/// Review P2: an answer after the deadline is refused before the Vault is touched.
+#[test]
+fn an_answer_after_the_deadline_leaves_the_vault_unchanged() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-expired", true).await;
+        let _home = Home::new(&f, "expired");
+        f.begin(&f.prompt_id);
+        let asked = ask_secret_with(&f, secret_request_with("cf-expired-token", Some(1)))
+            .await
+            .unwrap();
+        let id = asked["interaction_id"].as_str().unwrap().to_string();
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert!(answer_secret_result(&f, &id, "secret", Some(CANARY)).await.is_err());
+        assert!(crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .get("cf-expired-token")
+            .unwrap()
+            .is_none());
+        assert!(!inbox_text(&f).contains(CANARY));
+    });
+}
+
+/// Review P2: while an answer is being stored, a timeout, a cancel and a withdraw leave the card alone,
+/// a second answer is refused, and the card is released afterwards.
+#[test]
+fn a_store_in_progress_holds_the_card_against_timeout_cancel_and_withdraw() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-reserved", true).await;
+        let _home = Home::new(&f, "reserved");
+        let task = f.begin(&f.prompt_id);
+        let asked = ask_secret(&f, "cf-reserved-token").await.unwrap();
+        let id = asked["interaction_id"].as_str().unwrap().to_string();
+        let token = f
+            .runtime
+            .owned
+            .provider_store
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned();
+        let reservation = f.runtime.owned.reserve_secret_store(&f.room, &id).unwrap();
+        assert!(f.runtime.owned.reserve_secret_store(&f.room, &id).is_err());
+        f.runtime.owned.timeout_runtime_interaction(&f.room, &id).unwrap();
+        assert!(answer_secret_result(&f, &id, "cancel", None).await.is_err());
+        let withdraw = call(
+            &f,
+            &token,
+            "chariox.events.cancel_wake",
+            &task,
+            serde_json::json!({"wake_id": id}),
+        )
+        .await;
+        assert!(withdraw.is_err(), "a withdraw waits for the store");
+        assert_eq!(secret_cards(&f), vec![id.clone()], "the card is still open");
+        drop(reservation);
+        let withdrawn = call(
+            &f,
+            &token,
+            "chariox.events.cancel_wake",
+            &task,
+            serde_json::json!({"wake_id": id}),
+        )
+        .await
+        .unwrap()
+        .payload;
+        assert_eq!(withdrawn["settled"], true);
+        assert!(secret_cards(&f).is_empty());
     });
 }

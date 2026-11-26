@@ -94,6 +94,11 @@ impl WakeDriver for InteractionWakeDriver {
         Ok(())
     }
     fn cancel(&self, wake: &AgentWake) -> Result<Cancel, DaemonError> {
+        if self.owned.pending_interactions.secret_store_in_progress(&wake.id) {
+            return Err(ledger::error(
+                "The secret is being stored; withdraw again in a moment",
+            ));
+        }
         self.owned.remove_async_question(
             wake,
             "Question withdrawn because its task, agent or wake was cancelled",
