@@ -14,6 +14,11 @@ use crate::runtime::state::RequestedRaise;
 /// A raise card's id starts with this. It is no machine acquisition decision, so no agent answers it.
 pub(crate) const LIMITS_CARD_PREFIX: &str = "limits-raise-";
 
+/// Whether `id` is a card raising limits: the person's alone, never answered for them by an agent.
+pub(crate) fn is_limits_raise_decision(id: &str) -> bool {
+    id.starts_with(LIMITS_CARD_PREFIX)
+}
+
 /// The account's limits as the connected service answered them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AccountLimits {

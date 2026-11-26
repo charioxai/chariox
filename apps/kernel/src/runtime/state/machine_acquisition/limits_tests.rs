@@ -159,11 +159,20 @@ async fn service(machines: u32, spend: u64) -> Service {
                             .to_string(),
                         )
                     }
-                    "list" => (
-                        200,
-                        serde_json::json!({"kind":"machines","saved_states":[],"machines":[]})
-                            .to_string(),
-                    ),
+                    "list" => {
+                        // The machines acquired so far, as the service holds them.
+                        let machines: Vec<_> = (1..=acquires.lock().unwrap().len())
+                            .map(|n| serde_json::json!({"allocation_ref":format!("alloc-{n}"),
+                                "name":format!("alloc-{n}"),"state":"creating","revision":1,
+                                "since":"2026-11-26T00:00:00Z","kernel_id":null,"machine_id":null,
+                                "available_actions":[]}))
+                            .collect();
+                        (
+                            200,
+                            serde_json::json!({"kind":"machines","saved_states":[],"machines":machines})
+                                .to_string(),
+                        )
+                    }
                     other => panic!("unexpected control-plane action {other}"),
                 };
                 let _ = socket

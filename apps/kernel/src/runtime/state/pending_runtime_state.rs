@@ -176,6 +176,9 @@ impl PendingInteraction {
             Some("it needs the passkey")
         } else if super::agent_deadline_cards::is_deadline_card(interaction.id()) {
             Some("it changes the agent’s time limit")
+        } else if super::machine_acquisition::limits::is_limits_raise_decision(interaction.id()) {
+            // An agent that raises its own limits needs the person: no other agent says yes for them.
+            Some("it raises the account's machine limits")
         } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
             // A critical decision is the risky, irreversible kind the passkey guards.
             Some("it is a critical decision")
