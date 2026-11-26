@@ -137,11 +137,29 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inn
         .iter()
         .find(|agent| agent["alias"] == "reviewer")
         .expect("reviewer should be discoverable");
-    assert_eq!(listed_reviewer["address"], "@reviewer");
     assert_eq!(listed_reviewer["provider"], "dev-stub");
     assert_eq!(listed_reviewer["model"], "reviewer-model");
-    assert_eq!(listed_reviewer["location"]["kind"], "local");
-    assert_eq!(listed_reviewer["is_self"], false);
+    // The listing row is compact: where an agent runs, its address and whether it is the caller
+    // come from its detail.
+    let reviewer_id = listed_reviewer["id"]
+        .as_str()
+        .expect("the row names the agent");
+    let detail = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &sender_token,
+            "mcp__chariox__get_session_agent",
+            serde_json::json!({"agent": reviewer_id}),
+        )
+        .await
+        .expect("session agent detail should dispatch");
+    assert!(detail.ok, "{:?}", detail.payload);
+    let detail = &detail.payload["agent"];
+    assert_eq!(detail["address"], "@reviewer");
+    assert_eq!(detail["provider"], "dev-stub");
+    assert_eq!(detail["model"], "reviewer-model");
+    assert_eq!(detail["location"]["kind"], "local");
+    assert_eq!(detail["is_self"], false);
 
     let first = router
         .runtime_state

@@ -135,7 +135,7 @@ fn agent_listing_row(description: &Value) -> Value {
                 _ => kind.to_owned(),
             }
         });
-    json!({
+    let mut row = json!({
         "id": description["id"],
         "alias": description["alias"],
         "state": description["state"],
@@ -147,7 +147,20 @@ fn agent_listing_row(description: &Value) -> Value {
         "has_active_prompt": description["has_active_prompt"],
         "queued_prompt_count": description["queued_prompt_count"],
         "waiting_on": waiting_on,
-    })
+    });
+    // The agent's own `liveness` has the whole wait; the row keeps the two readings that tell a
+    // watcher an agent went quiet: when it last wrote and whether it is flagged stalled.
+    let liveness = &description["liveness"];
+    let mut quiet_signal = serde_json::Map::new();
+    for field in ["last_activity_at_ms", "stalled"] {
+        if !liveness[field].is_null() {
+            quiet_signal.insert(field.into(), liveness[field].clone());
+        }
+    }
+    if !quiet_signal.is_empty() {
+        row["liveness"] = quiet_signal.into();
+    }
+    row
 }
 
 pub(super) fn task_listing_row(
@@ -172,4 +185,58 @@ pub(super) fn task_listing_row(
         }
     }
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn description(liveness: Value) -> Value {
+        json!({
+            "id": "agent-1", "alias": "builder", "state": "working", "provider": "codex",
+            "model": "m", "execution_mode": "act", "permission_level": "full",
+            "parent_agent_id": null, "has_active_prompt": true, "queued_prompt_count": 0,
+            "liveness": liveness,
+            "address": "@builder", "location": {"kind": "local"}, "is_self": false,
+        })
+    }
+
+    /// A quiet working agent is flagged in the compact row itself: an orchestrator reading the
+    /// list sees the stall and when the agent last wrote, without a detail call per agent.
+    #[test]
+    fn a_stalled_agent_row_carries_its_stall_and_last_activity_only() {
+        let row = agent_listing_row(&description(json!({
+            "last_activity_at_ms": 1_700_000_000_000_u64,
+            "stalled": true,
+            "waiting_on": {"kind": "provider", "since_ms": 1_699_999_000_000_u64},
+            "waiting_events": [{"label": "a long wait label the row does not carry"}],
+        })));
+        assert_eq!(
+            row["liveness"],
+            json!({"last_activity_at_ms": 1_700_000_000_000_u64, "stalled": true})
+        );
+        assert_eq!(row["waiting_on"], "provider");
+        for detail_field in ["address", "location", "is_self"] {
+            assert!(row.get(detail_field).is_none(), "{detail_field} in the row");
+        }
+    }
+
+    #[test]
+    fn a_row_reads_back_as_the_liveness_the_agent_shows_elsewhere() {
+        let row = agent_listing_row(&description(json!({
+            "last_activity_at_ms": 40_000_u64, "stalled": false,
+        })));
+        let liveness: crate::runtime::projection::AgentLiveness =
+            serde_json::from_value(row["liveness"].clone()).unwrap();
+        assert_eq!(liveness.last_activity_at_ms, Some(40_000));
+        assert!(!liveness.stalled);
+    }
+
+    #[test]
+    fn a_quiet_agent_row_has_no_liveness_key() {
+        for liveness in [json!(null), json!({})] {
+            let row = agent_listing_row(&description(liveness));
+            assert!(row.get("liveness").is_none(), "{row}");
+        }
+    }
 }
