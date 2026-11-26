@@ -375,16 +375,25 @@ impl BrowserControllerProcessStdioBackend {
             crate::config::default_state_dir().join("browser/display-codecs"),
         );
         // L3: native workers this controller spawns hand whole frames straight to the pump.
+        let mut frame_channel_unavailable = false;
         let direct_frames = match &display_packets {
             // Linux only (admission reads the peer's credentials). Without a channel Node
-            // publishes every frame, slower; the log says why.
+            // publishes every frame, slower; the log and the controller health say why.
             Some(packets) if cfg!(target_os = "linux") => {
                 match display_frames::DirectFrames::listen(packets.clone()) {
-                    Ok(frames) => Some(frames),
+                    Ok(frames) => {
+                        crate::logging::info_with_fields(
+                            "daemon.browser_controller",
+                            "native frame channel ready",
+                            serde_json::json!({ "path_bytes": frames.path().as_os_str().len() }),
+                        );
+                        Some(frames)
+                    }
                     Err(error) => {
+                        frame_channel_unavailable = true;
                         crate::logging::warn_with_fields(
                             "daemon.browser_controller",
-                            "native frame channel unavailable; Node publishes every frame",
+                            "native frame channel unavailable; Node publishes every frame, so video is slower",
                             serde_json::json!({ "error": error }),
                         );
                         None
@@ -458,6 +467,7 @@ impl BrowserControllerProcessStdioBackend {
             pending_responses,
             host_policy: None,
             direct_frames,
+            frame_channel_unavailable,
         });
         Ok(())
     }
@@ -789,7 +799,12 @@ impl BrowserControllerProcessStdioBackend {
             .ok_or_else(|| "browser controller is not running".to_string())?;
         let response = self.request("health", serde_json::json!({}))?;
         let health = response.into_result::<BrowserControllerCommandHealth>("health")?;
-        let health = health.into_health("health")?;
+        let health = with_frame_channel_diagnostic(
+            health.into_health("health")?,
+            self.process
+                .as_ref()
+                .is_some_and(|process| process.frame_channel_unavailable),
+        );
         if health.process_id != Some(process_id) {
             return Err(format!(
                 "browser controller health reported process {:?}, expected {process_id}",
@@ -1310,6 +1325,23 @@ struct BrowserControllerChild {
     pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
     host_policy: Option<serde_json::Value>,
     direct_frames: Option<Arc<display_frames::DirectFrames>>,
+    /// The kernel tried to open the native frame channel and could not (reason is in the log).
+    frame_channel_unavailable: bool,
+}
+
+/// Health diagnostic while the controller runs without the native frame channel.
+pub(crate) const FRAME_CHANNEL_UNAVAILABLE: &str = "native_frame_channel_unavailable";
+
+/// A ready controller that runs without the native frame channel reports why it is slower;
+/// a diagnostic the controller itself raised is never replaced.
+fn with_frame_channel_diagnostic(
+    mut health: BrowserControllerProcessHealth,
+    channel_unavailable: bool,
+) -> BrowserControllerProcessHealth {
+    if channel_unavailable && health.diagnostic_code.is_none() {
+        health.diagnostic_code = Some(FRAME_CHANNEL_UNAVAILABLE.to_string());
+    }
+    health
 }
 
 #[derive(Deserialize)]
@@ -2410,6 +2442,33 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 
 #[cfg(test)]
 mod tests {
+    use super::with_frame_channel_diagnostic;
+
+    #[test]
+    fn a_controller_without_the_frame_channel_reports_it_in_health() {
+        let ready = |code: Option<&str>| BrowserControllerProcessHealth {
+            state: BrowserControllerProcessState::Ready,
+            process_id: Some(7),
+            diagnostic_code: code.map(str::to_owned),
+        };
+        assert_eq!(
+            with_frame_channel_diagnostic(ready(None), true)
+                .diagnostic_code
+                .as_deref(),
+            Some("native_frame_channel_unavailable")
+        );
+        assert_eq!(
+            with_frame_channel_diagnostic(ready(None), false).diagnostic_code,
+            None
+        );
+        assert_eq!(
+            with_frame_channel_diagnostic(ready(Some("own")), true)
+                .diagnostic_code
+                .as_deref(),
+            Some("own")
+        );
+    }
+
     // MP-08/MP-10/MP-11: safe host causes must survive the Rust RPC boundary.
     #[test]
     fn browser_host_specific_reason_survives_rpc_reply() {

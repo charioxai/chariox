@@ -95,30 +95,40 @@ impl KernelRuntimeState {
         }
         // Starting belongs to the actual runtime/generation transition. A delayed
         // completion or health refresh must not regress an already recovered Room.
-        if let Err(error) = self
+        let snapshot = match self
             .ensure_browser_controller_process_started(session_id)
             .await
         {
-            let _ = self.update_room_environment_component_health(
-                session_id,
-                EnvironmentComponent::BrowserController,
-                EnvironmentComponentHealthState::Unavailable,
-                Some("controller_start_failed"),
-            );
-            let _ = self.transition_room_environment(
-                session_id,
-                self.owned
-                    .room_environment_health_probes
-                    .startup_recovery
-                    .after_start_error(session_id, &error, std::time::Instant::now()),
-            );
-            return Err(error);
-        }
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::BrowserController,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("controller_start_failed"),
+                );
+                let _ = self.transition_room_environment(
+                    session_id,
+                    self.owned
+                        .room_environment_health_probes
+                        .startup_recovery
+                        .after_start_error(session_id, &error, std::time::Instant::now()),
+                );
+                return Err(error);
+            }
+        };
+        // A missing native frame channel is a speed-only fallback: the component stays Ready
+        // (the Room's lifecycle is unchanged) and carries the reason as its diagnostic.
+        let diagnostic = snapshot
+            .and_then(|snapshot| snapshot.diagnostic_code)
+            .filter(|code| {
+                code == crate::runtime::browser_controller_process::FRAME_CHANNEL_UNAVAILABLE
+            });
         self.update_room_environment_component_health(
             session_id,
             EnvironmentComponent::BrowserController,
             EnvironmentComponentHealthState::Ready,
-            None,
+            diagnostic.as_deref(),
         )
         .map_err(|error| environment_runtime_error(operation, error))?;
         match self.reconcile_started_browser(session_id).await {
