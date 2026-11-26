@@ -3474,3 +3474,37 @@ fn a_command_that_peaked_heavy_waits_while_a_job_of_unknown_peak_holds_the_pool(
     ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
     assert_eq!(wait(&shell, 8), None);
 }
+
+/// Row 541 round 2: a run the OS's out-of-memory killer may have cut off leaves
+/// no peak to start the next run from; a run that ended with no OS kill does.
+#[test]
+fn a_peak_reached_while_the_os_was_killing_processes_is_not_kept() {
+    let capture = crate::logging::capture::start();
+    let run = |kills_at_end: u64, key: u64| {
+        super::super::TEST_OS_OOM_KILLS.with(|kills| kills.set(Some(kills_at_end)));
+        let mut ledger = Ledger::new(None);
+        let current = owner(
+            "agent",
+            true,
+            Vec::new(),
+            vec![(
+                key as u32,
+                Entry {
+                    peak: heavy(73 * GIB),
+                    os_oom_kills: Some(5),
+                    ..entry(key, heavy(0))
+                },
+            )],
+        );
+        ledger.register(&current, 512 * MIB);
+        ledger.peaks.get(&format!("key-{key}")).map(|peak| peak.memory)
+    };
+    assert_eq!(run(5, 9), Some(73 * GIB), "an ordinary end keeps its peak");
+    assert_eq!(run(6, 10), None, "a peak cut off by the OS kill was kept");
+    assert!(
+        capture.records().iter().any(|line| line.contains("admission forgot")
+            && line.contains("killing processes for lack of memory")),
+        "the decision is not logged"
+    );
+    super::super::TEST_OS_OOM_KILLS.with(|kills| kills.set(None));
+}

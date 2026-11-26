@@ -138,6 +138,11 @@ pub(super) struct Entry {
     /// the wait, and these lines are what the command, its agent and its pane
     /// are told in place of the generic wait lines.
     pub exhaustion: Option<ExhaustionNote>,
+    /// The system's count of OS out-of-memory kills when it arrived. When the
+    /// count has grown by the time it ends, the OS may have killed it: the
+    /// peak it reached is where it was cut off, not a size to start it from.
+    /// `None` when unknown (arrived before a hot reload, or not Linux).
+    os_oom_kills: Option<u64>,
 }
 
 /// What an exhaustion pause tells, now and when it ends.
@@ -708,6 +713,26 @@ impl Ledger {
                 }
                 continue;
             };
+            // Row 541 (2026-11-26): the OS killed a 72.9 GB run, and the next run
+            // was started because that peak "fitted". A peak the OS cut off is
+            // a lower bound; the next run starts unknown, and only a pause or
+            // the runaway horizon can stop its growth.
+            if entry
+                .os_oom_kills
+                .zip(os_oom_kills())
+                .is_some_and(|(arrived, now)| now > arrived)
+            {
+                if heavy {
+                    entry.decision(
+                        pid,
+                        "forgot",
+                        WaitReason::Memory,
+                        "it ended while the system was killing processes for lack of memory, so the peak it reached is not a size to start it from",
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                continue;
+            }
             let kept = self.peaks.record(
                 &seen.key,
                 Peak {
@@ -779,6 +804,7 @@ impl Ledger {
                         vacant.insert(Entry {
                             arrived: self.arrivals,
                             holdable,
+                            os_oom_kills: os_oom_kills(),
                             ..Entry::default()
                         })
                     }
@@ -1828,6 +1854,34 @@ fn number(
             };
         }
     }
+}
+
+/// How many processes the OS's out-of-memory killer has killed so far
+/// (`oom_kill` of `/proc/vmstat`).
+#[cfg(all(target_os = "linux", not(test)))]
+fn os_oom_kills() -> Option<u64> {
+    std::fs::read_to_string("/proc/vmstat")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("oom_kill "))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[cfg(all(not(target_os = "linux"), not(test)))]
+fn os_oom_kills() -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_OS_OOM_KILLS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn os_oom_kills() -> Option<u64> {
+    TEST_OS_OOM_KILLS.with(std::cell::Cell::get)
 }
 
 pub(super) fn light(ceiling: u64) -> u64 {
