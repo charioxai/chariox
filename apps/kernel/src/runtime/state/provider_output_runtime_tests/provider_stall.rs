@@ -373,32 +373,31 @@ async fn row36_j_the_parents_resume_restarts_the_stalled_turn() {
         .unwrap();
     assert_eq!(status, ChildDecisionStatus::Answered);
     let original = team.child_prompt.id().to_owned();
-    let retried = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        loop {
-            let revision = team
-                .runtime
-                .session_projection_session_change_sequence(&team.room);
-            let room = team.runtime.owned.session_snapshot(&team.room).unwrap();
-            let next = room
-                .active_prompt_for_agent(&team.child)
-                .into_iter()
-                .chain(
-                    room.queued_prompts_for_agent(&team.child)
-                        .into_iter()
-                        .flatten(),
-                )
-                .find(|prompt| prompt.id() != original)
-                .cloned();
-            if let Some(next) = next {
-                break next;
-            }
-            team.runtime
-                .wait_for_session_projection_session_change_after(&team.room, revision)
-                .await;
+    // Resume waits for the provider to confirm the stop (up to a minute) before it sends the
+    // request again; poll, since the new prompt may start and settle between two looks.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let retried = loop {
+        let room = team.runtime.owned.session_snapshot(&team.room).unwrap();
+        let state = room.prompt_states().get(&team.child);
+        let next = state
+            .into_iter()
+            .flat_map(|state| {
+                state
+                    .active_prompt()
+                    .into_iter()
+                    .chain(state.queued_prompts())
+            })
+            .find(|prompt| prompt.id() != original)
+            .cloned();
+        if let Some(next) = next {
+            break next;
         }
-    })
-    .await
-    .expect("the parent's Resume sent the stalled request again");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the parent's Resume did not send the stalled request again: {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
     assert_eq!(retried.prompt(), team.child_prompt.prompt());
     assert_eq!(retried.target_agent_id(), team.child);
 }
