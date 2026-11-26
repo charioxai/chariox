@@ -117,6 +117,9 @@ pub struct DurableKernelStateStore {
     skill_catalog_owner: bool,
     agent_release_delivery: Option<Arc<crate::agent_release_notes::Delivery>>,
     workflow_instruction_root: Option<Arc<Path>>,
+    /// Reads of the dev installations through the shared connection (row 690, cell 4).
+    #[cfg(test)]
+    dev_installation_reads: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -672,6 +675,8 @@ impl DurableKernelStateStore {
             skill_catalog_owner: false,
             agent_release_delivery: None,
             workflow_instruction_root: None,
+            #[cfg(test)]
+            dev_installation_reads: Arc::default(),
         })
     }
 

@@ -15,7 +15,7 @@ const WORK_LIMIT: Duration = Duration::from_secs(180);
 /// long it waits for all of them together in one pass. The work goes on apart from the sweep, up
 /// to `WORK_LIMIT`, and the next sweep asks again. A pass stays well under the dead-man check
 /// (three sweeps) even when several tasks hold.
-const TASK_WAIT: Duration = Duration::from_secs(5);
+pub(super) const TASK_WAIT: Duration = Duration::from_secs(5);
 pub(super) const SWEEP_PATIENCE: Duration = Duration::from_secs(20);
 
 /// How the work of one task ended as far as the sweep that asked for it is concerned.

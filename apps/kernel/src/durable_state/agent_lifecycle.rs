@@ -70,6 +70,8 @@ mod reply_terminal_tests;
 mod settled_waits;
 #[cfg(test)]
 mod steered_turn_tests;
+#[cfg(test)]
+mod sweep_set_retirement_tests;
 mod subscriptions;
 mod supervision;
 #[cfg(test)]

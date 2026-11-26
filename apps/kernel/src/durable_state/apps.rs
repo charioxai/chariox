@@ -196,9 +196,18 @@ impl DurableKernelStateStore {
         Ok(latest.as_deref() != Some("app.binding.owner_revoked"))
     }
 
+    #[cfg(test)]
+    pub(crate) fn dev_installation_reads_for_test(&self) -> usize {
+        self.dev_installation_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) fn active_dev_app_installations(
         &self,
     ) -> Result<Vec<(String, String, String)>, DaemonError> {
+        #[cfg(test)]
+        self.dev_installation_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let connection = self.lock_connection("durable_state.dev_app_installations")?;
         let mut statement = connection.prepare("SELECT owner_id,dev_room_id,installation_id FROM app_installations WHERE channel='dev' AND active_json IS NOT NULL ORDER BY installation_id")
             .map_err(|error| DaemonError::InternalInvariant {operation:"apps.dev_bindings", message:error.to_string()})?;
