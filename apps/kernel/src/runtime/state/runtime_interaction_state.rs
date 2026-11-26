@@ -487,13 +487,13 @@ impl KernelRuntimeState {
             .await?;
         // Row 539: a secret card's answer goes into the Vault entry it names before the card closes;
         // a refused store leaves the card open, and the agent only ever reads that it was stored.
-        let (_reservation, undo) = if choice_id == "secret" {
+        let (_reservation, _vault_guard, undo) = if choice_id == "secret" {
             match self
                 .store_card_secret(session_id, interaction_id, custom_reply, agent.is_some())
                 .await?
             {
-                Some((reservation, undo)) => (Some(reservation), Some(undo)),
-                None => (None, None),
+                Some((reservation, guard, undo)) => (Some(reservation), Some(guard), Some(undo)),
+                None => (None, None, None),
             }
         } else if self.owned.pending_interactions.secret_store_in_progress(interaction_id) {
             return Err(DaemonError::LocalTransport {
@@ -501,7 +501,7 @@ impl KernelRuntimeState {
                 message: "The secret is being stored; answer again in a moment".into(),
             });
         } else {
-            (None, None)
+            (None, None, None)
         };
         let resolved = self.owned
             .resolve_attributed_terminal_runtime_interaction(
@@ -604,6 +604,7 @@ impl KernelRuntimeState {
     ) -> Result<
         Option<(
             super::runtime_interaction_owned_state::SecretStoreReservation,
+            tokio::sync::OwnedRwLockWriteGuard<()>,
             SecretUndo,
         )>,
         DaemonError,
@@ -647,8 +648,12 @@ impl KernelRuntimeState {
             &user_config.credential_vault,
         )?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
+        // The Vault lifecycle lock is held from the capture of what the entry holds, through the save, the
+        // resolution and any rollback: nothing else can change the entry in between, so taking a refused
+        // answer back never undoes another operation's update.
+        let vault_guard = self.vault_observation_mutation_guard().await;
         let undo = SecretUndo::capture(&service, &registry, &request.credential)?;
-        self.upsert_observed_vault_credential(
+        self.upsert_vault_credential_locked(
             &service,
             &registry,
             request.credential.clone(),
@@ -656,7 +661,7 @@ impl KernelRuntimeState {
             request.overwrite,
         )
         .await?;
-        Ok(Some((reservation, undo)))
+        Ok(Some((reservation, vault_guard, undo)))
     }
 }
 

@@ -586,3 +586,68 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
         assert!(!inbox_text(&f).contains(CANARY));
     });
 }
+
+/// Review P1: a refused answer is taken back under the Vault lock, so it never undoes another
+/// operation's successful update of the same entry.
+#[test]
+fn a_refused_overwrite_keeps_an_update_made_while_it_waited() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-intervening", true).await;
+        let _home = Home::new(&f, "intervening");
+        let task = f.begin(&f.prompt_id);
+        let first = ask_secret(&f, "cf-overwrite-token").await.unwrap();
+        let first_id = first["interaction_id"].as_str().unwrap().to_string();
+        answer_secret(&f, &first_id, "secret", Some("value-x-first")).await;
+        let mut request = secret_request("cf-overwrite-token");
+        request["overwrite"] = true.into();
+        let second = ask_secret_with(&f, request).await.unwrap();
+        let id = second["interaction_id"].as_str().unwrap().to_string();
+        assert_ne!(id, first_id);
+        let service = crate::secret::RuntimeSecretService::with_vault_config(
+            vec![],
+            &f.runtime.owned.config_projection.snapshot().user_config.credential_vault,
+        )
+        .unwrap();
+        let hold = async {
+            let guard = f.runtime.vault_observation_mutation_guard().await;
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            // Another operation updates the entry while the answer waits for the lock.
+            service.set_vault_secret("cf-overwrite-token", "value-y-intervening").unwrap();
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            drop(guard);
+        };
+        let answer = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            answer_on_fixture_runtime(&f, &id, CANARY).await
+        };
+        let destroy = async {
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            let current = f.task(&task.task_id);
+            f.store()
+                .agent_lifecycle(Operation::CancelTask {
+                    task: task.task_id.clone(),
+                    owner: "local".into(),
+                    revision: current.revision,
+                })
+                .unwrap();
+            f.runtime.owned.withdraw_stale_agent_interactions();
+            f.runtime
+                .owned
+                .withdraw_agent_interactions(&f.room, Some(&f.agent))
+                .unwrap();
+        };
+        let ((), answered, ()) = tokio::join!(hold, answer, destroy);
+        assert!(answered.is_err(), "the withdrawn card refuses the answer");
+        let kept = service
+            .vault_secret_for_dictation("cf-overwrite-token")
+            .unwrap()
+            .expect("the entry still holds a value");
+        assert_eq!(kept.as_str(), "value-y-intervening", "the other update survives the rollback");
+        assert!(crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .get("cf-overwrite-token")
+            .unwrap()
+            .is_some());
+        assert!(!inbox_text(&f).contains(CANARY));
+    });
+}
