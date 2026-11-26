@@ -173,6 +173,7 @@ mod vault_use;
 mod agent_release_notes;
 mod async_questions;
 mod secret_card;
+mod owner_view;
 mod provider_login;
 mod session_activity;
 
