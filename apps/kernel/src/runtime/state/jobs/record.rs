@@ -200,6 +200,7 @@ pub(super) fn save_record(state: &KernelRuntimeState, record: &Record) -> Result
     // A list entry advertises a result only after its full body has been saved.
     atomic_write(&path, &bytes)?;
     summary::save(state, record, bytes.len() as u64)?;
+    super::transcript_row::update_job_row(state, record);
     state
         .owned
         .session_projection

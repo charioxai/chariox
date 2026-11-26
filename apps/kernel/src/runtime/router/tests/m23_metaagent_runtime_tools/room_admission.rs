@@ -192,12 +192,10 @@ workflow.endpoint(review,{{handle:"entry"}});"#,
         .payload
         .to_string()
         .contains("unauthorized_existing_agent_binding"));
-    assert_eq!(
-        validation
-            .payload
-            .pointer("/WorkflowCodeValidated/result/definition/workflow/alias"),
-        Some(&serde_json::json!("inline-review"))
-    );
+    assert!(validation
+        .payload
+        .pointer("/WorkflowCodeValidated/result/definition")
+        .is_none());
     let legacy = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![
         config.workflow_code_artifact_root()
     ]);
@@ -410,18 +408,12 @@ async fn room_boundaries() {
     };
     let grandchild = room_command(&router, &auth_b, "agent spawn d --provider dev-stub").await;
     assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
-    // A peer outside the subtree stays out of reach, and a rename or delete
-    // needs a direct child: the grandparent may not rename d, its parent may.
-    // (Deleting the peer is the owner's delete, open to every agent of the Room: see
-    // subtree/owner_delete.rs.)
-    for command in ["agent focus peer", "agent alias d by-grandparent"] {
-        assert!(
-            !room_command(&router, &auth_a, command).await.ok,
-            "{command}"
-        );
-    }
+    // Row 405 (PA11): the grandparent renames d; the person's focus stays the person's.
+    let renamed = room_command(&router, &auth_a, "agent alias d by-grandparent").await;
+    assert!(renamed.ok, "{renamed:?}");
+    assert!(!room_command(&router, &auth_a, "agent focus peer").await.ok);
     assert!(
-        room_command(&router, &auth_b, "agent alias d direct-child")
+        room_command(&router, &auth_b, "agent alias by-grandparent direct-child")
             .await
             .ok
     );
@@ -563,9 +555,10 @@ async fn room_boundaries() {
         ),
         "MP-08 / MP-10 / MP-11 A01-S04: public peer graph passes admission: {resumed:?}"
     );
+    // Row 405 (PA11): the owner's agent renames another of the owner's agents.
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
-    assert!(!peer_alias.ok);
-    // The raw/native typed request path sees the same mutation fence.
+    assert!(peer_alias.ok, "{peer_alias:?}");
+    // The raw/native typed request path agrees.
     assert!(router
         .runtime_state
         .authorize_room_agent_request(
@@ -576,7 +569,7 @@ async fn room_boundaries() {
                 alias: "stolen".into()
             })
         )
-        .is_err());
+        .is_ok());
     // MP-11: raw/native host-shaped requests cannot broaden descendant rights.
     let project_id = app
         .lock()
@@ -586,26 +579,43 @@ async fn room_boundaries() {
         .unwrap()
         .project_id()
         .to_string();
+    // Row 405 (PA8): ending and archiving are the owner's ordinary actions, deleting a Project too.
+    // Deleting a Room stays the creator's: the Room the agent runs in is the owner's to delete.
+    let delete_room: LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"DeleteSession":{"session_ref":session.id(),"workspace_id":null}}),
+    )
+    .unwrap();
+    assert!(router
+        .runtime_state
+        .authorize_room_agent_request(a.id(), &delete_room)
+        .is_err());
     for value in [
         serde_json::json!({"EndSession":{"session_id":session.id()}}),
-        // Archiving or deleting a Project ends or deletes its Rooms, as the two above do.
         serde_json::json!({"ArchiveProject":{"project_id":project_id}}),
         serde_json::json!({"DeleteProject":{"project_id":project_id}}),
-        serde_json::json!({"DeleteSession":{"session_ref":session.id(),"workspace_id":null}}),
-        serde_json::json!({"UpdateAgentProfile":{"session_id":session.id(),"agent_id":peer.id(),"model":"takeover"}}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         assert!(router
             .runtime_state
             .authorize_room_agent_request(a.id(), &request)
-            .is_err());
+            .is_ok());
     }
+    let takeover: LocalDaemonRequest = serde_json::from_value(serde_json::json!(
+        {"UpdateAgentProfile":{"session_id":session.id(),"agent_id":peer.id(),"model":"takeover"}}
+    ))
+    .unwrap();
+    // Row 405: a peer of the same owner, at the same permission, controls it too.
+    assert!(router
+        .runtime_state
+        .authorize_room_agent_request(a.id(), &takeover)
+        .is_ok());
     // Neither aliases nor a stale provider-run credential can revive an actor.
+    // Row 405 (PA11): the owner's agent's rename above took effect.
     {
         let app = app.lock().await;
         assert_eq!(
             app.agents().get_agent(peer.id()).unwrap().alias(),
-            Some("peer")
+            Some("stolen")
         );
     }
     router
@@ -1308,10 +1318,11 @@ async fn concurrent_registry_add() {
             &compile.definition
         ))
     );
-    assert_eq!(
-        serde_json::to_value(&winner.metadata).unwrap(),
-        first.payload["WorkflowRegistryEntryAdded"]["entry"]
-    );
+    let added_entry = &first.payload["WorkflowRegistryEntryAdded"]["entry"];
+    let stored = serde_json::to_value(&winner.metadata).unwrap();
+    for field in ["name", "source_sha256", "definition_sha256", "validation"] {
+        assert_eq!(added_entry[field], stored[field], "{field}");
+    }
     assert!(
         !std::fs::read_dir(&registry_root).unwrap().any(|e| e
             .unwrap()
@@ -1651,10 +1662,10 @@ async fn other_room_fence() {
     );
 }
 
-// Tearing down a Room, Project or kernel is refused for an agent caller whether or not the Room
-// tool surface is switched on (it is opt-in, and the older metaagent path runs without it).
+// Row 405 (PA8): ending, deleting and archiving the owner's Rooms and Projects are ordinary owner
+// actions for the owner's agents, whether or not the Room tool surface is switched on.
 #[test]
-fn room_admission_refuses_teardown_with_room_agent_tools_off() {
+fn room_admission_admits_teardown_with_room_agent_tools_off() {
     run_large_stack_async_test("room-teardown-tools-off", teardown_with_tools_off);
 }
 
@@ -1685,8 +1696,8 @@ async fn teardown_with_tools_off() {
             router
                 .runtime_state
                 .authorize_room_agent_request(actor.id(), &request)
-                .is_err(),
-            "{value} reached its handler"
+                .is_ok(),
+            "{value} was refused to the owner's agent"
         );
     }
 }
@@ -1821,6 +1832,420 @@ async fn room_own_schedule() {
     let left = triggers(a.id().to_string()).await;
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].id(), own[1].id());
+}
+
+// PA10 (row 419): an orchestrator in one room takes back and re-arms the usage-limit resume of the
+// owner's agent in another room with no card, as the owner can in the agent pane. Other settings
+// of an agent in another room stay out of reach.
+#[test]
+fn room_admission_takes_back_a_resume_in_another_room_of_the_owner() {
+    run_large_stack_async_test("room-resume-other-room", resume_in_other_room);
+}
+
+async fn resume_in_other_room() {
+    let env = TestMetaRuntimeEnv::new("room-resume-other-room");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut room = |name: &str| {
+        let workspace = env.root.join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap()
+    };
+    let (orchestrator_room, orchestrator) = room("orchestrator");
+    let (other, stopped) = room("stopped");
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            orchestrator_room.id(),
+            format!("metaagent:{}:commands", orchestrator.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        orchestrator_room.id(),
+        orchestrator.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_owned();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let change = |usage_limit, permission_level| {
+        LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
+            session_id: other.id().to_string(),
+            agent_id: stopped.id().to_string(),
+            execution_mode: None,
+            clear_execution_mode: false,
+            permission_level,
+            clear_permission_level: false,
+            max_context_tokens: None,
+            clear_max_context_tokens: false,
+            workspace_id: None,
+            clear_workspace_id: false,
+            worktree_id: None,
+            clear_worktree_id: false,
+            usage_limit,
+            reason: None,
+        })
+    };
+    for action in [
+        crate::local::UsageLimitStopAction::Cancel,
+        crate::local::UsageLimitStopAction::ResumeWhenBack,
+    ] {
+        let request = change(Some(action.clone()), None);
+        let admitted = router
+            .runtime_state
+            .authorize_room_agent_request(orchestrator.id(), &request);
+        assert!(admitted.is_ok(), "{action:?}: {admitted:?}");
+    }
+    // PA11: other settings too, as another of the owner's agents whose permission covers it.
+    let settings = change(None, Some(crate::provider::AgentPermissionLevel::Required));
+    assert!(router
+        .runtime_state
+        .authorize_room_agent_request(orchestrator.id(), &settings)
+        .is_ok());
+    // The Room command end to end (the live drill found the session store refusing a caller
+    // from another room here): the target has no usage-limit stop, so the kernel answers from
+    // that state, past every authority check.
+    for command in ["agent resume cancel", "agent resume"] {
+        let command = format!("{command} {} --room {}", stopped.id(), other.id());
+        let result = room_command(&router, &auth, &command).await;
+        let error = result.payload["error"].as_str().unwrap_or_default();
+        assert!(
+            !result.ok && error.contains("not stopped by a usage limit"),
+            "{command}: {result:?}"
+        );
+    }
+}
+
+// Row 405 (review of #1695): `agent resume` and `agent resume cancel` of a BLOCKED peer's task,
+// through the Room command itself (parser, router, admission, settlement), for an agent in
+// another Room of the same owner. A peer whose permission is lower than the target's is refused
+// and the task stays blocked.
+#[test]
+fn room_admission_resumes_and_cancels_a_blocked_peer_in_another_room() {
+    run_large_stack_async_test("room-blocked-peer", blocked_peer_in_other_room);
+}
+
+async fn blocked_peer_in_other_room() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    use crate::provider::AgentPermissionLevel::{Required, Yolo};
+    let env = TestMetaRuntimeEnv::new("room-blocked-peer");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut room = |name: &str| {
+        let workspace = env.root.join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap()
+    };
+    let (orchestrator_room, orchestrator) = room("orchestrator");
+    let (other, to_resume) = room("blocked");
+    let mut peer = |alias: &str| {
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(other.id(), "dev-stub").with_alias(alias))
+            .unwrap()
+    };
+    let to_cancel = peer("to-cancel");
+    let above = peer("above");
+    for agent in [to_resume.id(), to_cancel.id(), above.id()] {
+        crate::test_support::admit_room_test_turn(&mut app, other.id(), agent);
+    }
+    for (agent, level) in [
+        (orchestrator.id(), Required),
+        (to_resume.id(), Required),
+        (to_cancel.id(), Required),
+        (above.id(), Yolo),
+    ] {
+        app.agents()
+            .update_agent_config(agent, None, Some(Some(level)), None, None)
+            .unwrap();
+    }
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            orchestrator_room.id(),
+            format!("metaagent:{}:commands", orchestrator.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        orchestrator_room.id(),
+        orchestrator.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_owned();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let runtime = &router.runtime_state;
+    let block = |agent: &str| runtime.block_admitted_task_for_test(other.id(), agent);
+    let state = |task: &str| runtime.task_state_for_test(task);
+    let (resume_task, cancel_task, held_task) = (
+        block(to_resume.id()),
+        block(to_cancel.id()),
+        block(above.id()),
+    );
+    // A peer of the same permission resumes one and cancels the other, in another Room.
+    let command = format!("agent resume {} --room {}", to_resume.id(), other.id());
+    let result = room_command(&router, &auth, &command).await;
+    assert!(result.ok, "{command}: {result:?}");
+    assert_ne!(state(&resume_task), ExecutionState::Blocked, "{command}");
+    let command = format!(
+        "agent resume cancel {} --room {}",
+        to_cancel.id(),
+        other.id()
+    );
+    let result = room_command(&router, &auth, &command).await;
+    assert!(result.ok, "{command}: {result:?}");
+    assert_eq!(state(&cancel_task), ExecutionState::Cancelled, "{command}");
+    // A peer with less permission than the target settles nothing.
+    for command in ["agent resume cancel", "agent resume"] {
+        let command = format!("{command} {} --room {}", above.id(), other.id());
+        let result = room_command(&router, &auth, &command).await;
+        assert!(!result.ok, "{command}: {result:?}");
+        assert_eq!(state(&held_task), ExecutionState::Blocked, "{command}");
+    }
+}
+
+// Row 405 (review of #1695): the owner's live agent reaches the downstream handlers of the owner's
+// kernel too, not only the reach classifier: kernel files, access grants and the owner's cards
+// through `chariox_kernel_request`.
+#[test]
+fn room_admission_an_owners_agent_reaches_kernel_files_grants_and_cards() {
+    run_large_stack_async_test("room-owner-agent-handlers", owner_agent_handlers);
+}
+
+async fn owner_agent_handlers() {
+    let env = TestMetaRuntimeEnv::new("room-owner-agent-handlers");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let auth = run.runtime_mcp_auth_token().unwrap().to_owned();
+    let run_id = run.id().to_owned();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let file = workspace.join("owner-file.txt");
+    std::fs::write(&file, "x").unwrap();
+    let call = |request: serde_json::Value| {
+        router.dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox_kernel_request",
+            serde_json::json!({ "request": request }),
+        )
+    };
+    for request in [
+        serde_json::json!({"StatKernelFile": {"path": file.to_string_lossy(), "with_sha256": false}}),
+        serde_json::json!({"ListKernelDirectory": {"path": workspace.to_string_lossy()}}),
+        serde_json::json!({"ListKernelAccessGrants": {}}),
+        serde_json::json!({"ListOwnerInteractions": {}}),
+    ] {
+        let result = call(request.clone()).await;
+        assert!(matches!(&result, Ok(r) if r.ok), "{request}: {result:?}");
+    }
+    // Revoking a grant that does not exist may fail, but never for who is asking.
+    let result =
+        call(serde_json::json!({"RevokeKernelAccessGrant": {"grant_id": "no-such-grant"}})).await;
+    let message = match &result {
+        Ok(_) => String::new(),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        !message.contains("only a Chariox terminal")
+            && !message.contains("only the kernel's owner"),
+        "{result:?}"
+    );
+    // The file-change subscription asks the same question with only the caller: the owner's live
+    // agent may watch files; a reach identity of a run that does not exist may not.
+    let caller = |id: String| {
+        let mut caller = crate::runtime::command::KernelCaller::for_source(
+            &crate::runtime::command::KernelCommandSource::LocalIpc,
+        )
+        .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+        caller.caller_id = id;
+        caller.user_id = Some(agent.owner_user_id().to_owned());
+        caller
+    };
+    let watch = |id: String| {
+        router.authorize_file_watch(
+            crate::runtime::command::KernelCommandSource::LocalIpc,
+            caller(id),
+        )
+    };
+    assert!(
+        watch(format!("reach:{run_id}")).is_ok(),
+        "the owner's live agent watches files"
+    );
+    assert!(
+        watch("reach:no-such-run".into()).is_err(),
+        "an unknown run's identity is refused"
+    );
+}
+
+// PA11 (row 363): after a handover, an orchestrator controls a predecessor's agents in the same
+// room (re-parents, renames, deletes) with no card: owner authority, not tree position.
+#[test]
+fn room_admission_an_owners_agent_controls_a_predecessors_agents() {
+    run_large_stack_async_test("room-predecessor-lanes", predecessor_lanes);
+}
+
+async fn predecessor_lanes() {
+    let env = TestMetaRuntimeEnv::new("room-predecessor-lanes");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, predecessor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let successor = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("successor"))
+        .unwrap();
+    let lane = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("lane"))
+        .unwrap();
+    app.agents()
+        .set_parent_agent(
+            lane.id(),
+            Some(crate::agent::AgentRef::local(predecessor.id())),
+        )
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    for value in [
+        serde_json::json!({"SetAgentParent":{"session_id":session.id(),"agent_id":lane.id(),
+            "parent_agent_id":successor.id()}}),
+        serde_json::json!({"AliasAgent":{"session_id":session.id(),"agent_id":lane.id(),"alias":"adopted"}}),
+        serde_json::json!({"DestroyAgent":{"session_id":session.id(),"agent_id":lane.id()}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        let admitted = router
+            .runtime_state
+            .authorize_room_agent_request(successor.id(), &request);
+        assert!(admitted.is_ok(), "{value}: {admitted:?}");
+    }
+}
+
+// PA12 (row 405): an orchestrator in Room A names a predecessor's sub-agent in Room B by alias
+// with `--room` and messages, resumes and deletes it, as the owner could. (The guest half, a
+// refusal that names its reason, is peer_rooms::kernels_sender::a_guest_reaches_only_the_agents_of_its_own_room.)
+#[test]
+fn room_admission_an_orchestrator_names_a_predecessors_sub_agent_in_another_room() {
+    run_large_stack_async_test(
+        "room-predecessor-sub-agent",
+        predecessor_sub_agent_in_another_room,
+    );
+}
+
+async fn predecessor_sub_agent_in_another_room() {
+    let env = TestMetaRuntimeEnv::new("room-predecessor-sub-agent");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut room = |name: &str| {
+        let workspace = env.root.join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap()
+    };
+    let (orchestrator_room, orchestrator) = room("orchestrator");
+    let (predecessor_room, predecessor) = room("predecessor");
+    let lane = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(predecessor_room.id(), "dev-stub").with_alias("lane"))
+        .unwrap();
+    app.agents()
+        .set_parent_agent(
+            lane.id(),
+            Some(crate::agent::AgentRef::local(predecessor.id())),
+        )
+        .unwrap();
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            orchestrator_room.id(),
+            format!("metaagent:{}:commands", orchestrator.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        orchestrator_room.id(),
+        orchestrator.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_owned();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let other = predecessor_room.id();
+
+    let message = room_command(
+        &router,
+        &auth,
+        &format!("agent message lane handover --room {other}"),
+    )
+    .await;
+    assert!(message.ok, "{message:?}");
+    // No usage-limit stop is armed, so the kernel answers from that state, past every authority check.
+    let resume = room_command(
+        &router,
+        &auth,
+        &format!("agent resume cancel lane --room {other}"),
+    )
+    .await;
+    assert!(
+        resume.payload["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not stopped by a usage limit")),
+        "{resume:?}"
+    );
+    let delete = room_command(&router, &auth, &format!("agent delete lane --room {other}")).await;
+    assert!(delete.ok, "{delete:?}");
+    assert!(app
+        .lock()
+        .await
+        .agents()
+        .get_agent(lane.id())
+        .map_or(true, |agent| agent.archived()));
 }
 
 #[test]

@@ -122,7 +122,7 @@ fn why_unavailable(
     Ok(None)
 }
 
-fn transfer(
+pub(super) fn transfer(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
     own: &mut Vec<Registration>,

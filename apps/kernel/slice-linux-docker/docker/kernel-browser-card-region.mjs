@@ -7,6 +7,14 @@ import { BrowserSnapshotError } from './browser-controller-snapshot.mjs';
 import { BrowserCardVerification, validateCardVerification } from './kernel-browser-card-verification.mjs';
 
 const validReference = ref => typeof ref === 'string' && /^(?:frame:.+:)?backend:[1-9][0-9]{0,15}$/.test(ref);
+// Row 655: what the person can see of an element. An element that is not rendered, hidden (visibility),
+// inside a hidden or offscreen frame, or clipped to nothing by the viewport has no visible area: the card shows the
+// documented empty crop for it (never a box sized as if it were on screen), and a card is never registered on it as
+// if the person could reach it. The registration wait stays inside the existing geometry window.
+const visibilityOptions = '{visibilityProperty:true}';
+const emptyCrop = (viewport_width, viewport_height) => ({ rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width, viewport_height });
+const hasArea = box => box?.rect?.width > 0 && box.rect.height > 0;
+const registrationWaitMs = 1_000;
 const anchorLifetimeMs = 15_000;
 const maxAnchors = 1_024;
 
@@ -76,22 +84,34 @@ async function childFrameBox(browser, connection, sessionId, tab, command) {
     const { object } = await connection.send('DOM.resolveNode', { backendNodeId, executionContextId: childWorld }, entry.sessionId);
     if (!object?.objectId) return null;
     try {
-      const { result, exceptionDetails } = await connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: 'function() { return this.isConnected; }', arguments: [{ value: null }], returnByValue: true }, entry.sessionId);
-      if (exceptionDetails || typeof result?.value !== 'boolean') throw new Error('Browser card element connection could not be read');
-      if (!result.value) return null;
+      const { result, exceptionDetails } = await connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function() { return this.isConnected ? (typeof this.checkVisibility === 'function' && !this.checkVisibility(${visibilityOptions}) ? 'hidden' : true) : false; }`, arguments: [{ value: null }], returnByValue: true }, entry.sessionId);
+      if (exceptionDetails || ![true, false, 'hidden'].includes(result?.value)) throw new Error('Browser card element connection could not be read');
+      if (result.value === false) return null;
+      if (result.value === 'hidden') { await assertBrowserFramesUnchanged(connection, frames); return { visible: false, viewport_width: width, viewport_height: height }; }
     } finally { await connection.send('Runtime.releaseObject', { objectId: object.objectId }, entry.sessionId).catch(() => {}); }
     let model;
     try { ({ model } = await connection.send('DOM.getBoxModel', { backendNodeId }, entry.sessionId)); }
     catch (error) {
       if (!/Could not compute box model/.test(error?.message ?? '')) throw error;
+      // Not rendered (display:none or a hidden ancestor): it has no box, which is not a 0x0 box at the top left.
       await assertBrowserFramesUnchanged(connection, frames);
-      return { rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width: width, viewport_height: height };
+      return { visible: false, viewport_width: width, viewport_height: height };
     }
     const transforms = new Map([[frames[0], point => point]]);
+    let hidden = false;
     const toViewport = async child => {
       if (transforms.has(child)) return transforms.get(child);
       const up = await toViewport(child.parent);
       const owner = await connection.send('DOM.getFrameOwner', { frameId: child.frame.id }, child.parent.sessionId);
+      // A frame hidden by its owner (a challenge frame waiting to be opened) hides everything inside it.
+      const ownerWorld = child.parent === root ? world.contextId : (await connection.send('Page.createIsolatedWorld', { frameId: child.parent.frame.id, worldName: 'chariox-card-viewport', grantUniveralAccess: false }, child.parent.sessionId)).executionContextId;
+      const { object: ownerObject } = await connection.send('DOM.resolveNode', { backendNodeId: owner.backendNodeId, executionContextId: ownerWorld }, child.parent.sessionId);
+      if (ownerObject?.objectId) {
+        try {
+          const { result: shown } = await connection.send('Runtime.callFunctionOn', { objectId: ownerObject.objectId, functionDeclaration: `function() { return typeof this.checkVisibility !== 'function' || this.checkVisibility(${visibilityOptions}); }`, arguments: [{ value: null }], returnByValue: true }, child.parent.sessionId);
+          if (shown?.value === false) hidden = true;
+        } finally { await connection.send('Runtime.releaseObject', { objectId: ownerObject.objectId }, child.parent.sessionId).catch(() => {}); }
+      }
       const { model: parentModel } = await connection.send('DOM.getBoxModel', { backendNodeId: owner.backendNodeId }, child.parent.sessionId);
       const quad = parentModel.content;
       const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: child.frame.id, worldName: 'chariox-card-viewport', grantUniveralAccess: false }, child.sessionId);
@@ -110,7 +130,86 @@ async function childFrameBox(browser, connection, sessionId, tab, command) {
     const right = Math.max(x, Math.min(width, Math.ceil(Math.max(...points.map(p => p[0])) + 16)));
     const bottom = Math.max(y, Math.min(height, Math.ceil(Math.max(...points.map(p => p[1])) + 16)));
     await assertBrowserFramesUnchanged(connection, frames);
+    // The element's own box, clipped to the viewport (an offscreen frame clamps to an edge), must keep an area.
+    const elementLeft = Math.max(0, Math.min(...points.map(p => p[0]))), elementRight = Math.min(width, Math.max(...points.map(p => p[0])));
+    const elementTop = Math.max(0, Math.min(...points.map(p => p[1]))), elementBottom = Math.min(height, Math.max(...points.map(p => p[1])));
+    if (hidden || !(elementRight > elementLeft && elementBottom > elementTop)) return { visible: false, viewport_width: width, viewport_height: height };
     return { rect: { x, y, width: right - x, height: bottom - y }, viewport_width: width, viewport_height: height };
+  });
+}
+
+// Row 666: a challenge widget is a set of frames of its own origin (hCaptcha's checkbox and challenge frames,
+// reCAPTCHA's anchor and its picture frame). A card anchored on one part of it shows the whole widget: the region
+// takes in every visible frame of the origin(s) of the frames the anchor is in or holds, never of the page's own
+// origin. Only frames directly in the page are measured; a page without such frames is unchanged.
+const frameOrigin = frame => {
+  if (typeof frame?.securityOrigin === 'string' && frame.securityOrigin && frame.securityOrigin !== 'null') return frame.securityOrigin;
+  try { const origin = new URL(frame?.url).origin; return origin === 'null' ? null : origin; } catch { return null; }
+};
+async function widgetRects(connection, sessionId, tab, ref, child, anchorObjectId, contextId, width, height, anchorRect) {
+  return withBrowserFrames(connection, sessionId, tab.target_id, tab.document_id, async frames => {
+    const root = frames[0], origins = new Set(), owners = new Map(), rects = new Map();
+    // The page's own frame tree names every direct child frame, whether it renders in the page's process or its own;
+    // a renderer of its own adds the child's full frame record.
+    const direct = (root.tree?.childFrames ?? []).map(({ frame }) => frames.find(entry => entry.frame.id === frame.id)?.frame ?? frame);
+    const owner = async frame => {
+      if (!owners.has(frame.id)) owners.set(frame.id, (await connection.send('DOM.getFrameOwner', { frameId: frame.id }, root.sessionId)).backendNodeId);
+      return owners.get(frame.id);
+    };
+    const ownerRect = async frame => {
+      if (rects.has(frame.id)) return rects.get(frame.id);
+      let rect = null;
+      const backendNodeId = await owner(frame);
+      const { object } = await connection.send('DOM.resolveNode', { backendNodeId, executionContextId: contextId }, root.sessionId);
+      if (object?.objectId) {
+        let shown = false;
+        try {
+          const { result } = await connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function() { return typeof this.checkVisibility !== 'function' || this.checkVisibility(${visibilityOptions}); }`, arguments: [{ value: null }], returnByValue: true }, root.sessionId);
+          shown = result?.value !== false;
+        } finally { await connection.send('Runtime.releaseObject', { objectId: object.objectId }, root.sessionId).catch(() => {}); }
+        let model = null;
+        if (shown) try { ({ model } = await connection.send('DOM.getBoxModel', { backendNodeId }, root.sessionId)); } catch { model = null; }
+        const quad = model?.border;
+        if (Array.isArray(quad) && quad.length === 8 && quad.every(Number.isFinite)) {
+          const xs = [quad[0], quad[2], quad[4], quad[6]], ys = [quad[1], quad[3], quad[5], quad[7]];
+          const left = Math.max(0, Math.min(...xs)), right = Math.min(width, Math.max(...xs)), top = Math.max(0, Math.min(...ys)), bottom = Math.min(height, Math.max(...ys));
+          if (right > left && bottom > top) rect = { left, top, right, bottom };
+        }
+      }
+      rects.set(frame.id, rect);
+      return rect;
+    };
+    if (child) {
+      let entry = frames.find(f => f.prefix && ref.startsWith(f.prefix));
+      while (entry && entry.parent && entry.parent !== root) entry = entry.parent;
+      if (entry && entry !== root) origins.add(frameOrigin(entry.frame));
+      else if (anchorRect) {
+        // An element of a frame rendered in the page's own process: the direct frame whose box holds it.
+        const cx = anchorRect.x + anchorRect.width / 2, cy = anchorRect.y + anchorRect.height / 2;
+        for (const frame of direct) {
+          const r = await ownerRect(frame);
+          if (r && cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) origins.add(frameOrigin(frame));
+        }
+      }
+    } else if (anchorObjectId) {
+      for (const frame of direct) {
+        const { object } = await connection.send('DOM.resolveNode', { backendNodeId: await owner(frame), executionContextId: contextId }, root.sessionId);
+        if (!object?.objectId) continue;
+        try {
+          const { result } = await connection.send('Runtime.callFunctionOn', { objectId: anchorObjectId, functionDeclaration: 'function(node) { return this === node || this.contains(node); }', arguments: [{ objectId: object.objectId }], returnByValue: true }, root.sessionId);
+          if (result?.value === true) origins.add(frameOrigin(frame));
+        } finally { await connection.send('Runtime.releaseObject', { objectId: object.objectId }, root.sessionId).catch(() => {}); }
+      }
+    }
+    origins.delete(null); origins.delete(frameOrigin(root.frame));
+    const found = [];
+    if (!origins.size) return found;
+    for (const frame of direct) {
+      if (!origins.has(frameOrigin(frame))) continue;
+      const r = await ownerRect(frame);
+      if (r) found.push(r);
+    }
+    return found;
   });
 }
 
@@ -124,7 +223,9 @@ function watchBox(previous, doneText, resolveAnchor) {
     if (!node?.isConnected || node.ownerDocument !== document) return null;
     if (doneText !== null && node.innerText.toLowerCase().includes(doneText.toLowerCase())) return { done: true };
     const r = node.getBoundingClientRect(), w = innerWidth, h = innerHeight;
-    if (r.right <= r.left || r.bottom <= r.top) return { rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width: w, viewport_height: h };
+    // Row 655: hidden, not rendered or clipped to nothing by the viewport is the empty crop.
+    if (r.right <= r.left || r.bottom <= r.top || Math.min(w, r.right) <= Math.max(0, r.left) || Math.min(h, r.bottom) <= Math.max(0, r.top)
+      || typeof node.checkVisibility === 'function' && !node.checkVisibility({ visibilityProperty: true })) return { rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width: w, viewport_height: h };
     const x = Math.max(0, Math.min(w, Math.floor(r.left - 16)));
     const y = Math.max(0, Math.min(h, Math.floor(r.top - 16)));
     const right = Math.max(x, Math.min(w, Math.ceil(r.right + 16)));
@@ -202,7 +303,8 @@ export async function resolveCardRegion(host, command, scope, signal) {
   // A card that waits for a response or for page text ends only when that happens: losing its element first is not completion.
   const gone = async reason => {
     if (anchor?.verification?.receipt?.result === 'accepted') return completion();
-    // After a restart the anchor is gone but the command still names the verification: its proof is lost, which is unavailable, never completion.
+    // After a restart the anchor is gone but the command still names the verification: its proof is lost, which is reported as
+    // unavailable (never completion). The kernel keeps the person's card pending and binds it again without the proof.
     if (anchor?.verification || command.verification !== undefined || command.done_text !== undefined) return {state:'unavailable',reason};
     return {state:'condition_met',reason};
   };
@@ -271,16 +373,42 @@ export async function resolveCardRegion(host, command, scope, signal) {
       objectId = resolved.result?.objectId;
       if (!objectId) return goneElement();
     }
-    if (remembered.children.has(command.ref)) {
-      box = await childFrameBox(browser, connection, sessionId, tab, command);
-    } else {
-      const resolved = objectId ? {object:{objectId}} : await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
-      objectId = resolved.object?.objectId;
-      if (!objectId) return goneElement();
-      const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }, { value: command.done_text ?? null }, ...(anchor?.elementResolver ? [{ objectId: anchor.elementResolver }] : [])], returnByValue: true, awaitPromise: true }, sessionId);
+    const readBox = async after => {
+      if (remembered.children.has(command.ref)) {
+        const child = await childFrameBox(browser, connection, sessionId, tab, { ...command, after });
+        return child?.visible === false ? emptyCrop(child.viewport_width, child.viewport_height) : child;
+      }
+      if (!objectId) {
+        const resolved = await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
+        objectId = resolved.object?.objectId;
+        if (!objectId) return null;
+      }
+      const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: after ?? null }, { value: command.done_text ?? null }, ...(anchor?.elementResolver ? [{ objectId: anchor.elementResolver }] : [])], returnByValue: true, awaitPromise: true }, sessionId);
       if (signal?.aborted) throw new Error('Browser card observation cancelled');
       if (reply.exceptionDetails) throw new Error('Browser card geometry could not be read');
-      box = reply.result?.value;
+      return reply.result?.value;
+    };
+    // Row 666: a card that grew to its widget waits on its anchor's own geometry; comparing the union with the anchor
+    // alone would end every long read at once.
+    box = await readBox(command.after !== undefined && anchor?.anchorBox ? anchor.anchorBox : command.after);
+    // Row 655: at registration an element without visible area (a challenge frame not opened yet) gets the
+    // existing geometry window to appear; after it the card is the empty crop and the kernel tells the agent so.
+    for (const deadline = Date.now() + registrationWaitMs; command.after === undefined && box && box.done !== true && !hasArea(box) && Date.now() < deadline;) box = await readBox(box);
+    // Row 666: a visible anchor in a challenge widget shows the whole widget (its challenge frame grows the card when it opens).
+    if (anchor && box && box.done !== true && box.rect) anchor.anchorBox = { rect: box.rect, viewport_width: box.viewport_width, viewport_height: box.viewport_height };
+    if (box && box.done !== true && hasArea(box) && !(command.app_confirmation === true)) {
+      const child = remembered.children.has(command.ref);
+      // A page element holding no frame belongs to no widget: no frame walk on ordinary pages.
+      const holdsFrame = child || (objectId && (await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: "function() { return this.localName === 'iframe' || typeof this.querySelector === 'function' && !!this.querySelector('iframe'); }", arguments: [{ value: null }], returnByValue: true }, sessionId)).result?.value === true);
+      const extra = !holdsFrame ? [] : await widgetRects(connection, sessionId, tab, command.ref, child, child ? null : objectId, world.contextId, box.viewport_width, box.viewport_height, box.rect);
+      if (extra.length) {
+        const { x, y, width: w, height: h } = box.rect, vw = box.viewport_width, vh = box.viewport_height;
+        const left = Math.max(0, Math.floor(Math.min(x, ...extra.map(r => r.left - 16))));
+        const top = Math.max(0, Math.floor(Math.min(y, ...extra.map(r => r.top - 16))));
+        const right = Math.min(vw, Math.ceil(Math.max(x + w, ...extra.map(r => r.right + 16))));
+        const bottom = Math.min(vh, Math.ceil(Math.max(y + h, ...extra.map(r => r.bottom + 16))));
+        box = { ...box, rect: { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) } };
+      }
     }
     if ((await current())?.loaderId !== remembered.document_id) return gone('Browser document changed');
     if (box === null) return goneElement();

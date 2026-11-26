@@ -479,3 +479,19 @@ fn withdrawing_a_reply_is_routed() {
     ));
     assert!(crate::runtime::room_tool_admission::command(&tokens).is_ok());
 }
+
+#[test]
+fn agent_parent_help_describes_the_tree_change_and_continued_peer_control() {
+    // Row 405 lets the owner's agents control each other, so a move changes the tree and never
+    // promises that the old parent loses control.
+    let docs = command_docs(MetaCommandDocsArgs {
+        command: "agent parent".to_string(),
+    })
+    .expect("agent parent docs should exist");
+    let text = docs["description"].as_str().unwrap().to_lowercase();
+    assert!(text.contains("tree"), "{text}");
+    assert!(text.contains("peers"), "{text}");
+    for promise in ["no longer does", "no longer prompts", "loses control"] {
+        assert!(!text.contains(promise), "{text}");
+    }
+}

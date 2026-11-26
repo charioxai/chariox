@@ -106,7 +106,6 @@ async fn check_lease_release(fixture: &LiveWorker) {
                 provider_session_id: None,
                 required_mcps: Vec::new(),
                 remote_extension_manifest: Default::default(),
-                provider_launch_credential: None,
             },
         )
         .await

@@ -5,6 +5,7 @@ mod goal_waits;
 mod goal_yields;
 mod open_sources;
 mod owner_wait;
+mod stale_waits;
 mod unwaited_timers;
 mod wakeable_agents;
 struct Fixture {
@@ -52,12 +53,23 @@ impl Fixture {
             .unwrap()
     }
     fn create(&self, id: &str, kind: &str, due: Option<u64>, interval: Option<u64>) -> AgentWake {
+        self.create_in("p", id, kind, due, interval)
+    }
+    /// A wake armed by the turn of prompt `prompt` (its own task).
+    fn create_in(
+        &self,
+        prompt: &str,
+        id: &str,
+        kind: &str,
+        due: Option<u64>,
+        interval: Option<u64>,
+    ) -> AgentWake {
         self.wakes(Operation::CreateWake {
-            task: "p".into(),
-            prompt: "p".into(),
+            task: prompt.into(),
+            prompt: prompt.into(),
             wake: AgentWake {
                 id: id.into(),
-                task_id: "p".into(),
+                task_id: prompt.into(),
                 room_id: "room".into(),
                 agent_id: "agent".into(),
                 registration_id: format!("completion-{id}"),

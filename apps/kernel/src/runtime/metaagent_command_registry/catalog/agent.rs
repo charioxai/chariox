@@ -222,7 +222,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "agents below the caller; peers of the same owner with no more authority than the caller",
         routed: true,
-        description: "Stop the active turn of an agent below you, at any depth, and keep the agent. Its finish arrives as a child_finished event. A peer (an ordinary agent of this or another room of the same owner, never one above you) can be stopped too when its permission level and mode are at or below yours; --room names its room.",
+        description: "Stop the active turn of an agent below you, at any depth, and keep the agent. Its finish arrives as a child_finished event. A peer (another of the owner's agents in this or another room, a sub-agent included, never one above you) can be stopped too when its permission level and mode are at or below yours; --room names its room.",
     },
     MetaCommandDoc {
         name: "agent steer",
@@ -243,7 +243,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "agents below the caller; peers of the same owner with no more authority than the caller",
         routed: true,
-        description: "Send an urgent message to an agent: it steers the agent's running turn, or starts a turn if the agent is idle. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (an ordinary agent of this or another room, on this or another kernel, of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. With --reply-requested, the answer comes from a turn started by the request. When the request joins another turn, your inbox records why there is no answer. This is chariox.send_agent_message with urgent set.",
+        description: "Send an urgent message to an agent: it steers the agent's running turn, or starts a turn if the agent is idle. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (another of the owner's agents in this or another room of this kernel, sub-agents included, or an ordinary agent on another kernel of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. With --reply-requested, the answer comes from a turn started by the request. When the request joins another turn, your inbox records why there is no answer. This is chariox.send_agent_message with urgent set.",
     },
     MetaCommandDoc {
         name: "agent message",
@@ -453,6 +453,24 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         authority: "the agents above the stopped agent",
         routed: true,
         description: "Goes on with whatever holds an agent below you. A blocked task: your child's `child_blocked` event names what unblocks it; `agent resume <agent>` resumes the task and `agent resume cancel <agent>` cancels it. A provider usage limit: the kernel itself resumes the agent when usage is back, unless the person chose Ask me, so nothing depends on this command; `agent resume cancel` takes back an armed resume at any time, and `agent resume` arms it again (refused when the person chose Ask me, which is theirs to decide). The child's `child_finished` event names `resumes_at_ms` while a resume is armed. The person runs the same words as `chariox agent resume`.",
+    },
+    MetaCommandDoc {
+        name: "agent parent",
+        aliases: &["agent parent"],
+        usage: "agent parent <agent-ref> <new-parent-ref|none>",
+        examples: &["agent parent worker-1 successor", "agent parent worker-1 none"],
+        tags: &["agent", "parent", "orchestration", "successor", "handover"],
+        intents: &[
+            "take over the lanes of the orchestrator before me",
+            "move an agent under another parent",
+            "make an agent a room agent",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "the owner's reach: any agent of the Room, as the owner's own move",
+        routed: true,
+        description: "Moves an agent, with its sub-agents, history and context, under a new parent in this Room; `none` makes it a Room agent. The agent keeps its id and leaves the old parent's tree for the new parent's (`agent children`, child events); it can no longer control the agent it was moved under. Agents of the owner keep controlling each other as peers, so the old parent is not locked out. Refused under itself or one of its descendants, and for an agent of another Room. The person runs the same words as `chariox agent parent`.",
     },
     MetaCommandDoc {
         name: "agent profiles",

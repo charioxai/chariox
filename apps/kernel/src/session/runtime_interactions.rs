@@ -218,6 +218,14 @@ impl RuntimeInteractionCustomChoice {
     }
 }
 
+/// The Vault entry a secret card fills (safe metadata only; the value is never part of a card).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionSecretRequest {
+    pub credential: crate::config::UserCredentialConfig,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeInteractionInputKind {
@@ -302,6 +310,10 @@ pub struct RuntimeInteraction {
     /// MP-08 / MP-09 / MP-10 / MP-11: the payment a `vault-card-*` decision approves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     payment: Option<crate::local::VaultPaymentApproval>,
+    /// Row 539: the Vault entry this card's secret input fills. The kernel stores the typed
+    /// secret under it when the person answers; the answer the agent reads never carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_request: Option<RuntimeInteractionSecretRequest>,
     id: String,
     #[serde(flatten)]
     subject: RuntimeInteractionSubject,
@@ -461,6 +473,7 @@ impl RuntimeInteraction {
             handoff: None,
             requester: None,
             payment: None,
+            secret_request: None,
             room_dismissed: false,
             decision_expires_at: None,
             sudo_request: None,
@@ -573,6 +586,15 @@ impl RuntimeInteraction {
 
     pub(crate) fn with_payment(mut self, payment: crate::local::VaultPaymentApproval) -> Self {
         self.payment = Some(payment);
+        self
+    }
+
+    pub fn secret_request(&self) -> Option<&RuntimeInteractionSecretRequest> {
+        self.secret_request.as_ref()
+    }
+
+    pub(crate) fn with_secret_request(mut self, request: RuntimeInteractionSecretRequest) -> Self {
+        self.secret_request = Some(request);
         self
     }
 
@@ -695,6 +717,7 @@ impl RuntimeInteraction {
             handoff: None,
             requester: None,
             payment: None,
+            secret_request: None,
             room_dismissed: false,
             decision_expires_at: None,
             sudo_request: None,

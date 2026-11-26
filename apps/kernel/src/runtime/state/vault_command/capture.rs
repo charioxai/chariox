@@ -117,7 +117,7 @@ fn first_group() -> usize {
 pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_COMMAND.into(),
-        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. origin and env run it with existing Vault entries, as in chariox.vault.use_env. Retrying with the same request_id returns the same credential without running the command again.".into(),
+        description: "run one command (argv, no shell) in your workspace and store a secret it prints in the owner's Vault. You never see the value or the output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"}, or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination (an env name and origin, a stdin origin, or an absolute workspace file path) for chariox.vault.use_env or chariox.vault.write_file. origin and env run it with existing entries, as in use_env. The same request_id again returns the same credential without rerunning.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","argv","host","use_binding"],"properties":{
             "use_binding": capture_binding_schema(),
             "request_id":{"type":"string","minLength":1,"maxLength":128},
@@ -293,8 +293,9 @@ impl KernelRuntimeState {
         masks.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
         let output = run_command(
             self,
-            context.clone(),
+            Some(context.clone()),
             super::super::agent_process_watch::KernelCommand {
+                launch: super::super::agent_process_watch::KernelLaunch::Isolated,
                 argv,
                 cwd,
                 env,
@@ -309,7 +310,7 @@ impl KernelRuntimeState {
             KernelCommandExit::Exited(code) => {
                 return Err(error(format!(
                     "the command exited with code {code}; nothing was stored{}",
-                    stderr_excerpt(super::use_env::masked(&output.stderr, &masks).0.as_bytes())
+                    stderr_excerpt(super::mask::masked(&output.stderr, &masks).0.as_bytes())
                 )))
             }
             KernelCommandExit::TimedOut => {

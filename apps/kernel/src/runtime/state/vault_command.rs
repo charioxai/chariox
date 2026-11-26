@@ -10,6 +10,8 @@ mod copy;
 mod entry_ref;
 mod files;
 mod home;
+mod mask;
+mod privileged;
 mod remove;
 mod use_env;
 
@@ -22,6 +24,9 @@ pub(in crate::runtime::state) use copy::site_bearer_use;
 pub(crate) use copy::{copy_for_use_spec, VAULT_COPY_FOR_USE};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
 pub(crate) use home::HomeVaultCaptureAnswer;
+#[cfg(test)]
+pub(in crate::runtime::state) use privileged::sudo_refusal;
+pub(crate) use privileged::{privileged_run_spec, PRIVILEGED_RUN};
 pub(crate) use remove::{remove_capture_spec, VAULT_REMOVE_CAPTURE};
 pub(crate) use use_env::{use_env_spec, VAULT_USE_ENV};
 
@@ -65,13 +70,15 @@ impl KernelRuntimeState {
 /// Runs the command off the async runtime; it may take minutes.
 async fn run_command(
     state: &KernelRuntimeState,
-    context: VaultAgentContext,
+    context: Option<VaultAgentContext>,
     command: super::agent_process_watch::KernelCommand,
 ) -> Result<super::agent_process_watch::KernelCommandOutput, DaemonError> {
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
-        state.recheck_vault_command_context(&context)?;
-        state.run_kernel_command(&context, command)
+        if let Some(context) = &context {
+            state.recheck_vault_command_context(context)?;
+        }
+        state.run_kernel_command(context.as_ref(), command)
     })
     .await
     .map_err(|_| error("the command runner stopped unexpectedly"))?

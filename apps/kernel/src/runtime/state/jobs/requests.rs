@@ -207,6 +207,7 @@ impl KernelRuntimeState {
             return Err(error);
         }
         self.refresh_wake_projection(&task.room_id);
+        self.write_job_row(&id, task.provider_run_id.as_deref());
         self.wait_for_job(&id, request.wait_s).await
     }
 

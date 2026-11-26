@@ -293,6 +293,7 @@ mod tests {
     mod session_actor_projection;
     mod session_lifecycle_projection;
     mod session_read_projection;
+    mod slice_hosted_placement;
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;

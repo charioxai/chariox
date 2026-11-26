@@ -109,6 +109,7 @@ async fn an_orchestrator_that_owns_the_switch_gets_the_stop_and_the_person_no_ca
     team.rt()
         .set_agent_parent(
             OWNER,
+            None,
             crate::local::SetAgentParentRequest {
                 session_id: team.session_id.clone(),
                 agent_id: team.lanes[1].agent_id.clone(),

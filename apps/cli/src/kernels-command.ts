@@ -74,6 +74,14 @@ export async function withKernel<T>(
   options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
   use: (send: SendRequest) => Promise<T>,
 ): Promise<T> {
+  // An agent's own shell: the kernel gave its run a credential for the kernel's own endpoint
+  // (CHARIOX_AGENT_CLI_TOKEN + CHARIOX_KERNEL_URL). It comes first, so the agent needs no access
+  // grant; the kernel's own gates then answer for what an agent may not do. An explicit --socket or
+  // --kernel is a different target and keeps the grant socket.
+  if (options.socket === undefined && options.kernel === undefined && agentCredentialInEnvironment()) {
+    const client = new LocalIpcClient(defaultKernelEndpoint(), localAgentClientOptions(options.commandId))
+    try { return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds)) } finally { await client.close() }
+  }
   if (options.kernel !== undefined) await requireKernelGateway(options.socket, options.timeoutSeconds)
   const client = kernelUnixClient(options.socket, { kernel: options.kernel, commandId: options.commandId })
   try {
@@ -84,6 +92,16 @@ export async function withKernel<T>(
       throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
     }))
   } finally { await client.close() }
+}
+
+// The kernel client removes the credential from the environment when it first uses it, so a process that has
+// seen it once keeps taking the agent route for its later requests.
+let agentProcess = false
+
+/** The kernel put its credential for this run in the environment: the run's shell is an agent's. */
+function agentCredentialInEnvironment(): boolean {
+  if (!agentProcess && process.env.CHARIOX_AGENT_CLI_TOKEN?.trim() && process.env.CHARIOX_KERNEL_URL?.trim()) agentProcess = true
+  return agentProcess
 }
 
 export function localAgentClientOptions(commandId: string | undefined) {
@@ -233,7 +251,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         const stdin = await readExecInput(ownStdin(), { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
         try {
           process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
-            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process, kernel: kernel ?? undefined }, send, process.stdout))
         } finally {
           late.stop()
           if (late.arrived) process.stderr.write(`${LATE_STDIN_NOTICE}\n`)

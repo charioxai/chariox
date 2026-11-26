@@ -28,9 +28,9 @@ use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 
 use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use super::{
-    ConnectionCloseCommand, KernelSubscription, KernelTransportRuntime, HEARTBEAT_INTERVAL_TICKS,
-    RELAY_DISCOVERY_INTERVAL_TICKS, ROOM_LIST_INTERVAL_TICKS, ROOM_LIST_ROW_COALESCE_MS,
-    SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WATCH_INTERVAL_MS,
+    interval_due, ConnectionCloseCommand, KernelSubscription, KernelTransportRuntime,
+    HEARTBEAT_INTERVAL_TICKS, RELAY_DISCOVERY_INTERVAL_TICKS, ROOM_LIST_INTERVAL_TICKS,
+    ROOM_LIST_ROW_COALESCE_MS, SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WATCH_INTERVAL_MS,
 };
 
 pub(super) async fn run_subscription_loop(
@@ -956,6 +956,8 @@ async fn run_room_list_subscription_loop(
     let mut previous_slices = None;
     let mut inventory_dirty = true;
     let mut tick: u64 = 0;
+    let mut last_room_list_refresh: Option<u64> = None;
+    let mut last_remote_machine_discovery: Option<u64> = None;
     let mut next_heartbeat_at = Instant::now();
     let mut next_relay_status_at = Instant::now();
     loop {
@@ -997,7 +999,9 @@ async fn run_room_list_subscription_loop(
         }
         let room_list_change_sequence = router.room_list_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
-        if inventory_dirty || tick.is_multiple_of(ROOM_LIST_INTERVAL_TICKS) {
+        let room_list_refresh_due =
+            interval_due(tick, &mut last_room_list_refresh, ROOM_LIST_INTERVAL_TICKS);
+        if inventory_dirty || room_list_refresh_due {
             let Some(snapshot_result) = await_subscription_work_with_heartbeats(
                 router.room_list_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
                 &mut next_heartbeat_at,
@@ -1092,7 +1096,11 @@ async fn run_room_list_subscription_loop(
             next_relay_status_at =
                 advance_subscription_deadline(next_relay_status_at, heartbeat_interval);
         }
-        if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
+        if interval_due(
+            tick,
+            &mut last_remote_machine_discovery,
+            RELAY_DISCOVERY_INTERVAL_TICKS,
+        ) {
             let inventory = router.transport_remote_machines_snapshot();
             if previous_remote_machines.as_ref() != Some(&inventory) {
                 previous_remote_machines = Some(inventory.clone());

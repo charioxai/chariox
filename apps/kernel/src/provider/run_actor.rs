@@ -144,6 +144,18 @@ impl ProviderRunActorMailbox {
         self.runtime_registry.claude_process_identities()
     }
 
+    /// Runs a command holds: their turns are not at a safe point for a hot reload.
+    pub(crate) fn busy_runs(&self) -> Vec<String> {
+        let mut runs = self.runtime_registry.busy_runs();
+        // A prompt or steer queued behind the worker is work too: it takes the runtime next.
+        runs.extend(self.in_flight.prompt_io_in_flight_runs());
+        runs.extend(self.in_flight.output_poll_in_flight_runs());
+        runs.extend(self.in_flight.plan_publication_in_flight_runs());
+        runs.sort();
+        runs.dedup();
+        runs
+    }
+
     pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
         self.runtime_registry.claude_runs_exited_while_idle(only)
     }
@@ -192,7 +204,7 @@ impl ProviderRunActorMailbox {
             .lock()
             .expect("provider output poll delay map poisoned")
             .remove(run_id);
-        self.clear_structured_prompt_io_in_flight(run_id);
+        self.in_flight.reset_prompt_io_in_flight(run_id);
         self.clear_structured_output_poll_in_flight(run_id);
         self.runtime_registry.clear_runtime(run_id, true);
     }

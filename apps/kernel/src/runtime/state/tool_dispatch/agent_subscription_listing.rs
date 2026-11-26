@@ -39,7 +39,18 @@ impl KernelRuntimeState {
         } else {
             (Vec::new(), None)
         };
+        // Row 470: every wait of this agent's other tasks, read-only: a retained watch of a task
+        // that still waits is listed here even where its registrations are not.
+        let waits: Vec<Value> = store
+            .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
+            .iter()
+            .filter(|t| t.task_id != task.task_id && t.wait.is_some())
+            .filter(|t| t.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting)
+            .take(32)
+            .map(super::agent_wake_listing::wait_row)
+            .collect();
         Ok(json!({
+            "waits": waits,
             "task": task_listing_row(task.clone(), history, 16 * 1024),
             "registrations": registrations, "next_registrations_cursor": next_registrations_cursor,
             "other_tasks": other_tasks, "next_other_tasks_cursor": next_other_tasks_cursor,

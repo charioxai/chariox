@@ -15,7 +15,9 @@ mod accepted_yield;
 mod assessment_inbox;
 #[cfg(unix)]
 mod handed_over_run;
+mod lost_process;
 mod mcp_paging;
+mod stale_waits;
 #[cfg(unix)]
 mod unwatched_work;
 mod watch_open;
@@ -2690,6 +2692,8 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 
 #[path = "async_popup.rs"]
 mod async_popup;
+#[path = "credential_secret_card.rs"]
+mod credential_secret_card;
 
 #[path = "claude_login_card.rs"]
 mod claude_login_card;

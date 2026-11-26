@@ -210,6 +210,11 @@ impl DaemonApp {
         #[cfg(unix)]
         self.adopt_handed_over_clients();
         #[cfg(unix)]
+        {
+            let mailbox = self.providers.read().run_actor_mailbox();
+            crate::hot_reload::watch_busy_turns(move || mailbox.busy_runs());
+        }
+        #[cfg(unix)]
         let hot_reload = crate::hot_reload::requested(
             self.room_terminals(),
             self.config
@@ -330,6 +335,10 @@ impl DaemonApp {
             }
             #[cfg(not(unix))]
             wait_for_shutdown_signal().await;
+            #[cfg(unix)]
+            if crate::hot_reload::handing_over() {
+                crate::shutdown::begin_hot_reload();
+            }
             crate::shutdown::begin();
             runtime_state.finish_outside_waits_on_shutdown().await;
             let _ = shutdown_tx.send(true);

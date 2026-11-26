@@ -88,7 +88,7 @@ test('an App confirmation region is found by the host in the Tab document, never
   assert.equal(calls.includes('DOM.getDocument'), false, 'the base fake never saw the confirmation query');
 }));
 
-test('a plain card is bound again to the whole page after the browser restarted, and one that waits for a proof is not', () => withHost(async ({ host, snapshot, region, state }) => {
+test('after a browser restart a person card is bound again to the whole page (a plain card by the restart notice, a card that waits for text or a proof by unavailable "Browser restarted"); a rebind never carries a proof', () => withHost(async ({ host, snapshot, region, state }) => {
   await snapshot();
   const first = await region({ card_id: 'person-card' });
   assert.equal(first.state, 'present');
@@ -192,7 +192,7 @@ test('546 a second navigation while the card is being rebound leaves it rebindab
   assert.equal(again.state, 'present');
   assert.equal(again.region.document_id, 'doc-3');
 }));
-test('a verification card whose proof was lost with the restart settles unavailable, never as a completed card', () => withHost(async ({ host, snapshot, region }) => {
+test('a verification card whose proof was lost with the restart reports unavailable "Browser restarted" (the kernel keeps the card and rebinds it without the proof), never a completed card', () => withHost(async ({ host, snapshot, region }) => {
   const verification = { challenge_id: 'challenge-one', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
   await snapshot();
   const first = await region({ card_id: 'verification', verification });
@@ -203,7 +203,7 @@ test('a verification card whose proof was lost with the restart settles unavaila
   host.cardReferences.clear(); host.cardAnchors.clear();
   // The recovered card polls with the old generation and its verification condition.
   const lost = await region({ card_id: 'verification', verification, generation: 1, document_id: 'doc' });
-  assert.equal(lost.state, 'unavailable', 'a lost proof is reported to the waiting agent, not settled as success');
+  assert.equal(lost.state, 'unavailable', 'a lost proof is reported as unavailable, never as success; the kernel keeps the card pending and rebinds it');
   assert.equal(lost.reason, 'Browser restarted');
   // The same poll for a plain card is still the restart notice the kernel rebinds from.
   const plain = await region({ card_id: 'plain', generation: 1, document_id: 'doc' });
@@ -419,4 +419,200 @@ test('AU-03 a done_text card cannot be rebound to another done text', () => with
   await region({ card_id: 'done', done_text: 'Verification accepted' });
   await assert.rejects(region({ card_id: 'done', done_text: 'Something else' }), { code: 'user_domain_stale_reference' });
   await assert.rejects(region({ card_id: 'done' }), { code: 'user_domain_stale_reference' });
+}));
+
+// Row 655: a hidden hCaptcha challenge frame is parked far above the page (top:-10000px). Its buttons map to a
+// box clipped to nothing; the card must be the empty crop, never a sized box at the page's top edge.
+function childFrameConnection(host, state, frame) {
+  return host.browser.ensureConnection().then(connection => {
+    const original = connection.send.bind(connection);
+    const childFrame = { id: 'child', parentId: 'frame', loaderId: 'child-doc' };
+    connection.send = async (method, params, session) => {
+      if (method === 'Page.getFrameTree') return { frameTree: session === 'child-session'
+        ? { frame: childFrame } : { frame: { id: 'frame', loaderId: state.document_id }, childFrames: [{ frame: childFrame }] } };
+      if (method === 'Target.getTargets') return { targetInfos: [{ type: 'iframe', targetId: 'child', parentFrameId: 'frame' }] };
+      if (method === 'Target.attachToTarget') return { sessionId: 'child-session' };
+      if (method === 'DOM.getFrameOwner') return { backendNodeId: 99 };
+      if (method === 'DOM.getBoxModel' && params.backendNodeId !== 99 && frame.unrendered) throw new Error('Could not compute box model.');
+      if (method === 'DOM.getBoxModel') return params.backendNodeId === 99
+        ? { model: { content: frame.owner } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
+      if (method === 'DOM.resolveNode' && params.backendNodeId === 99) return { object: { objectId: 'owner' } };
+      if (method === 'Runtime.callFunctionOn' && params.objectId === 'owner') return { result: { value: !frame.ownerHidden } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+      if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
+      return original(method, params, session);
+    };
+  });
+}
+
+test('655 a card on an element inside a hidden challenge frame is the empty crop, then follows the frame when it opens', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const frame = { owner: [0, -10000, 400, -10000, 400, -9500, 0, -9500] };
+  await childFrameConnection(host, state, frame);
+  await snapshot();
+  const parked = await region({ ref, card_id: 'card' });
+  assert.equal(parked.state, 'present');
+  assert.deepEqual(parked.region.rect, { x: 0, y: 0, width: 0, height: 0 }, 'a box clipped to nothing is the empty crop');
+  frame.owner = [100, 120, 300, 120, 300, 220, 100, 220];
+  const opened = await region({ ref, card_id: 'card', generation: 1, document_id: 'doc', after: { rect: parked.region.rect, viewport_width: 800, viewport_height: 600 } });
+  assert.deepEqual(opened.region.rect, { x: 89, y: 114, width: 82, height: 52 }, 'the card follows the frame when it opens');
+  frame.ownerHidden = true;
+  const closed = await region({ ref, card_id: 'card', generation: 1, document_id: 'doc', after: { rect: opened.region.rect, viewport_width: 800, viewport_height: 600 } });
+  assert.deepEqual(closed.region.rect, { x: 0, y: 0, width: 0, height: 0 }, 'a frame hidden by its owner hides its elements');
+}));
+
+test('655 an element that is not rendered has no box: the empty crop, not a 0x0 box read as a position', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const frame = { owner: [100, 120, 300, 120, 300, 220, 100, 220], unrendered: true };
+  await childFrameConnection(host, state, frame);
+  await snapshot();
+  const started = Date.now();
+  const unrendered = await region({ ref });
+  assert.deepEqual(unrendered.region.rect, { x: 0, y: 0, width: 0, height: 0 });
+  assert.ok(Date.now() - started >= 900, 'registration waited the geometry window for the element to appear');
+}));
+
+test('655 registration waits the geometry window for an element that appears (an opening challenge), then binds its box', () => withHost(async ({ snapshot, region, state }) => {
+  await snapshot();
+  state.box = { left: 80, top: -10000, right: 180, bottom: -9950 };
+  const waiting = region({});
+  await delay(50);
+  state.box = { left: 80, top: 90, right: 180, bottom: 140 };
+  const shown = await waiting;
+  assert.equal(shown.state, 'present');
+  assert.deepEqual(shown.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+  state.box = { left: 80, top: -10000, right: 180, bottom: -9950 };
+  const parked = await region({});
+  assert.deepEqual(parked.region.rect, { x: 0, y: 0, width: 0, height: 0 }, 'an element above the viewport is the empty crop, not a strip at the top edge');
+}));
+
+test('666 a card on a challenge widget grows to the widget\'s visible frames of its own origin, never the page\'s other frames', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  const widget = 'https://widget.example', frames = {
+    child: { frame: { id: 'child', parentId: 'frame', loaderId: 'child-doc', securityOrigin: widget, url: widget + '/checkbox' }, owner: 99, box: [20, 80, 320, 80, 320, 154, 20, 154] },
+    challenge: { frame: { id: 'challenge', parentId: 'frame', loaderId: 'c-doc', securityOrigin: widget, url: widget + '/challenge' }, owner: 98, box: [330, 60, 730, 60, 730, 660, 330, 660] },
+    ad: { frame: { id: 'ad', parentId: 'frame', loaderId: 'a-doc', securityOrigin: 'https://ads.example', url: 'https://ads.example/' }, owner: 97, box: [0, 700, 1280, 700, 1280, 790, 0, 790] },
+  };
+  const hidden = new Set(['challenge']);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://page.example', url: 'https://page.example/' }, childFrames: Object.values(frames).map(f => ({ frame: f.frame })) } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: Object.keys(frames).map(id => ({ type: 'iframe', targetId: id, parentFrameId: 'frame' })) };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && params.backendNodeId >= 97 && params.backendNodeId <= 99) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) {
+      const id = Object.keys(frames).find(k => 'owner-' + frames[k].owner === params.objectId);
+      return { result: { value: !hidden.has(id) } };
+    }
+    if (method === 'DOM.getBoxModel') {
+      const f = Object.values(frames).find(v => v.owner === params.backendNodeId);
+      return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
+    }
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
+    return original(method, params, session);
+  };
+  await snapshot();
+  const closed = await region({ ref, card_id: 'w' });
+  const r = closed.region.rect;
+  assert.ok(r.x <= 20 && r.x + r.width >= 320 && r.height < 200, `only the checkbox frame while the challenge is hidden: ${JSON.stringify(r)}`);
+  hidden.delete('challenge');
+  const open = (await region({ ref, card_id: 'w', generation: 1, document_id: 'doc', after: { rect: r, viewport_width: 1280, viewport_height: 800 } })).region.rect;
+  assert.ok(open.x <= 20 && open.x + open.width >= 730 && open.y <= 60 && open.y + open.height >= 660, `the challenge with its bottom bar is in: ${JSON.stringify(open)}`);
+  assert.ok(open.y + open.height < 700, 'the page\'s ad frame of another origin is not');
+}));
+
+test('666 a reCAPTCHA-style widget: a page element holding the anchor frame grows to the picture frame (bframe) each time it opens, and back', () => withHost(async ({ host, snapshot, region, state, node }) => {
+  // The agent anchors on the page's own container of the anchor iframe; the bframe is a sibling frame of the same origin.
+  const google = 'https://www.google.com', frames = {
+    anchor: { frame: { id: 'anchor', parentId: 'frame', loaderId: 'a-doc', securityOrigin: google, url: google + '/recaptcha/api2/anchor' }, owner: 99, box: [40, 100, 344, 100, 344, 178, 40, 178] },
+    bframe: { frame: { id: 'bframe', parentId: 'frame', loaderId: 'b-doc', securityOrigin: google, url: google + '/recaptcha/api2/bframe' }, owner: 98, box: [360, 20, 760, 20, 760, 600, 360, 600] },
+  };
+  let open = false;
+  node.querySelector = selector => selector === 'iframe' ? {} : null;
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://shop.example', url: 'https://shop.example/' }, childFrames: Object.values(frames).map(f => ({ frame: f.frame })) } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: Object.keys(frames).map(id => ({ type: 'iframe', targetId: id, parentFrameId: 'frame' })) };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && (params.backendNodeId === 98 || params.backendNodeId === 99)) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('this.contains(node)')) return { result: { value: params.arguments[0].objectId === 'owner-99' } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) return { result: { value: params.objectId === 'owner-99' || open } };
+    if (method === 'DOM.getBoxModel') { const f = Object.values(frames).find(v => v.owner === params.backendNodeId); if (f) return { model: { content: f.box, border: f.box } }; }
+    return original(method, params, session);
+  };
+  state.box = { left: 30, top: 90, right: 354, bottom: 188 };
+  await snapshot();
+  let last = (await region({ card_id: 'r' })).region;
+  const after = r => ({ generation: 1, document_id: 'doc', card_id: 'r', after: { rect: r.rect, viewport_width: r.viewport_width, viewport_height: r.viewport_height } });
+  for (let round = 0; round < 3; round++) {
+    open = true;
+    const grown = (await region(after(last))).region;
+    assert.ok(grown.rect.x + grown.rect.width >= 760 && grown.rect.y <= 20 && grown.rect.y + grown.rect.height >= 600, `round ${round}: the picture frame is in: ${JSON.stringify(grown.rect)}`);
+    if (round === 0) {
+      // Review P2: a card that grew waits on its anchor's own geometry: a stationary open challenge is a long read, not a spin.
+      const started = Date.now();
+      const still = (await region(after(grown))).region;
+      assert.ok(Date.now() - started >= 900, `a stationary open challenge waits the geometry window (${Date.now() - started} ms)`);
+      assert.deepEqual(still.rect, grown.rect);
+    }
+    open = false;
+    last = (await region(after(grown))).region;
+    assert.ok(last.rect.x + last.rect.width < 400, `round ${round}: closed again, only the anchor: ${JSON.stringify(last.rect)}`);
+  }
+}));
+
+test('666 review: a widget whose frames render in the page\'s own process (no iframe targets) also grows', () => withHost(async ({ host, snapshot, region, state, node }) => {
+  // The agent anchors on the page's own container of the anchor iframe; the bframe is a sibling frame of the same origin.
+  const google = 'https://www.google.com', frames = {
+    anchor: { frame: { id: 'anchor', parentId: 'frame', loaderId: 'a-doc', securityOrigin: google, url: google + '/recaptcha/api2/anchor' }, owner: 99, box: [40, 100, 344, 100, 344, 178, 40, 178] },
+    bframe: { frame: { id: 'bframe', parentId: 'frame', loaderId: 'b-doc', securityOrigin: google, url: google + '/recaptcha/api2/bframe' }, owner: 98, box: [360, 20, 760, 20, 760, 600, 360, 600] },
+  };
+  let open = false;
+  node.querySelector = selector => selector === 'iframe' ? {} : null;
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://shop.example', url: 'https://shop.example/' }, childFrames: Object.values(frames).map(f => ({ frame: f.frame })) } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: [] };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && (params.backendNodeId === 98 || params.backendNodeId === 99)) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('this.contains(node)')) return { result: { value: params.arguments[0].objectId === 'owner-99' } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) return { result: { value: params.objectId === 'owner-99' || open } };
+    if (method === 'DOM.getBoxModel') { const f = Object.values(frames).find(v => v.owner === params.backendNodeId); if (f) return { model: { content: f.box, border: f.box } }; }
+    return original(method, params, session);
+  };
+  state.box = { left: 30, top: 90, right: 354, bottom: 188 };
+  await snapshot();
+  let last = (await region({ card_id: 'r' })).region;
+  const after = r => ({ generation: 1, document_id: 'doc', card_id: 'r', after: { rect: r.rect, viewport_width: r.viewport_width, viewport_height: r.viewport_height } });
+  for (let round = 0; round < 1; round++) {
+    open = true;
+    const grown = (await region(after(last))).region;
+    assert.ok(grown.rect.x + grown.rect.width >= 760 && grown.rect.y <= 20 && grown.rect.y + grown.rect.height >= 600, `round ${round}: the picture frame is in: ${JSON.stringify(grown.rect)}`);
+    if (round === 0) {
+      // Review P2: a card that grew waits on its anchor's own geometry: a stationary open challenge is a long read, not a spin.
+      const started = Date.now();
+      const still = (await region(after(grown))).region;
+      assert.ok(Date.now() - started >= 900, `a stationary open challenge waits the geometry window (${Date.now() - started} ms)`);
+      assert.deepEqual(still.rect, grown.rect);
+    }
+    open = false;
+    last = (await region(after(grown))).region;
+    assert.ok(last.rect.x + last.rect.width < 400, `round ${round}: closed again, only the anchor: ${JSON.stringify(last.rect)}`);
+  }
 }));

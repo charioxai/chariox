@@ -18,7 +18,79 @@ pub(crate) struct OutboundRequester<'a> {
     pub session_id: Option<&'a str>,
 }
 
+/// A copy to a new machine that never shows on the source cannot be told from one that never arrived: the source says when
+/// the start request reached it and what it answered (ids and the outcome only).
 pub(crate) fn execute_managed_context_outbound_request(
+    config: DaemonConfig,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    store: ManagedContextOutboundOperationStore,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    runtime: crate::runtime::state::KernelRuntimeState,
+    requester: OutboundRequester<'_>,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let ids = start_request_ids(&request);
+    if let Some(ids) = &ids {
+        crate::logging::info_with_fields(
+            "managed_context.outbound",
+            "managed context transfer start received",
+            ids.clone(),
+        );
+    }
+    let result = run_managed_context_outbound_request(
+        config,
+        relay_state,
+        store,
+        provider_account_profiles,
+        runtime,
+        requester,
+        request,
+    );
+    if let Some(mut fields) = ids {
+        let outcome = match &result {
+            Ok(LocalDaemonResponse::ManagedContextTransferStarted { status }) => {
+                fields["context_id"] = serde_json::json!(status.context_id);
+                fields["phase"] = serde_json::to_value(status.phase).unwrap_or_default();
+                "managed context transfer start answered"
+            }
+            Ok(_) => "managed context transfer start answered",
+            Err(error) => {
+                fields["code"] = serde_json::json!(match error {
+                    DaemonError::ManagedContext { code, .. } => *code,
+                    _ => "refused",
+                });
+                "managed context transfer start refused"
+            }
+        };
+        crate::logging::info_with_fields("managed_context.outbound", outcome, fields);
+    }
+    result
+}
+
+/// Ids only: no plan content, ticket secrets or paths.
+fn start_request_ids(request: &LocalDaemonRequest) -> Option<serde_json::Value> {
+    let LocalDaemonRequest::StartManagedContextTransfer(start) = request else {
+        return None;
+    };
+    let (context_id, environment_id, target) = match (&start.ticket, &start.owner_managed) {
+        (Some(ticket), _) => (
+            Some(ticket.context_plan.package_binding().context_id),
+            Some(ticket.environment_id.clone()),
+            Some(&ticket.target),
+        ),
+        (None, Some(owner)) => (None, None, Some(&owner.target)),
+        (None, None) => (None, None, None),
+    };
+    Some(serde_json::json!({
+        "context_id": context_id,
+        "environment_id": environment_id,
+        "target_kernel_id": target.map(|target| target.kernel_id.clone()),
+        "target_machine_id": target.map(|target| target.machine_id.clone()),
+        "interactive": start.interactive,
+    }))
+}
+
+fn run_managed_context_outbound_request(
     config: DaemonConfig,
     relay_state: Arc<RwLock<RelayClientState>>,
     store: ManagedContextOutboundOperationStore,
@@ -247,7 +319,23 @@ mod tests {
             DaemonError::ManagedContext { code, .. } => code,
             other => panic!("expected a managed-context refusal, got {other:?}"),
         };
+        let logs = crate::logging::capture::start();
         assert_eq!(code(start("connection-a")), "event_connection_not_found");
+        let lines = logs
+            .records()
+            .into_iter()
+            .filter(|line| line.contains("managed_context.outbound"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line on receipt and one on the answer: {lines:?}"
+        );
+        assert!(lines[0].contains("start received") && lines[0].contains("target-kernel"));
+        assert!(
+            lines[1].contains("start refused") && lines[1].contains("event_connection_not_found")
+        );
+        drop(logs);
         runtime
             .event_connection_registry()
             .upsert(

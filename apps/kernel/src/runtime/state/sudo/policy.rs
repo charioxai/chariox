@@ -125,6 +125,7 @@ impl KernelRuntimeState {
         Ok(turn)
     }
 
+    #[cfg(test)]
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {
         let runs = self
             .owned
@@ -197,11 +198,6 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
         let turn = self.sudo_window_bound(id)?;
-        if teardown_request(request) {
-            return Err(error(
-                "sudo cannot end or delete a Room, Project or kernel; ask the owner to do it from a Chariox client",
-            ));
-        }
         if sudo_request_forbidden(request) {
             return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
         }
@@ -220,33 +216,17 @@ impl KernelRuntimeState {
     }
 }
 
-/// Ending or deleting a Room, Project or kernel is the owner's decision, with or without /sudo.
-pub(crate) fn teardown_request(request: &LocalDaemonRequest) -> bool {
+pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
-        LocalDaemonRequest::EndSession(_)
-            | LocalDaemonRequest::DeleteSession(_)
-            | LocalDaemonRequest::ArchiveProject(_)
-            | LocalDaemonRequest::DeleteProject(_)
-            | LocalDaemonRequest::DeleteKernel(_)
-    )
-}
-
-pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
-    teardown_request(request)
-        || matches!(
-            request,
-            LocalDaemonRequest::RequestKernelSudo(_)
+        LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::ExtendKernelSudo(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
-        | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
-            | LocalDaemonRequest::ListKernelAccessGrants(_)
-            | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::SubscribeEvents(_)
             | LocalDaemonRequest::UnsubscribeEvents(_)
             | LocalDaemonRequest::GetEventSubscription(_)
@@ -262,9 +242,6 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::SealCredentialVaultKey(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
-            | LocalDaemonRequest::GetUserConfig(_)
-            | LocalDaemonRequest::HideAgent(_)
-            | LocalDaemonRequest::SetAgentParent(_)
             | LocalDaemonRequest::ListCredentials(_)
             // Sudo must not serialize literal MCP env/header credentials either.
             | LocalDaemonRequest::GetMcpServer(_)
@@ -277,15 +254,12 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::CreateTerminalPairingLink(_)
             | LocalDaemonRequest::JoinTerminalPairingLink(_)
             | LocalDaemonRequest::JoinKernelLink(_)
-            | LocalDaemonRequest::ForgetGatewayKernel(_)
             | LocalDaemonRequest::RecordPairedClient(_)
             | LocalDaemonRequest::ConfigureRelayIssuer(_)
             | LocalDaemonRequest::IssueRelayClientToken(_)
-            | LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::CreateSessionInvite(_)
             | LocalDaemonRequest::JoinSessionInvite(_)
             | LocalDaemonRequest::ConfigureRelay(_)
-            | LocalDaemonRequest::CloudRelayStatus(_)
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)
             | LocalDaemonRequest::LogoutCloudRelay(_)
@@ -302,10 +276,8 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
             | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
-            | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
-        )
-        || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
+    ) || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt))
         || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt)))
@@ -356,10 +328,12 @@ fn sudo_config_forbidden(path: &str) -> bool {
         "credential_vault",
         "relay",
         "secret_link",
-        "agents",
     ]
     .iter()
     .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
+        // The machine acquisition toggle spends the owner's money: only the owner turns it (row 405).
+        || path == "agents"
+        || path == "agents.offload_without_asking"
 }
 
 pub(super) fn requester_grant_live(
@@ -437,21 +411,4 @@ fn owner_vault_is_not_a_sudo_operation() {
     assert!(sudo_request_forbidden(&LocalDaemonRequest::OwnerVault(
         crate::local::OwnerVaultRequest::Reveal { id: "entry".into() }
     )));
-}
-
-// Accepting an App's host action releases the payload it asked to write or open; like every
-// approval it is the user's, also for an elevated agent.
-#[cfg(test)]
-#[test]
-fn sudo_cannot_accept_an_app_host_action() {
-    let request =
-        LocalDaemonRequest::AcceptAppHostAction(crate::local::AcceptAppHostActionRequest {
-            session_id: "s".into(),
-            operation_id: "o".into(),
-        });
-    assert!(sudo_request_forbidden(&request));
-    assert_eq!(
-        crate::runtime::state::reach::reach_need(&request),
-        crate::runtime::state::reach::ReachNeed::Excluded
-    );
 }

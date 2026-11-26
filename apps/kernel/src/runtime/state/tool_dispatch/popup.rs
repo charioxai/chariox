@@ -34,6 +34,49 @@ fn popup_error(message: &str) -> DaemonError {
 /// The choice every agent question carries so the person can always decline.
 pub(in crate::runtime::state) const CANCEL_CHOICE_ID: &str = "cancel";
 
+/// Rows 574 / 655: the person's own word that a plain browser card's step is done (never a proof: the agent checks the page).
+pub(in crate::runtime::state) const DONE_CHOICE_ID: &str = "done";
+
+/// Row 655: what the agent is told when its card's element has no visible area when the card opens.
+pub(in crate::runtime::state) const HIDDEN_REGION_NOTE: &str = "The element is not visible on the page now (hidden, not opened yet, or off screen). The card shows the whole page so the person can take the step that reveals it (for example ticking the checkbox), and it moves to the element when it appears. Do not tell the person that the element or challenge is open.";
+
+/// Rows 574 / 655 (D107: a person card ends by the person's Done or Cancel, the agent, or its condition): a plain
+/// browser card has no condition that ends it, so the person says when the step is done. A card that waits for page
+/// text or a verification closes by itself and carries no Done; an agent's own Done is kept, never doubled.
+pub(in crate::runtime::state) fn add_person_done(
+    view: Option<&crate::transport::runtime_tools::RequestPopupViewArgs>,
+    choices: &mut Vec<crate::session::RuntimeInteractionChoice>,
+) {
+    let plain = view.is_some_and(|view| {
+        view.browser_region.done_text.is_none() && view.browser_region.verification.is_none()
+    });
+    if plain
+        && !choices.iter().any(|choice| {
+            choice.id() == DONE_CHOICE_ID || choice.label().trim().eq_ignore_ascii_case("done")
+        })
+    {
+        choices.push(crate::session::RuntimeInteractionChoice::new(
+            DONE_CHOICE_ID,
+            "Done",
+            DONE_CHOICE_ID,
+            Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+        ));
+    }
+}
+
+/// Row 655: the note for a card whose element has no visible area (the documented empty crop).
+pub(in crate::runtime::state) fn hidden_region_note(
+    view: Option<&crate::session::RuntimeInteractionView>,
+) -> Option<&'static str> {
+    view.filter(|view| view.browser_region.rect.width == 0 || view.browser_region.rect.height == 0)
+        .map(|_| HIDDEN_REGION_NOTE)
+}
+
+/// Row 655: an agent choice labelled like the built-in Cancel with another id would show a second Cancel.
+fn duplicates_cancel(id: &str, label: &str) -> bool {
+    id != CANCEL_CHOICE_ID && label.trim().eq_ignore_ascii_case("cancel")
+}
+
 /// What the agent reads as the outcome: declining is a definitive result of its
 /// own, never a timeout or a missing answer.
 pub(in crate::runtime::state) fn popup_status<'a>(
@@ -194,16 +237,23 @@ impl KernelRuntimeState {
                 || args.until.is_some()
                 || args.custom_choice.is_some()
                 || args.default_on_timeout.is_some()
-                || args
-                    .choices
-                    .iter()
-                    .any(|choice| choice.id != CANCEL_CHOICE_ID))
+                || args.choices.iter().any(|choice| {
+                    choice.id != CANCEL_CHOICE_ID && !duplicates_cancel(&choice.id, &choice.label)
+                }))
         {
             return Err(popup_error("verification cards require wait:false and only Cancel; no until, custom reply or default"));
         }
+        let folded_cancel: Vec<String> = args
+            .choices
+            .iter()
+            .filter(|choice| duplicates_cancel(&choice.id, &choice.label))
+            .map(|choice| choice.id.clone())
+            .collect();
         let mut choices = args
             .choices
             .into_iter()
+            // Row 655: the card always carries its own Cancel; an agent choice that only repeats it is the same choice.
+            .filter(|choice| !duplicates_cancel(&choice.id, &choice.label))
             .map(|choice| {
                 crate::session::RuntimeInteractionChoice::new(
                     choice.id,
@@ -213,6 +263,7 @@ impl KernelRuntimeState {
                 )
             })
             .collect::<Vec<_>>();
+        add_person_done(args.view.as_ref(), &mut choices);
         if choices.iter().all(|choice| choice.id() != CANCEL_CHOICE_ID) {
             choices.push(crate::session::RuntimeInteractionChoice::new(
                 CANCEL_CHOICE_ID,
@@ -254,7 +305,13 @@ impl KernelRuntimeState {
                 }
             }
         }
-        let default_choice_id = args.default_on_timeout.clone();
+        let default_choice_id = args.default_on_timeout.clone().map(|id| {
+            if folded_cancel.contains(&id) {
+                CANCEL_CHOICE_ID.to_string()
+            } else {
+                id
+            }
+        });
         if let Some(default_choice_id) = default_choice_id.as_deref() {
             if !choices
                 .iter()
@@ -296,6 +353,9 @@ impl KernelRuntimeState {
         } else {
             None
         };
+        // Row 655: the agent is told the truth when the element it named cannot be seen yet (a challenge frame
+        // that opens only after a checkbox): it must not tell the person the step is open.
+        let page_note = hidden_region_note(view.as_ref());
         let mut interaction = crate::session::RuntimeInteraction::new(
             interaction_id,
             agent_id,
@@ -321,7 +381,10 @@ impl KernelRuntimeState {
         }
         if let Some(task) = asking_task {
             let interaction_id = interaction.id().to_owned();
-            let result = self.arm_interaction_wake_for_task(&task, interaction)?;
+            let mut result = self.arm_interaction_wake_for_task(&task, interaction)?;
+            if let Some(note) = page_note {
+                result.payload["page_note"] = note.into();
+            }
             self.resume_browser_region_cards();
             // Its holder is told as for a question that blocks the turn.
             self.announce_child_decision(session_id, &interaction_id)

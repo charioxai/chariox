@@ -14,11 +14,16 @@ impl KernelRuntimeOwnedState {
                 crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(room),
             ) = crate::runtime::session_membership::scope::request_session_scope(request)
             {
-                // The Room fence has already checked cross-Room spawns and deletions.
+                // The Room fence has already checked cross-Room spawns and deletions. Row 405: a
+                // cross-Room agent setting or `agent resume [cancel] --room` is judged by Room
+                // admission (the peer check), which runs before this guard and again whenever the
+                // command's steps re-authorize it, so it is no workflow target.
                 if room != actor.session_id()
                     && !matches!(
                         request,
-                        LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_)
+                        LocalDaemonRequest::SpawnAgent(_)
+                            | LocalDaemonRequest::DestroyAgent(_)
+                            | LocalDaemonRequest::UpdateAgentConfig(_)
                     )
                 {
                     return Err(crate::runtime::room_tool_admission::denied(

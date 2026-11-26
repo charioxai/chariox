@@ -203,7 +203,6 @@ async fn a_leased_prompt_that_arrives_after_the_deadline_starts_nothing() {
             Some(context),
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await;

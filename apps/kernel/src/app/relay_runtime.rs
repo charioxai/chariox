@@ -51,7 +51,12 @@ impl DaemonApp {
             })
             .collect();
         DaemonRegistration {
-            auth_token: self.config.relay_token.clone().unwrap_or_default(),
+            // A renewal installs its token in the projection before the durable write lands.
+            auth_token: self
+                .config_projection
+                .snapshot()
+                .relay_token
+                .unwrap_or_default(),
             daemon_id: self.config.daemon_id.clone(),
             machine_id: self.config.host_machine_id.clone(),
             machine_alias: self.config.machine_name(),

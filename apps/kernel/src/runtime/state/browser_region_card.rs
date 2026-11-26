@@ -25,10 +25,11 @@ enum PageChangeFlow {
     Done,
 }
 
-/// Row 546 (Miguel's D3 decision, row 78): the person's step goes on across navigations of the card's own Tab.
-/// A restart or a navigation keeps the card pending; it ends by the person's choice, the agent's
-/// cancel, its page-text condition, or its Tab closing. A verification's proof belongs to one document: on the new
-/// page the card stays pending without it (it re-arms only if the agent raises or updates the card for that page).
+/// Rows 546 and 548 (Miguel's D3 decision, row 78): a person card survives a navigation of its own Tab and any kernel
+/// restart, hot or cold, whenever its Tab is restored. It ends by the person's choice, the agent's cancel, its page-text
+/// condition, or its Tab closing; and, with a plain reason, only when its Tab cannot be restored (the page cannot be shown
+/// again within the observation budget). A verification's proof belongs to one document: on the new page the card stays
+/// pending without it (it re-arms only if the agent raises or updates the card for that page).
 fn keeps_card_pending(
     reason: &str,
     previous: &RuntimeInteractionBrowserRegion,
@@ -44,8 +45,19 @@ fn keeps_card_pending(
         // A restart (a hot reload is a planned one) and a navigation keep the card the same way: the person must not notice
         // either. A card waiting for text goes on waiting on the page that came back; a proof is lost with the old document.
         "Browser restarted" | "Browser document changed" => waiting == waiting_for_text,
+        // Rows 574 / 655 (D107): a plain card has no condition of its own, so its element going away (a sign-in page
+        // replacing its email step with the password step in the same document) is not the person finishing: the card
+        // stays and shows the page; it ends by Done, Cancel or the agent. A card waiting for text keeps AU-03's rule.
+        "Browser element disappeared" => !waiting && !waiting_for_text,
         _ => false,
     }
+}
+
+/// Row 666: the agent a card's live page view belongs to. A hand-off card is the kernel's own question, so its
+/// agent is the one that asked for the hand-off.
+fn card_agent(card: &crate::session::RuntimeInteraction) -> Option<&str> {
+    card.agent_id()
+        .or_else(|| card.handoff().map(|handoff| handoff.agent_id.as_str()))
 }
 
 fn region_error(message: &str) -> DaemonError {
@@ -283,7 +295,7 @@ impl KernelRuntimeState {
                 .iter()
                 .filter(|i| i.view().is_some())
             {
-                let Some(agent) = interaction.agent_id() else {
+                let Some(agent) = card_agent(interaction) else {
                     continue;
                 };
                 let agent = agent.to_owned();
@@ -399,7 +411,7 @@ impl KernelRuntimeState {
             let Some(card) = session.active_interactions().iter().find(|i| i.id() == id) else {
                 return;
             };
-            let (Some(agent), Some(view)) = (card.agent_id(), card.view()) else {
+            let (Some(agent), Some(view)) = (card_agent(card), card.view()) else {
                 return;
             };
             let app_confirmation = card.app_confirmation().is_some();
@@ -524,6 +536,24 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Row 666: a hand-off card shows the live page, but only the hand-off decides how it ends (the person's Done in
+    /// browser or Cancel, its expiry, or the agent): what the page does never settles it. The watcher stops here.
+    fn leaves_handoff_open(
+        &self,
+        session: &crate::session::RuntimeSession,
+        id: &str,
+        reason: &str,
+    ) -> bool {
+        let handoff = session
+            .active_interactions()
+            .iter()
+            .any(|card| card.id() == id && card.handoff().is_some());
+        if handoff {
+            tracing::debug!(interaction_id=%id, reason=%crate::secret_redaction::redact_secrets(reason), "hand-off card keeps its own outcome; its page view stops following");
+        }
+        handoff
+    }
+
     pub(super) fn close_browser_region_card(
         &self,
         room: &str,
@@ -531,6 +561,9 @@ impl KernelRuntimeState {
         reason: String,
     ) -> Result<(), DaemonError> {
         let session = self.owned.session_store.get_session(room)?;
+        if self.leaves_handoff_open(&session, id, &reason) {
+            return Ok(());
+        }
         if let Some(region) = session
             .active_interactions()
             .iter()
@@ -590,6 +623,9 @@ impl KernelRuntimeState {
         id: &str,
         reason: String,
     ) -> Result<(), DaemonError> {
+        if self.leaves_handoff_open(&self.owned.session_store.get_session(room)?, id, &reason) {
+            return Ok(());
+        }
         self.owned.settle_card_unavailable(room, id, reason)?;
         self.schedule_question_answer_delivery(id)
     }
@@ -720,9 +756,11 @@ mod tests {
         }
     }
 
-    /// Row 546: a navigation of the card's own Tab is the page moving on inside the person's step, not the step ending.
+    /// Rows 546 and 548: a navigation of the card's own Tab or a kernel restart is not the person's step ending: every person
+    /// card is kept, whatever it waits for.
     #[test]
-    fn a_navigation_of_the_cards_own_tab_keeps_a_person_card_pending() {
+    fn a_navigation_or_a_restart_keeps_every_person_card_pending_until_its_tab_cannot_be_restored()
+    {
         let plain = region(None, false);
         let waiting = region(Some("Welcome home"), false);
         let proof = region(None, true);
@@ -775,11 +813,18 @@ mod tests {
             true,
             false
         ));
-        // The Tab closing or its element disappearing still ends the card.
-        assert!(!keeps_card_pending(
+        // Rows 574 / 655: a plain card outlives its element (it ends by Done/Cancel/the agent); a card waiting for text
+        // still reports the loss as unavailable, and an App confirmation keeps its own rules.
+        assert!(keeps_card_pending(
             "Browser element disappeared",
             &plain,
             false,
+            false
+        ));
+        assert!(!keeps_card_pending(
+            "Browser element disappeared",
+            &plain,
+            true,
             false
         ));
         assert!(!keeps_card_pending(

@@ -26,7 +26,6 @@ test("agent interaction strip controller renders current pane and interaction in
     customEditing: () => true,
     queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-a" ? [queuedPromptFixture()] : [],
     onQueuedJobAction: (job, action) => { queuedActions.push(`${job.processId}:${action}`) },
-    remoteJobLinesForAgent: agentId => agentId === "agent-a" ? ["Running on offload-1234"] : [],
     selectedQueuedPromptIndexForAgent: () => 0,
     onQueuedPromptAction: () => {},
     agentTriggerStripItemsForAgent: (agentId) => agentId === "agent-a"
@@ -73,10 +72,10 @@ test("agent interaction strip controller renders current pane and interaction in
   assert.equal(first.customEditing("interaction-a"), true)
   assert.deepEqual(first.queuedPromptStripItemsForAgent("agent-a").map((item) => item.promptId), ["prompt-a"])
   assert.equal(first.selectedQueuedPromptIndexForAgent("agent-a"), 0)
-  const jobs = rendered[0] as { onQueuedJobAction: (job: { processId: string; command: string; wait: string; detail: null }, action: "remote") => void; remoteJobLinesForAgent: (id: string) => readonly string[] }
+  const jobs = rendered[0] as { onQueuedJobAction: (job: { processId: string; command: string; wait: string; detail: null }, action: "remote") => void }
   jobs.onQueuedJobAction({ processId: "job", command: "build", wait: "waiting", detail: null }, "remote")
   assert.deepEqual(queuedActions, ["job:remote"])
-  assert.deepEqual(jobs.remoteJobLinesForAgent("agent-a"), ["Running on offload-1234"])
+  assert.equal("remoteJobLinesForAgent" in jobs, false, "a remote job is a tool row of the transcript, never a strip line")
 
   const second = rendered[1] as { primaryBox: string; auxiliaryBoxes: string[]; visibleAgents: Array<{ id: string }> }
   assert.equal(second.primaryBox, "next-primary")
