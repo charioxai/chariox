@@ -1115,7 +1115,7 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
     );
     assert_eq!(
         forged_holder["error"]["message"],
-        crate::runtime::kernel_access::Refusal::NotCovered.message()
+        crate::runtime::kernel_access::Refusal::HolderOutside.message()
     );
     let grant_id = grant(&mut kernel, &mut holder).await;
     assert!(holder.request(get.clone())["error"].is_null());
