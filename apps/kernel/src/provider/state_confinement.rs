@@ -298,7 +298,18 @@ fn confine_command_with_read_only(
     own: Vec<PathBuf>,
     read_only: &[PathBuf],
 ) -> Result<(String, Vec<String>), DaemonError> {
-    let secrets = secrets();
+    confine_command_around(secrets(), program, args, environment, own, read_only)
+}
+
+/// `confine_command_with_read_only` around exactly the folders `secrets` lists.
+fn confine_command_around(
+    secrets: Secrets,
+    program: String,
+    args: Vec<String>,
+    environment: &BTreeMap<String, String>,
+    own: Vec<PathBuf>,
+    read_only: &[PathBuf],
+) -> Result<(String, Vec<String>), DaemonError> {
     let named = own
         .into_iter()
         .map(|path| {
@@ -359,8 +370,13 @@ pub(crate) fn confined_program_signal(status: &std::process::ExitStatus) -> Opti
     platform::confined_program_signal(status)
 }
 
-/// Exactly the declared secret folders that exist now, by their real paths.
-fn secrets() -> Secrets {
+/// The folders that hold the kernel's secrets (state, Vault, credentials,
+/// local-auth tokens, keys, machine identity, history), by their real paths.
+/// This is the one list of protected paths: the sandbox mask covers exactly
+/// these, and any other code that must keep an agent away from the kernel's
+/// private files (the kernel's own file operations for agents) calls this
+/// instead of keeping a list of its own.
+pub(crate) fn protected_folders() -> Vec<PathBuf> {
     let mut folders = home_secret_folders()
         .into_iter()
         .chain(CONFIGURED_FOLDERS.get().into_iter().flatten().cloned())
@@ -375,7 +391,14 @@ fn secrets() -> Secrets {
             outermost.push(folder);
         }
     }
-    Secrets { folders: outermost }
+    outermost
+}
+
+/// Exactly the declared secret folders that exist now, by their real paths.
+fn secrets() -> Secrets {
+    Secrets {
+        folders: protected_folders(),
+    }
 }
 
 /// What the chariox CLI reads to reach this kernel.
@@ -466,6 +489,31 @@ mod platform {
         for folder in &secrets.folders {
             wrapped.extend(["--remount-ro".to_string(), path_arg(folder)]);
         }
+        // The user's service manager and session bus would start a process
+        // outside this sandbox, where the folders above are not covered. Their
+        // sockets are replaced here, after the agent's own paths are mounted,
+        // so no environment of the agent can name them back.
+        let session = user_session_endpoints(
+            std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+            // SAFETY: getuid takes no arguments and cannot fail.
+            unsafe { libc::getuid() },
+            std::env::var("DBUS_SESSION_BUS_ADDRESS").ok(),
+            &[PathBuf::from("/tmp")],
+        );
+        for folder in &session.folders {
+            wrapped.extend(["--tmpfs".to_string(), path_arg(folder)]);
+            wrapped.extend(["--remount-ro".to_string(), path_arg(folder)]);
+        }
+        for socket in &session.sockets {
+            wrapped.extend([
+                "--ro-bind".to_string(),
+                "/dev/null".to_string(),
+                path_arg(socket),
+            ]);
+        }
+        for name in USER_SESSION_ENVIRONMENT {
+            wrapped.extend(["--unsetenv".to_string(), (*name).to_string()]);
+        }
         wrapped.extend([
             "--setenv".to_string(),
             STATE_CONFINEMENT_MARKER_ENV.to_string(),
@@ -479,6 +527,83 @@ mod platform {
         wrapped.push(program);
         wrapped.extend(args);
         Ok((path_arg(&sandbox.env), wrapped))
+    }
+
+    /// Environment that names the user's session bus.
+    const USER_SESSION_ENVIRONMENT: &[&str] = &["DBUS_SESSION_BUS_ADDRESS"];
+
+    /// What reaches the user's service manager or session bus from a process
+    /// that shares the user's runtime folder.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    pub(super) struct UserSessionEndpoints {
+        /// Folders of sockets, replaced by empty read-only ones.
+        pub(super) folders: Vec<PathBuf>,
+        /// Socket files, replaced by an empty file.
+        pub(super) sockets: Vec<PathBuf>,
+    }
+
+    /// The user manager's sockets (`systemd/`), the session bus (`bus`,
+    /// `dbus-1/`) and the bus the environment names, of the runtime folder
+    /// `XDG_RUNTIME_DIR` names and of `/run/user/<uid>`, and the session buses
+    /// `dbus-launch` leaves as `dbus-*` sockets in the temp folders, where they
+    /// exist. A call to any of them can start a service outside the sandbox
+    /// (D-Bus activation), so each is replaced. The rest of the runtime
+    /// folder stays the agent's.
+    pub(super) fn user_session_endpoints(
+        runtime: Option<PathBuf>,
+        uid: u32,
+        bus_address: Option<String>,
+        temp_folders: &[PathBuf],
+    ) -> UserSessionEndpoints {
+        let mut endpoints = UserSessionEndpoints::default();
+        let runtimes = runtime
+            .into_iter()
+            .chain([PathBuf::from(format!("/run/user/{uid}"))])
+            .filter(|runtime| runtime.is_absolute());
+        let mut sockets = Vec::new();
+        for runtime in runtimes {
+            for folder in ["systemd", "dbus-1"] {
+                endpoints.folders.push(runtime.join(folder));
+            }
+            sockets.push(runtime.join("bus"));
+        }
+        sockets.extend(bus_address.iter().flat_map(|address| {
+            address
+                .split(',')
+                .flat_map(|part| part.split(';'))
+                .filter_map(|part| part.strip_prefix("unix:path="))
+                .map(|path| PathBuf::from(path.split(',').next().unwrap_or(path)))
+        }));
+        for folder in temp_folders {
+            sockets.extend(
+                std::fs::read_dir(folder)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("dbus-"))
+                    .filter(|entry| {
+                        entry
+                            .file_type()
+                            .is_ok_and(|kind| std::os::unix::fs::FileTypeExt::is_socket(&kind))
+                    })
+                    .map(|entry| entry.path()),
+            );
+        }
+        endpoints.folders.retain(|folder| folder.is_dir());
+        endpoints.folders.sort();
+        endpoints.folders.dedup();
+        sockets.retain(|socket| {
+            socket.is_absolute()
+                && std::fs::symlink_metadata(socket).is_ok_and(|meta| !meta.is_dir())
+                && !endpoints
+                    .folders
+                    .iter()
+                    .any(|folder| socket.starts_with(folder))
+        });
+        sockets.sort();
+        sockets.dedup();
+        endpoints.sockets = sockets;
+        endpoints
     }
 
     pub(super) fn prefix_len(args: &[String]) -> Option<usize> {
@@ -615,6 +740,40 @@ mod platform {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn the_user_manager_and_session_bus_are_named_where_they_exist() {
+            // A socket path must fit in SUN_LEN, which a test temp folder may not.
+            let root = PathBuf::from(format!("/tmp/smu-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let runtime = root.join("run-user");
+            std::fs::create_dir_all(runtime.join("systemd")).unwrap();
+            std::fs::write(runtime.join("bus"), "").unwrap();
+            let other = root.join("other-bus");
+            std::fs::write(&other, "").unwrap();
+            let temp = root.join("tmp");
+            std::fs::create_dir_all(&temp).unwrap();
+            let launched = temp.join("dbus-AbC123");
+            let _listener = std::os::unix::net::UnixListener::bind(&launched).unwrap();
+            std::fs::write(temp.join("dbus-not-a-socket"), "").unwrap();
+            let endpoints = user_session_endpoints(
+                Some(runtime.clone()),
+                4_000_000_000,
+                Some(format!("unix:path={},guid=1", other.display())),
+                std::slice::from_ref(&temp),
+            );
+            assert_eq!(endpoints.folders, vec![runtime.join("systemd")]);
+            assert_eq!(
+                endpoints.sockets,
+                vec![other, runtime.join("bus"), launched]
+            );
+            assert_eq!(
+                user_session_endpoints(None, 4_000_000_000, None, &[]),
+                UserSessionEndpoints::default()
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
 
         #[test]
         fn namespace_probe_names_nested_confinement_and_the_supported_drill_path() {
