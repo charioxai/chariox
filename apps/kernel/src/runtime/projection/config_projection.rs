@@ -214,7 +214,10 @@ impl DaemonConfigProjectionStore {
             None => RenewalSave::Untracked,
             Some(renewal)
                 if renewal.token == token
-                    || renewal.unsaved_earlier.iter().any(|earlier| earlier == token) =>
+                    || renewal
+                        .unsaved_earlier
+                        .iter()
+                        .any(|earlier| earlier == token) =>
             {
                 RenewalSave::Unsaved {
                     base_removal_pending: renewal.base_removal_pending,

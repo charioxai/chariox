@@ -388,8 +388,7 @@ async fn an_intermediate_renewal_save_keeps_the_newest_renewal_projected_and_sav
             .install_cloud_relay_renewal(&projection.snapshot(), t1.clone(), "t1".into())
             .unwrap();
         let mut expected_t2 = projection.snapshot().cloud_relay.unwrap();
-        expected_t2.kernel_removal_pending =
-            projection.unsaved_renewal_removal_baseline().unwrap();
+        expected_t2.kernel_removal_pending = projection.unsaved_renewal_removal_baseline().unwrap();
         projection
             .install_cloud_relay_renewal(&projection.snapshot(), t2.clone(), "t2".into())
             .unwrap();
