@@ -241,7 +241,10 @@ async fn row36_g_a_long_tool_call_raises_no_card_and_shows_running_its_tool() {
     let activity = team.runtime.agent_activity_for_session(&room);
     let liveness = &activity[&team.child].liveness;
     assert!(!liveness.stalled);
-    let on = liveness.waiting_on.as_ref().expect("the row names what runs");
+    let on = liveness
+        .waiting_on
+        .as_ref()
+        .expect("the row names what runs");
     assert_eq!(serde_json::to_value(on.kind).unwrap(), "tool");
     assert_eq!(on.detail, "Bash");
     assert!(
