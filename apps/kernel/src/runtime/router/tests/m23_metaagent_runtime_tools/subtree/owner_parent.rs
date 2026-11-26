@@ -51,8 +51,9 @@ async fn moves() {
     ));
     let grandchild = room_command(&world, "a", "agent parent d peer").await;
     assert!(grandchild.ok, "{grandchild:?}");
+    // An agent's command answer omits response bodies; the new edge is read from the agent.
     assert_eq!(
-        grandchild.payload["response"]["type"], "AgentParentChanged",
+        grandchild.payload["response"]["type"], "CommandAccepted",
         "{grandchild:?}"
     );
     assert_eq!(
@@ -133,7 +134,7 @@ async fn cycle() {
             "{command}: {refused:?}"
         );
     }
-    let agent = room_command(&world, "peer", "agent parent a d").await;
+    let agent = room_command(&world, "peer", &format!("agent parent {a} d")).await;
     assert!(
         error_text(&agent).contains(&owner.to_string()),
         "the same sentence for the agent and the owner: {agent:?} / {owner}"
