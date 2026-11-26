@@ -152,7 +152,7 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     )?;
     spawn_renewed_token_save(
         runtime_state.clone(),
-        profile,
+        expected,
         updated_profile,
         issued.token,
     );
