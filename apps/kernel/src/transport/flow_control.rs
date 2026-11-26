@@ -75,6 +75,29 @@ pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run
         });
 }
 
+/// A leased turn's tool rows reach the home kernel as projected output. The home keeps the open
+/// ones for its admitted turn, so the agent's row says which tool runs and a long one is not taken
+/// for a stalled provider. The turn's completion clears them with the rest of its activity.
+pub(crate) fn note_projected_prompt_tool_output(
+    app: &mut DaemonApp,
+    projected_provider_run_id: &str,
+    merge_key: Option<&str>,
+    bytes: &[u8],
+) {
+    app.prompt_activity
+        .write()
+        .entry(projected_provider_run_id.to_string())
+        .or_insert_with(|| ActivePromptState {
+            last_output_at: None,
+            saw_response_content: false,
+            completion_recorded: false,
+            settlement_requested: false,
+            active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
+        })
+        .observe_provider_tool(merge_key, bytes);
+}
+
 pub(crate) fn note_prompt_tool_output(
     app: &mut DaemonApp,
     provider_run_id: &str,
