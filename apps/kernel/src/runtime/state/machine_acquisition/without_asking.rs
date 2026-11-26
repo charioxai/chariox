@@ -235,7 +235,8 @@ impl KernelRuntimeState {
             ));
         };
         // A new attempt at an account with no room goes to the card path, which refuses it before the person is asked.
-        if let Some(machines) = capability.account_machines {
+        // A job is not asked about: at the limit it waits and runs where it is.
+        if let (ControlPlaneRequest::Acquire { .. }, Some(machines)) = (request, capability.account_machines) {
             if machines.in_use >= machines.allowed {
                 return Ok(Admission::Outside(limits::account_allows_machines(
                     machines.allowed,
