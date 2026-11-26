@@ -1946,7 +1946,7 @@ async fn row655_a_newer_card_on_the_same_tab_replaces_the_open_one_but_never_a_s
 }
 
 async fn seed_card(f: &Fixture, region: crate::session::RuntimeInteractionBrowserRegion) -> String {
-    let id = ask(f, serde_json::json!({}))["interaction_id"]
+    let id = ask(f, serde_json::json!({})).await["interaction_id"]
         .as_str()
         .unwrap()
         .to_owned();

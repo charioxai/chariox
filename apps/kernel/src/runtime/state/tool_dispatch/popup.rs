@@ -136,6 +136,36 @@ impl KernelRuntimeState {
         Ok(Some(existing))
     }
 
+    /// The wake a card follows must be this agent's own live source, so the card
+    /// can never be closed by someone else's event or wait for one that is over.
+    fn card_condition_wake(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        wake_id: &str,
+    ) -> Result<String, DaemonError> {
+        let wake = self
+            .owned
+            .durable_state_store
+            .agent_wake(wake_id)?
+            .filter(|wake| wake.room_id == session_id && wake.agent_id == agent_id)
+            .ok_or_else(|| {
+                popup_error(&format!(
+                    "until `{wake_id}` is not a wake source you armed in this room"
+                ))
+            })?;
+        if wake.kind == super::super::interaction_wake::KIND {
+            return Err(popup_error("a card cannot follow another card"));
+        }
+        if !matches!(wake.state.as_str(), "scheduled" | "starting" | "running") {
+            return Err(popup_error(&format!(
+                "until `{wake_id}` already ended ({}); check it with events.wakes instead of asking",
+                wake.state
+            )));
+        }
+        Ok(wake.id)
+    }
+
     pub(super) async fn dispatch_popup_tool(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
