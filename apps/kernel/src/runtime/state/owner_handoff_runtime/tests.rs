@@ -73,7 +73,7 @@ fn handoff() -> RuntimeHandoff {
 }
 async fn register(state: &KernelRuntimeState, room: &str, h: &RuntimeHandoff) -> String {
     state
-        .register_handoff_interaction(room, DEFAULT_LOCAL_USER_ID, h.clone(), 900)
+        .register_handoff_interaction(room, DEFAULT_LOCAL_USER_ID, h.clone(), 900, None)
         .await
         .unwrap();
     RuntimeHandoff::interaction_id(&h.obligation_id)
@@ -500,7 +500,7 @@ async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_answer_without_collab
         let (state, room) = fixture_with_owner(Some("cloud-owner"), owner);
         let h = handoff();
         state
-            .register_handoff_interaction(&room, owner, h.clone(), 900)
+            .register_handoff_interaction(&room, owner, h.clone(), 900, None)
             .await
             .unwrap();
         let id = RuntimeHandoff::interaction_id(&h.obligation_id);
@@ -519,7 +519,7 @@ async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_answer_without_collab
     let (state, room) = fixture_with_owner(Some("cloud-owner"), "collaborator");
     let h = handoff();
     state
-        .register_handoff_interaction(&room, "collaborator", h.clone(), 900)
+        .register_handoff_interaction(&room, "collaborator", h.clone(), 900, None)
         .await
         .unwrap();
     let id = RuntimeHandoff::interaction_id(&h.obligation_id);
@@ -761,4 +761,73 @@ async fn handoff_cold_restart_never_projects_an_answered_card_from_an_older_chec
         .iter()
         .all(|card| card.id() != id));
     assert!(state.pending_handoff_tabs(DEFAULT_LOCAL_USER_ID).is_empty());
+}
+
+/// Row 666: a hand-off on a kernel-browser element carries the same live page view as a browser card; the page
+/// watcher may move or rebind it, but only the hand-off decides how the card ends.
+#[tokio::test]
+async fn row666_a_handoff_card_shows_the_live_page_and_the_page_never_settles_it() {
+    let (state, room) = fixture();
+    let h = handoff();
+    let view = crate::session::RuntimeInteractionView {
+        browser_region: crate::session::RuntimeInteractionBrowserRegion {
+            tab_id: "tab".into(),
+            reference: "backend:7".into(),
+            generation: 1,
+            document_id: "doc".into(),
+            origin: "https://console.hetzner.cloud".into(),
+            rect: crate::session::RuntimeInteractionBrowserRect {
+                x: 10,
+                y: 20,
+                width: 200,
+                height: 40,
+            },
+            viewport_width: 1280,
+            viewport_height: 800,
+            verification: None,
+            verification_result: None,
+            done_text: None,
+        },
+    };
+    state
+        .register_handoff_interaction(&room, DEFAULT_LOCAL_USER_ID, h.clone(), 900, Some(view.clone()))
+        .await
+        .unwrap();
+    let id = RuntimeHandoff::interaction_id(&h.obligation_id);
+    let card = |state: &KernelRuntimeState| {
+        state
+            .owned
+            .session_store
+            .get_session(&room)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .find(|i| i.id() == id)
+            .cloned()
+    };
+    let shown = card(&state).expect("the hand-off card is open");
+    assert_eq!(shown.view(), Some(&view), "the person sees the live page of the hand-off target");
+    assert_eq!(shown.handoff(), Some(&h));
+    state
+        .close_unavailable_browser_region_card(&room, &id, "Browser element disappeared".into())
+        .unwrap();
+    state
+        .close_browser_region_card(&room, &id, "Browser document changed".into())
+        .unwrap();
+    assert!(card(&state).is_some(), "what the page does never settles a hand-off");
+    // A hand-off whose page view cannot be shown (or a future one without a browser target) stays the plain card.
+    let plain = handoff();
+    let plain_id = register(&state, &room, &plain).await;
+    let plain_card = state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .find(|i| i.id() == plain_id)
+        .cloned()
+        .unwrap();
+    assert_eq!(plain_card.view(), None);
+    assert_eq!(plain_card.handoff(), Some(&plain));
 }

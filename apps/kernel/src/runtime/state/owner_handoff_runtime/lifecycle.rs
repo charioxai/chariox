@@ -180,6 +180,12 @@ impl KernelRuntimeState {
                 session.owner_user_id(),
                 handoff.clone(),
                 remaining,
+                // Row 666: a re-armed hand-off keeps its live page view; the watcher binds it to the page that came back.
+                session
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id() == handoff_id)
+                    .and_then(|card| card.view().cloned()),
             )
             .await
         {

@@ -238,8 +238,32 @@ impl KernelRuntimeState {
             Some(&obligation),
             binding,
         )?;
+        // Row 666 (Mac 11-26): a step the person does in the kernel browser shows the same live page view whichever tool
+        // the agent picked. The hand-off target is an observed element of a kernel-browser Tab, so the card carries the
+        // browser card's live region of it; the hand-off keeps its own outcomes. A view that cannot be resolved leaves
+        // the card as before (text and Done in browser), never a refused hand-off.
+        let view = match self
+            .resolve_popup_view(
+                agent.session_id(),
+                agent.id(),
+                &id,
+                &crate::transport::runtime_tools::RequestPopupBrowserRegionArgs {
+                    tab_id: handoff.target.tab_id.clone(),
+                    reference: handoff.target.node_ref.clone(),
+                    verification: None,
+                    done_text: None,
+                },
+            )
+            .await
+        {
+            Ok(view) => Some(view),
+            Err(error) => {
+                tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "hand-off card registered without its live page view");
+                None
+            }
+        };
         let registered = self
-            .register_handoff_interaction(agent.session_id(), &owner, handoff.clone(), timeout_sec)
+            .register_handoff_interaction(agent.session_id(), &owner, handoff.clone(), timeout_sec, view)
             .await;
         crate::runtime::room_dispatch_registration::reject_if_failed(
             &self.owned.durable_state_store,
@@ -268,12 +292,13 @@ impl KernelRuntimeState {
         owner: &str,
         handoff: RuntimeHandoff,
         timeout_sec: u64,
+        view: Option<crate::session::RuntimeInteractionView>,
     ) -> Result<(), DaemonError> {
         self.owned
             .durable_state_store
             .record_open_owner_handoff(session_id, &handoff)?;
         if let Err(error) = self
-            .open_handoff_card(session_id, owner, handoff.clone(), timeout_sec)
+            .open_handoff_card(session_id, owner, handoff.clone(), timeout_sec, view)
             .await
         {
             let id = RuntimeHandoff::interaction_id(&handoff.obligation_id);
@@ -295,6 +320,7 @@ impl KernelRuntimeState {
         owner: &str,
         handoff: RuntimeHandoff,
         timeout_sec: u64,
+        view: Option<crate::session::RuntimeInteractionView>,
     ) -> Result<(), DaemonError> {
         let id = RuntimeHandoff::interaction_id(&handoff.obligation_id);
         let action = match handoff.kind {
@@ -338,6 +364,11 @@ impl KernelRuntimeState {
         )
         .with_timeout_sec(timeout_sec)
         .with_handoff(handoff.clone());
+        let followed = view.is_some();
+        let interaction = match view {
+            Some(view) => interaction.with_view(view),
+            None => interaction,
+        };
         let receiver = self
             .create_kernel_operation_interaction(
                 crate::runtime::state::CardKind::OwnerControl,
@@ -346,6 +377,9 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
+        if followed {
+            self.resume_browser_region_cards();
+        }
         let state = self.clone();
         let room = session_id.to_owned();
         tokio::spawn(async move {

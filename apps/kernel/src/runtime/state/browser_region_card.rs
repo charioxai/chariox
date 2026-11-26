@@ -53,6 +53,13 @@ fn keeps_card_pending(
     }
 }
 
+/// Row 666: the agent a card's live page view belongs to. A hand-off card is the kernel's own question, so its
+/// agent is the one that asked for the hand-off.
+fn card_agent(card: &crate::session::RuntimeInteraction) -> Option<&str> {
+    card.agent_id()
+        .or_else(|| card.handoff().map(|handoff| handoff.agent_id.as_str()))
+}
+
 fn region_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_request_popup",
@@ -288,7 +295,7 @@ impl KernelRuntimeState {
                 .iter()
                 .filter(|i| i.view().is_some())
             {
-                let Some(agent) = interaction.agent_id() else {
+                let Some(agent) = card_agent(interaction) else {
                     continue;
                 };
                 let agent = agent.to_owned();
@@ -404,7 +411,7 @@ impl KernelRuntimeState {
             let Some(card) = session.active_interactions().iter().find(|i| i.id() == id) else {
                 return;
             };
-            let (Some(agent), Some(view)) = (card.agent_id(), card.view()) else {
+            let (Some(agent), Some(view)) = (card_agent(card), card.view()) else {
                 return;
             };
             let app_confirmation = card.app_confirmation().is_some();
@@ -529,6 +536,19 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Row 666: a hand-off card shows the live page, but only the hand-off decides how it ends (the person's Done in
+    /// browser or Cancel, its expiry, or the agent): what the page does never settles it. The watcher stops here.
+    fn leaves_handoff_open(&self, session: &crate::session::RuntimeSession, id: &str, reason: &str) -> bool {
+        let handoff = session
+            .active_interactions()
+            .iter()
+            .any(|card| card.id() == id && card.handoff().is_some());
+        if handoff {
+            tracing::debug!(interaction_id=%id, reason=%crate::secret_redaction::redact_secrets(reason), "hand-off card keeps its own outcome; its page view stops following");
+        }
+        handoff
+    }
+
     pub(super) fn close_browser_region_card(
         &self,
         room: &str,
@@ -536,6 +556,9 @@ impl KernelRuntimeState {
         reason: String,
     ) -> Result<(), DaemonError> {
         let session = self.owned.session_store.get_session(room)?;
+        if self.leaves_handoff_open(&session, id, &reason) {
+            return Ok(());
+        }
         if let Some(region) = session
             .active_interactions()
             .iter()
@@ -595,6 +618,9 @@ impl KernelRuntimeState {
         id: &str,
         reason: String,
     ) -> Result<(), DaemonError> {
+        if self.leaves_handoff_open(&self.owned.session_store.get_session(room)?, id, &reason) {
+            return Ok(());
+        }
         self.owned.settle_card_unavailable(room, id, reason)?;
         self.schedule_question_answer_delivery(id)
     }
