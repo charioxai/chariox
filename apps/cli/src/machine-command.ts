@@ -6,7 +6,7 @@ import { reportFailure, withKernel } from "./kernels-command.js"
 const ACQUIRE_SECONDS = 330
 const REQUEST_SECONDS = 60
 const CARD_POLL_MS = 1500
-const USAGE = ["machine options", "machine acquire", "machine status", "machine release", "machine limits", "machine set-limits"].map(usageOf).join(" | ")
+const USAGE = ["machine options", "machine acquire", "machine status", "machine release", "machine limits"].map(usageOf).join(" | ")
 
 type Send = (body: Record<string, unknown>) => Promise<unknown>
 type Flags = Map<string, string | true>
@@ -74,10 +74,6 @@ async function release(argv: string[]): Promise<void> {
   await acquisition(flags, REQUEST_SECONDS, { action: "release", allocation_ref: allocationRef })
 }
 
-async function limits(argv: string[]): Promise<void> {
-  const { flags } = parseArguments("machine limits", argv)
-  await acquisition(flags, REQUEST_SECONDS, { action: "limits" })
-}
 
 // A decimal amount in the account's currency, as millionths.
 function microsOf(text: string): number {
@@ -92,13 +88,18 @@ function countOf(text: string): number {
   return count
 }
 
-async function setLimits(argv: string[]): Promise<void> {
-  const { flags } = parseArguments("machine set-limits", argv)
+// Without --machines or --spend this reads the limits; with them it changes the account's, or the person's own with --scope no-ask.
+async function limits(argv: string[]): Promise<void> {
+  const { flags } = parseArguments("machine limits", argv)
   const scope = flags.get("--scope") ?? "account"
   if (scope !== "account" && scope !== "no-ask") throw new CommandFailure("usage", "--scope is account or no-ask")
   const machines = flags.get("--machines")
   const spend = flags.get("--spend")
-  if (typeof machines !== "string" && typeof spend !== "string") throw new CommandFailure("usage", "name --machines or --spend to change")
+  if (typeof machines !== "string" && typeof spend !== "string") {
+    if (flags.has("--scope")) throw new CommandFailure("usage", "--scope names which limits --machines or --spend change")
+    await acquisition(flags, REQUEST_SECONDS, { action: "limits" })
+    return
+  }
   const request = {
     action: "set_limits", scope: scope === "no-ask" ? "no_ask" : "account",
     ...(typeof machines === "string" ? { machines_at_once: countOf(machines) } : {}),
@@ -120,7 +121,6 @@ export async function runMachineCommand(argv: string[]): Promise<boolean> {
     else if (argv[1] === "status") await status(argv.slice(2))
     else if (argv[1] === "release") await release(argv.slice(2))
     else if (argv[1] === "limits") await limits(argv.slice(2))
-    else if (argv[1] === "set-limits") await setLimits(argv.slice(2))
     else throw new CommandFailure("usage", USAGE)
   } catch (error) { reportFailure(error) }
   return true

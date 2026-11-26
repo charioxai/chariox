@@ -100,25 +100,25 @@ test("machine limits reads the account's limits and the no-ask limits", async ()
   assert.deepEqual(JSON.parse(result.out), reading)
 })
 
-test("machine set-limits sends the named changes, in millionths for spend", async () => {
-  const account = await run(["machine", "set-limits", "--machines", "3", "--spend", "7.5"], answer(reading))
+test("machine limits with a change sends the named changes, in millionths for spend", async () => {
+  const account = await run(["machine", "limits", "--machines", "3", "--spend", "7.5"], answer(reading))
   assert.deepEqual(account.requests, [{ MachineAcquisition: { action: "set_limits", scope: "account", machines_at_once: 3, spend_per_day_micros: 7_500_000 } }])
-  const noAsk = await run(["machine", "set-limits", "--scope", "no-ask", "--machines", "2"], answer(reading))
+  const noAsk = await run(["machine", "limits", "--scope", "no-ask", "--machines", "2"], answer(reading))
   assert.deepEqual(noAsk.requests, [{ MachineAcquisition: { action: "set_limits", scope: "no_ask", machines_at_once: 2 } }])
 })
 
-test("machine set-limits refuses an empty or malformed change before the kernel is asked", async () => {
+test("machine limits refuses an empty or malformed change before the kernel is asked", async () => {
   for (const argv of [["--scope", "account"], ["--machines", "0"], ["--machines", "two"], ["--spend", "-1"], ["--spend", "1.2345678"], ["--scope", "all", "--machines", "2"]]) {
-    const result = await run(["machine", "set-limits", ...argv], answer(reading))
+    const result = await run(["machine", "limits", ...argv], answer(reading))
     assert.deepEqual(result.requests, [], argv.join(" "))
     assert.notEqual(result.exit, undefined, argv.join(" "))
   }
 })
 
-test("machine set-limits says it waits for the person's card, then prints the limits", async () => {
+test("machine limits says it waits for the person's card, then prints the limits", async () => {
   let setFrame: FakeKernelFrame | undefined
   const limitsCard = { ...card, interaction_id: "limits-raise-abc" }
-  const result = await run(["machine", "set-limits", "--spend", "15"], (socket, frame) => {
+  const result = await run(["machine", "limits", "--spend", "15"], (socket, frame) => {
     if ("ListOwnerInteractions" in frame.request) {
       replyWith(socket, frame, { response: { OwnerInteractionsListed: { interactions: [limitsCard] } } })
       setTimeout(() => setFrame && replyWith(socket, setFrame, { response: { MachineAcquisition: { result: reading } } }), 100)
