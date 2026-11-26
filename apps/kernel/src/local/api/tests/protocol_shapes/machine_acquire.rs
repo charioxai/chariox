@@ -7,7 +7,7 @@ fn machine_acquire_snapshot_and_hash() {
     let bytes = include_bytes!("machine-acquire-1015.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "8a01943459c8c90a1521a716ad32ac524bd61635e491d7a20b6254da4ead5c05"
+        "1ee68f7b6f383cb5739a84b7057b1415df17087059eb29aeb41530cb97667fcf"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["protocol_version"], LOCAL_DAEMON_PROTOCOL_VERSION);

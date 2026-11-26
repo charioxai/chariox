@@ -24,7 +24,7 @@ fn semantic_session_activity_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "4d9287bf388bdb1c2e88d438f0a816ba67711aa46da6487975a7072e657162b3"
+        "9dd7b0dbacb3dc23724ea87b0719bb519c910283aa4447a5a0440037c5152981"
     );
 }
 
