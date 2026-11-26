@@ -1840,3 +1840,44 @@ fn row655_a_card_on_an_element_without_visible_area_tells_the_agent_it_is_not_op
     assert!(note.contains("Do not tell the person"));
     assert_eq!(super::super::tool_dispatch::hidden_region_note(None), None);
 }
+
+/// Rows 574 / 655: a plain browser card gives the person Done (the agent hears choice_id "done"); a card that closes
+/// by itself on page text or a verification gets none, and an agent's own Done is never doubled.
+#[test]
+fn row574_a_plain_browser_card_gets_a_done_choice_and_a_self_closing_one_does_not() {
+    let view = |done_text: Option<&str>| crate::transport::runtime_tools::RequestPopupViewArgs {
+        browser_region: crate::transport::runtime_tools::RequestPopupBrowserRegionArgs {
+            tab_id: "tab-one".into(),
+            reference: "backend:42".into(),
+            verification: None,
+            done_text: done_text.map(str::to_owned),
+        },
+    };
+    let cancel = || {
+        crate::session::RuntimeInteractionChoice::new(
+            "cancel",
+            "Cancel",
+            "cancel",
+            Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+        )
+    };
+    let ids = |choices: &[crate::session::RuntimeInteractionChoice]| {
+        choices.iter().map(|c| c.id().to_owned()).collect::<Vec<_>>()
+    };
+    let mut plain = vec![cancel()];
+    super::super::tool_dispatch::add_person_done(Some(&view(None)), &mut plain);
+    assert_eq!(ids(&plain), ["cancel", "done"]);
+    assert_eq!(plain[1].label(), "Done");
+    let mut waiting = vec![cancel()];
+    super::super::tool_dispatch::add_person_done(Some(&view(Some("Signed in"))), &mut waiting);
+    assert_eq!(ids(&waiting), ["cancel"], "a done_text card closes by itself");
+    let mut own = vec![
+        crate::session::RuntimeInteractionChoice::new("finished", " done ", "finished", None),
+        cancel(),
+    ];
+    super::super::tool_dispatch::add_person_done(Some(&view(None)), &mut own);
+    assert_eq!(ids(&own), ["finished", "cancel"], "the agent's own Done is kept, not doubled");
+    let mut no_view = vec![cancel()];
+    super::super::tool_dispatch::add_person_done(None, &mut no_view);
+    assert_eq!(ids(&no_view), ["cancel"], "a question without a page gets no Done");
+}
