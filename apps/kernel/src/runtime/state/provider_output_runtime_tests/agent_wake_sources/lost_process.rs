@@ -174,16 +174,17 @@ fn assert_check_before_restart(tail: &str, notice: &str) {
             text.contains("cannot rule out") && text.contains("may still be running"),
             "{what} says survivors cannot be ruled out: {text}"
         );
+        let check = text
+            .find("check for what remains first")
+            .unwrap_or_else(|| panic!("{what} tells the owner to check first: {text}"));
+        let restart = text
+            .find("start it again")
+            .unwrap_or_else(|| panic!("{what} still says what to do after the check: {text}"));
+        assert!(check < restart, "{what} puts the check before the restart: {text}");
         assert!(
-            text.contains("check for what remains before starting it again"),
-            "{what} tells the owner to check before restarting: {text}"
+            !text.contains("is gone"),
+            "{what} must not say the work is gone when termination is not established: {text}"
         );
-        for claim in ["is gone", "start it again and watch the new one"] {
-            assert!(
-                !text.contains(claim),
-                "{what} must not say `{claim}` when termination is not established: {text}"
-            );
-        }
     }
 }
 

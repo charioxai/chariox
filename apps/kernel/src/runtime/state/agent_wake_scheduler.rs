@@ -679,7 +679,7 @@ fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
             "check for it and stop what remains before starting it again",
         ),
     };
-    const CHECK_FIRST: &str = "check for what remains before starting it again";
+    const CHECK_FIRST: &str = "check for what remains first; only then start it again and watch the new one";
     format!(
         "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {state}; {next}",
         wake.label,
