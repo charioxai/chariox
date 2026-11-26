@@ -1375,7 +1375,7 @@ async fn run_relay_room_list_subscription_loop(
 /// the refresh therefore runs once a whole interval has passed since the last run (the first check
 /// always runs), and `tick` may wrap.
 fn interval_due(tick: u64, last_run: &mut Option<u64>, interval: u64) -> bool {
-    let due = tick.is_multiple_of(interval);
+    let due = last_run.is_none_or(|last| tick.wrapping_sub(last) >= interval);
     if due {
         *last_run = Some(tick);
     }
