@@ -3497,13 +3497,19 @@ fn a_peak_reached_while_the_os_was_killing_processes_is_not_kept() {
             )],
         );
         ledger.register(&current, 512 * MIB);
-        ledger.peaks.get(&format!("key-{key}")).map(|peak| peak.memory)
+        ledger
+            .peaks
+            .get(&format!("key-{key}"))
+            .map(|peak| peak.memory)
     };
     assert_eq!(run(5, 9), Some(73 * GIB), "an ordinary end keeps its peak");
     assert_eq!(run(6, 10), None, "a peak cut off by the OS kill was kept");
     assert!(
-        capture.records().iter().any(|line| line.contains("admission forgot")
-            && line.contains("killing processes for lack of memory")),
+        capture
+            .records()
+            .iter()
+            .any(|line| line.contains("admission forgot")
+                && line.contains("killing processes for lack of memory")),
         "the decision is not logged"
     );
     super::super::TEST_OS_OOM_KILLS.with(|kills| kills.set(None));

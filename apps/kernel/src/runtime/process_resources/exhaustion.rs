@@ -223,23 +223,24 @@ impl Exhaustion {
         // The runaway horizon: no pressure average and no sustain to wait
         // for, since a command taking memory this fast leaves the host
         // seconds, not the time the pressure takes to show.
-        let (pid, grew, window, runaway) =
-            if let Some((pid, rate, grew, window)) = self.runaway_in_horizon(now, gauge, commands) {
-                (pid, grew, window, Some(rate))
-            } else {
-                if !gauge.hot() {
-                    self.hot_since = None;
-                    return actions;
-                }
-                let hot = *self.hot_since.get_or_insert(now);
-                if now.saturating_duration_since(hot) < PSI_SUSTAIN {
-                    return actions;
-                }
-                let Some((pid, grew, window)) = self.top_grower(now, commands) else {
-                    return actions;
-                };
-                (pid, grew, window, None)
+        let (pid, grew, window, runaway) = if let Some((pid, rate, grew, window)) =
+            self.runaway_in_horizon(now, gauge, commands)
+        {
+            (pid, grew, window, Some(rate))
+        } else {
+            if !gauge.hot() {
+                self.hot_since = None;
+                return actions;
+            }
+            let hot = *self.hot_since.get_or_insert(now);
+            if now.saturating_duration_since(hot) < PSI_SUSTAIN {
+                return actions;
+            }
+            let Some((pid, grew, window)) = self.top_grower(now, commands) else {
+                return actions;
             };
+            (pid, grew, window, None)
+        };
         self.hot_since = None;
         let repeat = STOP_A_RE_GROWER_AT_ONCE && self.paused_before.contains_key(&pid);
         let step = if repeat { Step::Stop } else { Step::Throttle };
@@ -992,13 +993,19 @@ mod tests {
         let mut machine = Exhaustion::default();
         let steps = run(&mut machine, start, 0..30, |_| roomy(6), 1331 * MIB);
         let at = |step| steps.iter().find(|(_, a)| a.step == step).map(|(t, _)| *t);
-        let throttled = at(Step::Throttle).expect("throttled with PSI 1 % and 10 % of the pool used");
-        assert_eq!(throttled, 1, "one sample to measure the rate, no sustain time");
+        let throttled =
+            at(Step::Throttle).expect("throttled with PSI 1 % and 10 % of the pool used");
+        assert_eq!(
+            throttled, 1,
+            "one sample to measure the rate, no sustain time"
+        );
         assert_eq!(at(Step::Pause), Some(throttled + 3));
         assert_eq!(at(Step::Stop), Some(throttled + 13));
         let stop = steps.iter().find(|(_, a)| a.step == Step::Stop).unwrap().1;
         assert_eq!(stop.pid, 7);
-        assert!(stop.runaway.is_some_and(|rate| rate >= RUNAWAY_BYTES_PER_SECOND));
+        assert!(stop
+            .runaway
+            .is_some_and(|rate| rate >= RUNAWAY_BYTES_PER_SECOND));
     }
 
     #[test]
@@ -1047,7 +1054,13 @@ mod tests {
             runaway: Some(1331 * MIB),
         };
         let throttled = throttled_line("node usage.test.js", &action);
-        for part in ["throttled", "1.3 GB a second", "6 GB left", "5 s of room", "-j"] {
+        for part in [
+            "throttled",
+            "1.3 GB a second",
+            "6 GB left",
+            "5 s of room",
+            "-j",
+        ] {
             assert!(throttled.contains(part), "{part}: {throttled}");
         }
         assert!(paused_line("node usage.test.js", &action).contains("paused"));
@@ -1057,7 +1070,10 @@ mod tests {
     #[test]
     fn free_memory_plus_file_cache_is_what_a_fast_grower_can_have() {
         let text = "MemTotal: 1000 kB\nMemFree: 800 kB\nMemAvailable: 9000 kB\nActive(file): 100 kB\nInactive(file): 50 kB\nSReclaimable: 8000 kB\n";
-        assert_eq!(super::super::pool::fast_room_of_for_tests(text), Some(950 * 1024));
+        assert_eq!(
+            super::super::pool::fast_room_of_for_tests(text),
+            Some(950 * 1024)
+        );
     }
 
     #[test]
