@@ -1782,3 +1782,61 @@ async fn async_popup_browser_verification_refuses_confirm_and_blocking_calls() {
         );
     }
 }
+
+/// Row 655: an agent choice that only repeats the card's own Cancel under another id leaves ONE Cancel, and pressing it
+/// is the definitive decline.
+#[tokio::test]
+async fn row655_a_cancel_choice_with_another_id_leaves_one_cancel() {
+    let f = fixture("async-popup-one-cancel", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(
+        &f,
+        serde_json::json!({"choices":[
+            {"id":"cancel_note","label":"Cancel","reply":"cancelled","style":"secondary"},
+            {"id":"done","label":"Done","reply":"done"}
+        ],"default_on_timeout":"cancel_note"}),
+    )
+    .await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.id() == id)
+        .unwrap();
+    let cancels: Vec<_> = card
+        .choices()
+        .iter()
+        .filter(|choice| choice.label().trim().eq_ignore_ascii_case("cancel"))
+        .map(|choice| choice.id().to_owned())
+        .collect();
+    assert_eq!(cancels, vec!["cancel".to_owned()], "exactly one Cancel, the card's own");
+    assert!(card.choice("done").is_some());
+    assert!(card.choice("cancel_note").is_none());
+}
+
+/// Row 655: a card whose element has no visible area (the empty crop) tells the agent so; a visible one adds nothing.
+#[test]
+fn row655_a_card_on_an_element_without_visible_area_tells_the_agent_it_is_not_open() {
+    let mut region = browser_region();
+    let visible = crate::session::RuntimeInteractionView {
+        browser_region: region.clone(),
+    };
+    assert_eq!(
+        super::super::tool_dispatch::hidden_region_note(Some(&visible)),
+        None
+    );
+    region.rect = crate::session::RuntimeInteractionBrowserRect {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
+    let hidden = crate::session::RuntimeInteractionView {
+        browser_region: region,
+    };
+    let note = super::super::tool_dispatch::hidden_region_note(Some(&hidden)).unwrap();
+    assert!(note.contains("not visible"));
+    assert!(note.contains("Do not tell the person"));
+    assert_eq!(super::super::tool_dispatch::hidden_region_note(None), None);
+}

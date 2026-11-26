@@ -449,7 +449,7 @@ export class KernelBrowserHost {
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
       // Protocol 556: the same subscription wakes parked state reads (a Tab or document changed).
-      if (stateChangingEvent(message)) this.stateSignal.notify();
+      if (stateChangingEvent(message, connection)) this.stateSignal.notify();
       const info = message?.params?.targetInfo;
       if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
       if (blockedUrl(info.url)) void this.closeBlocked(connection, info.targetId);

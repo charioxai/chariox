@@ -7315,7 +7315,19 @@ shown again within the 15 second observation budget ("Browser restarted and the 
 again; take a fresh snapshot and ask again"). The agent is then told `status: "unavailable"` with no choice
 id, never `condition_met`. App confirmations are not person steps on a page and keep their own rules.
 
-Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
+Row 655 (no shape change): an element the person cannot see has no visible area, and the card is the empty crop
+`rect: {x:0, y:0, width:0, height:0}`, never a box sized as if it were on screen. This covers an element that is not
+rendered, is hidden (visibility), sits in a frame its owner hides, or is clipped to nothing by the viewport
+(a challenge frame parked above the page until its checkbox is ticked). At registration the host gives such an element
+the existing geometry window (one second) to appear. If it is still not visible, the card is registered in the empty
+crop, and the `wait:false` result carries `page_note`: a plain sentence telling the agent that the element is not
+visible yet, that the card shows the whole page so the person can take the step that reveals it, and that the agent
+must not tell the person it is open. Clients show the whole page while the crop is empty (never an empty box), and
+move to the element when it gains area and back to the page when it loses it. A move or resize of a visible element
+still never moves the card under the pointer. The card carries one Cancel: an agent choice labelled Cancel under
+another id is the card's own Cancel (`choice_id: "cancel"`, status `cancelled`).
+
+Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region row655`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
 
 ### Agent reach — local 974

@@ -420,3 +420,70 @@ test('AU-03 a done_text card cannot be rebound to another done text', () => with
   await assert.rejects(region({ card_id: 'done', done_text: 'Something else' }), { code: 'user_domain_stale_reference' });
   await assert.rejects(region({ card_id: 'done' }), { code: 'user_domain_stale_reference' });
 }));
+
+// Row 655: a hidden hCaptcha challenge frame is parked far above the page (top:-10000px). Its buttons map to a
+// box clipped to nothing; the card must be the empty crop, never a sized box at the page's top edge.
+function childFrameConnection(host, state, frame) {
+  return host.browser.ensureConnection().then(connection => {
+    const original = connection.send.bind(connection);
+    const childFrame = { id: 'child', parentId: 'frame', loaderId: 'child-doc' };
+    connection.send = async (method, params, session) => {
+      if (method === 'Page.getFrameTree') return { frameTree: session === 'child-session'
+        ? { frame: childFrame } : { frame: { id: 'frame', loaderId: state.document_id }, childFrames: [{ frame: childFrame }] } };
+      if (method === 'Target.getTargets') return { targetInfos: [{ type: 'iframe', targetId: 'child', parentFrameId: 'frame' }] };
+      if (method === 'Target.attachToTarget') return { sessionId: 'child-session' };
+      if (method === 'DOM.getFrameOwner') return { backendNodeId: 99 };
+      if (method === 'DOM.getBoxModel' && params.backendNodeId !== 99 && frame.unrendered) throw new Error('Could not compute box model.');
+      if (method === 'DOM.getBoxModel') return params.backendNodeId === 99
+        ? { model: { content: frame.owner } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
+      if (method === 'DOM.resolveNode' && params.backendNodeId === 99) return { object: { objectId: 'owner' } };
+      if (method === 'Runtime.callFunctionOn' && params.objectId === 'owner') return { result: { value: !frame.ownerHidden } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+      if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
+      return original(method, params, session);
+    };
+  });
+}
+
+test('655 a card on an element inside a hidden challenge frame is the empty crop, then follows the frame when it opens', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const frame = { owner: [0, -10000, 400, -10000, 400, -9500, 0, -9500] };
+  await childFrameConnection(host, state, frame);
+  await snapshot();
+  const parked = await region({ ref, card_id: 'card' });
+  assert.equal(parked.state, 'present');
+  assert.deepEqual(parked.region.rect, { x: 0, y: 0, width: 0, height: 0 }, 'a box clipped to nothing is the empty crop');
+  frame.owner = [100, 120, 300, 120, 300, 220, 100, 220];
+  const opened = await region({ ref, card_id: 'card', generation: 1, document_id: 'doc', after: { rect: parked.region.rect, viewport_width: 800, viewport_height: 600 } });
+  assert.deepEqual(opened.region.rect, { x: 89, y: 114, width: 82, height: 52 }, 'the card follows the frame when it opens');
+  frame.ownerHidden = true;
+  const closed = await region({ ref, card_id: 'card', generation: 1, document_id: 'doc', after: { rect: opened.region.rect, viewport_width: 800, viewport_height: 600 } });
+  assert.deepEqual(closed.region.rect, { x: 0, y: 0, width: 0, height: 0 }, 'a frame hidden by its owner hides its elements');
+}));
+
+test('655 an element that is not rendered has no box: the empty crop, not a 0x0 box read as a position', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const frame = { owner: [100, 120, 300, 120, 300, 220, 100, 220], unrendered: true };
+  await childFrameConnection(host, state, frame);
+  await snapshot();
+  const started = Date.now();
+  const unrendered = await region({ ref });
+  assert.deepEqual(unrendered.region.rect, { x: 0, y: 0, width: 0, height: 0 });
+  assert.ok(Date.now() - started >= 900, 'registration waited the geometry window for the element to appear');
+}));
+
+test('655 registration waits the geometry window for an element that appears (an opening challenge), then binds its box', () => withHost(async ({ snapshot, region, state }) => {
+  await snapshot();
+  state.box = { left: 80, top: -10000, right: 180, bottom: -9950 };
+  const waiting = region({});
+  await delay(50);
+  state.box = { left: 80, top: 90, right: 180, bottom: 140 };
+  const shown = await waiting;
+  assert.equal(shown.state, 'present');
+  assert.deepEqual(shown.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+  state.box = { left: 80, top: -10000, right: 180, bottom: -9950 };
+  const parked = await region({});
+  assert.deepEqual(parked.region.rect, { x: 0, y: 0, width: 0, height: 0 }, 'an element above the viewport is the empty crop, not a strip at the top edge');
+}));
