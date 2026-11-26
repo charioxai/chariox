@@ -34,8 +34,18 @@ fn watched_before_the_restart(f: &Fixture, id: &str, age_ms: u64) -> AgentWake {
 }
 
 fn lost_report(f: &Fixture) -> (String, String) {
+    lost_report_with(f, |_| Ok(Default::default()))
+}
+
+/// The report when the restart's orphan cleanup answers as `reap` says.
+fn lost_report_with(
+    f: &Fixture,
+    reap: impl FnOnce(
+        &std::collections::BTreeMap<String, u64>,
+    ) -> std::io::Result<std::collections::BTreeMap<String, usize>>,
+) -> (String, String) {
     f.runtime
-        .recover_lost_agent_processes(crate::session::unix_epoch_ms())
+        .recover_lost_agent_processes_with(crate::session::unix_epoch_ms(), reap)
         .unwrap();
     let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
     assert_eq!(events.len(), 1, "the waiting agent hears of the loss once");
@@ -56,7 +66,10 @@ fn lost_report(f: &Fixture) -> (String, String) {
 async fn a_watch_lost_across_a_restart_says_when_it_was_last_seen_that_it_is_gone_and_what_to_do() {
     let f = fixture("lost-process-cell2", false).await;
     watched_before_the_restart(&f, "watch-a", 3 * HOUR_MS);
-    let (tail, notice) = lost_report(&f);
+    // The process was still running at the restart, so recovery stopped it.
+    let (tail, notice) = lost_report_with(&f, |wakes| {
+        Ok(wakes.keys().map(|id| (id.clone(), 1)).collect())
+    });
     for (what, text) in [("the answer", &tail), ("the room notice", &notice)] {
         assert!(
             text.contains("last seen") && text.contains("3 h"),
@@ -90,5 +103,56 @@ async fn a_watch_whose_process_ended_while_the_kernel_was_down_says_so() {
             text.contains("exit is unknown"),
             "{what} says its exit is unknown: {text}"
         );
+    }
+}
+
+// Orphans of the watch were found and stopped: the report says the kernel
+// stopped them, so the work is gone and can be started again.
+#[tokio::test]
+async fn a_watch_whose_leftover_process_was_stopped_says_the_kernel_stopped_it() {
+    let f = fixture("lost-process-stopped", false).await;
+    watched_before_the_restart(&f, "watch-c", HOUR_MS);
+    let (tail, notice) = lost_report_with(&f, |wakes| {
+        Ok(wakes.keys().map(|id| (id.clone(), 2)).collect())
+    });
+    for (what, text) in [("the answer", &tail), ("the room notice", &notice)] {
+        assert!(
+            text.contains("the kernel restarted and stopped it")
+                && text.contains("are gone")
+                && text.contains("start it again"),
+            "{what} says the kernel stopped it and to start it again: {text}"
+        );
+        assert!(
+            !text.contains("ended while the kernel was down"),
+            "{what} does not claim it ended on its own: {text}"
+        );
+    }
+}
+
+// The cleanup failed (for example its settlement deadline passed): survivors
+// cannot be ruled out, so the report must not say the job is gone or tell the
+// owner to start it again before checking.
+#[tokio::test]
+async fn a_watch_whose_cleanup_is_unconfirmed_does_not_claim_the_job_is_gone() {
+    let f = fixture("lost-process-unconfirmed", false).await;
+    watched_before_the_restart(&f, "watch-d", HOUR_MS);
+    let (tail, notice) = lost_report_with(&f, |_| {
+        Err(std::io::Error::other("settlement deadline expired"))
+    });
+    for (what, text) in [("the answer", &tail), ("the room notice", &notice)] {
+        assert!(
+            text.contains("could not confirm") && text.contains("may still be running"),
+            "{what} says survivors cannot be ruled out: {text}"
+        );
+        assert!(
+            text.contains("stop what remains before starting it again"),
+            "{what} tells the owner to resolve survivors before restarting: {text}"
+        );
+        for claim in ["are gone", "ended while the kernel was down", "stopped it,"] {
+            assert!(
+                !text.contains(claim),
+                "{what} must not claim `{claim}` without evidence: {text}"
+            );
+        }
     }
 }

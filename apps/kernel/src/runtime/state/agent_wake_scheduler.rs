@@ -421,6 +421,18 @@ impl KernelRuntimeState {
     /// reported lost and never relaunched. Descendants it left running are
     /// identified by their wake marker and stopped.
     pub(super) fn recover_lost_agent_processes(&self, now: u64) -> Result<(), DaemonError> {
+        self.recover_lost_agent_processes_with(now, super::agent_process_group::reap_orphans)
+    }
+
+    /// `reap` stops the orphans of the given wakes (wake id -> created at) and
+    /// returns how many each had; it is a parameter so a failed cleanup can be tested.
+    pub(super) fn recover_lost_agent_processes_with(
+        &self,
+        now: u64,
+        reap: impl FnOnce(
+            &std::collections::BTreeMap<String, u64>,
+        ) -> std::io::Result<std::collections::BTreeMap<String, usize>>,
+    ) -> Result<(), DaemonError> {
         let monitor = &self.owned.agent_wakes;
         let lost: Vec<_> = self
             .owned
@@ -442,7 +454,7 @@ impl KernelRuntimeState {
         if lost.is_empty() {
             return Ok(());
         }
-        let stopped = super::agent_process_group::reap_orphans(
+        let stopped = reap(
             &lost
                 .iter()
                 .map(|wake| (wake.id.clone(), wake.created_at_ms))
@@ -458,8 +470,12 @@ impl KernelRuntimeState {
             if !crate::provider::managed_provider_isolation_required() {
                 orphans.push_str("; descendants that cleared their environment or have a live parent outside the watched session cannot be attributed and may still be running");
             }
-            let was_stopped = matches!(&stopped, Ok(stopped) if stopped.contains_key(&wake.id));
-            let report = lost_watch_report(&wake, now, was_stopped);
+            let outcome = match &stopped {
+                Ok(stopped) if stopped.contains_key(&wake.id) => LostWatch::Stopped,
+                Ok(_) => LostWatch::NotFound,
+                Err(_) => LostWatch::Unconfirmed,
+            };
+            let report = lost_watch_report(&wake, now, outcome);
             self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
                 id: wake.id.clone(),
                 exit_code: None,
@@ -621,7 +637,7 @@ impl KernelRuntimeState {
 
 /// What a watch lost across a cold restart tells its owner: when the process
 /// was last seen, that it and the job behind it are gone, and what to do.
-fn lost_watch_report(wake: &AgentWake, now: u64, was_stopped: bool) -> String {
+fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
     let seen = wake.verified_at_ms.unwrap_or(wake.created_at_ms);
     let (secs, clock) = (
         now.saturating_sub(seen) / 1000,
@@ -632,16 +648,36 @@ fn lost_watch_report(wake: &AgentWake, now: u64, was_stopped: bool) -> String {
         90..=5_399 => format!("{} min", secs / 60),
         _ => format!("{} h", (secs + 1800) / 3600),
     };
-    let ended = if was_stopped {
-        "the kernel restarted and stopped it"
-    } else {
-        "it ended while the kernel was down"
+    let (state, next) = match outcome {
+        LostWatch::Stopped => (
+            "the kernel restarted and stopped it, so it and the job behind it are gone and its exit is unknown",
+            "start it again with chariox.events.process and watch the new one",
+        ),
+        LostWatch::NotFound => (
+            "no process of it was found after the restart, so it ended while the kernel was down and its exit is unknown",
+            "start it again with chariox.events.process and watch the new one",
+        ),
+        LostWatch::Unconfirmed => (
+            "the kernel restarted and could not confirm that it, or anything it started, has stopped, so it may still be running and its exit is unknown",
+            "check for it and stop what remains before starting it again with chariox.events.process",
+        ),
     };
     format!(
-        "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {ended}, so it and the job behind it are gone and its exit is unknown: start it again with chariox.events.process and watch the new one",
+        "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {state}: {next}",
         wake.label,
         clock / 3600,
         clock % 3600 / 60,
         clock % 60
     )
+}
+
+/// What the restart's cleanup established about a lost watched process.
+#[derive(Clone, Copy)]
+enum LostWatch {
+    /// Processes of the watch were found and stopped, exits confirmed.
+    Stopped,
+    /// The scan completed and found none of the watch's processes.
+    NotFound,
+    /// The cleanup failed or timed out: survivors cannot be ruled out.
+    Unconfirmed,
 }

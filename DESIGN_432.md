@@ -63,3 +63,14 @@ real ledger):
 - cell 3: no process of the watch left to stop -> answer and notice say "ended while the kernel was down"
   and "exit is unknown".
 - cell 1: existing `hot_reload.rs::a_watched_process_still_wakes_its_agent_after_a_hot_reload` (must pass on the union head).
+
+## Review follow-up (P2): cleanup that cannot prove termination
+
+`reap_orphans` can fail (its settlement deadline expires) and a scan that finds nothing does not cover
+descendants with a live outside parent or a cleared marker. The report now has three outcomes
+(`LostWatch`): `Stopped` (found and stopped: "the kernel restarted and stopped it, so it and the job
+behind it are gone"), `NotFound` (scan completed, none found: "no process of it was found after the
+restart, so it ended while the kernel was down"; the existing survivor caveat is still appended) and
+`Unconfirmed` (cleanup failed: "could not confirm that it, or anything it started, has stopped, so it may
+still be running: check for it and stop what remains before starting it again"). `recover_lost_agent_processes_with`
+takes the cleanup as a parameter so tests cover the failed case.
