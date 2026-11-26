@@ -185,6 +185,22 @@ impl KernelRuntimeState {
             without_asking::Admission::Off => None,
             without_asking::Admission::Outside(reason) => Some(reason),
         };
+        // A machine the account has no room for is refused before the person is asked: their yes would only be refused
+        // after the card, and a request the service refused is closed. The service still decides; this is its own count. A retry of a request already sent or admitted never gets here: it replays.
+        if let (ControlPlaneRequest::Acquire { .. }, Some(machines)) =
+            (request, capability.and_then(|c| c.account_machines))
+        {
+            if machines.in_use >= machines.allowed {
+                return Err(acquisition_error(
+                    "account_machine_limit",
+                    &format!(
+                        "The account allows {} and {} in use, so this was not asked of the person. Release one, or raise the limit: chariox machine limits --machines N (a raise goes to the person)",
+                        limits::plural_machines(machines.allowed),
+                        machines.in_use
+                    ),
+                ));
+            }
+        }
         let description = match (request, capability) {
             (
                 ControlPlaneRequest::AcquireJob {
@@ -253,6 +269,11 @@ impl KernelRuntimeState {
         };
         let description = match outside_limits {
             Some(reason) => format!("{description} Asked because {reason}."),
+            None => description,
+        };
+        // The person sees how full the account is before they say yes.
+        let description = match capability.and_then(|c| c.account_machines) {
+            Some(machines) => format!("{description} The account has {}.", machines.in_use_text()),
             None => description,
         };
         let description = match request {
@@ -928,6 +949,7 @@ impl KernelRuntimeState {
             MachineAcquisitionRequest::Options {} => Ok(MachineAcquisitionResult::Options {
                 options: capability.offers,
                 default: capability.offer,
+                account_machines: capability.account_machines,
             }),
             MachineAcquisitionRequest::Limits {} => {
                 let account = read_account_limits(&capability, &plane).await?;

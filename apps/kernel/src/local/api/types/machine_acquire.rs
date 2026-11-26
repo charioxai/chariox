@@ -66,6 +66,9 @@ pub struct MachineLimitsReading {
 #[serde(deny_unknown_fields)]
 pub struct AccountLimitsReading {
     pub machines_at_once: u32,
+    /// How many machines count against it now, when the service says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machines_in_use: Option<u32>,
     pub spend_per_day_micros: u64,
     pub currency: String,
     pub version: u64,
@@ -94,6 +97,9 @@ pub enum MachineAcquisitionResult {
     Options {
         options: Vec<MachineOption>,
         default: Option<MachineAcquisitionOffer>,
+        /// How many machines count against the account's limit now, before any is asked for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_machines: Option<AccountMachines>,
     },
     /// An acquired machine with the option it was acquired under; no duration is known up front.
     Acquired {

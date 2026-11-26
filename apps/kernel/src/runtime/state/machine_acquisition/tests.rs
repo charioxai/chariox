@@ -35,6 +35,7 @@ fn fixture(
     command.session_id = Some(room.id().into());
     command.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
     let caps = MachineAllocationCapability {
+        account_machines: None,
         revision: "v1".into(),
         actions: vec!["acquire_job".into()],
         offer: None,

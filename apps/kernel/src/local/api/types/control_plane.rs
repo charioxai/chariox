@@ -161,6 +161,9 @@ pub enum ControlPlaneResponse {
         spend_per_day_micros: u64,
         currency: String,
         version: u64,
+        /// How many machines count against `machines_at_once` now, when the service says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machines_in_use: Option<u32>,
     },
     Machines {
         machines: Vec<ControlPlaneMachineRow>,
@@ -208,6 +211,29 @@ pub struct MachineAllocationCapability {
     pub job_offers: Vec<JobMachineOffer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_default_class_id: Option<String>,
+    /// The account's machine limit and how many count against it now: said before anyone is asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_machines: Option<AccountMachines>,
+}
+
+/// "N of M machines in use", as the connected service counts them (every fleet together).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountMachines {
+    pub in_use: u32,
+    pub allowed: u32,
+}
+
+impl AccountMachines {
+    /// "2 of 3 machines in use".
+    pub fn in_use_text(&self) -> String {
+        format!(
+            "{} of {} {} in use",
+            self.in_use,
+            self.allowed,
+            if self.allowed == 1 { "machine" } else { "machines" }
+        )
+    }
 }
 
 /// One machine the connected service offers: its size, rate in the account's currency, region and stock now.

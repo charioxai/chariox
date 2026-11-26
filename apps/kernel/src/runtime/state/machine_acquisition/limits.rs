@@ -25,6 +25,7 @@ pub(crate) struct AccountLimits {
     pub(crate) values: AccountLimitValues,
     pub(crate) currency: String,
     pub(crate) version: u64,
+    pub(crate) machines_in_use: Option<u32>,
 }
 
 impl AccountLimits {
@@ -35,6 +36,7 @@ impl AccountLimits {
                 spend_per_day_micros,
                 currency,
                 version,
+                machines_in_use,
             } => Some(Self {
                 values: AccountLimitValues {
                     machines_at_once: *machines_at_once,
@@ -42,6 +44,7 @@ impl AccountLimits {
                 },
                 currency: currency.clone(),
                 version: *version,
+                machines_in_use: *machines_in_use,
             }),
             _ => None,
         }
@@ -50,6 +53,7 @@ impl AccountLimits {
     fn reading(&self) -> AccountLimitsReading {
         AccountLimitsReading {
             machines_at_once: self.values.machines_at_once,
+            machines_in_use: self.machines_in_use,
             spend_per_day_micros: self.values.spend_per_day_micros,
             currency: self.currency.clone(),
             version: self.version,
@@ -65,6 +69,10 @@ pub(crate) enum AccountBound {
     /// The service has them and the read failed: nothing goes ahead without asking on a guess.
     Unread,
     Limits(AccountLimits),
+}
+
+pub(super) fn plural_machines(count: u32) -> String {
+    plural(count)
 }
 
 fn plural(count: u32) -> String {

@@ -800,6 +800,7 @@ async fn the_rentals_toggle_alone_decides_even_for_a_sudo_task() {
     command.caller.metaagent_id = Some(turn.agent_id.clone());
     command.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
     let capability = MachineAllocationCapability {
+        account_machines: None,
         revision: "v1".into(),
         actions: vec!["acquire_job".into()],
         offer: None,

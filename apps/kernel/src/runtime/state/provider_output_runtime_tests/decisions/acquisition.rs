@@ -31,6 +31,7 @@ async fn acquire(t: &Tree, requester: &str) -> (Gate, String) {
     command.session_id = Some(t.room.clone());
     command.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
     let capability = MachineAllocationCapability {
+        account_machines: None,
         revision: "v1".into(),
         actions: vec!["acquire_job".into()],
         offer: None,

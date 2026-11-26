@@ -21,6 +21,8 @@ struct Service {
     no_limits: Arc<std::sync::atomic::AtomicBool>,
     /// A read of the limits fails.
     limits_down: Arc<std::sync::atomic::AtomicBool>,
+    /// The service says how many machines are in use of the account's limit, with its offer and its limits.
+    counts: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn option(class_id: &str, vcpu: u32, amount_micros: u64) -> MachineOption {
@@ -52,7 +54,9 @@ async fn service(machines: u32, spend: u64) -> Service {
         acquires: Arc::default(),
         no_limits: Arc::default(),
         limits_down: Arc::default(),
+        counts: Arc::default(),
     };
+    let counts_flag = service.counts.clone();
     let (account, sets, acquires, no_limits, limits_down) = (
         service.account.clone(),
         service.sets.clone(),
@@ -63,6 +67,7 @@ async fn service(machines: u32, spend: u64) -> Service {
     tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
+            let counts = counts_flag.clone();
             let (account, sets, acquires, no_limits, limits_down) = (
                 account.clone(),
                 sets.clone(),
@@ -94,9 +99,15 @@ async fn service(machines: u32, spend: u64) -> Service {
                     }
                 };
                 let request = &body["request"];
+                let in_use = acquires.lock().unwrap().len();
+                let counted = counts.load(std::sync::atomic::Ordering::SeqCst);
                 let limits_json = |a: &Account| {
-                    serde_json::json!({"kind":"limits","machines_at_once":a.machines,
-                        "spend_per_day_micros":a.spend,"currency":"EUR","version":a.version})
+                    let mut limits = serde_json::json!({"kind":"limits","machines_at_once":a.machines,
+                        "spend_per_day_micros":a.spend,"currency":"EUR","version":a.version});
+                    if counted {
+                        limits["machines_in_use"] = in_use.into();
+                    }
+                    limits
                 };
                 let refuse = |status: u16, code: &str| {
                     (
@@ -111,13 +122,14 @@ async fn service(machines: u32, spend: u64) -> Service {
                         } else {
                             serde_json::json!(["acquire", "limits", "set_limits"])
                         };
-                        (
-                            200,
-                            serde_json::json!({"kind":"capabilities","machine_allocation":{
-                                "revision":"v1","actions":actions,"offer":null,
-                                "offers":[option("small", 2, 1_000), option("big", 8, 4_000)]}})
-                            .to_string(),
-                        )
+                        let mut capability = serde_json::json!({"kind":"capabilities","machine_allocation":{
+                            "revision":"v1","actions":actions,"offer":null,
+                            "offers":[option("small", 2, 1_000), option("big", 8, 4_000)]}});
+                        if counted {
+                            capability["machine_allocation"]["account_machines"] =
+                                serde_json::json!({"in_use":in_use,"allowed":account.lock().unwrap().machines});
+                        }
+                        (200, capability.to_string())
                     }
                     "limits" if limits_down.load(std::sync::atomic::Ordering::SeqCst) => {
                         refuse(503, "unavailable")
@@ -565,6 +577,7 @@ async fn an_agent_cannot_send_its_own_approval() {
         },
         currency: "EUR".into(),
         version: 1,
+        machines_in_use: None,
     };
     let error = state
         .authorize_account_change(&command, &current, &raise)
@@ -662,4 +675,57 @@ fn the_limit_tools_are_listed_only_with_an_account() {
     assert!(!machine_tool_specs()
         .iter()
         .any(|spec| names.contains(&spec.name)));
+}
+
+#[tokio::test]
+async fn the_options_and_the_card_say_how_many_machines_are_in_use_before_anyone_is_asked() {
+    let service = service(3, 10_000_000).await;
+    service.counts.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Not allowed without asking: every acquire goes to the person's card.
+    let (state, token, room, _worktree) = super::without_asking_tests::agent_kernel(
+        service.api_url.clone(),
+        crate::config::UserAgentsConfig::default(),
+    )
+    .await;
+    let options = tool(&state, &token, "chariox.machines.options", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(options["account_machines"], serde_json::json!({"in_use":0,"allowed":3}));
+    let read = tool(&state, &token, "chariox.machines.limits", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["limits"]["account"]["machines_in_use"], 0);
+    let message = super::without_asking_tests::acquire_waits_for_a_card(
+        &state, &token, &room, "one", "small",
+    )
+    .await;
+    assert!(message.contains("The account has 0 of 3 machines in use."), "{message}");
+}
+
+#[tokio::test]
+async fn a_full_account_refuses_an_acquire_before_the_person_is_asked_and_a_retry_still_replays() {
+    let service = service(1, 10_000_000).await;
+    service.counts.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (state, token, room, _worktree) = super::without_asking_tests::agent_kernel(
+        service.api_url.clone(),
+        no_ask(Some(4), None),
+    )
+    .await;
+    // Within the person's no-ask limits and the account's: the one machine goes ahead.
+    let first = super::without_asking_tests::acquire(&state, &token, "first", "small").await;
+    assert!(first.is_ok(), "{first:?}");
+    // Now 1 of 1 is in use: a second is refused before any card, naming the count and the way out.
+    let error = super::without_asking_tests::acquire(&state, &token, "second", "small")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("allows 1 machine and 1 in use") && error.contains("not asked of the person"),
+        "{error}"
+    );
+    no_card(&state, &room);
+    assert_eq!(service.acquires.lock().unwrap().len(), 1, "the refused one is not sent");
+    // The first request, retried after a lost answer, replays: the full account does not refuse it.
+    let again = super::without_asking_tests::acquire(&state, &token, "first", "small").await;
+    assert!(again.is_ok(), "{again:?}");
 }
