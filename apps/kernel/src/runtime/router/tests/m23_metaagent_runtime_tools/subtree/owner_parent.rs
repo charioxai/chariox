@@ -38,6 +38,20 @@ async fn owner_move(
     world.router.dispatch(command, request).await
 }
 
+/// The aliases `agent children` lists for the caller's own tree, sorted.
+async fn own_children(world: &World, who: &str) -> Vec<String> {
+    let result = room_command(world, who, "agent children").await;
+    assert!(result.ok, "{who}: {result:?}");
+    let mut found = result.payload["response"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["alias"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    found.sort();
+    found
+}
+
 #[test]
 fn an_agent_moves_a_sibling_and_a_grandchild_and_the_new_parent_controls_them() {
     run_large_stack_async_test("owner-parent-moves", moves);
@@ -45,13 +59,13 @@ fn an_agent_moves_a_sibling_and_a_grandchild_and_the_new_parent_controls_them() 
 
 async fn moves() {
     let world = world("owner-parent-moves").await;
-    // d is b's child and a's grandchild: peer is above neither. Before this, nobody but the user moved it.
-    assert!(!controls_it(
-        &room_command(&world, "peer", "agent children d").await
-    ));
+    // Tree: a -> {b -> {d}, s}; peer has no children yet.
+    assert_eq!(own_children(&world, "a").await, ["b", "d", "s"]);
+    assert!(own_children(&world, "peer").await.is_empty());
+    // d is b's child and a's grandchild: an agent of the Room moves it under peer, as the owner can.
     let grandchild = room_command(&world, "a", "agent parent d peer").await;
     assert!(grandchild.ok, "{grandchild:?}");
-    // An agent's command answer omits response bodies; the new edge is read from the agent.
+    // An agent's command answer omits response bodies; the new edge is read from the tree.
     assert_eq!(
         grandchild.payload["response"]["type"], "CommandAccepted",
         "{grandchild:?}"
@@ -60,6 +74,8 @@ async fn moves() {
         parent_of(&world, "d").await.as_deref(),
         Some(world.ids["peer"].as_str())
     );
+    assert_eq!(own_children(&world, "a").await, ["b", "s"]);
+    assert_eq!(own_children(&world, "peer").await, ["d"]);
     // A sibling: b moves s under itself.
     let sibling = room_command(&world, "b", "agent parent s b").await;
     assert!(sibling.ok, "{sibling:?}");
@@ -67,23 +83,9 @@ async fn moves() {
         parent_of(&world, "s").await.as_deref(),
         Some(world.ids["b"].as_str())
     );
-    // The new parent controls the lane, the old parent no longer does (cells b, c).
-    for verb in ["agent children d", "agent deadline get d"] {
-        assert!(
-            controls_it(&room_command(&world, "peer", verb).await),
-            "{verb}"
-        );
-    }
-    for verb in ["agent children d", "agent deadline get d"] {
-        let old = room_command(&world, "b", verb).await;
-        assert!(refused_by_policy(&old), "{verb}: {old:?}");
-        assert!(
-            error_text(&old).contains("can control it"),
-            "the plain reason: {old:?}"
-        );
-    }
-    let old_prompt = room_command(&world, "a", "prompt d say hello").await;
-    assert!(refused_by_policy(&old_prompt), "{old_prompt:?}");
+    assert_eq!(own_children(&world, "b").await, ["s"]);
+    assert_eq!(own_children(&world, "a").await, ["b", "s"]);
+    // The new parent prompts the moved agent (cell b).
     let new_prompt = room_command(&world, "peer", "prompt d say hello").await;
     assert!(controls_it(&new_prompt), "{new_prompt:?}");
     // The same agent, not a relaunch (cell d): its id and alias stay.
@@ -99,18 +101,39 @@ async fn moves() {
 }
 
 #[test]
+fn a_moved_agent_can_no_longer_control_the_agent_it_was_moved_under() {
+    run_large_stack_async_test("owner-parent-upward", upward);
+}
+
+// Row 405: the owner's agents control each other, upward excepted. A move changes which way that
+// exception runs: before it b controls peer as an equal; once under peer, b is below it.
+async fn upward() {
+    let world = world("owner-parent-upward").await;
+    let before = room_command(&world, "b", "agent deadline get peer").await;
+    assert!(controls_it(&before), "{before:?}");
+    let moved = room_command(&world, "a", "agent parent b peer").await;
+    assert!(moved.ok, "{moved:?}");
+    let after = room_command(&world, "b", "agent deadline get peer").await;
+    assert!(refused_by_policy(&after), "{after:?}");
+    assert!(
+        error_text(&after).contains("can control it"),
+        "the plain reason: {after:?}"
+    );
+}
+
+#[test]
 fn an_agent_makes_an_agent_a_room_agent_with_none() {
     run_large_stack_async_test("owner-parent-none", to_none);
 }
 
 async fn to_none() {
     let world = world("owner-parent-none").await;
+    assert_eq!(own_children(&world, "a").await, ["b", "d", "s"]);
     let result = room_command(&world, "peer", "agent parent b none").await;
     assert!(result.ok, "{result:?}");
     assert_eq!(parent_of(&world, "b").await, None);
-    assert!(refused_by_policy(
-        &room_command(&world, "a", "agent children b").await
-    ));
+    // b and d left a's tree.
+    assert_eq!(own_children(&world, "a").await, ["s"]);
 }
 
 #[test]
