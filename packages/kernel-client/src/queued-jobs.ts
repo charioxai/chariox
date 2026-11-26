@@ -1,4 +1,4 @@
-import type { JobView, SessionProcess, SessionProcessState } from "./kernel-events.js"
+import type { SessionProcess, SessionProcessState } from "./kernel-events.js"
 
 /** A command of an agent that waits for room: one queued-job row in its pane. */
 export type QueuedJob = {
@@ -50,43 +50,6 @@ export function queuedJobRate(estimate: NonNullable<SessionProcess["estimate"]>)
   return estimate.kind === "estimate"
     ? { rate: `≈ ${rate}`, rateDetail: `About ${rate} on a VM (${memory}${estimate.minutes !== undefined ? `, about ${estimate.minutes} min` : ""})` }
     : { rate: `${rate}/min`, rateDetail: `No estimate yet: a ${memory} VM costs ${rate} a minute` }
-}
-
-/** Progress and rates come from the home kernel, including confirmed deletion. */
-export function remoteJobLinesForAgent(jobs: readonly JobView[] | undefined, agentId: string | null | undefined, now = Date.now()): string[] {
-  return (jobs ?? []).filter(job => job.agent_id === agentId && (job.placement === "remote" || Boolean(job.read_error))).flatMap(job => {
-    if (job.read_error) return [[job.command, job.read_error].join(" · ")]
-    const result = job.result
-    if (result && !job.machine_label) {
-      const reason = (result.reason ?? "").trim() || result.outcome.replaceAll("_", " ")
-      return [["Remote request refused", job.command, reason].join(" · ")]
-    }
-    const machine = job.machine_label ?? result?.ran_on.machine, address = job.address ?? result?.ran_on.ip
-    const allocating = ["starting", "allocating", "queued"].includes(job.state)
-    const label = machine ?? "a remote machine"
-    const phases: Record<string, string> = {
-      uploading: `Uploading to ${label}`,
-      running: `Running on ${label}`,
-      reconnecting: `Reconnecting to ${label}`,
-      returning: `Returning files from ${label}`,
-      deleting: `Deleting ${label}`,
-      finished: `Ran on ${label}`,
-    }
-    const parts = [allocating ? "Starting a remote machine" : phases[job.state] ?? `Remote job ${job.state} on ${label}`, ...address ? [address] : [], job.command]
-    if (!allocating || result) {
-      const seconds = Math.floor((result?.duration_ms ?? Math.max(0, now - job.started_at_ms)) / 1000)
-      parts.push(`${Math.floor(seconds / 60)}m ${seconds % 60}s`)
-    }
-    if (result) parts.push(result.exit_code !== null ? `exit ${result.exit_code}` : result.outcome.replaceAll("_", " "), `${result.files_back_count} ${result.files_back_count === 1 ? "file" : "files"} back`, ...result.conflicts_count ? [`${result.conflicts_count} conflicts`] : [])
-    if (job.class_id) parts.push(job.class_id)
-    if (job.rate_per_minute) {
-      const estimate = { ...job.rate_per_minute, kind: "per_minute" as const, memory_mib: 0 }
-      parts.push(queuedJobRate(estimate).rate)
-      if (job.estimate_micros !== null && job.estimate_micros !== undefined) parts.push(queuedJobRate({ ...estimate, kind: "estimate", amount_micros: job.estimate_micros }).rate)
-      else parts.push("No duration estimate yet")
-    }
-    return [parts.join(" · "), ...(job.deleted ? [`Deleted ${machine ?? "remote machine"}`] : [])]
-  })
 }
 
 function gigabytes(bytes: number): string {

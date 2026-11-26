@@ -110,6 +110,7 @@ pub(crate) use provider_tool_close::{
     background_calls, ended_background_call_ids, ended_background_provider_tool_rows,
     ended_open_provider_tool_rows, interrupted_foreground_provider_tool_rows, is_work_of_a_turn,
     BackgroundCalls, EndedProviderToolRow, ProviderToolEnding, FOREGROUND_COMMAND_RESTART_REASON,
+    JOB_ROW_KEY_PREFIX,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
