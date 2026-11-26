@@ -136,24 +136,48 @@ impl DaemonConfigProjectionStore {
             config.relay_url = Some(profile.relay_url.clone());
             config.relay_token = Some(token.clone());
             config.cloud_relay = Some(profile.clone());
-            *self
+            let mut pending = self
                 .renewal
                 .lock()
-                .expect("daemon config renewal lock should not be poisoned") =
-                Some(PendingRenewal {
-                    token,
-                    profile,
-                    base_relay_url: previous.relay_url.clone(),
-                    base_relay_token: previous.relay_token.clone(),
-                    base_removal_pending: previous
+                .expect("daemon config renewal lock should not be poisoned");
+            // Renewals chained over unsaved ones keep the first baseline: it is what the app and
+            // the disk still carry until a save lands.
+            let (base_relay_url, base_relay_token, base_removal_pending) = match pending.as_ref() {
+                Some(existing) => (
+                    existing.base_relay_url.clone(),
+                    existing.base_relay_token.clone(),
+                    existing.base_removal_pending,
+                ),
+                None => (
+                    previous.relay_url.clone(),
+                    previous.relay_token.clone(),
+                    previous
                         .cloud_relay
                         .as_ref()
                         .is_some_and(|profile| profile.kernel_removal_pending),
-                });
+                ),
+            };
+            *pending = Some(PendingRenewal {
+                token,
+                profile,
+                base_relay_url,
+                base_relay_token,
+                base_removal_pending,
+            });
             config.clone()
         };
         self.notify_observers(&installed);
         Ok(())
+    }
+
+    /// The removal mark the app and the disk still carry while renewals are unsaved: a save is
+    /// accepted against that, not against the projected profile that already shows the renewal.
+    pub(crate) fn unsaved_renewal_removal_baseline(&self) -> Option<bool> {
+        self.renewal
+            .lock()
+            .expect("daemon config renewal lock should not be poisoned")
+            .as_ref()
+            .map(|renewal| renewal.base_removal_pending)
     }
 
     fn notify_observers(&self, config: &DaemonConfig) {
@@ -307,6 +331,34 @@ mod tests {
         let seen = projection.snapshot();
         assert_eq!(seen.relay_token, None);
         assert!(seen.cloud_relay.unwrap().kernel_removal_pending);
+    }
+
+    /// Row 563 review: a second renewal installed over an unsaved first one must not make the
+    /// first renewal's baseline the new "saved" config.
+    #[test]
+    fn chained_unsaved_renewals_keep_the_durable_baseline() {
+        let mut config = enrolled();
+        config.cloud_relay.as_mut().unwrap().kernel_removal_pending = true;
+        config.relay_token = None;
+        let projection = DaemonConfigProjectionStore::new(config.clone());
+        let mut first = renewed_profile(&config);
+        first.kernel_removal_pending = false;
+        projection
+            .install_cloud_relay_renewal(&config, first, "t1".into())
+            .unwrap();
+        let mut second = renewed_profile(&config);
+        second.kernel_removal_pending = false;
+        second.token_expires_at_ms = Some(19_000);
+        projection
+            .install_cloud_relay_renewal(&projection.snapshot(), second, "t2".into())
+            .unwrap();
+        assert_eq!(projection.unsaved_renewal_removal_baseline(), Some(true));
+        let mut unrelated = config.clone();
+        unrelated.runtime_mcp_port = 4321;
+        projection.update(unrelated);
+        let seen = projection.snapshot();
+        assert_eq!(seen.relay_token.as_deref(), Some("t2"));
+        assert_eq!(seen.runtime_mcp_port, 4321);
     }
 
     #[test]

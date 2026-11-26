@@ -139,6 +139,12 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     progress.stage("install renewed token", Duration::from_secs(2));
     // The connector reads the projection: install there first, off the app lock. The durable
     // write follows on its own task, so a slow disk under the app lock cannot stall presence.
+    // The save is accepted against what the app and the disk still carry, not against a
+    // projected profile that already shows an earlier unsaved renewal.
+    let mut expected = profile;
+    if let Some(unsaved_base) = config_projection.unsaved_renewal_removal_baseline() {
+        expected.kernel_removal_pending = unsaved_base;
+    }
     config_projection.install_cloud_relay_renewal(
         &config,
         updated_profile.clone(),

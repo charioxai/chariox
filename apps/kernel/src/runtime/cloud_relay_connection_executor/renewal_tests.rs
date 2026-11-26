@@ -309,6 +309,47 @@ async fn a_delayed_renewal_save_does_not_undo_a_recorded_removal() {
     assert_ne!(app.config().relay_token.as_deref(), Some("late"));
 }
 
+/// Row 563 review: after Undo Remove the app still carries the removal mark until a renewal save
+/// lands. A save whose first attempt failed must stay recoverable by the next renewal, which is
+/// accepted against the baseline the app and disk still carry (`expected` keeps the removal mark).
+#[tokio::test]
+async fn a_renewal_save_after_undo_remove_recovers_once_storage_answers() {
+    let root = crate::test_support::TestWorktree::new("relay-renew-after-undo-failed-save");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: "http://127.0.0.1:9".into(),
+        relay_url: "wss://relay.example.test".into(),
+        kernel_id: Some(config.daemon_id.clone()),
+        kernel_credential: Some("synthetic-enrollment".into()),
+        token_expires_at_ms: Some(1_000),
+        ..Default::default()
+    });
+    let enrolled = config.cloud_relay.clone().unwrap();
+    let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 1);
+    let state = router.runtime_state();
+    state
+        .mark_cloud_kernel_removal(enrolled.clone(), crate::config::CloudKernelRemoval::Pending)
+        .await
+        .unwrap();
+    let removed = app.lock().await.config().cloud_relay.clone().unwrap();
+    assert!(removed.kernel_removal_pending);
+    // The first renewal's save failed; the next one carries the baseline's removal mark.
+    let mut restored = removed.clone();
+    restored.kernel_removal_pending = false;
+    restored.token_expires_at_ms = Some(9_000);
+    state
+        .finish_cloud_relay_renewal(removed, Some((restored, "after-undo".into())))
+        .await
+        .unwrap();
+    let app = app.lock().await;
+    let saved = app.config().cloud_relay.clone().unwrap();
+    assert!(!saved.kernel_removal_pending);
+    assert_eq!(app.config().relay_token.as_deref(), Some("after-undo"));
+}
+
 /// The body is a long async test: it overflows the default 2 MiB test stack in a debug build, so
 /// it runs on a large-stack thread like the other long relay tests.
 #[test]
