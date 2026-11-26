@@ -134,7 +134,7 @@ impl KernelRuntimeState {
                             target_ref: binding.worker_kernel_id.clone(),
                             state: ProviderAccountMaterializationState::Error,
                             observed_at_ms: crate::session::unix_epoch_ms(),
-                            last_error: Some("the worker no longer holds the account copy".into()),
+                            last_error: Some(WORKER_LOST_COPY.into()),
                         },
                     )?;
             }
@@ -209,10 +209,21 @@ impl KernelRuntimeState {
         ) {
             return Ok(());
         }
+        // A copy replacing one the worker lost is its own operation; until it finishes the
+        // recorded loss stays, so its retries keep that operation.
+        let recovery = lost_copy_generation(&profile.materializations, &binding.worker_kernel_id);
         let result = self
-            .copy_claude_account_to_worker(agent_id, &profile.profile_id, &binding.worker_kernel_id)
+            .copy_claude_account_to_worker(
+                agent_id,
+                &profile.profile_id,
+                &binding.worker_kernel_id,
+                recovery,
+            )
             .await;
         let installed = result.is_ok();
+        if !installed && recovery.is_some() {
+            return result.map(|_| ());
+        }
         registry.update_materialization_status(
             &owner,
             "claude",
@@ -240,6 +251,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         home_profile_id: &str,
         worker_kernel_id: &str,
+        recovery: Option<u64>,
     ) -> Result<(), DaemonError> {
         use crate::provider_account_copy::{
             failure, TRANSFER_SIGN_IN_REQUIRED, TRANSFER_TARGET_NOT_OWNED, TRANSFER_WORKER_OUTDATED,
@@ -307,8 +319,12 @@ impl KernelRuntimeState {
             .map_err(|_| failure(TRANSFER_TARGET_NOT_OWNED))?;
         // One operation per (account, worker): a retry returns the saved receipt, so a copy the
         // worker already holds is never sent twice.
-        let operation_id =
-            lease_copy_operation_id(&config.daemon_id, home_profile_id, worker_kernel_id, None);
+        let operation_id = lease_copy_operation_id(
+            &config.daemon_id,
+            home_profile_id,
+            worker_kernel_id,
+            recovery,
+        );
         let request = crate::local::CopyProviderAccountToKernelRequest {
             provider: "claude".to_string(),
             account_profile: home_profile_id.to_string(),
@@ -391,8 +407,10 @@ fn lease_copy_operation_id(
     recovery: Option<u64>,
 ) -> String {
     use sha2::Digest;
-    let input = format!("{home_kernel_id}\0{home_profile_id}\0{worker_kernel_id}");
-    let _ = recovery;
+    let mut input = format!("{home_kernel_id}\0{home_profile_id}\0{worker_kernel_id}");
+    if let Some(recorded_at_ms) = recovery {
+        input.push_str(&format!("\0recovery-{recorded_at_ms}"));
+    }
     format!(
         "lease-{}",
         &format!("{:x}", sha2::Sha256::digest(input))[..32]
