@@ -1260,6 +1260,18 @@ Cancelling a wake that already ended (fired, exited, lost or cancelled) is
 idempotent: the answer is `settled:true` plus `final_state`; an unknown wake ID
 stays an error.
 
+Row 470: an agent with several prompts has a task per prompt, and an earlier task may still wait
+on a timer or watched process. A newer task's `yield` takes over the live timers and watched
+processes of earlier tasks that wait on nothing else (no goal, no unread outcome, no other work to
+settle) and ends those tasks quietly, so one source firing is one wake. An earlier task whose wait
+times out beside a newer task of the same agent starts no turn: a newer waiting task takes its
+sources over; a newer working task defers the timeout until it waits or ends. A wake the agent
+cancels from any of its own turns leaves a handled receipt, never a turn. A second
+`chariox.events.process` for the same argv, label, match text and directory returns the armed
+watch with `already_watching: true`. Read-only: `chariox.events.subscriptions` carries `waits`,
+every wait of the agent's other tasks, and `chariox.events.wakes` takes `wake_id` to read one wake
+and its task's wait. No serialized shape of a client protocol changes.
+
 A workflow node that yields remains supervised by its durable task after the
 native provider turn ends. The returned workflow run ID stays live and
 addressable for cancellation. Wake and owner continuations retain the same

@@ -1052,11 +1052,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // outcome. Otherwise a successor cancels the clock while
                     // leaving the owning task asleep on its dead registration.
                     cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
-                    // The owning turn asked for this cancellation, so its receipt
-                    // needs no handling (a successor turn's wake-up still does).
-                    if caller.task_id == t.task_id {
-                        handle_cancel_receipt(tx, &wake)?;
-                    }
+                    // The agent asked for this cancellation, from its own turn or a later
+                    // one (row 470), so its receipt needs no handling and starts no turn.
+                    handle_cancel_receipt(tx, &wake)?;
                 }
                 None => {
                     if !stop_cancels_wake(&t, &id) {

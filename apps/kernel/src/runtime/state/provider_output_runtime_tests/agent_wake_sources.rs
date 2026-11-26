@@ -16,6 +16,7 @@ mod assessment_inbox;
 #[cfg(unix)]
 mod handed_over_run;
 mod mcp_paging;
+mod stale_waits;
 mod watch_open;
 
 const KIND: &str = "test-source";

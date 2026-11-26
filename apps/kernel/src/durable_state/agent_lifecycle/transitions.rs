@@ -579,6 +579,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {
                 super::watch_adoption::adopt(tx, &mut t, &ids, &mut regs)?;
             }
+            // Row 470: this wait takes over the timers and watches earlier prompts still wait on,
+            // so one source firing is one wake. A refusal below undoes it with the rest.
+            let taken = super::folded_waits::fold_older(tx, &mut t, &mut regs)?;
             // A source that already ended is not something to wait on: its outcome is in the
             // inbox and the kernel delivers it. Naming it is harmless, so it is dropped.
             let mut selected = vec![];
@@ -593,7 +596,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "nothing to wait on: every source you named has ended and its outcome is in your inbox; read it and reply with the final answer",
                 ));
             }
-            let ids: Vec<String> = selected.iter().map(|r| r.id.clone()).collect();
+            let mut ids: Vec<String> = selected.iter().map(|r| r.id.clone()).collect();
+            for id in taken {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
             // Goal check-ins have a separate clock. Preserve the admitted wait
             // deadline so an early check-in cannot turn a live source into a timeout.
             t.wait = Some(AgentWait {

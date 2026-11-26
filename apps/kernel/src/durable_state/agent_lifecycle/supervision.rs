@@ -320,7 +320,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             held_work,
         } => {
             let mut changed = vec![];
+            let mut folded = false;
             for mut t in waiting_tasks(tx)? {
+                // An earlier task's wait folded into a newer one in this pass: read the saved task.
+                if folded {
+                    if let Ok(fresh) = load(tx, &t.task_id) {
+                        t = fresh;
+                    }
+                }
                 if t.state == ExecutionState::Waiting {
                     let regs = match registrations(tx, &t.task_id) {
                         Ok(regs) => regs,
@@ -348,6 +355,29 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         None
                     };
                     let settled = super::settled_waits::is_settled(tx, &t)?;
+                    // Row 470: a wait of timers and watches that times out beside a newer task of
+                    // the same agent starts no turn of its own; the newer task holds the agent.
+                    let timing_out = t.goal.is_none()
+                        && !settled
+                        && t.wait.as_ref().is_some_and(|w| {
+                            w.deadline_ms.is_some_and(|d| d <= now)
+                                && now >= w.started_at_ms
+                                && now >= w.last_checked_at_ms
+                                && w.registration_ids
+                                    .iter()
+                                    .all(|id| regs.iter().any(|r| &r.id == id && r.live))
+                        });
+                    if timing_out {
+                        match super::folded_waits::timed_out(tx, &t)? {
+                            super::folded_waits::Timeout::Own => {}
+                            super::folded_waits::Timeout::Quiet => continue,
+                            super::folded_waits::Timeout::Folded(_) => {
+                                folded = true;
+                                changed.push(load(tx, &t.task_id)?);
+                                continue;
+                            }
+                        }
+                    }
                     let unread = match t.wait.as_ref() {
                         Some(w) => super::settled_waits::unread_outcome(tx, &t, w)?,
                         None => false,
