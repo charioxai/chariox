@@ -224,3 +224,80 @@ fn the_answer_is_stored_in_the_vault_and_the_agent_never_reads_it() {
         assert_ne!(again["interaction_id"], asked["interaction_id"]);
     });
 }
+
+/// C3: the agent withdraws its own open secret request by its wake id; the card closes for every client.
+#[test]
+fn the_agent_withdraws_its_open_secret_request_and_the_card_closes() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-withdraw", true).await;
+        let _home = Home::new(&f, "withdraw");
+        let task = f.begin(&f.prompt_id);
+        let asked = ask_secret(&f, "cf-mailbox-token").await.unwrap();
+        let id = asked["interaction_id"].as_str().unwrap().to_string();
+        let token = f
+            .runtime
+            .owned
+            .provider_store
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned();
+        let withdrawn = call(
+            &f,
+            &token,
+            "chariox.events.cancel_wake",
+            &task,
+            serde_json::json!({"wake_id": id}),
+        )
+        .await
+        .unwrap()
+        .payload;
+        assert_eq!(withdrawn["settled"], true);
+        assert!(secret_cards(&f).is_empty(), "the card is gone for every client");
+        // Nothing can answer it any more, and the secret goes nowhere.
+        assert!(!inbox_text(&f).contains(CANARY));
+        let retry = ask_secret(&f, "cf-mailbox-token").await.unwrap();
+        assert_ne!(retry["interaction_id"], asked["interaction_id"]);
+        assert_eq!(secret_cards(&f).len(), 1);
+    });
+}
+
+/// C4 + C5: no deadline by default (a 7-minute answer still works), and a kernel reload that loses the
+/// process-local waiter keeps the card and its entry, so the answer still stores.
+#[test]
+fn a_slow_answer_after_a_reload_still_reaches_the_vault() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-reload", true).await;
+        let _home = Home::new(&f, "reload");
+        let task = f.begin(&f.prompt_id);
+        let asked = ask_secret(&f, "cf-mailbox-token").await.unwrap();
+        let id = asked["interaction_id"].as_str().unwrap().to_string();
+        let wake = f.store().agent_wake(&id).unwrap().unwrap();
+        assert!(wake.next_due_ms.is_none(), "an ask has no deadline unless the agent set one");
+        f.wait_on(&task, &wake.registration_id);
+        // Lose only process-local responders, as a restart does.
+        f.runtime.owned.pending_interactions.write().remove(&id);
+        let driver = f
+            .runtime
+            .owned
+            .agent_wakes
+            .drivers
+            .get("interaction")
+            .unwrap();
+        assert_eq!(driver.recover(&wake), Recovery::Reattached);
+        // Seven minutes on, the card is still open.
+        f.runtime
+            .tick_interaction_wakes(crate::session::unix_epoch_ms() + 7 * 60 * 1000)
+            .unwrap();
+        assert_eq!(secret_cards(&f), vec![id.clone()]);
+        answer_secret(&f, &id, "secret", Some(CANARY)).await;
+        assert!(secret_cards(&f).is_empty());
+        assert!(crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .get("cf-mailbox-token")
+            .unwrap()
+            .is_some());
+        assert!(!inbox_text(&f).contains(CANARY));
+    });
+}
