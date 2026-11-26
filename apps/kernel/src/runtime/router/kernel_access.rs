@@ -314,7 +314,7 @@ impl CommandRouter {
             path: "/".into(),
             with_sha256: false,
         });
-        let command = KernelCommand::from_local_request_with_caller(
+        let mut command = KernelCommand::from_local_request_with_caller(
             "file-watch",
             source,
             caller,
@@ -322,6 +322,15 @@ impl CommandRouter {
             None,
             &request,
         );
+        // Row 405: a subscription carries only its caller. The owner's live agent is a
+        // `reach:<run>` identity; bind the run that identity names while it is live, so the
+        // owner check below sees the same pair `dispatch_as_owner_agent` sets.
+        if command.caller.connection_class == Some(KernelConnectionClass::KernelAgent) {
+            command.provider_run_id = self
+                .runtime_state
+                .reach_for_id(&command.caller.caller_id)
+                .map(|reach| reach.run_id);
+        }
         crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
             &self.config_projection.snapshot(),
             &request,
