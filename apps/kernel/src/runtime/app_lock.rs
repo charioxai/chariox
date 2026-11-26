@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex as StdMutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -59,6 +60,100 @@ impl Drop for InstrumentedAppGuard<'_> {
     fn drop(&mut self) {
         record(self.site, self.wait, self.acquired_at.elapsed());
     }
+}
+
+/// Who holds the app lock now, kept on every build (not only with performance diagnostics): the
+/// kernel's own watchdog reads it from its thread when the runtime itself no longer advances.
+struct Holder {
+    id: u64,
+    operation: &'static str,
+    thread: String,
+    since: Instant,
+}
+
+/// One slot per app lock: a new holder replaces the mark, so only one continuous hold has an age.
+pub(crate) struct HolderSlot {
+    holder: StdMutex<Option<Holder>>,
+    next: AtomicU64,
+}
+
+static HOLDER: HolderSlot = HolderSlot::new();
+
+/// The app lock's current holder, as seen by a watchdog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppLockHolder {
+    /// The function that runs under the lock (its closure's type name).
+    pub(crate) operation: &'static str,
+    pub(crate) thread: String,
+    pub(crate) held: Duration,
+}
+
+/// Marks the app lock as held by its operation until dropped. Take it right after the lock and
+/// drop it before the guard.
+pub(crate) struct HolderMark {
+    slot: &'static HolderSlot,
+    id: u64,
+}
+
+impl HolderSlot {
+    const fn new() -> Self {
+        Self {
+            holder: StdMutex::new(None),
+            next: AtomicU64::new(1),
+        }
+    }
+
+    fn mark(&'static self, operation: &'static str) -> HolderMark {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        *self.holder.lock().unwrap_or_else(PoisonError::into_inner) = Some(Holder {
+            id,
+            operation,
+            thread: std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_string(),
+            since: Instant::now(),
+        });
+        HolderMark { slot: self, id }
+    }
+
+    fn current(&self) -> Option<AppLockHolder> {
+        self.holder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|holder| AppLockHolder {
+                operation: holder.operation,
+                thread: holder.thread.clone(),
+                held: holder.since.elapsed(),
+            })
+    }
+}
+
+impl Drop for HolderMark {
+    fn drop(&mut self) {
+        let mut holder = self
+            .slot
+            .holder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if holder.as_ref().is_some_and(|holder| holder.id == self.id) {
+            *holder = None;
+        }
+    }
+}
+
+pub(crate) fn mark_holder(operation: &'static str) -> HolderMark {
+    HOLDER.mark(operation)
+}
+
+/// The type name of `operation`: for a closure it names the function that wrote it.
+pub(crate) fn operation_name<T>(_: &T) -> &'static str {
+    std::any::type_name::<T>()
+}
+
+pub(crate) fn current_holder() -> Option<AppLockHolder> {
+    HOLDER.current()
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -172,5 +267,23 @@ mod tests {
             .expect("instrumented site should be recorded");
         assert!(site.acquisitions >= 1);
         assert!(site.max_hold_us >= 1_000, "hold should include sleep time");
+    }
+
+    /// Row 678: a watchdog sees one continuous hold; each new holder starts a new age, so many
+    /// short holders never add up to a long one.
+    #[test]
+    fn the_holder_age_restarts_with_every_new_holder() {
+        let slot: &'static HolderSlot = Box::leak(Box::new(HolderSlot::new()));
+        let first = slot.mark("first-holder");
+        std::thread::sleep(Duration::from_millis(30));
+        let held = slot.current().expect("a holder is marked");
+        assert_eq!(held.operation, "first-holder");
+        assert!(held.held >= Duration::from_millis(30));
+        drop(first);
+        assert_eq!(slot.current(), None);
+        let _second = slot.mark("second-holder");
+        let held = slot.current().expect("a holder is marked");
+        assert_eq!(held.operation, "second-holder");
+        assert!(held.held < Duration::from_millis(30));
     }
 }

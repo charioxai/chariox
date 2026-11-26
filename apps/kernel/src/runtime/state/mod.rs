@@ -1535,11 +1535,14 @@ impl KernelRuntimeState {
         if let Some(probe) = &self.app_lock_wait_probe {
             probe.notify_one();
         }
+        let holder = crate::runtime::app_lock::operation_name(&operation);
         let (result, dispatches) = {
             let mut app =
                 crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                     .await;
+            let held = crate::runtime::app_lock::mark_holder(holder);
             let result = operation(&mut app);
+            drop(held);
             let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
             (result, dispatches)
         };
@@ -1563,8 +1566,11 @@ impl KernelRuntimeState {
             if let Some(probe) = probe {
                 probe.notify_one();
             }
+            let holder = crate::runtime::app_lock::operation_name(&operation);
             let mut app = app.blocking_lock();
+            let held = crate::runtime::app_lock::mark_holder(holder);
             let result = operation(&mut app);
+            drop(held);
             let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
             (result, dispatches)
         })
@@ -1613,8 +1619,11 @@ impl KernelRuntimeState {
     ) -> Option<R> {
         let can_spawn_dispatches = tokio::runtime::Handle::try_current().is_ok();
         let (result, dispatches) = {
+            let holder = crate::runtime::app_lock::operation_name(&operation);
             let mut app = self.app.try_lock().ok()?;
+            let held = crate::runtime::app_lock::mark_holder(holder);
             let result = operation(&mut app);
+            drop(held);
             let dispatches = if can_spawn_dispatches {
                 app.take_deferred_workflow_remote_prompt_dispatches()
             } else {

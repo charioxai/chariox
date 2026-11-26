@@ -20,6 +20,13 @@
 		<key>SuccessfulExit</key>
 		<false/>
 	</dict>
+	<!-- KeepAlive starts the kernel again after a failed exit: its wedge watchdog may exit for a
+	     restart only when something will start it again (row 678). -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CHARIOX_KERNEL_SUPERVISOR</key>
+		<string>launchd</string>
+	</dict>
 	<key>ThrottleInterval</key>
 	<integer>5</integer>
 	<key>ExitTimeOut</key>
