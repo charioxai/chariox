@@ -19,7 +19,7 @@ fn a_secret_card_names_its_entry_and_an_old_client_ignores_it() {
             "credential": {
                 "id": "cf-mailbox-token",
                 "source": {"type": "vault", "key": "cf-mailbox-token"},
-                "injection": {"kind": "env", "name": "CF_TOKEN"}
+                "injection": {"kind": "env"}
             },
             "overwrite": false
         }
