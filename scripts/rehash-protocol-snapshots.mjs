@@ -12,7 +12,8 @@ import { localProtocolVersion, relayPeerProtocolVersion, repositoryRoot } from '
 // A URL path is percent-encoded (My%20Projects); the working directory and the file paths below must be the decoded filesystem path.
 const root = fileURLToPath(repositoryRoot)
 const ROUNDS = 3
-const MISMATCH = /panicked at (\S+?):(\d+):\d+:\nassertion `left == right` failed(?:: [^\n]*)?\n  left: "([0-9a-f]{64})"\n right: "([0-9a-f]{64})"/g
+// Older toolchains print "assertion `left == right` failed" before the two values; newer ones print the values at once.
+const MISMATCH = /panicked at (\S+?):(\d+):\d+:\n(?:assertion `left == right` failed(?:: [^\n]*)?\n)?  left: "([0-9a-f]{64})"\n right: "([0-9a-f]{64})"/g
 
 // Pure: the file text with the one pinned literal replaced, or null when the file does not hold it exactly once.
 export function replaceLiteral(text, computed, pinned) {

@@ -2690,6 +2690,8 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 
 #[path = "async_popup.rs"]
 mod async_popup;
+#[path = "credential_secret_card.rs"]
+mod credential_secret_card;
 
 #[path = "claude_login_card.rs"]
 mod claude_login_card;

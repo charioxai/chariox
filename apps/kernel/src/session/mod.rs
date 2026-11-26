@@ -105,7 +105,7 @@ pub use types::{
     RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
     RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
     RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
-    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionSecretRequest,
     RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
     RuntimeInteractionView, RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment,
     SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
