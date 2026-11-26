@@ -1,5 +1,11 @@
 name: CI
 
+# A newer head of the same pull request replaces the run still going for the older head; runs on
+# main and manual runs are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   workflow_dispatch:
   push:
@@ -12,16 +18,11 @@ on:
     # marker starts no run; a candidate head must not carry one.
     types: [opened, reopened, ready_for_review, synchronize]
 
-# A newer head of the same pull request replaces the run still going for the older head; runs on
-# main and manual runs are never cancelled.
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   node:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
