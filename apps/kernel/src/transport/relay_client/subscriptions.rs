@@ -7,6 +7,7 @@ use futures_util::FutureExt;
 use super::request_errors::{map_relay_error, relay_error};
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
+use crate::runtime_transport::interval_due;
 use crate::transport::agent_turn_feed::AgentTurnFeed;
 use crate::transport::home_audit_feed::HomeAuditFeed;
 use crate::transport::kernel_protocol::{requested_heartbeat_interval, RoomListEventProjection};
@@ -1368,18 +1369,6 @@ async fn run_relay_room_list_subscription_loop(
             ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
         tick = tick.wrapping_add(elapsed_ticks);
     }
-}
-
-/// Whether a periodic relay-subscription refresh is due at `tick`. The tick advances by the ticks
-/// that really passed, so a slow loop or a wake-up can jump over any given multiple of the interval;
-/// the refresh therefore runs once a whole interval has passed since the last run (the first check
-/// always runs), and `tick` may wrap.
-fn interval_due(tick: u64, last_run: &mut Option<u64>, interval: u64) -> bool {
-    let due = last_run.is_none_or(|last| tick.wrapping_sub(last) >= interval);
-    if due {
-        *last_run = Some(tick);
-    }
-    due
 }
 
 async fn wait_for_relay_room_list_change(
