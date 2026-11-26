@@ -322,7 +322,7 @@ impl Refusal {
     pub(crate) fn message(self) -> &'static str {
         match self {
             Self::HumanOnly => "Only you can do this, in a Chariox terminal. An external agent can't.",
-            Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered. To cover a background process you started, run `chariox access cover --pid <its pid>` right after starting it; to get access for a new agent, run `chariox access request --until-exit`.",
+            Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered. To cover this process, run `chariox access cover --pid <its pid>` from the approved agent's shell (for a background process, right after starting it); to get access for a new agent, run `chariox access request --until-exit`.",
             Self::Ended => "Access ended. Run `chariox access request --no-wait` if you still need access.",
             Self::EndedExpired => "Access expired. Run `chariox access request --no-wait` to continue.",
             Self::EndedHolderExited => "Access ended when its program exited. Run `chariox access request --no-wait` from the current program.",
@@ -406,6 +406,17 @@ impl Refusal {
             retryable: self == Self::Unconfirmed,
         }
     }
+
+    /// `transport_error` for the process `pid` the refusal is about: the step that works
+    /// names that process, so the person or agent reading it can run it as written.
+    pub(crate) fn transport_error_for(
+        self,
+        pid: u32,
+    ) -> crate::transport::kernel_protocol::KernelTransportError {
+        let mut error = self.transport_error();
+        error.message = error.message.replace("<its pid>", &pid.to_string());
+        error
+    }
 }
 
 #[cfg(test)]
@@ -441,5 +452,15 @@ mod tests {
         let message = Refusal::NotCovered.message();
         assert!(message.contains("chariox access cover --pid"), "{message}");
         assert!(message.contains("chariox access request"), "{message}");
+    }
+
+    #[test]
+    fn the_refusal_names_the_pid_of_the_process_it_is_about() {
+        let named = Refusal::NotCovered.transport_error_for(4242).message;
+        assert!(named.contains("chariox access cover --pid 4242"), "{named}");
+        assert!(!named.contains("<its pid>"), "{named}");
+        // Refusals with no such step are unchanged.
+        let ended = Refusal::EndedRevoked.transport_error_for(4242);
+        assert_eq!(ended.message, Refusal::EndedRevoked.message());
     }
 }
