@@ -20,8 +20,10 @@ impl KernelRuntimeState {
             // profile can carry an older expiry than the `expected` one: same enrollment is enough.
             let current = app.config().cloud_relay.clone();
             let expected_matches = match (&renewal, &current) {
+                // A removal recorded after the renewal was requested is not undone by its save.
                 (Some(_), Some(current)) => {
                     crate::runtime::projection::same_cloud_enrollment(current, &expected)
+                        && current.kernel_removal_pending == expected.kernel_removal_pending
                 }
                 _ => current.as_ref() == Some(&expected),
             };

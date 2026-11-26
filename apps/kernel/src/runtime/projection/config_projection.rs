@@ -15,6 +15,12 @@ pub(crate) struct DaemonConfigProjectionStore {
 struct PendingRenewal {
     token: String,
     profile: crate::config::PersistedCloudRelayProfile,
+    /// The transport and removal state the renewal was installed over. Only a config that still
+    /// carries exactly these is a stale publish of the same state; anything else is a decision
+    /// (a private relay, a recorded owner removal, a saved token) that the renewal must not undo.
+    base_relay_url: Option<String>,
+    base_relay_token: Option<String>,
+    base_removal_pending: bool,
 }
 
 /// The same Cloud enrollment: a renewal changes only the token's expiry and the removal-pending mark.
@@ -134,7 +140,16 @@ impl DaemonConfigProjectionStore {
                 .renewal
                 .lock()
                 .expect("daemon config renewal lock should not be poisoned") =
-                Some(PendingRenewal { token, profile });
+                Some(PendingRenewal {
+                    token,
+                    profile,
+                    base_relay_url: previous.relay_url.clone(),
+                    base_relay_token: previous.relay_token.clone(),
+                    base_removal_pending: previous
+                        .cloud_relay
+                        .as_ref()
+                        .is_some_and(|profile| profile.kernel_removal_pending),
+                });
             config.clone()
         };
         self.notify_observers(&installed);
@@ -163,12 +178,13 @@ impl DaemonConfigProjectionStore {
                 .lock()
                 .expect("daemon config renewal lock should not be poisoned");
             if let Some(renewal) = pending.as_ref() {
-                let caught_up = config.relay_token.as_deref() == Some(renewal.token.as_str());
-                let still_older = config.cloud_relay.as_ref().is_some_and(|profile| {
-                    same_cloud_enrollment(profile, &renewal.profile)
-                        && profile.token_expires_at_ms < renewal.profile.token_expires_at_ms
-                });
-                if still_older && !caught_up {
+                let stale_publish = config.relay_url == renewal.base_relay_url
+                    && config.relay_token == renewal.base_relay_token
+                    && config.cloud_relay.as_ref().is_some_and(|profile| {
+                        same_cloud_enrollment(profile, &renewal.profile)
+                            && profile.kernel_removal_pending == renewal.base_removal_pending
+                    });
+                if stale_publish {
                     config.relay_url = Some(renewal.profile.relay_url.clone());
                     config.relay_token = Some(renewal.token.clone());
                     config.cloud_relay = Some(renewal.profile.clone());
@@ -260,6 +276,37 @@ mod tests {
         assert_eq!(seen.relay_token.as_deref(), Some("renewed"));
         assert_eq!(seen.cloud_relay.unwrap().token_expires_at_ms, Some(9_000));
         assert_eq!(seen.runtime_mcp_port, 4321);
+    }
+
+    /// Row 563 review: a private relay chosen, or an owner removal recorded, while a renewal is
+    /// unsaved are decisions, not stale publishes: the renewal must not take them back.
+    #[test]
+    fn a_private_relay_or_a_recorded_removal_ends_the_overlay() {
+        let config = enrolled();
+        let projection = DaemonConfigProjectionStore::new(config.clone());
+        projection
+            .install_cloud_relay_renewal(&config, renewed_profile(&config), "renewed".into())
+            .unwrap();
+        let mut private = config.clone();
+        private.relay_url = Some("ws://127.0.0.1:9010".into());
+        private.relay_token = Some("private".into());
+        projection.update(private);
+        let seen = projection.snapshot();
+        assert_eq!(seen.relay_url.as_deref(), Some("ws://127.0.0.1:9010"));
+        assert_eq!(seen.relay_token.as_deref(), Some("private"));
+
+        let projection = DaemonConfigProjectionStore::new(config.clone());
+        projection
+            .install_cloud_relay_renewal(&config, renewed_profile(&config), "renewed".into())
+            .unwrap();
+        let mut removed = config.clone();
+        removed.relay_token = None;
+        removed.cloud_relay.as_mut().unwrap().kernel_removal_pending = true;
+        removed.cloud_relay.as_mut().unwrap().token_expires_at_ms = None;
+        projection.update(removed);
+        let seen = projection.snapshot();
+        assert_eq!(seen.relay_token, None);
+        assert!(seen.cloud_relay.unwrap().kernel_removal_pending);
     }
 
     #[test]

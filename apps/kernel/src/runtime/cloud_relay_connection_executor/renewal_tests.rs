@@ -266,6 +266,49 @@ async fn a_later_renewal_is_saved_after_the_first_save_failed() {
     );
 }
 
+/// Row 563 review: an owner removal recorded while a renewal's save is still queued must survive it.
+#[tokio::test]
+async fn a_delayed_renewal_save_does_not_undo_a_recorded_removal() {
+    let root = crate::test_support::TestWorktree::new("relay-renew-after-removal");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: "http://127.0.0.1:9".into(),
+        relay_url: "wss://relay.example.test".into(),
+        kernel_id: Some(config.daemon_id.clone()),
+        kernel_credential: Some("synthetic-enrollment".into()),
+        token_expires_at_ms: Some(1_000),
+        ..Default::default()
+    });
+    let requested = config.cloud_relay.clone().unwrap();
+    let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 1);
+    let state = router.runtime_state();
+    state
+        .mark_cloud_kernel_removal(
+            requested.clone(),
+            crate::config::CloudKernelRemoval::Pending,
+        )
+        .await
+        .unwrap();
+    let mut renewed = requested.clone();
+    renewed.token_expires_at_ms = Some(9_000);
+    state
+        .finish_cloud_relay_renewal(requested, Some((renewed, "late".into())))
+        .await
+        .unwrap();
+    let app = app.lock().await;
+    assert!(
+        app.config()
+            .cloud_relay
+            .as_ref()
+            .unwrap()
+            .kernel_removal_pending
+    );
+    assert_ne!(app.config().relay_token.as_deref(), Some("late"));
+}
+
 /// The body is a long async test: it overflows the default 2 MiB test stack in a debug build, so
 /// it runs on a large-stack thread like the other long relay tests.
 #[test]
