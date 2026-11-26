@@ -515,7 +515,7 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
     on_kernel_stack(|| async {
         let f = fixture("secret-card-destroyed", true).await;
         let _home = Home::new(&f, "destroyed");
-        f.begin(&f.prompt_id);
+        let task = f.begin(&f.prompt_id);
         let asked = ask_secret(&f, "cf-destroyed-token").await.unwrap();
         let id = asked["interaction_id"].as_str().unwrap().to_string();
         let service = crate::secret::RuntimeSecretService::with_vault_config(
@@ -534,6 +534,16 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
         };
         let destroy = async {
             tokio::time::sleep(Duration::from_millis(600)).await;
+            // What destroying the agent does to its question: its task ends, then its cards are withdrawn.
+            let current = f.task(&task.task_id);
+            f.store()
+                .agent_lifecycle(Operation::CancelTask {
+                    task: task.task_id.clone(),
+                    owner: "local".into(),
+                    revision: current.revision,
+                })
+                .unwrap();
+            f.runtime.owned.withdraw_stale_agent_interactions();
             f.runtime
                 .owned
                 .withdraw_agent_interactions(&f.room, Some(&f.agent))
