@@ -40,6 +40,9 @@ pub enum MachineAcquisitionRequest {
         machines_at_once: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spend_per_day_micros: Option<u64>,
+        /// The classes agents may acquire without asking (`scope` no_ask only): the named classes, or an empty list for the smallest only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        classes: Option<Vec<String>>,
     },
 }
 

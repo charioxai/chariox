@@ -77,8 +77,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "machine limits", brief: "Read or change the machine limits",
-    flags: [{ name: "--scope", value: "account|no-ask" }, { name: "--machines", value: "N" }, { name: "--spend", value: "AMOUNT" }, KERNEL, TIMEOUT, SOCKET],
-    summary: "read the account's limits (machines at once, spend per day) and the person's limits for acquiring without asking, with what applies after the account's bound them. --machines and/or --spend (AMOUNT in the account's currency) change them, of the account or with --scope no-ask of the person's own: a lower applies at once; a raise needs the person, by their /sudo naming it or by their card showing the old and new values, which this waits for",
+    flags: [{ name: "--scope", value: "account|no-ask" }, { name: "--machines", value: "N" }, { name: "--spend", value: "AMOUNT" }, { name: "--classes", value: "CLASS,...|smallest" }, KERNEL, TIMEOUT, SOCKET],
+    summary: "read the account's limits (machines at once, spend per day) and the person's limits for acquiring without asking, with what applies after the account's bound them. --machines and/or --spend (AMOUNT in the account's currency) change them, of the account or with --scope no-ask of the person's own (--classes: the machine classes allowed without asking): a lower applies at once; a raise needs the person, by their /sudo naming it or by their card showing the old and new values, which this waits for",
   },
   { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "the allocation's state and its verified kernel target; release it before it is no longer needed to stop charges" },
   { name: "machine release", brief: "Release an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "delete an acquired machine; read machine status until its state is deleted" },

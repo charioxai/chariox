@@ -6,7 +6,7 @@ fn account_limits_protocol_shapes_and_hash() {
     let bytes = include_bytes!("account-limits-1017.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "37e7666d881e33810ad8bbe86d5d8f98666ff1b7da9079f89f8da72d48240c89"
+        "aa54d0ededfe92244e69d3a209c815c1ce91ddfc14fa2b95bb263d809c9a13fc"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

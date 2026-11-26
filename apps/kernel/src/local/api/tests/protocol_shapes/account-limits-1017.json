@@ -33,15 +33,18 @@
     },
     { "MachineAcquisition": { "action": "limits" } },
     { "MachineAcquisition": { "action": "set_limits", "scope": "account", "machines_at_once": 3 } },
-    { "MachineAcquisition": { "action": "set_limits", "scope": "no_ask", "spend_per_day_micros": 5000000 } }
+    { "MachineAcquisition": { "action": "set_limits", "scope": "no_ask", "spend_per_day_micros": 5000000 } },
+    { "MachineAcquisition": { "action": "set_limits", "scope": "no_ask", "classes": ["small", "medium"] } }
   ],
   "responses": [
-    { "ControlPlane": { "result": { "kind": "limits", "machines_at_once": 4, "spend_per_day_micros": 10000000, "currency": "EUR", "version": 4 } } },
+    { "ControlPlane": { "result": { "kind": "limits", "machines_at_once": 4, "spend_per_day_micros": 10000000, "currency": "EUR", "version": 4, "machines_in_use": 2 } } },
+    { "ControlPlane": { "result": { "kind": "capabilities", "machine_allocation": { "revision": "revision", "actions": ["acquire", "limits", "set_limits"], "offer": null, "account_machines": { "in_use": 2, "allowed": 4 } } } } },
+    { "MachineAcquisition": { "result": { "options": [], "default": null, "account_machines": { "in_use": 2, "allowed": 4 } } } },
     {
       "MachineAcquisition": {
         "result": {
           "limits": {
-            "account": { "machines_at_once": 2, "spend_per_day_micros": 3000000, "currency": "EUR", "version": 1 },
+            "account": { "machines_at_once": 2, "machines_in_use": 1, "spend_per_day_micros": 3000000, "currency": "EUR", "version": 1 },
             "no_ask": {
               "enabled": true,
               "machines_at_once": 6,

@@ -82,6 +82,13 @@ function microsOf(text: string): number {
   return Number(whole) * 1_000_000 + Number(fraction.padEnd(6, "0"))
 }
 
+// "smallest" is the person's default: the smallest class only, which the kernel reads as an empty list.
+function classesOf(text: string): string[] {
+  const names = text === "smallest" ? [] : text.split(",").map(name => name.trim())
+  if (names.some(name => !/^[A-Za-z0-9._-]+$/.test(name))) throw new CommandFailure("usage", "--classes needs class ids separated by commas, or smallest")
+  return names
+}
+
 function countOf(text: string): number {
   const count = Number(text)
   if (!Number.isInteger(count) || count < 1) throw new CommandFailure("usage", "--machines needs a whole number of machines, 1 or more")
@@ -95,7 +102,8 @@ async function limits(argv: string[]): Promise<void> {
   if (scope !== "account" && scope !== "no-ask") throw new CommandFailure("usage", "--scope is account or no-ask")
   const machines = flags.get("--machines")
   const spend = flags.get("--spend")
-  if (typeof machines !== "string" && typeof spend !== "string") {
+  const classes = flags.get("--classes")
+  if (typeof machines !== "string" && typeof spend !== "string" && typeof classes !== "string") {
     if (flags.has("--scope")) throw new CommandFailure("usage", "--scope names which limits --machines or --spend change")
     await acquisition(flags, REQUEST_SECONDS, { action: "limits" })
     return
@@ -104,7 +112,9 @@ async function limits(argv: string[]): Promise<void> {
     action: "set_limits", scope: scope === "no-ask" ? "no_ask" : "account",
     ...(typeof machines === "string" ? { machines_at_once: countOf(machines) } : {}),
     ...(typeof spend === "string" ? { spend_per_day_micros: microsOf(spend) } : {}),
+    ...(typeof classes === "string" ? { classes: classesOf(classes) } : {}),
   }
+  if (typeof classes === "string" && scope !== "no-ask") throw new CommandFailure("usage", "--classes is a limit for acquiring without asking: add --scope no-ask")
   await acquisition(flags, ACQUIRE_SECONDS, request, async send => {
     const answered = send({ MachineAcquisition: request })
     const [result] = await Promise.all([answered, reportPendingCard(send, answered, LIMITS_CARD, "this change")])

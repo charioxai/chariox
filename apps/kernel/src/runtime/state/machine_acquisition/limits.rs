@@ -9,6 +9,7 @@ use crate::local::{
     AccountLimitValues, AccountLimitsReading, LimitApproval, LimitApprovalKind, LimitScope,
     MachineLimitsReading, NoAskLimitsReading,
 };
+use crate::local::MachineAllocationCapability;
 use crate::runtime::state::RequestedRaise;
 
 /// A raise card's id starts with this. It is no machine acquisition decision, so no agent answers it.
@@ -250,7 +251,7 @@ impl KernelRuntimeState {
         Some((turn.entry_id, turn.limit_grant?))
     }
 
-    /// The person's card for a raise: shown to every client of the Room, answered only by the person,
+    /// The person's card for a raise of the limits: shown to every client of the Room, answered only by the person,
     /// never by the requester or its sub-agents. Returns the card's id once it is approved.
     async fn ask_limit_raise(
         &self,
@@ -260,28 +261,42 @@ impl KernelRuntimeState {
         to: &AccountLimitValues,
         currency: &str,
     ) -> Result<String, DaemonError> {
+        let (suffix, title) = match scope {
+            LimitScope::Account => ("asks to raise the account limits.", "account"),
+            LimitScope::NoAsk => (
+                "asks to raise your limits for machines it acquires without asking.",
+                "no_ask",
+            ),
+        };
+        self.ask_card(
+            caller,
+            &format!("{title}\0{from:?}\0{to:?}"),
+            suffix,
+            change_text(scope, from, to, currency),
+        )
+        .await
+    }
+
+    /// One card: who asks (`{name} {title_rest}`), what changes, and the id that follows from `seed`.
+    async fn ask_card(
+        &self,
+        caller: &AgentCaller,
+        seed: &str,
+        title_rest: &str,
+        description: String,
+    ) -> Result<String, DaemonError> {
         let (room, owner, agent) = (&caller.room, &caller.owner, caller.agent.as_deref());
         let id = format!(
             "{LIMITS_CARD_PREFIX}{:x}",
             sha2::Sha256::digest(
-                format!(
-                    "{room}\0{}\0{scope:?}\0{from:?}\0{to:?}",
-                    agent.unwrap_or_default()
-                )
-                .as_bytes()
+                format!("{room}\0{}\0{seed}", agent.unwrap_or_default()).as_bytes()
             )
         );
         let name = agent
             .and_then(|agent| self.owned.agent_store.get_agent(agent).ok())
             .map(|known| known.alias().unwrap_or(known.agent_ref()).to_owned())
             .unwrap_or_else(|| "An agent".into());
-        let title = match scope {
-            LimitScope::Account => format!("{name} asks to raise the account limits."),
-            LimitScope::NoAsk => {
-                format!("{name} asks to raise your limits for machines it acquires without asking.")
-            }
-        };
-        let description = change_text(scope, from, to, currency);
+        let title = format!("{name} {title_rest}");
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
@@ -375,9 +390,16 @@ impl KernelRuntimeState {
         caller: Option<AgentCaller>,
         machines_at_once: Option<u32>,
         spend_per_day_micros: Option<u64>,
+        classes: Option<Vec<String>>,
+        capability: &MachineAllocationCapability,
         account: Option<&AccountLimits>,
     ) -> Result<(), DaemonError> {
         let settings = self.owned.config_projection.snapshot().user_config.agents;
+        // The classes first: a refused or denied class change leaves the numbers as they were.
+        if let Some(classes) = classes {
+            self.change_no_ask_classes(caller.as_ref(), &settings, classes, capability)
+                .await?;
+        }
         let current_machines = settings
             .offload_max_machines
             .unwrap_or(crate::config::DEFAULT_OFFLOAD_MAX_MACHINES);
@@ -413,6 +435,81 @@ impl KernelRuntimeState {
                 to.spend_per_day_micros.to_string(),
             )
             .await?;
+        }
+        Ok(())
+    }
+}
+
+/// The smallest class the service offers: the only one agents may acquire without asking when the person named none.
+fn smallest_class(capability: &MachineAllocationCapability) -> Option<String> {
+    capability
+        .offers
+        .iter()
+        .min_by(|a, b| {
+            (a.vcpu, a.ram_gb, a.rate_per_minute.amount_micros)
+                .partial_cmp(&(b.vcpu, b.ram_gb, b.rate_per_minute.amount_micros))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|option| option.class_id.clone())
+}
+
+impl KernelRuntimeState {
+    /// The machine classes agents may acquire without asking. Taking classes away (or going back to the smallest only) applies;
+    /// adding one the setting does not allow now is a raise: the person's card, naming the old and new classes.
+    async fn change_no_ask_classes(
+        &self,
+        caller: Option<&AgentCaller>,
+        settings: &crate::config::UserAgentsConfig,
+        classes: Vec<String>,
+        capability: &MachineAllocationCapability,
+    ) -> Result<(), DaemonError> {
+        let offered: Vec<&str> = capability.offers.iter().map(|o| o.class_id.as_str()).collect();
+        let mut wanted: Vec<String> = Vec::new();
+        for class in classes {
+            if !offered.contains(&class.as_str()) {
+                return Err(acquisition_error(
+                    "invalid_request",
+                    &format!("{class} is not a machine class the service offers (chariox.machines.options lists them)"),
+                ));
+            }
+            if !wanted.contains(&class) {
+                wanted.push(class);
+            }
+        }
+        let smallest = smallest_class(capability);
+        let current: Vec<String> = settings
+            .offload_classes
+            .clone()
+            .unwrap_or_else(|| smallest.clone().into_iter().collect());
+        let target: Vec<String> = if wanted.is_empty() {
+            smallest.into_iter().collect()
+        } else {
+            wanted.clone()
+        };
+        if target.iter().all(|class| current.contains(class)) {
+            // Nothing is added: a lower, or the same. The smallest only is the unset state.
+        } else if let Some(caller) = caller {
+            let text = format!(
+                "Machine classes without asking: from {} to {}.",
+                current.join(", "),
+                target.join(", ")
+            );
+            self.ask_card(
+                caller,
+                &format!("classes\0{}\0{}", current.join(","), target.join(",")),
+                "asks to raise your limits for machines it acquires without asking.",
+                text,
+            )
+            .await?;
+        }
+        if wanted.is_empty() {
+            if settings.offload_classes.is_some() {
+                self.unset_user_config_value("agents.offload_classes".into())
+                    .await?;
+            }
+        } else if settings.offload_classes.as_deref() != Some(wanted.as_slice()) {
+            self.set_user_config_value("agents.offload_classes".into(), wanted.join(","))
+                .await?;
         }
         Ok(())
     }

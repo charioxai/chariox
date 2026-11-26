@@ -801,7 +801,7 @@ pub(crate) fn limits_tool_specs() -> Vec<crate::transport::runtime_tools::Runtim
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.limits", "Read the account's machine limits (machines at once, spend per day) and the owner's limits for acquiring without asking.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.set_limits", "Change a limit. A lower applies at once; a raise needs the person: their /sudo naming it, or a card you raise showing the old and new values (the call waits for it). scope account (default) or no_ask; spend in millionths.", schema(serde_json::json!({"scope":{"type":"string","enum":["account","no_ask"]},"machines_at_once":{"type":"integer","minimum":1},"spend_per_day_micros":{"type":"integer","minimum":0}}),serde_json::json!([]))),
+        ("chariox.machines.set_limits", "Change a limit. A lower applies at once; a raise needs the person: their /sudo naming it, or a card you raise showing the old and new values (the call waits for it). scope account (default) or no_ask; spend in millionths; classes (no_ask) lists the machine classes you may acquire without asking, empty for the smallest only.", schema(serde_json::json!({"scope":{"type":"string","enum":["account","no_ask"]},"machines_at_once":{"type":"integer","minimum":1},"spend_per_day_micros":{"type":"integer","minimum":0},"classes":{"type":"array","items":{"type":"string"}}}),serde_json::json!([]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
 }
 impl KernelRuntimeState {
@@ -823,11 +823,12 @@ impl KernelRuntimeState {
             scope: Option<crate::local::LimitScope>,
             machines_at_once: Option<u32>,
             spend_per_day_micros: Option<u64>,
+            classes: Option<Vec<String>>,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use request_id, class_id, region, timeout_s and purpose for acquire, allocation_ref for status and release, scope, machines_at_once and spend_per_day_micros for set_limits, and no arguments for options and limits",
+                "Use request_id, class_id, region, timeout_s and purpose for acquire, allocation_ref for status and release, scope, machines_at_once, spend_per_day_micros and classes for set_limits, and no arguments for options and limits",
             )
         })?;
         let runs = self
@@ -873,6 +874,7 @@ impl KernelRuntimeState {
                 scope: args.scope.unwrap_or_default(),
                 machines_at_once: args.machines_at_once,
                 spend_per_day_micros: args.spend_per_day_micros,
+                classes: args.classes.clone(),
             },
             _ => {
                 return Err(acquisition_error(
@@ -961,11 +963,18 @@ impl KernelRuntimeState {
                 scope,
                 machines_at_once,
                 spend_per_day_micros,
+                classes,
             } => {
-                if machines_at_once.is_none() && spend_per_day_micros.is_none() {
+                if machines_at_once.is_none() && spend_per_day_micros.is_none() && classes.is_none() {
                     return Err(acquisition_error(
                         "invalid_request",
-                        "Name machines_at_once or spend_per_day_micros to change",
+                        "Name machines_at_once, spend_per_day_micros or classes to change",
+                    ));
+                }
+                if classes.is_some() && scope == crate::local::LimitScope::Account {
+                    return Err(acquisition_error(
+                        "invalid_request",
+                        "classes belong to the limits for acquiring without asking: use scope no_ask",
                     ));
                 }
                 let mut account = read_account_limits(&capability, &plane).await?;
@@ -1004,6 +1013,8 @@ impl KernelRuntimeState {
                             caller,
                             machines_at_once,
                             spend_per_day_micros,
+                            classes,
+                            &capability,
                             account.as_ref(),
                         )
                         .await?;

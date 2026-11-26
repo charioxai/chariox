@@ -103,12 +103,16 @@ test("machine limits reads the account's limits and the no-ask limits", async ()
 test("machine limits with a change sends the named changes, in millionths for spend", async () => {
   const account = await run(["machine", "limits", "--machines", "3", "--spend", "7.5"], answer(reading))
   assert.deepEqual(account.requests, [{ MachineAcquisition: { action: "set_limits", scope: "account", machines_at_once: 3, spend_per_day_micros: 7_500_000 } }])
+  const classes = await run(["machine", "limits", "--scope", "no-ask", "--classes", "small, medium"], answer(reading))
+  assert.deepEqual(classes.requests, [{ MachineAcquisition: { action: "set_limits", scope: "no_ask", classes: ["small", "medium"] } }])
+  const smallest = await run(["machine", "limits", "--scope", "no-ask", "--classes", "smallest"], answer(reading))
+  assert.deepEqual(smallest.requests, [{ MachineAcquisition: { action: "set_limits", scope: "no_ask", classes: [] } }])
   const noAsk = await run(["machine", "limits", "--scope", "no-ask", "--machines", "2"], answer(reading))
   assert.deepEqual(noAsk.requests, [{ MachineAcquisition: { action: "set_limits", scope: "no_ask", machines_at_once: 2 } }])
 })
 
 test("machine limits refuses an empty or malformed change before the kernel is asked", async () => {
-  for (const argv of [["--scope", "account"], ["--machines", "0"], ["--machines", "two"], ["--spend", "-1"], ["--spend", "1.2345678"], ["--scope", "all", "--machines", "2"]]) {
+  for (const argv of [["--scope", "account"], ["--machines", "0"], ["--machines", "two"], ["--spend", "-1"], ["--spend", "1.2345678"], ["--scope", "all", "--machines", "2"], ["--classes", "small"], ["--scope", "no-ask", "--classes", "a b"]]) {
     const result = await run(["machine", "limits", ...argv], answer(reading))
     assert.deepEqual(result.requests, [], argv.join(" "))
     assert.notEqual(result.exit, undefined, argv.join(" "))

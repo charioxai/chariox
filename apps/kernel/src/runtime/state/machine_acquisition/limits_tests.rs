@@ -729,3 +729,122 @@ async fn a_full_account_refuses_an_acquire_before_the_person_is_asked_and_a_retr
     let again = super::without_asking_tests::acquire(&state, &token, "first", "small").await;
     assert!(again.is_ok(), "{again:?}");
 }
+
+fn classes_of(state: &KernelRuntimeState) -> Option<Vec<String>> {
+    state
+        .owned
+        .config_projection
+        .snapshot()
+        .user_config
+        .agents
+        .offload_classes
+}
+
+#[tokio::test]
+async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_raised_by_card() {
+    let service = service(8, 10_000_000).await;
+    let settings = crate::config::UserAgentsConfig {
+        offload_classes: Some(vec!["small".into(), "big".into()]),
+        ..no_ask(None, None)
+    };
+    let (state, token, room, _worktree) =
+        super::without_asking_tests::agent_kernel(service.api_url.clone(), settings).await;
+    // Taking a class away applies at once.
+    let lowered = tool(
+        &state,
+        &token,
+        "chariox.machines.set_limits",
+        serde_json::json!({"scope":"no_ask","classes":["small"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(lowered["limits"]["no_ask"]["classes"], serde_json::json!(["small"]));
+    assert_eq!(classes_of(&state), Some(vec!["small".into()]));
+    no_card(&state, &room);
+    // Adding one goes to the person's card naming the old and new classes; nothing changes before they answer.
+    let call = {
+        let (state, token) = (state.clone(), token.clone());
+        tokio::spawn(async move {
+            tool(
+                &state,
+                &token,
+                "chariox.machines.set_limits",
+                serde_json::json!({"scope":"no_ask","classes":["small","big"]}),
+            )
+            .await
+        })
+    };
+    let (id, message) = the_card(&state, &room).await;
+    assert!(
+        message.contains("Machine classes without asking: from small to small, big."),
+        "{message}"
+    );
+    assert_eq!(classes_of(&state), Some(vec!["small".into()]));
+    let owner = the_owner(&state, &room);
+    state
+        .resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner))
+        .await
+        .unwrap();
+    assert!(call.await.unwrap().is_err());
+    assert_eq!(classes_of(&state), Some(vec!["small".into()]), "a denied raise changes nothing");
+    let call = {
+        let (state, token) = (state.clone(), token.clone());
+        tokio::spawn(async move {
+            tool(
+                &state,
+                &token,
+                "chariox.machines.set_limits",
+                serde_json::json!({"scope":"no_ask","classes":["small","big"]}),
+            )
+            .await
+        })
+    };
+    let (id, _) = the_card(&state, &room).await;
+    state
+        .resolve_terminal_runtime_interaction(&room, &id, "approve", None, Some(&owner))
+        .await
+        .unwrap();
+    call.await.unwrap().unwrap();
+    assert_eq!(classes_of(&state), Some(vec!["small".into(), "big".into()]));
+    // Back to the smallest only is the unset state and needs nobody.
+    let reset = tool(
+        &state,
+        &token,
+        "chariox.machines.set_limits",
+        serde_json::json!({"scope":"no_ask","classes":[]}),
+    )
+    .await
+    .unwrap();
+    assert!(reset["limits"]["no_ask"]["classes"].is_null());
+    assert_eq!(classes_of(&state), None);
+    no_card(&state, &room);
+}
+
+#[tokio::test]
+async fn a_class_the_service_does_not_offer_and_classes_of_the_account_scope_are_refused() {
+    let service = service(8, 10_000_000).await;
+    let (state, token, room, _worktree) =
+        super::without_asking_tests::agent_kernel(service.api_url.clone(), no_ask(None, None)).await;
+    let error = tool(
+        &state,
+        &token,
+        "chariox.machines.set_limits",
+        serde_json::json!({"scope":"no_ask","classes":["huge"]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("huge is not a machine class the service offers"), "{error}");
+    let error = tool(
+        &state,
+        &token,
+        "chariox.machines.set_limits",
+        serde_json::json!({"classes":["small"]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("scope no_ask"), "{error}");
+    assert_eq!(classes_of(&state), Some(vec!["small".into()]));
+    no_card(&state, &room);
+}
