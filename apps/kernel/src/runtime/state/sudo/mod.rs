@@ -16,6 +16,8 @@ mod entry;
 mod exec_place_tests;
 mod external;
 mod goal;
+#[cfg(test)]
+mod kernel_restart_tests;
 pub(crate) mod leased;
 mod lifecycle;
 mod login_recovery;
