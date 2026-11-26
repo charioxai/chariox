@@ -2322,6 +2322,25 @@ async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
     f.state.owned.room_terminals.end_scope(&turn.session_id[..]);
 }
 
+#[tokio::test]
+async fn a_sudo_agent_moves_an_agent_in_the_tree_as_the_owner_can() {
+    // Row 363: an owner's agent has the owner's reach for SetAgentParent, so an agent already
+    // elevated through /sudo may use it on the same connection, with the same refusals.
+    let f = fixture();
+    let turn = running(&f);
+    let request =
+        crate::local::LocalDaemonRequest::SetAgentParent(crate::local::SetAgentParentRequest {
+            session_id: turn.session_id.clone(),
+            agent_id: turn.agent_id.clone(),
+            parent_agent_id: None,
+        });
+    assert!(!super::policy::sudo_request_forbidden(&request));
+    assert!(f
+        .state
+        .authorize_sudo_request(&turn.entry_id, &request)
+        .is_ok());
+}
+
 #[test]
 fn agent_hide_cannot_be_escalated_with_sudo() {
     for hidden in [true, false] {
