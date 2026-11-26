@@ -1067,6 +1067,7 @@ mod tests {
         assert!(stopped_line("node usage.test.js", &action).contains("stopped"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn free_memory_plus_file_cache_is_what_a_fast_grower_can_have() {
         let text = "MemTotal: 1000 kB\nMemFree: 800 kB\nMemAvailable: 9000 kB\nActive(file): 100 kB\nInactive(file): 50 kB\nSReclaimable: 8000 kB\n";

@@ -164,6 +164,14 @@ pub(super) struct Filling {
     pub full_in: Option<u64>,
 }
 impl Entry {
+    /// The OS's out-of-memory killer killed something since this run began, so
+    /// the peak it reached may be where it was cut off, not what it needs.
+    fn os_may_have_cut_it_off(&self) -> bool {
+        self.os_oom_kills
+            .zip(os_oom_kills())
+            .is_some_and(|(arrived, now)| now > arrived)
+    }
+
     /// It waits from now on, for the reason `wait` names.
     fn wait_for(&mut self, wait: Wait) {
         if self.wait.is_none() {
@@ -717,11 +725,7 @@ impl Ledger {
             // was started because that peak "fitted". A peak the OS cut off is
             // a lower bound; the next run starts unknown, and only a pause or
             // the runaway horizon can stop its growth.
-            if entry
-                .os_oom_kills
-                .zip(os_oom_kills())
-                .is_some_and(|(arrived, now)| now > arrived)
-            {
+            if entry.os_may_have_cut_it_off() {
                 if heavy {
                     entry.decision(
                         pid,
@@ -824,16 +828,18 @@ impl Ledger {
                         && inspect(seen.pid).is_err()
                 })
             {
-                let kept = entry.seen.as_ref().is_some_and(|seen| {
-                    self.peaks.record(
-                        &seen.key,
-                        Peak {
-                            exact: seen.exact,
-                            ..entry.peak.clone()
-                        },
-                        light,
-                    )
-                });
+                let cut_off = entry.os_may_have_cut_it_off();
+                let kept = !cut_off
+                    && entry.seen.as_ref().is_some_and(|seen| {
+                        self.peaks.record(
+                            &seen.key,
+                            Peak {
+                                exact: seen.exact,
+                                ..entry.peak.clone()
+                            },
+                            light,
+                        )
+                    });
                 if entry.peak.memory >= light {
                     entry.decision(
                         command.pid,
@@ -841,6 +847,8 @@ impl Ledger {
                         WaitReason::Memory,
                         if kept {
                             "its run ended at the shell's prompt; its peak is kept, so the next run waits when the pool cannot fit it"
+                        } else if cut_off {
+                            "its run ended at the shell's prompt while the system was killing processes for lack of memory, so the peak it reached is not a size to start it from"
                         } else {
                             "its run ended at the shell's prompt; its peak was not kept"
                         },
@@ -851,6 +859,7 @@ impl Ledger {
                 *entry = Entry {
                     arrived: self.arrivals,
                     holdable: entry.holdable,
+                    os_oom_kills: os_oom_kills(),
                     ..Entry::default()
                 };
             }
