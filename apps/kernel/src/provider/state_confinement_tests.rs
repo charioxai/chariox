@@ -785,11 +785,20 @@ fn an_agent_shell_cannot_reach_the_user_manager_or_the_session_bus() {
     assert!(output.contains("bus-address-unset"), "{output}");
 }
 
-/// Cell (a): the kernel's own process shows its mounts, unmasked, under /proc.
-/// An agent must not read the secrets through it.
+/// Cell (a), route 3: the kernel's own process shows its mounts, unmasked, under
+/// /proc. A kernel that holds a local token is non-dumpable (PR_SET_DUMPABLE 0,
+/// disable_kernel_process_dumpability), which makes its /proc files root-owned,
+/// so a same-uid agent is refused and needs no pid namespace. Root bypasses the
+/// flag, so a root test run proves nothing and is skipped.
 #[test]
 fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
+    // SAFETY: geteuid and prctl take no pointers.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: root reads every /proc file");
+        return;
+    }
     let kernel = DummyKernelHome::new();
+    assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
     let pid = std::process::id();
     let output = run_confined(
         &kernel,
