@@ -1,5 +1,5 @@
 {
-  "local": 1015,
+  "local": 1016,
   "requests": [
     {"GetAgentSettings":{"agent":"worker","session_id":"room"}},
     {"UpdateAgentProfileAtTurnEnd":{"session_id":"room","agent_id":"agent","provider":"codex","model":"next-model","clear_effort":false}}
