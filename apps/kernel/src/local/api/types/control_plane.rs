@@ -233,6 +233,17 @@ pub struct ControlPlaneMachineRow {
     pub kernel_id: Option<String>,
     pub machine_id: Option<String>,
     pub available_actions: Vec<String>,
+    /// The machine's class and region, when the service lists them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// When the allocation was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// When the service deletes the machine on its own, when it has a hard stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hard_stop_at: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
