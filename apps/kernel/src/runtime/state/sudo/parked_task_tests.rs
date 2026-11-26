@@ -153,14 +153,20 @@ async fn stop_of_an_idle_agent_with_several_parked_tasks_cancels_them_all() {
     };
     assert_eq!(task.state, ExecutionState::Cancelled);
     let store = &f.state.owned.durable_state_store;
+    // Row 470: the second wait took the first task's timer over, so the first task had already
+    // ended (adopted) before Stop; Stop cancels the task that holds both timers.
+    let folded = store.agent_task(&first.task_id).unwrap().unwrap();
+    assert_eq!(folded.state, ExecutionState::Done);
+    assert!(
+        folded.reason.starts_with("adopted by task"),
+        "{}",
+        folded.reason
+    );
     for original in [first, second] {
         let stopped = store.agent_task(&original.task_id).unwrap().unwrap();
-        assert_eq!(
-            stopped.state,
-            ExecutionState::Cancelled,
-            "{}",
-            original.task_id
-        );
+        if original.task_id != "waiting-turn-1" {
+            assert_eq!(stopped.state, ExecutionState::Cancelled);
+        }
         let wake = store
             .agent_wake(&format!("timer-{}", original.task_id))
             .unwrap()
@@ -397,6 +403,20 @@ async fn exact_owner_task_cancellation_preserves_other_waits_and_active_prompt()
                 PromptStatus::Running,
             )),
         );
+    // Row 470: the second wait took the first task's timer over and ended that task, so the
+    // owner cancels the task that holds the timers; the ended one is refused with its state.
+    let refused = cancel_request(
+        &f,
+        serde_json::json!({"CancelAgentTask":{
+            "session_id": f.request.session_id, "attachment_id": f.request.attachment_id,
+            "task_id": original.task_id, "revision": original.revision,
+        }}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("already completed"), "{refused}");
+    let original = other;
     let response = cancel_request(
         &f,
         serde_json::json!({"CancelAgentTask":{
@@ -413,25 +433,9 @@ async fn exact_owner_task_cancellation_preserves_other_waits_and_active_prompt()
     assert_eq!(task.state, ExecutionState::Cancelled);
     assert_eq!(task.reason, "Stopped by you");
     let store = &f.state.owned.durable_state_store;
-    let tasks = store
-        .agent_tasks(Some(&original.room_id), Some(&original.agent_id))
-        .unwrap();
-    assert_eq!(
-        tasks.iter().find(|t| t.task_id == other.task_id).unwrap(),
-        &other
-    );
-    assert_eq!(
-        store.agent_wake("timer-first-wait").unwrap().unwrap().state,
-        "cancelled"
-    );
-    assert_eq!(
-        store
-            .agent_wake("timer-second-wait")
-            .unwrap()
-            .unwrap()
-            .state,
-        "scheduled"
-    );
+    for timer in ["timer-first-wait", "timer-second-wait"] {
+        assert_eq!(store.agent_wake(timer).unwrap().unwrap().state, "cancelled");
+    }
     assert_eq!(
         f.state
             .owned
