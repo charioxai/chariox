@@ -99,6 +99,18 @@ const _: () = assert!(
 );
 static KERNEL_LOCAL_AUTH_TOKEN: OnceLock<Option<Arc<str>>> = OnceLock::new();
 
+/// Whether a periodic subscription refresh is due at `tick`. The tick advances by the ticks
+/// that really passed, so a slow loop or a wake-up can jump over any given multiple of the interval;
+/// the refresh therefore runs once a whole interval has passed since the last run (the first check
+/// always runs), and `tick` may wrap.
+pub(crate) fn interval_due(tick: u64, last_run: &mut Option<u64>, interval: u64) -> bool {
+    let due = last_run.is_none_or(|last| tick.wrapping_sub(last) >= interval);
+    if due {
+        *last_run = Some(tick);
+    }
+    due
+}
+
 pub fn initialize_kernel_local_auth_from_env() -> Result<(), DaemonError> {
     if KERNEL_LOCAL_AUTH_TOKEN.get().is_some() {
         std::env::remove_var(KERNEL_LOCAL_AUTH_TOKEN_ENV);
