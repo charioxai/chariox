@@ -39,6 +39,9 @@ pub(crate) struct Grant {
     pub(crate) holder: ProcessIdentity,
     /// Background processes the grant covers by name once their parent is gone.
     pub(crate) covered: Vec<ProcessIdentity>,
+    /// How many of `covered` the grant took from the holder's tree when it landed (or, after
+    /// a restart, held then): they do not count against the limit of processes named later.
+    pub(crate) adopted: usize,
     pub(crate) clock: Option<GrantClock>,
 }
 
@@ -427,6 +430,7 @@ mod tests {
             },
             holder,
             covered: Vec::new(),
+            adopted: 0,
             clock: Some(GrantClock::new(30, 5)),
         };
         assert_eq!(grant.ended_reason(Instant::now()), Some("expiry"));

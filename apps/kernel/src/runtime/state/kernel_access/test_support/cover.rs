@@ -433,6 +433,16 @@ async fn a_cover_that_fails_to_persist_is_not_live_and_a_retry_records_it() {
     {
         let router = kernel(&root);
         let state = router.runtime_state();
+        let database = rusqlite::Connection::open(root.path().join("state.db")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_cover BEFORE INSERT ON durable_state_events
+                 WHEN NEW.payload_json LIKE '%\"outcome\":\"covered\"%'
+                 BEGIN SELECT RAISE(FAIL, 'injected cover failure'); END;",
+            )
+            .unwrap();
+        // The background process already runs under the holder: the grant tries to cover
+        // it as it lands, and the injected failure leaves it uncovered too.
         let mut access = state.owned.kernel_access.lock().unwrap();
         state
             .admit_grant(
@@ -444,14 +454,6 @@ async fn a_cover_that_fails_to_persist_is_not_live_and_a_retry_records_it() {
             )
             .unwrap();
         drop(access);
-        let database = rusqlite::Connection::open(root.path().join("state.db")).unwrap();
-        database
-            .execute_batch(
-                "CREATE TRIGGER fail_cover BEFORE INSERT ON durable_state_events
-                 WHEN NEW.payload_json LIKE '%\"outcome\":\"covered\"%'
-                 BEGIN SELECT RAISE(FAIL, 'injected cover failure'); END;",
-            )
-            .unwrap();
         state
             .cover_kernel_access_process(&holder, None, &request)
             .unwrap_err();

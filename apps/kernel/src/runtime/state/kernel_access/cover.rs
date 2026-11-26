@@ -7,6 +7,10 @@ use crate::local::{CoverKernelAccessProcessRequest, CoveredProcess};
 /// The most processes one grant covers by name.
 pub(crate) const MAX_COVERED: usize = 16;
 
+/// The most processes already running under the holder that a grant covers by identity
+/// the moment it lands, so they stay covered when their parent exits later.
+pub(crate) const MAX_ADOPTED: usize = 48;
+
 impl KernelRuntimeState {
     /// Covers `request.pid` for the grant `peer` is already covered by. The target must be
     /// a live process the grant covers now (the holder, a covered process, or a descendant
@@ -72,7 +76,9 @@ impl KernelRuntimeState {
         }
         if !live.covered.contains(&target) {
             live.covered.retain(|process| !process.gone());
-            if live.covered.len() >= MAX_COVERED {
+            // The holder's tree at grant time is covered too (`adopted`); it does not use up
+            // the limit of processes named later.
+            if live.covered.len() >= MAX_COVERED + live.adopted.min(MAX_ADOPTED) {
                 return Err(Refusal::CoverLimit.error());
             }
             // Recorded before it is live: a cover that failed to persist is refused, and
@@ -81,6 +87,38 @@ impl KernelRuntimeState {
             live.covered.push(target.clone());
         }
         Ok((grant, covered_process(&target)))
+    }
+
+    /// The processes already running under `holder` when its grant lands. They are
+    /// reached by ancestry now; covering them by identity keeps them covered after the
+    /// parent that links them to the holder exits (the shell call that started a
+    /// background program ends). It adds no authority: who may hold access is unchanged,
+    /// and only what the holder's tree already is at this moment is covered. The kernel
+    /// and what it started are never covered.
+    pub(super) fn cover_running_descendants(
+        &self,
+        grant: &KernelAccessGrant,
+        holder: &ProcessIdentity,
+    ) -> Vec<ProcessIdentity> {
+        let Ok((kernel, _)) = process::inspect(std::process::id()) else {
+            return Vec::new();
+        };
+        let mut covered = Vec::new();
+        for target in process::descendants(holder) {
+            if covered.len() >= MAX_ADOPTED {
+                break;
+            }
+            let reached = process::ancestry(&target)
+                .is_ok_and(|chain| chain.contains(holder) && !chain.contains(&kernel));
+            // Recorded before it is live, as for a named cover.
+            if target.uid == holder.uid
+                && reached
+                && self.audit_cover(grant, &target, "covered", None).is_ok()
+            {
+                covered.push(target);
+            }
+        }
+        covered
     }
 
     /// Records that a covered process left the grant's set.

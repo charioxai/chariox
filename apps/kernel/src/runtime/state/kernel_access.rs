@@ -257,6 +257,10 @@ impl KernelRuntimeState {
             }
             match holder.filter(|holder| !holder.gone()) {
                 Some(holder) => {
+                    let covered: Vec<_> = covered
+                        .into_iter()
+                        .filter(|process| !process.gone())
+                        .collect();
                     self.owned
                         .kernel_access
                         .lock()
@@ -267,10 +271,10 @@ impl KernelRuntimeState {
                             Grant {
                                 summary,
                                 holder,
-                                covered: covered
-                                    .into_iter()
-                                    .filter(|process| !process.gone())
-                                    .collect(),
+                                // Which of them came from the holder's tree is not recorded:
+                                // the slack is bounded by `MAX_ADOPTED`.
+                                adopted: covered.len().min(cover::MAX_ADOPTED),
+                                covered,
                                 clock: None,
                             },
                         );
@@ -935,12 +939,14 @@ impl KernelRuntimeState {
         reason: Option<&str>,
     ) -> Result<(), DaemonError> {
         self.audit_access_of_holder(&summary, Some(&holder), "granted", reason)?;
+        let covered = self.cover_running_descendants(&summary, &holder);
         state.grants.insert(
             id,
             Grant {
                 summary,
                 holder,
-                covered: Vec::new(),
+                adopted: covered.len(),
+                covered,
                 clock,
             },
         );
