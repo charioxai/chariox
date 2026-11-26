@@ -168,6 +168,20 @@ async fn refused_slice_spawn() {
         });
     })
     .await;
+    // A real checkout, so the spawn reaches slice creation as it does on a user's machine.
+    let workspace = world._env.root.join("workspace");
+    for args in [
+        &["init", "-q"][..],
+        &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+    }
     register("rented-kernel", "rented-machine");
     let before = place(&world, "rented-kernel").await;
     let slices_before = world.router.runtime_state().list_slices().len();
