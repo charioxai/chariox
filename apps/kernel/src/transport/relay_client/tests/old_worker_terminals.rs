@@ -9,6 +9,15 @@ async fn old_worker_rig() -> (
     String,
     crate::test_support::TestWorktree,
 ) {
+    worker_rig(crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1).await
+}
+
+async fn worker_rig(peer_protocol: u32) -> (
+    CommandRouter,
+    String,
+    String,
+    crate::test_support::TestWorktree,
+) {
     let root = crate::test_support::TestWorktree::new("old-worker-terminals");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("home bootstraps");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -28,9 +37,7 @@ async fn old_worker_rig() -> (
                 active_worker_provider_run_id: None,
                 relay_url: None,
                 relay_token: None,
-                relay_peer_protocol_version: Some(
-                    crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1,
-                ),
+                relay_peer_protocol_version: Some(peer_protocol),
                 worker_worktree_id: None,
             },
         )
@@ -124,5 +131,61 @@ fn a_room_list_leaves_out_a_worker_too_old_for_terminals_and_the_home_kernel_ope
                 && message.contains("own kernel"),
             "{message}"
         );
+    });
+}
+
+/// Row 675: the worker an agent is leased to is current but away (stopped, or off the relay). The home kernel's
+/// own terminals still list, and the worker is named, as for a worker too old to ask.
+#[test]
+fn a_room_list_keeps_its_own_terminals_when_a_worker_cannot_be_reached() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("unreachable-worker-room-terminals", || async {
+        let (router, session, agent, _root) =
+            worker_rig(crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION).await;
+        let opened = call(
+            &router,
+            &session,
+            None,
+            RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: None,
+                stdin: None,
+            },
+        )
+        .await
+        .expect("a terminal opens on the Room's own kernel");
+        let RoomTerminalResult::Opened { terminal } = opened else {
+            panic!("an open answers with the terminal");
+        };
+        let listed = call(&router, &session, None, RoomTerminalOperation::List)
+            .await
+            .expect("the Room-wide list answers although one worker cannot be reached");
+        let RoomTerminalResult::Listed {
+            terminals,
+            unavailable,
+        } = listed
+        else {
+            panic!("a list answers with terminals");
+        };
+        assert_eq!(
+            terminals
+                .iter()
+                .map(|listed| listed.terminal_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![terminal.terminal_id.as_str()],
+            "the Room's own terminal stays listed"
+        );
+        assert_eq!(unavailable.len(), 1, "the worker that was not reached is named");
+        assert_eq!(unavailable[0].host_agent, agent);
+        assert!(
+            unavailable[0].message.contains("could not be reached"),
+            "{}",
+            unavailable[0].message
+        );
+        call(&router, &session, Some(&agent), RoomTerminalOperation::List)
+            .await
+            .expect_err("asking the unreachable worker itself is still refused");
     });
 }
