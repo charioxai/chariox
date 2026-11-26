@@ -636,7 +636,8 @@ impl KernelRuntimeState {
 }
 
 /// What a watch lost across a cold restart tells its owner: when the process
-/// was last seen, that it and the job behind it are gone, and what to do.
+/// was last seen, whether recovery stopped it or it ended while the kernel
+/// was down, and (as #1757's `LOST_NEXT_STEP`) what to do.
 fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
     let seen = wake.verified_at_ms.unwrap_or(wake.created_at_ms);
     let (secs, clock) = (
@@ -649,21 +650,19 @@ fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
         _ => format!("{} h", (secs + 1800) / 3600),
     };
     let (state, next) = match outcome {
-        LostWatch::Stopped => (
-            "the kernel restarted and stopped it, so it and the job behind it are gone and its exit is unknown",
-            "start it again with chariox.events.process and watch the new one",
-        ),
+        LostWatch::Stopped => ("the kernel restarted and stopped it and its exit is unknown", LOST_NEXT_STEP),
         LostWatch::NotFound => (
             "no process of it was found after the restart, so it ended while the kernel was down and its exit is unknown",
-            "start it again with chariox.events.process and watch the new one",
+            LOST_NEXT_STEP,
         ),
+        // Survivors cannot be ruled out: never say the work is gone.
         LostWatch::Unconfirmed => (
             "the kernel restarted and could not confirm that it, or anything it started, has stopped, so it may still be running and its exit is unknown",
-            "check for it and stop what remains before starting it again with chariox.events.process",
+            "check for it and stop what remains before starting it again",
         ),
     };
     format!(
-        "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {state}: {next}",
+        "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {state}; {next}",
         wake.label,
         clock / 3600,
         clock % 3600 / 60,

@@ -74,3 +74,11 @@ restart, so it ended while the kernel was down"; the existing survivor caveat is
 `Unconfirmed` (cleanup failed: "could not confirm that it, or anything it started, has stopped, so it may
 still be running: check for it and stop what remains before starting it again"). `recover_lost_agent_processes_with`
 takes the cleanup as a parameter so tests cover the failed case.
+
+## Overlap with #1757 (row 554)
+
+#1757 (in the L15 union) already appends `LOST_NEXT_STEP` ("what it watched is gone: start it again and
+watch the new one") to the lost-watch reports. This PR does not say it twice: the cold-restart process
+report uses that constant as its next step (except when cleanup is unconfirmed, where "gone" would be
+false). What this PR adds on top: when the process was last seen (`HH:MM:SS UTC`, `N h ago`) and the
+three-way distinction stopped / ended while the kernel was down / unconfirmed.

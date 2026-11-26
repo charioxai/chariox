@@ -118,7 +118,7 @@ async fn a_watch_whose_leftover_process_was_stopped_says_the_kernel_stopped_it()
     for (what, text) in [("the answer", &tail), ("the room notice", &notice)] {
         assert!(
             text.contains("the kernel restarted and stopped it")
-                && text.contains("are gone")
+                && text.contains("is gone")
                 && text.contains("start it again"),
             "{what} says the kernel stopped it and to start it again: {text}"
         );
@@ -148,7 +148,7 @@ async fn a_watch_whose_cleanup_is_unconfirmed_does_not_claim_the_job_is_gone() {
             text.contains("stop what remains before starting it again"),
             "{what} tells the owner to resolve survivors before restarting: {text}"
         );
-        for claim in ["are gone", "ended while the kernel was down", "stopped it,"] {
+        for claim in ["is gone", "ended while the kernel was down", "stopped it and"] {
             assert!(
                 !text.contains(claim),
                 "{what} must not claim `{claim}` without evidence: {text}"
