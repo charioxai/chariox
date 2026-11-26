@@ -48,7 +48,6 @@ type InteractionStripRenderOptions = {
   /** Commands of the agent waiting for room, in line order. */
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
-  remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   /** An approved machine request still reaching the service, or one that expired: its card is gone, its status stays. */
   machineApprovalLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
@@ -86,11 +85,10 @@ function renderInteractionStrip(
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
   const subAgents = options.subAgentStripeForAgent?.(agent?.id ?? null) ?? null
   const queuedJobs = options.queuedJobsForAgent?.(agent?.id ?? null) ?? []
-  const remoteJobs = options.remoteJobLinesForAgent?.(agent?.id ?? null) ?? []
   const machineApprovals = options.machineApprovalLinesForAgent?.(agent?.id ?? null) ?? []
   const triggers = options.agentTriggerStripItemsForAgent(agent?.id ?? null)
   const deliveries = options.unconfirmedTriggerDeliveriesForAgent?.(agent?.id ?? null) ?? []
-  const visible = Boolean(interaction) || subAgents !== null || queuedPrompts.length > 0 || queuedJobs.length > 0 || remoteJobs.length > 0 || machineApprovals.length > 0 || triggers.length > 0 || deliveries.length > 0
+  const visible = Boolean(interaction) || subAgents !== null || queuedPrompts.length > 0 || queuedJobs.length > 0 || machineApprovals.length > 0 || triggers.length > 0 || deliveries.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -109,7 +107,7 @@ function renderInteractionStrip(
   const view = providerLogin ? null : JSON.stringify([
     agent?.id, focused, interaction, interaction && options.askingAgentLabel?.(interaction),
     interaction && [options.selectedChoiceIndex(interaction.id), options.customReply(interaction.id), options.customEditing(interaction.id)],
-    queuedPrompts, selectedQueuedPromptIndex, subAgents, queuedJobs, remoteJobs, machineApprovals, triggers, deliveries,
+    queuedPrompts, selectedQueuedPromptIndex, subAgents, queuedJobs, machineApprovals, triggers, deliveries,
   ])
   if (view !== null && stripViews.get(box) === view) return
   for (const child of [...box.getChildren()]) {
@@ -122,7 +120,6 @@ function renderInteractionStrip(
     return
   }
   renderQueuedJobStrip(options, box, queuedJobs)
-  for (const line of remoteJobs) box.add(new TextRenderable(options.renderer, { content: line, fg: theme.textMuted, wrapMode: "word" }))
   for (const line of machineApprovals) box.add(new TextRenderable(options.renderer, { content: line, fg: theme.textMuted, wrapMode: "word" }))
   if (interaction && providerLogin) {
     if (focused && providerLogin.view.takesCode) {

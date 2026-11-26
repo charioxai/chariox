@@ -52,6 +52,9 @@ mod summary;
 mod summary_tests;
 #[cfg(test)]
 mod tests;
+mod transcript_row;
+#[cfg(test)]
+mod transcript_row_tests;
 
 #[cfg(test)]
 use driver::completion_payload;
@@ -59,6 +62,7 @@ use projection::effective_needs;
 use record::{public_record, save_record, CancelCause, Record};
 use requests::validate;
 use stage::{RemoteStage, StageEvent};
+pub(super) use transcript_row::is_job_launch_snapshot;
 
 pub(super) const KIND: &str = "job";
 const TAIL_BYTES: usize = 64 * 1024;
