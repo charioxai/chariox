@@ -249,8 +249,8 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
         // terminal that is still listed and cannot be closed is named, with the way to close it.
         await send(closeRoomTerminalRequest(target, terminalId)).catch(async (error: unknown) => {
           if (await isGone(send, target, openTerminal)) return
-          if (failed) process.stderr.write(`${JSON.stringify({ warning: { code: "exec_terminal_left_open", terminal_id: terminalId, message: String((error as Error)?.message ?? error), next_step: `chariox terminal close --terminal ${terminalId}` } })}\n`)
-          else throw new CommandFailure("exec_terminal_left_open", `the command finished but its terminal could not be closed: ${String((error as Error)?.message ?? error)}`, { terminal_id: terminalId, next_step: `chariox terminal close --terminal ${terminalId}` })
+          if (failed) process.stderr.write(`${JSON.stringify({ warning: { code: "exec_terminal_left_open", terminal_id: terminalId, message: String((error as Error)?.message ?? error), next_step: `chariox terminal close${options.kernel ? ` --kernel ${options.kernel}` : ""} --terminal ${terminalId}` } })}\n`)
+          else throw new CommandFailure("exec_terminal_left_open", `the command finished but its terminal could not be closed: ${String((error as Error)?.message ?? error)}`, { terminal_id: terminalId, next_step: `chariox terminal close${options.kernel ? ` --kernel ${options.kernel}` : ""} --terminal ${terminalId}` })
         })
       }
     } finally {

@@ -391,3 +391,20 @@ test("a drop while the terminal is being opened is not retried: its id is unknow
   await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, async () => { requests++; throw blip("kernel_connection_lost") }, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "kernel_connection_lost")
   assert.equal(requests, 1)
 })
+
+test("a terminal that cannot be closed is named with its kernel, so the way to close it works from anywhere", async () => {
+  const { send } = kernel("x", 0)
+  const signals = new EventEmitter() as NodeJS.Process
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") { setTimeout(() => signals.emit("SIGINT"), 20); throw blip("kernel_connection_lost") }
+    if (operationOf(body) === "close" || operationOf(body) === "list") throw blip("kernel_offline")
+    return send(body)
+  }
+  const written: string[] = []
+  const realWrite = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true }) as typeof process.stderr.write
+  try {
+    assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 30, signals, kernel: "nelpx", retryStepMs: 1000, notice: () => {} }, down, sink().stream), 130)
+  } finally { process.stderr.write = realWrite }
+  assert.match(written.join(""), /chariox terminal close --kernel nelpx --terminal t1/)
+})

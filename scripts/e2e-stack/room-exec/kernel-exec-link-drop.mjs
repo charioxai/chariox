@@ -15,6 +15,8 @@ import { until } from './fixture.mjs'
 const exec = promisify(execFile)
 const envPath = name => path.resolve(process.env[`CHARIOX_EXEC_${name}`])
 const ticks = Number(process.env.CHARIOX_EXEC_TICKS ?? 60)
+// CHARIOX_EXEC_ONLY=C1 runs that cell alone (the 10-minute run is longer than the units' 900 s with the others after it).
+const only = process.env.CHARIOX_EXEC_ONLY ?? ''
 
 const fixture = new SystemdFixture({
   home: envPath('HOME'), evidence: envPath('EVIDENCE'), kernelBinary: envPath('KERNEL'),
@@ -40,6 +42,7 @@ const run = async args => native(args).finished
 const execOn = (seconds, script) => ['exec', '--kernel', fixture.target, '--timeout', String(seconds), '--', 'sh', '-c', script]
 
 async function cell(id, exercise) {
+  if (only && !id.startsWith(only)) return
   try { results.push({ id, status: 'PASS', ...await exercise() }) }
   catch (error) { results.push({ id, status: 'FAIL', message: String(error.message).slice(0, 900) }) }
   await writeFile(path.join(fixture.evidence, 'results.json'), JSON.stringify(results, null, 2) + '\n')
