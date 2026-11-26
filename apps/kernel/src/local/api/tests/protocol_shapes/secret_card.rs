@@ -1,5 +1,4 @@
 //! Local 1016: a secret card names the Vault entry its secret input fills (additive).
-use super::*;
 
 #[test]
 fn a_secret_card_names_its_entry_and_an_old_client_ignores_it() {

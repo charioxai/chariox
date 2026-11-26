@@ -124,44 +124,6 @@ pub(super) fn stamp_runtime_credential_metadata_for_agent(
     credential
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runtime_credential_metadata_records_agent_provenance_without_secret() {
-        let credential = crate::config::UserCredentialConfig {
-            id: "gmail-login".to_string(),
-            description: Some("Gmail credential".to_string()),
-            source: crate::config::UserCredentialSourceConfig::Vault {
-                key: "gmail-login".to_string(),
-            },
-            allowed_hosts: vec!["accounts.google.com".to_string()],
-            allowed_uses: vec![crate::config::UserCredentialUse::Browser],
-            injection: crate::config::UserCredentialInjectionConfig::Browser,
-            metadata: None,
-        };
-        let provider_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
-            "run-123",
-            "session-123".to_string(),
-            Some("agent-123".to_string()),
-            "codex".to_string(),
-        );
-
-        let credential = stamp_runtime_credential_metadata(credential, &provider_run);
-        let metadata = credential.metadata.expect("metadata");
-
-        assert_eq!(metadata.created_by_kind.as_deref(), Some("agent"));
-        assert_eq!(metadata.created_by_id.as_deref(), Some("agent-123"));
-        assert_eq!(metadata.session_id.as_deref(), Some("session-123"));
-        assert_eq!(metadata.provider.as_deref(), Some("codex"));
-        assert_eq!(metadata.provider_run_id.as_deref(), Some("run-123"));
-        assert_eq!(metadata.vault_key.as_deref(), Some("gmail-login"));
-        assert!(metadata.created_at_ms.is_some());
-        assert_eq!(metadata.updated_at_ms, metadata.created_at_ms);
-    }
-}
-
 impl KernelRuntimeState {
     /// Row 539: one card per secret. The card for one Vault entry asked by one agent has one id; a
     /// repeat ask while that card is open returns the same ids (`deduplicated`), and only a settled
@@ -230,5 +192,43 @@ impl KernelRuntimeState {
         payload["credential_id"] = entry_id.into();
         payload["status"] = "pending".into();
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_credential_metadata_records_agent_provenance_without_secret() {
+        let credential = crate::config::UserCredentialConfig {
+            id: "gmail-login".to_string(),
+            description: Some("Gmail credential".to_string()),
+            source: crate::config::UserCredentialSourceConfig::Vault {
+                key: "gmail-login".to_string(),
+            },
+            allowed_hosts: vec!["accounts.google.com".to_string()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+            injection: crate::config::UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        };
+        let provider_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            "run-123",
+            "session-123".to_string(),
+            Some("agent-123".to_string()),
+            "codex".to_string(),
+        );
+
+        let credential = stamp_runtime_credential_metadata(credential, &provider_run);
+        let metadata = credential.metadata.expect("metadata");
+
+        assert_eq!(metadata.created_by_kind.as_deref(), Some("agent"));
+        assert_eq!(metadata.created_by_id.as_deref(), Some("agent-123"));
+        assert_eq!(metadata.session_id.as_deref(), Some("session-123"));
+        assert_eq!(metadata.provider.as_deref(), Some("codex"));
+        assert_eq!(metadata.provider_run_id.as_deref(), Some("run-123"));
+        assert_eq!(metadata.vault_key.as_deref(), Some("gmail-login"));
+        assert!(metadata.created_at_ms.is_some());
+        assert_eq!(metadata.updated_at_ms, metadata.created_at_ms);
     }
 }

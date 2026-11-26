@@ -1270,57 +1270,6 @@ pub(in crate::runtime::state) fn validate_runtime_interaction_custom_reply(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn interaction(default_on_timeout: Option<&str>) -> crate::session::RuntimeInteraction {
-        crate::session::RuntimeInteraction::new(
-            "interaction-1".to_string(),
-            "agent-1".to_string(),
-            crate::session::RuntimeInteractionKind::Choice,
-            crate::session::RuntimeInteractionLevel::Info,
-            Some("Pick".to_string()),
-            "Pick one".to_string(),
-            vec![
-                crate::session::RuntimeInteractionChoice::new(
-                    "yes".to_string(),
-                    "Yes".to_string(),
-                    "User picked yes.".to_string(),
-                    None,
-                ),
-                crate::session::RuntimeInteractionChoice::new(
-                    "no".to_string(),
-                    "No".to_string(),
-                    "User picked no.".to_string(),
-                    None,
-                ),
-            ],
-            None,
-            Some(1),
-            default_on_timeout.map(ToOwned::to_owned),
-        )
-    }
-
-    #[test]
-    fn timeout_without_default_returns_explicit_timeout_result() {
-        let resolution = timeout_runtime_interaction_resolution(&interaction(None));
-
-        assert_eq!(resolution.status, "timed_out");
-        assert_eq!(resolution.choice_id, None);
-        assert_eq!(resolution.reply, None);
-    }
-
-    #[test]
-    fn timeout_with_default_returns_default_choice_reply() {
-        let resolution = timeout_runtime_interaction_resolution(&interaction(Some("no")));
-
-        assert_eq!(resolution.status, "answered");
-        assert_eq!(resolution.choice_id.as_deref(), Some("no"));
-        assert_eq!(resolution.reply.as_deref(), Some("User picked no."));
-    }
-}
-
 /// Holds one secret card for the store of its answer; dropping it releases the card.
 pub(in crate::runtime::state) struct SecretStoreReservation {
     store: super::PendingInteractionStore,
@@ -1390,5 +1339,56 @@ impl KernelRuntimeOwnedState {
             store: self.pending_interactions.clone(),
             interaction_id: interaction_id.to_owned(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn interaction(default_on_timeout: Option<&str>) -> crate::session::RuntimeInteraction {
+        crate::session::RuntimeInteraction::new(
+            "interaction-1".to_string(),
+            "agent-1".to_string(),
+            crate::session::RuntimeInteractionKind::Choice,
+            crate::session::RuntimeInteractionLevel::Info,
+            Some("Pick".to_string()),
+            "Pick one".to_string(),
+            vec![
+                crate::session::RuntimeInteractionChoice::new(
+                    "yes".to_string(),
+                    "Yes".to_string(),
+                    "User picked yes.".to_string(),
+                    None,
+                ),
+                crate::session::RuntimeInteractionChoice::new(
+                    "no".to_string(),
+                    "No".to_string(),
+                    "User picked no.".to_string(),
+                    None,
+                ),
+            ],
+            None,
+            Some(1),
+            default_on_timeout.map(ToOwned::to_owned),
+        )
+    }
+
+    #[test]
+    fn timeout_without_default_returns_explicit_timeout_result() {
+        let resolution = timeout_runtime_interaction_resolution(&interaction(None));
+
+        assert_eq!(resolution.status, "timed_out");
+        assert_eq!(resolution.choice_id, None);
+        assert_eq!(resolution.reply, None);
+    }
+
+    #[test]
+    fn timeout_with_default_returns_default_choice_reply() {
+        let resolution = timeout_runtime_interaction_resolution(&interaction(Some("no")));
+
+        assert_eq!(resolution.status, "answered");
+        assert_eq!(resolution.choice_id.as_deref(), Some("no"));
+        assert_eq!(resolution.reply.as_deref(), Some("User picked no."));
     }
 }
