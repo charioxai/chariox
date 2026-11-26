@@ -477,10 +477,13 @@ impl KernelRuntimeState {
             if !isolated {
                 orphans.push_str("; descendants that cleared their environment or have a live parent outside the watched session cannot be attributed and may still be running");
             }
-            let outcome = match &stopped {
-                Ok(stopped) if stopped.contains_key(&wake.id) => LostWatch::Stopped,
-                Ok(_) => LostWatch::NotFound,
-                Err(_) => LostWatch::Unconfirmed,
+            // Only the managed PID namespace makes an Ok scan complete.
+            let outcome = match (&stopped, isolated) {
+                (Ok(stopped), true) if stopped.contains_key(&wake.id) => LostWatch::Stopped,
+                (Ok(_), true) => LostWatch::NotFound,
+                (Ok(stopped), false) if stopped.contains_key(&wake.id) => LostWatch::StoppedSome,
+                (Ok(_), false) => LostWatch::NoneAttributed,
+                (Err(_), _) => LostWatch::Unconfirmed,
             };
             let report = lost_watch_report(&wake, now, outcome);
             self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
@@ -663,11 +666,20 @@ fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
             LOST_NEXT_STEP,
         ),
         // Survivors cannot be ruled out: never say the work is gone.
+        LostWatch::StoppedSome => (
+            "the kernel restarted and stopped the processes it could attribute to it, but cannot rule out others it started, so it may still be running and its exit is unknown",
+            CHECK_FIRST,
+        ),
+        LostWatch::NoneAttributed => (
+            "no process of it was found after the restart, so it most likely ended while the kernel was down, but the kernel cannot rule out others it started, so it may still be running and its exit is unknown",
+            CHECK_FIRST,
+        ),
         LostWatch::Unconfirmed => (
             "the kernel restarted and could not confirm that it, or anything it started, has stopped, so it may still be running and its exit is unknown",
             "check for it and stop what remains before starting it again",
         ),
     };
+    const CHECK_FIRST: &str = "check for what remains before starting it again";
     format!(
         "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {state}; {next}",
         wake.label,
@@ -684,6 +696,11 @@ enum LostWatch {
     Stopped,
     /// The scan completed and found none of the watch's processes.
     NotFound,
+    /// Without the managed PID namespace: some were stopped, but a descendant that
+    /// cleared its marker or has a live outside parent cannot be attributed.
+    StoppedSome,
+    /// Without the managed PID namespace: none was attributed, none can be ruled out.
+    NoneAttributed,
     /// The cleanup failed or timed out: survivors cannot be ruled out.
     Unconfirmed,
 }
