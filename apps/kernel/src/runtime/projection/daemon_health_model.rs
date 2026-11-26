@@ -748,6 +748,9 @@ pub struct DaemonHealthProjection {
     pub workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
     pub projection_invariants: ProjectionInvariantHealthSnapshot,
     pub request_timings: Vec<crate::runtime::request_metrics::RequestKindTiming>,
+    /// Sizes of the collections the wire budget truncated, by path. One more key, not a collection:
+    /// `browser_native_frame_channel_unavailable` = the browser controllers running right now without
+    /// the native frame channel (video is slower); absent when every controller has it.
     pub sample_counts: std::collections::BTreeMap<String, usize>,
     #[serde(default)]
     pub app_lock: crate::runtime::app_lock::AppLockHealthSnapshot,

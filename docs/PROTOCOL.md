@@ -6925,6 +6925,11 @@ outside the request worker and normally refreshes once a second.
 sampling; child collections count the parents included in the sample. Nested
 arrays and long diagnostic text are sampled to keep the complete
 response below 64 KiB. Counts remain authoritative when a sample is shortened.
+`sample_counts.browser_native_frame_channel_unavailable` is present only while that
+many browser controllers run without the native display frame channel (the kernel could
+not open its short socket, so Node publishes every frame and video is slower); it is
+absent when every controller has the channel. The key is not a collection and the response
+shape is unchanged.
 
 `request_timings` contains the most recent 128 completed requests per kind, up to
 1,024 known kinds. Each entry has `kind`, `samples`, and p50/p95/max distributions

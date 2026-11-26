@@ -345,6 +345,13 @@ impl KernelRuntimeState {
                 .collect::<Vec<_>>(),
         );
         let focused_target_id = reconciliation.browser.focused_target_id.clone();
+        let channel_diagnostic = reconciliation
+            .process
+            .diagnostic_code
+            .clone()
+            .filter(|code| {
+                code == crate::runtime::browser_controller_process::FRAME_CHANNEL_UNAVAILABLE
+            });
         let tabs = reconciliation
             .browser
             .tabs
@@ -368,7 +375,12 @@ impl KernelRuntimeState {
                 session_id,
                 EnvironmentComponent::BrowserController,
                 EnvironmentComponentHealthState::Ready,
-                Some("controller_recovered"),
+                // Both facts in one code: the CLI shows the retry hint and the slower video.
+                Some(if channel_diagnostic.is_some() {
+                    "controller_recovered_native_frame_channel_unavailable"
+                } else {
+                    "controller_recovered"
+                }),
             )
             .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
             self.update_room_environment_component_health(
@@ -382,6 +394,31 @@ impl KernelRuntimeState {
                 .complete_room_environment_browser_controller_recovery(session_id)
                 .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
             self.complete_browser_controller_generation_recovery(session_id)?;
+        } else {
+            // A recovery marker keeps its place (it already says whether the channel is down);
+            // otherwise the observation restores or clears the slower-video diagnostic.
+            let current = environment
+                .health
+                .iter()
+                .find(|health| health.component == EnvironmentComponent::BrowserController)
+                .and_then(|health| health.diagnostic_code.as_deref());
+            let marked = current
+                == Some(crate::runtime::browser_controller_process::FRAME_CHANNEL_UNAVAILABLE);
+            if channel_diagnostic.is_some() != marked
+                && (channel_diagnostic.is_some() || marked)
+                && !current.is_some_and(|code| code.starts_with("controller_recovered"))
+            {
+                environment = self
+                    .update_room_environment_component_health(
+                        session_id,
+                        EnvironmentComponent::BrowserController,
+                        EnvironmentComponentHealthState::Ready,
+                        channel_diagnostic.as_deref(),
+                    )
+                    .map_err(|error| {
+                        environment_runtime_error("browser_controller.observe", error)
+                    })?;
+            }
         }
         Ok(environment)
     }
