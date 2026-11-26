@@ -108,38 +108,63 @@ impl KernelRuntimeState {
                         });
                     }
                 }
-                let interaction = crate::session::RuntimeInteraction::new(
-                    format!(
-                        "credential-secret-{}-{}",
-                        provider_run.agent_instance_id().unwrap_or("agent"),
-                        crate::session::unix_epoch_ms()
-                    ),
-                    provider_run.agent_instance_id().ok_or_else(|| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_credential_secret",
-                            message: "provider run is not bound to an agent".to_string(),
-                        }
-                    })?,
-                    crate::session::RuntimeInteractionKind::Choice,
-                    crate::session::RuntimeInteractionLevel::Critical,
-                    args.prompt.title.clone(),
-                    args.prompt.message.clone(),
-                    vec![crate::session::RuntimeInteractionChoice::new(
-                        "cancel",
-                        "Cancel",
-                        "cancel",
-                        Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
-                    )],
-                    Some(crate::session::RuntimeInteractionCustomChoice::secret(
-                        "secret",
-                        "Secret",
-                        args.prompt.placeholder.clone(),
-                        args.prompt.min_length,
-                        args.prompt.max_length,
-                    )),
-                    args.prompt.timeout_sec,
-                    Some("cancel".to_string()),
-                );
+                let agent_id = provider_run
+                    .agent_instance_id()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_request_credential_secret",
+                        message: "provider run is not bound to an agent".to_string(),
+                    })?
+                    .to_owned();
+                let secret_request = crate::session::RuntimeInteractionSecretRequest {
+                    credential: credential.clone(),
+                    overwrite: args.overwrite,
+                };
+                let build_interaction = |id: String| {
+                    crate::session::RuntimeInteraction::new(
+                        id,
+                        agent_id.as_str(),
+                        crate::session::RuntimeInteractionKind::Choice,
+                        crate::session::RuntimeInteractionLevel::Critical,
+                        args.prompt.title.clone(),
+                        args.prompt.message.clone(),
+                        vec![crate::session::RuntimeInteractionChoice::new(
+                            "cancel",
+                            "Cancel",
+                            "cancel",
+                            Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+                        )],
+                        Some(crate::session::RuntimeInteractionCustomChoice::secret(
+                            "secret",
+                            "Secret",
+                            args.prompt.placeholder.clone(),
+                            args.prompt.min_length,
+                            args.prompt.max_length,
+                        )),
+                        args.prompt.timeout_sec,
+                        Some("cancel".to_string()),
+                    )
+                    .with_secret_request(secret_request.clone())
+                };
+                // Row 539: inside a running turn the ask returns its ids at once and the answer wakes
+                // the agent; a retry for the same entry joins the card that is already open.
+                if let Ok(task) =
+                    self.asking_task_for_turn(provider_run.session_id(), &agent_id)
+                {
+                    return self
+                        .raise_secret_card(
+                            &task,
+                            provider_run.session_id(),
+                            &agent_id,
+                            &credential.id,
+                            build_interaction,
+                        )
+                        .await;
+                }
+                let interaction = build_interaction(format!(
+                    "credential-secret-{}-{}",
+                    agent_id,
+                    crate::session::unix_epoch_ms()
+                ));
                 let interaction =
                     interaction.with_native_origin(self.owned.capture_native_interaction_origin(
                         provider_run.session_id(),

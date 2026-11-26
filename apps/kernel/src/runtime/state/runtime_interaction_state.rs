@@ -485,6 +485,12 @@ impl KernelRuntimeState {
                 connection_class,
             )
             .await?;
+        // Row 539: a secret card's answer goes into the Vault entry it names before the card closes;
+        // a refused store leaves the card open, and the agent only ever reads that it was stored.
+        if choice_id == "secret" {
+            self.store_card_secret(session_id, interaction_id, custom_reply, agent.is_some())
+                .await?;
+        }
         self.owned
             .resolve_attributed_terminal_runtime_interaction(
                 session_id,
@@ -568,5 +574,63 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         self.owned
             .timeout_runtime_interaction(session_id, interaction_id)
+    }
+}
+
+impl KernelRuntimeState {
+    async fn store_card_secret(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        custom_reply: Option<&str>,
+        answered_by_agent: bool,
+    ) -> Result<(), DaemonError> {
+        if session_id.is_empty() {
+            return Ok(());
+        }
+        let Some(card) = self
+            .owned
+            .session_store
+            .get_session(session_id)?
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == interaction_id)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let (Some(request), Some(custom_choice)) = (card.secret_request(), card.custom_choice())
+        else {
+            return Ok(());
+        };
+        if answered_by_agent {
+            return Err(DaemonError::LocalTransport {
+                operation: "credential secret card",
+                message: "Only the person can enter this secret".into(),
+            });
+        }
+        let secret = custom_reply.ok_or_else(|| DaemonError::LocalTransport {
+            operation: "credential secret card",
+            message: "the secret is required".into(),
+        })?;
+        super::runtime_interaction_owned_state::validate_runtime_interaction_custom_reply(
+            custom_choice,
+            secret,
+        )?;
+        let user_config = self.owned.config_projection.snapshot().user_config;
+        let service = crate::secret::RuntimeSecretService::with_vault_config(
+            crate::credential::load_user_credentials()?,
+            &user_config.credential_vault,
+        )?;
+        let registry = crate::credential::CharioxCredentialRegistry::user()?;
+        self.upsert_observed_vault_credential(
+            &service,
+            &registry,
+            request.credential.clone(),
+            secret,
+            request.overwrite,
+        )
+        .await?;
+        Ok(())
     }
 }

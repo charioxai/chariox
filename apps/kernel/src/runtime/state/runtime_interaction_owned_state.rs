@@ -1225,7 +1225,7 @@ fn timeout_runtime_interaction_resolution(
     }
 }
 
-fn validate_runtime_interaction_custom_reply(
+pub(in crate::runtime::state) fn validate_runtime_interaction_custom_reply(
     custom_choice: &crate::session::RuntimeInteractionCustomChoice,
     reply: &str,
 ) -> Result<(), DaemonError> {

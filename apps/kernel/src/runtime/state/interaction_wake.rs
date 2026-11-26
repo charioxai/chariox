@@ -38,9 +38,10 @@ impl WakeDriver for InteractionWakeDriver {
             .is_some_and(|p| p.belongs_to(&self.owned.session_store))
         {
             let (tx, _rx) = tokio::sync::oneshot::channel();
+            let secret_card = interaction.secret_request().is_some();
             self.owned.register_runtime_interaction(
                 crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    if super::vault_use::is_vault_payment_decision(&wake.id) {
+                    if secret_card || super::vault_use::is_vault_payment_decision(&wake.id) {
                         super::CardKind::VaultCredentialPayment
                     } else {
                         super::CardKind::Task
@@ -373,6 +374,14 @@ impl KernelRuntimeOwnedState {
         if !matches!(wake.state.as_str(), "starting" | "running") {
             return Err(ledger::error("question was already answered or withdrawn"));
         }
+        // A secret card's answer is the secret itself: the kernel stored it under the entry the card
+        // names, so the agent reads the entry and that it was stored, never the value.
+        let secret_entry = interaction.secret_request().map(|request| request.credential.id.clone());
+        let reply = if secret_entry.is_some() {
+            None
+        } else {
+            resolution.reply.clone()
+        };
         self.durable_state_store
             .agent_lifecycle(Operation::WakeOccurred {
                 id: wake.id.clone(),
@@ -382,7 +391,10 @@ impl KernelRuntimeOwnedState {
                 payload: serde_json::json!({
                     "interaction_id": wake.id,
                     "status": super::tool_dispatch::popup_status(resolution.status, resolution.choice_id.as_deref()),
-                    "choice_id": resolution.choice_id, "reply": resolution.reply,
+                    "choice_id": resolution.choice_id, "reply": reply,
+                    "credential_id": secret_entry,
+                    "stored": secret_entry.is_some() && resolution.status == "answered"
+                        && resolution.choice_id.as_deref() == Some("secret"),
                     "answered_by": answerer.map(|a| a.caller_id.as_str()).or(caller),
                     "user_id": answerer.and_then(|a| a.user_id.as_deref()).or(caller),
                     "agent_id": answerer.and_then(|a| a.metaagent_id.as_deref()),
