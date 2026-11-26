@@ -67,12 +67,12 @@ pub(crate) fn capture_file_spec() -> RuntimeToolSpec {
 pub(crate) fn write_file_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_WRITE_FILE.into(),
-        description: "write a file in your workspace (for example .env) from a template: every {{NAME}} in template is replaced by the Vault value of values[NAME] (a credential_id). You never see the values. Works with credentials whose allowed uses include file, such as those from chariox.vault.capture_command or chariox.vault.capture_file. mode is octal, default \"600\". Returns the path and size.".into(),
+        description: "write a file in your workspace (for example .env) from a template: every {{NAME}} in template is replaced by the Vault value of values[NAME]. You never see the values. Works with credentials whose allowed uses include file, such as those from chariox.vault.capture_command or chariox.vault.capture_file. mode is octal, default \"600\". Returns the path and size.".into(),
         input_schema: serde_json::json!({"type":"object","required":["path","template","values"],"properties":{
             "path":{"type":"string","description":"File inside your workspace, relative to it; replaced if it exists"},
             "template":{"type":"string","maxLength":65536},
             "values":{"type":"object","additionalProperties":{"type":"string"},"maxProperties":MAX_PLACEHOLDERS,
-                "description":"Placeholder NAME -> credential_id"},
+                "description":"Placeholder NAME -> credential_id or unique description"},
             "mode":{"type":"string","pattern":"^0?[0-7]{3}$","default":"600"}},
             "additionalProperties":false}),
     }
@@ -209,8 +209,22 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
-        let args: WriteFileArgs = serde_json::from_value(arguments)
+        let mut args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
+        {
+            let names: Vec<String> = args.values.keys().cloned().collect();
+            let mut ids = self
+                .resolve_entry_refs(
+                    context.home.as_ref(),
+                    args.values.values().map(String::as_str),
+                    None,
+                )
+                .await?
+                .into_iter();
+            for name in names {
+                args.values.insert(name, ids.next().unwrap_or_default());
+            }
+        }
         if args.values.is_empty() || args.values.len() > MAX_PLACEHOLDERS {
             return Err(error(format!(
                 "values names 1-{MAX_PLACEHOLDERS} placeholders"
