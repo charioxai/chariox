@@ -1006,6 +1006,8 @@ impl KernelBrowserHost {
             .entry(user.into())
             .or_insert_with(|| {
                 let mut model = KernelBrowserActors::default();
+                // Row 548: a hot reload or restart rebuilds this model; the agents' Tabs stay theirs.
+                model.persist_tab_openers(self.profile_root(user).join("chariox-tab-openers.json"));
                 for (_, viewer) in leases.keys().filter(|(leased, _)| leased == user) {
                     model.viewer_connected(EnvironmentActor::new(
                         viewer,
@@ -1427,6 +1429,33 @@ mod tests {
             1,
             "no submission after the run ended"
         );
+    }
+
+    // Row 548: after a hot reload (a new host over the same profile) the agent's Tab is still the agent's.
+    #[test]
+    fn row548_a_new_host_names_the_agents_tabs_the_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let user = "user-548";
+        let inventory =
+            serde_json::json!({"generation":1,"tabs":[{"tab_id":"host-1","document_id":"a"}]});
+        let first = KernelBrowserHost::new(root.path().to_path_buf());
+        std::fs::create_dir_all(first.profile_root(user)).unwrap();
+        {
+            let model = first.actor_model(user).unwrap();
+            let mut model = model.lock().unwrap();
+            model.reconcile(&inventory).unwrap();
+            model.opened_tab(
+                EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "a"),
+                "host-1",
+            );
+        }
+        let second = KernelBrowserHost::new(root.path().to_path_buf());
+        let model = second.actor_model(user).unwrap();
+        let mut model = model.lock().unwrap();
+        let mut state = inventory.clone();
+        model.reconcile(&state).unwrap();
+        model.project_tabs(&mut state);
+        assert_eq!(state["tabs"][0]["opened_by"]["actor_id"], "agent:a");
     }
 
     #[test]

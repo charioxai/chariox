@@ -853,6 +853,11 @@ impl KernelBrowserActors {
         }
     }
 
+    /// Row 548: keep which agent opened which Tab in `path`, so a rebuilt model (a hot reload or a restart)
+    /// still names the agent's Tabs as the agent's.
+    pub(crate) fn persist_tab_openers(&mut self, path: std::path::PathBuf) {
+        self.tab_activity.persist_at(path);
+    }
     pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
         self.tab_activity.opened(actor, tab);
     }
@@ -1593,6 +1598,48 @@ mod visible_tab_tests {
         assert!(state["tabs"][4]["opened_by"].is_null());
         assert_eq!(state["agent_activity"]["tab_id"], "popup");
         assert_eq!(state["agent_activity"]["sequence"], 2);
+    }
+    // Row 548: a hot reload or a full restart builds a new model; the agent's Tabs stay the agent's.
+    #[test]
+    fn row548_an_agents_tab_stays_the_agents_after_the_model_is_rebuilt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tab-openers.json");
+        let inventory = || json!({"generation":1,"tabs":[{"tab_id":"host-1","document_id":"a"},{"tab_id":"host-2","document_id":"b"}]});
+        let mut before = KernelBrowserActors::default();
+        before.persist_tab_openers(path.clone());
+        before.reconcile(&inventory()).unwrap();
+        before.opened_tab(actor("agent:a"), "host-2");
+        // The kernel program is replaced: a new model reads what the old one saved.
+        let mut after = KernelBrowserActors::default();
+        after.persist_tab_openers(path.clone());
+        let mut state = inventory();
+        after.reconcile(&state).unwrap();
+        after.project_tabs(&mut state);
+        assert!(
+            state["tabs"][0]["opened_by"].is_null(),
+            "the person's own Tab stays the person's"
+        );
+        assert_eq!(state["tabs"][1]["opened_by"]["actor_id"], "agent:a");
+        // A browser that is still starting reports no Tabs yet: that is not the agent's Tab closing.
+        let mut restarted = KernelBrowserActors::default();
+        restarted.persist_tab_openers(path.clone());
+        restarted
+            .reconcile(&json!({"generation":2,"tabs":[]}))
+            .unwrap();
+        let mut back = json!({"generation":2,"tabs":[{"tab_id":"host-1","document_id":"a"},{"tab_id":"host-2","document_id":"b"}]});
+        restarted.reconcile(&back).unwrap();
+        restarted.project_tabs(&mut back);
+        assert_eq!(back["tabs"][1]["opened_by"]["actor_id"], "agent:a");
+        // A Tab that is really gone loses its attribution, here and on disk.
+        let mut gone = json!({"generation":3,"tabs":[{"tab_id":"host-1","document_id":"a"}]});
+        restarted.reconcile(&gone).unwrap();
+        restarted.project_tabs(&mut gone);
+        let mut later = KernelBrowserActors::default();
+        later.persist_tab_openers(path);
+        let mut again = inventory();
+        later.reconcile(&again).unwrap();
+        later.project_tabs(&mut again);
+        assert!(again["tabs"][1]["opened_by"].is_null());
     }
     #[test]
     fn mp08_browser_restart_does_not_attribute_restored_popups_to_mutation() {
