@@ -16,10 +16,24 @@ impl KernelRuntimeState {
         renewal: Option<(crate::config::PersistedCloudRelayProfile, String)>,
     ) -> Result<(), DaemonError> {
         self.with_authorized_app_side_effect(move |app| {
-            if app.config().cloud_relay.as_ref() == Some(&expected)
+            // A renewal installed in the projection may have failed its own save, so the app's
+            // profile can carry an older expiry than the `expected` one: same enrollment is enough.
+            let current = app.config().cloud_relay.clone();
+            let expected_matches = match (&renewal, &current) {
+                (Some(_), Some(current)) => {
+                    crate::runtime::projection::same_cloud_enrollment(current, &expected)
+                }
+                _ => current.as_ref() == Some(&expected),
+            };
+            if expected_matches
                 && crate::runtime::cloud_relay_control::cloud_relay_transport_selected(app.config())
             {
                 match renewal {
+                    // Saves run concurrently: an older renewal never replaces a newer one.
+                    Some((updated, _))
+                        if current.as_ref().is_some_and(|current| {
+                            current.token_expires_at_ms > updated.token_expires_at_ms
+                        }) => {}
                     Some((updated, token)) => {
                         app.persist_cloud_relay_token(updated, token)?;
                     }

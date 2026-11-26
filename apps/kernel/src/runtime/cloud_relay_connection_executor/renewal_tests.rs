@@ -207,6 +207,65 @@ async fn renewal_reaches_the_projection_while_the_app_lock_is_held() {
     assert_eq!(durable.as_deref(), Some(token.as_str()));
 }
 
+/// Row 563 review: a renewal whose own save failed leaves the projection's profile ahead of the app's.
+/// The next renewal passes that projected profile as `expected`; it must still be saved, and an
+/// older delayed save must not replace a newer one.
+#[tokio::test]
+async fn a_later_renewal_is_saved_after_the_first_save_failed() {
+    let root = crate::test_support::TestWorktree::new("relay-renew-after-failed-save");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: "http://127.0.0.1:9".into(),
+        relay_url: "wss://relay.example.test".into(),
+        kernel_id: Some(config.daemon_id.clone()),
+        kernel_credential: Some("synthetic-enrollment".into()),
+        token_expires_at_ms: Some(1_000),
+        ..Default::default()
+    });
+    let durable = config.cloud_relay.clone().unwrap();
+    let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 1);
+    let state = router.runtime_state();
+    // The first renewal's save never ran: the projection (and so `expected`) is ahead of the app.
+    let mut ahead = durable.clone();
+    ahead.token_expires_at_ms = Some(5_000);
+    let mut second = durable.clone();
+    second.token_expires_at_ms = Some(9_000);
+    state
+        .finish_cloud_relay_renewal(ahead.clone(), Some((second, "second".into())))
+        .await
+        .unwrap();
+    {
+        let app = app.lock().await;
+        assert_eq!(app.config().relay_token.as_deref(), Some("second"));
+        assert_eq!(
+            app.config()
+                .cloud_relay
+                .as_ref()
+                .unwrap()
+                .token_expires_at_ms,
+            Some(9_000)
+        );
+    }
+    // The delayed first save arrives last and is older: it changes nothing.
+    state
+        .finish_cloud_relay_renewal(durable, Some((ahead, "first-late".into())))
+        .await
+        .unwrap();
+    let app = app.lock().await;
+    assert_eq!(app.config().relay_token.as_deref(), Some("second"));
+    assert_eq!(
+        app.config()
+            .cloud_relay
+            .as_ref()
+            .unwrap()
+            .token_expires_at_ms,
+        Some(9_000)
+    );
+}
+
 /// The body is a long async test: it overflows the default 2 MiB test stack in a debug build, so
 /// it runs on a large-stack thread like the other long relay tests.
 #[test]

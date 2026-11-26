@@ -6,7 +6,29 @@ use std::sync::Mutex as StdMutex;
 #[derive(Clone)]
 pub(crate) struct DaemonConfigProjectionStore {
     config: Arc<StdMutex<DaemonConfig>>,
+    /// A renewed token the durable save has not caught up with. App configuration published
+    /// meanwhile still carries the previous token: it must not take the renewal back.
+    renewal: Arc<StdMutex<Option<PendingRenewal>>>,
     observers: Arc<StdMutex<Vec<ConfigObserver>>>,
+}
+
+struct PendingRenewal {
+    token: String,
+    profile: crate::config::PersistedCloudRelayProfile,
+}
+
+/// The same Cloud enrollment: a renewal changes only the token's expiry and the removal-pending mark.
+pub(crate) fn same_cloud_enrollment(
+    left: &crate::config::PersistedCloudRelayProfile,
+    right: &crate::config::PersistedCloudRelayProfile,
+) -> bool {
+    let normalized = |profile: &crate::config::PersistedCloudRelayProfile| {
+        let mut profile = profile.clone();
+        profile.token_expires_at_ms = None;
+        profile.kernel_removal_pending = false;
+        profile
+    };
+    normalized(left) == normalized(right)
 }
 
 /// Called on the updating thread, after the new config is visible and no lock is held.
@@ -16,6 +38,7 @@ impl DaemonConfigProjectionStore {
     pub(crate) fn new(config: DaemonConfig) -> Self {
         Self {
             config: Arc::new(StdMutex::new(config)),
+            renewal: Arc::new(StdMutex::new(None)),
             observers: Arc::new(StdMutex::new(Vec::new())),
         }
     }
@@ -105,8 +128,13 @@ impl DaemonConfigProjectionStore {
                 });
             }
             config.relay_url = Some(profile.relay_url.clone());
-            config.relay_token = Some(token);
-            config.cloud_relay = Some(profile);
+            config.relay_token = Some(token.clone());
+            config.cloud_relay = Some(profile.clone());
+            *self
+                .renewal
+                .lock()
+                .expect("daemon config renewal lock should not be poisoned") =
+                Some(PendingRenewal { token, profile });
             config.clone()
         };
         self.notify_observers(&installed);
@@ -124,11 +152,32 @@ impl DaemonConfigProjectionStore {
         }
     }
 
-    pub(crate) fn update(&self, config: DaemonConfig) {
-        *self
-            .config
-            .lock()
-            .expect("daemon config projection lock should not be poisoned") = config.clone();
+    pub(crate) fn update(&self, mut config: DaemonConfig) {
+        {
+            let mut projected = self
+                .config
+                .lock()
+                .expect("daemon config projection lock should not be poisoned");
+            let mut pending = self
+                .renewal
+                .lock()
+                .expect("daemon config renewal lock should not be poisoned");
+            if let Some(renewal) = pending.as_ref() {
+                let caught_up = config.relay_token.as_deref() == Some(renewal.token.as_str());
+                let still_older = config.cloud_relay.as_ref().is_some_and(|profile| {
+                    same_cloud_enrollment(profile, &renewal.profile)
+                        && profile.token_expires_at_ms < renewal.profile.token_expires_at_ms
+                });
+                if still_older && !caught_up {
+                    config.relay_url = Some(renewal.profile.relay_url.clone());
+                    config.relay_token = Some(renewal.token.clone());
+                    config.cloud_relay = Some(renewal.profile.clone());
+                } else {
+                    *pending = None;
+                }
+            }
+            *projected = config.clone();
+        }
         self.notify_observers(&config);
     }
 
@@ -168,5 +217,77 @@ fn room_member_user_id_in(config: &DaemonConfig, room_owner: &str, user_id: &str
         crate::session::DEFAULT_LOCAL_USER_ID.into()
     } else {
         user_id.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enrolled() -> DaemonConfig {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".into());
+        config.relay_token = Some("first".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            relay_url: "wss://relay.example.test".into(),
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("enrollment".into()),
+            token_expires_at_ms: Some(1_000),
+            ..Default::default()
+        });
+        config
+    }
+
+    fn renewed_profile(config: &DaemonConfig) -> crate::config::PersistedCloudRelayProfile {
+        let mut profile = config.cloud_relay.clone().unwrap();
+        profile.token_expires_at_ms = Some(9_000);
+        profile
+    }
+
+    /// Row 563 review: an app configuration write that stalled on the disk publishes the config it
+    /// read before the renewal. It must not take the renewed token back out of the projection.
+    #[test]
+    fn unrelated_app_config_publish_keeps_an_unsaved_renewal() {
+        let config = enrolled();
+        let projection = DaemonConfigProjectionStore::new(config.clone());
+        projection
+            .install_cloud_relay_renewal(&config, renewed_profile(&config), "renewed".into())
+            .unwrap();
+        let mut stale = config.clone();
+        stale.runtime_mcp_port = 4321;
+        projection.update(stale);
+        let seen = projection.snapshot();
+        assert_eq!(seen.relay_token.as_deref(), Some("renewed"));
+        assert_eq!(seen.cloud_relay.unwrap().token_expires_at_ms, Some(9_000));
+        assert_eq!(seen.runtime_mcp_port, 4321);
+    }
+
+    #[test]
+    fn the_saved_renewal_or_a_replaced_enrollment_ends_the_overlay() {
+        let config = enrolled();
+        let projection = DaemonConfigProjectionStore::new(config.clone());
+        projection
+            .install_cloud_relay_renewal(&config, renewed_profile(&config), "renewed".into())
+            .unwrap();
+        let mut saved = config.clone();
+        saved.relay_token = Some("renewed".into());
+        saved.cloud_relay = Some(renewed_profile(&config));
+        projection.update(saved.clone());
+        let mut later = config.clone();
+        later.relay_token = Some("first".into());
+        projection.update(later);
+        assert_eq!(projection.snapshot().relay_token.as_deref(), Some("first"));
+
+        projection
+            .install_cloud_relay_renewal(
+                &projection.snapshot(),
+                renewed_profile(&config),
+                "again".into(),
+            )
+            .unwrap();
+        let mut relinked = config.clone();
+        relinked.cloud_relay.as_mut().unwrap().kernel_credential = Some("other".into());
+        projection.update(relinked);
+        assert_eq!(projection.snapshot().relay_token.as_deref(), Some("first"));
     }
 }
