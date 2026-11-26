@@ -219,7 +219,9 @@ fn degraded_body(reason: &Reason) -> String {
 }
 
 /// Supervised: try the product's hot reload once, then exit so the supervisor starts the kernel.
+/// The reason is saved first: a reload that succeeds is a restart the owner is told about too.
 fn recover(supervisor: &str, reason: &Reason, marker: &Path) {
+    write_marker_bounded(marker, reason);
     crate::logging::warn_with_fields(
         "kernel.wedge_watchdog",
         "trying a hot reload of the kernel",
@@ -245,7 +247,6 @@ fn recover(supervisor: &str, reason: &Reason, marker: &Path) {
             serde_json::json!({ "reason": refusal }),
         ),
     }
-    write_marker_bounded(marker, reason);
     crate::logging::error_with_fields(
         "kernel.wedge_watchdog",
         "the kernel exits so its supervisor starts it again",
