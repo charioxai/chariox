@@ -298,7 +298,18 @@ fn confine_command_with_read_only(
     own: Vec<PathBuf>,
     read_only: &[PathBuf],
 ) -> Result<(String, Vec<String>), DaemonError> {
-    let secrets = secrets();
+    confine_command_around(secrets(), program, args, environment, own, read_only)
+}
+
+/// `confine_command_with_read_only` around exactly the folders `secrets` lists.
+fn confine_command_around(
+    secrets: Secrets,
+    program: String,
+    args: Vec<String>,
+    environment: &BTreeMap<String, String>,
+    own: Vec<PathBuf>,
+    read_only: &[PathBuf],
+) -> Result<(String, Vec<String>), DaemonError> {
     let named = own
         .into_iter()
         .map(|path| {
@@ -359,8 +370,13 @@ pub(crate) fn confined_program_signal(status: &std::process::ExitStatus) -> Opti
     platform::confined_program_signal(status)
 }
 
-/// Exactly the declared secret folders that exist now, by their real paths.
-fn secrets() -> Secrets {
+/// The folders that hold the kernel's secrets (state, Vault, credentials,
+/// local-auth tokens, keys, machine identity, history), by their real paths.
+/// This is the one list of protected paths: the sandbox mask covers exactly
+/// these, and any other code that must keep an agent away from the kernel's
+/// private files (the kernel's own file operations for agents) calls this
+/// instead of keeping a list of its own.
+pub(crate) fn protected_folders() -> Vec<PathBuf> {
     let mut folders = home_secret_folders()
         .into_iter()
         .chain(CONFIGURED_FOLDERS.get().into_iter().flatten().cloned())
@@ -375,7 +391,14 @@ fn secrets() -> Secrets {
             outermost.push(folder);
         }
     }
-    Secrets { folders: outermost }
+    outermost
+}
+
+/// Exactly the declared secret folders that exist now, by their real paths.
+fn secrets() -> Secrets {
+    Secrets {
+        folders: protected_folders(),
+    }
 }
 
 /// What the chariox CLI reads to reach this kernel.

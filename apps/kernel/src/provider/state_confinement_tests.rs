@@ -815,3 +815,42 @@ fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
     assert!(output.contains("proc-environ-closed"), "{output}");
     assert!(!output.contains(SECRET), "{output}");
 }
+
+/// The protected-path list is kept in one place: the mask covers exactly the
+/// folders `protected_folders` names, and a folder added to the list is masked
+/// without any change to the mask.
+#[test]
+fn the_mask_follows_the_one_list_of_protected_folders() {
+    let kernel = DummyKernelHome::new();
+    let listed = super::protected_folders();
+    assert!(listed.iter().any(|folder| folder.ends_with("state")));
+    assert!(listed.iter().any(|folder| folder.ends_with("vault")));
+    let masked = |secrets: super::Secrets| -> Vec<PathBuf> {
+        let (_, args) = super::confine_command_around(
+            secrets,
+            "/bin/true".to_string(),
+            Vec::new(),
+            &kernel.agent_environment(),
+            vec![kernel.workspace.clone()],
+            &[],
+        )
+        .expect("a command is confined");
+        args.windows(2)
+            .filter(|pair| pair[0] == "--tmpfs")
+            .map(|pair| PathBuf::from(&pair[1]))
+            .collect()
+    };
+    let before = masked(super::Secrets {
+        folders: listed.clone(),
+    });
+    for folder in &listed {
+        assert!(before.contains(folder), "{folder:?} is listed but not masked");
+    }
+    let added = kernel.home.join("added-secret-folder");
+    std::fs::create_dir_all(&added).unwrap();
+    let added = added.canonicalize().unwrap();
+    assert!(!before.contains(&added));
+    let mut longer = listed;
+    longer.push(added.clone());
+    assert!(masked(super::Secrets { folders: longer }).contains(&added));
+}
