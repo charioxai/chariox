@@ -729,3 +729,77 @@ fn killing_the_sandbox_ends_the_program_it_confines() {
     }
     assert!(!survived, "the confined program outlived its sandbox");
 }
+
+/// A user manager socket and a session bus as a login session has them: the
+/// folder `XDG_RUNTIME_DIR` names, with listening sockets in it.
+struct FakeUserSession {
+    runtime: PathBuf,
+    _listeners: Vec<std::os::unix::net::UnixListener>,
+}
+
+impl FakeUserSession {
+    fn new(kernel: &DummyKernelHome) -> Self {
+        let runtime = kernel.home.parent().unwrap().join("run-user");
+        std::fs::create_dir_all(runtime.join("systemd")).unwrap();
+        let listeners = [runtime.join("systemd/private"), runtime.join("bus")]
+            .iter()
+            .map(|path| std::os::unix::net::UnixListener::bind(path).unwrap())
+            .collect();
+        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
+        std::env::set_var(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", runtime.join("bus").display()),
+        );
+        Self {
+            runtime,
+            _listeners: listeners,
+        }
+    }
+}
+
+impl Drop for FakeUserSession {
+    fn drop(&mut self) {
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
+    }
+}
+
+/// Cell (a): the user's service manager and session bus start processes outside
+/// the sandbox, where the state folder is not masked. Neither socket may be
+/// reachable from an agent's shell.
+#[test]
+fn an_agent_shell_cannot_reach_the_user_manager_or_the_session_bus() {
+    let kernel = DummyKernelHome::new();
+    let session = FakeUserSession::new(&kernel);
+    let runtime = session.runtime.display();
+    let output = run_confined(
+        &kernel,
+        &format!(
+            "if test -S '{runtime}/systemd/private'; then echo user-manager-open; else echo user-manager-closed; fi\n\
+             if test -S '{runtime}/bus'; then echo session-bus-open; else echo session-bus-closed; fi\n\
+             case \"$DBUS_SESSION_BUS_ADDRESS\" in '') echo bus-address-unset;; *) echo bus-address-set;; esac\n"
+        ),
+    );
+    assert!(output.contains("user-manager-closed"), "{output}");
+    assert!(output.contains("session-bus-closed"), "{output}");
+    assert!(output.contains("bus-address-unset"), "{output}");
+}
+
+/// Cell (a): the kernel's own process shows its mounts, unmasked, under /proc.
+/// An agent must not read the secrets through it.
+#[test]
+fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
+    let kernel = DummyKernelHome::new();
+    let pid = std::process::id();
+    let output = run_confined(
+        &kernel,
+        &format!(
+            "if cat '/proc/{pid}/root{home}/vault/vault.json' >/dev/null 2>&1; then echo proc-root-open; else echo proc-root-closed; fi\n\
+             if test -r '/proc/{pid}/environ'; then echo proc-environ-open; else echo proc-environ-closed; fi\n",
+            home = kernel.home.display(),
+        ),
+    );
+    assert!(output.contains("proc-root-closed"), "{output}");
+    assert!(output.contains("proc-environ-closed"), "{output}");
+    assert!(!output.contains(SECRET), "{output}");
+}
