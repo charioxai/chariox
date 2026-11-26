@@ -1780,7 +1780,8 @@ impl KernelRuntimeState {
             "runtime.agent_lifecycle",
             "supervision sweep set",
             serde_json::json!({"tasks": tasks.len(), "read_ms": read_ms,
-                "open_obligations": open, "open_obligations_of_ended_agents": ended}),
+                "open_obligations": open, "open_obligations_of_ended_agents": ended,
+                "reads": crate::durable_state::agent_lifecycle::read_gauge::take()}),
         );
     }
     async fn sweep_task(

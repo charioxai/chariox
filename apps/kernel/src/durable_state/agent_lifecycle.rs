@@ -494,6 +494,7 @@ impl DurableKernelStateStore {
         // it is released, so decoding a long ledger never holds up the other readers (row 690).
         let rows = {
             let db = self.lock_connection(operation)?;
+            let held_from = std::time::Instant::now();
             let mut q = db
                 .prepare_cached(&format!(
                     "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
@@ -516,6 +517,7 @@ impl DurableKernelStateStore {
                 .map_err(sql)?;
             #[cfg(test)]
             TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+            read_gauge::record(operation, held_from.elapsed(), rows.len());
             rows
         };
         rows.into_iter()
@@ -1551,7 +1553,44 @@ fn source_tasks(
     room: &str,
     source: &str,
 ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
-    tasks_where(tx, SOURCE_TASKS, params![room, source])
+    let started = std::time::Instant::now();
+    let tasks = tasks_where(tx, SOURCE_TASKS, params![room, source])?;
+    read_gauge::record("agent.lifecycle.source_tasks", started.elapsed(), tasks.len());
+    Ok(tasks)
+}
+
+/// What each read of task rows cost since the last pass looked: how often, how long the longest held
+/// the connection it ran on, and the most rows (row 690, D151a). A read that holds the shared
+/// connection for more than 100 ms is the follow-up row; the sweep logs this once per pass.
+pub(crate) mod read_gauge {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    #[derive(Default, serde::Serialize)]
+    struct Reads {
+        reads: u64,
+        held_ms_total: u128,
+        held_ms_max: u128,
+        rows_max: usize,
+    }
+
+    static READS: Mutex<BTreeMap<&'static str, Reads>> = Mutex::new(BTreeMap::new());
+
+    pub(crate) fn record(read: &'static str, held: Duration, rows: usize) {
+        let mut reads = READS.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = reads.entry(read).or_default();
+        entry.reads += 1;
+        entry.held_ms_total += held.as_millis();
+        entry.held_ms_max = entry.held_ms_max.max(held.as_millis());
+        entry.rows_max = entry.rows_max.max(rows);
+    }
+
+    /// The reads since the last call, by name; starts a new count.
+    pub(crate) fn take() -> serde_json::Value {
+        let reads = std::mem::take(&mut *READS.lock().unwrap_or_else(|e| e.into_inner()));
+        serde_json::json!(reads)
+    }
 }
 /// A room's tasks (one agent's when given), in ledger order.
 fn room_tasks(
