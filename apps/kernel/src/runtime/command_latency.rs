@@ -25,13 +25,19 @@ pub(crate) struct CommandTrace {
 
 /// The operation name and tab id a browser command names, bounded; neither carries page content or a secret.
 fn browser_labels(command: &KernelCommand) -> (Option<String>, Option<String>) {
-    let Some(request) = command
+    let Some(mut request) = command
         .payload
         .get("KernelBrowser")
         .and_then(|value| value.get("command"))
     else {
         return (None, None);
     };
+    // A person's Room input and navigation travel inside a Room envelope: the labels are the wrapped operation and tab.
+    if request.get("op").and_then(Value::as_str) == Some("room") {
+        if let Some(inner) = request.get("command") {
+            request = inner;
+        }
+    }
     let label = |key: &str, limit: usize| {
         request
             .get(key)
@@ -707,6 +713,30 @@ mod tests {
             json!({"KernelBrowser": {"command": {"op": "input text", "tab_id": "x".repeat(200)}}});
         let fields = CommandTrace::from_command(&command).base_fields(command.submitted_at_ms);
         assert!(fields.get("browser_op").is_none() && fields.get("browser_tab_id").is_none());
+    }
+
+    #[test]
+    fn a_room_scoped_browser_command_log_names_the_wrapped_operation_and_tab() {
+        use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
+        // The shape a person's Room input really has: the operation and tab are inside the Room envelope.
+        let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+            command: KernelBrowserCommand::Room {
+                session_id: "s".to_string(),
+                command: Box::new(KernelBrowserCommand::Input {
+                    tab_id: "host-tab-1".to_string(),
+                    generation: 2,
+                    input: KernelBrowserInput::Click {
+                        x: 1,
+                        y: 1,
+                        button: None,
+                    },
+                }),
+            },
+        });
+        let command = KernelCommand::from_local_request("cmd-room-browser", None, None, &request);
+        let fields = CommandTrace::from_command(&command).base_fields(command.submitted_at_ms);
+        assert_eq!(fields["browser_op"], "input");
+        assert_eq!(fields["browser_tab_id"], "host-tab-1");
     }
 
     #[test]
