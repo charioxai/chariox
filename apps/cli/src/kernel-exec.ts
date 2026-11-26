@@ -177,8 +177,10 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
   // Every request after the terminal is open: a link that drops is waited for, never answered by closing the terminal
   // (that would end the command whose result is wanted). wait and read_output are by terminal and offset, so a retry is safe.
   // `build` makes the request afresh each try: a wait asks for what is left of --timeout, not its first length.
+  let droppedOnRequest = false
   const sendThroughDrops = async (build: () => Record<string, unknown>): Promise<unknown> => {
     let told = false
+    droppedOnRequest = false
     let retrying = false
     for (;;) {
       if (retrying && Date.now() >= deadline) { leaveRunning = true; throw linkLost(options, terminalId!, options.timeoutSeconds) }
@@ -197,6 +199,7 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
         if (Date.now() >= deadline) { leaveRunning = true; throw linkLost(options, terminalId!, options.timeoutSeconds) }
         if (!told) { told = true; tell(`link to kernel ${options.kernel ?? "the kernel"} lost, waiting for it; the command keeps running as terminal ${terminalId}`) }
         retrying = true
+        droppedOnRequest = true
         let timer: ReturnType<typeof setTimeout> | undefined
         await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, Math.min(retryStepMs, Math.max(0, deadline - Date.now()))) }), interrupted])
         clearTimeout(timer)
@@ -210,13 +213,14 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
     if (signalExit !== undefined) return signalExit
     deadline = Date.now() + options.timeoutSeconds * 1000
     let ended: unknown
+    let outputEnd = 0
     for (;;) {
       const reply = await sendThroughDrops(() => roomTerminalRequest(target, {
         operation: "wait", terminal_id: terminalId!, watches: [{ kind: "finished" }] as never, timeout_ms: Math.max(0, Math.min(WAIT_CHUNK_MS, deadline - Date.now())),
       }))
       if (signalExit !== undefined) return signalExit
       const { waited } = expectRoomTerminalResult(reply, "waited")
-      if (waited.fired) { ended = waited.terminal.status; break }
+      if (waited.fired) { ended = waited.terminal.status; outputEnd = waited.terminal.output_offset; break }
       if (Date.now() >= deadline) {
         throw new CommandFailure("kernel_request_timeout", `the command is still running after ${options.timeoutSeconds} s and was stopped; raise --timeout, or run it in a terminal (chariox terminal open ... --kernel)`)
       }
@@ -233,7 +237,16 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
       if (body) stdout.write(body.replace(/\r\n/g, "\n"))
     }
     for (;;) {
-      const reply = await sendThroughDrops(() => readRoomTerminalOutputRequest(target, terminalId!, offset))
+      let reply: unknown
+      try {
+        reply = await sendThroughDrops(() => readRoomTerminalOutputRequest(target, terminalId!, offset))
+      } catch (error) {
+        // The kernel removes a finished command's terminal as it answers the read of its last byte. A drop that lost that
+        // answer leaves the retry with "no such terminal": the exit code is known from the wait, the lost page is said plainly.
+        if (!droppedOnRequest || (error instanceof CommandFailure && error.code === "exec_link_lost") || !(await isGone(send, target, terminalId))) throw error
+        tell(`the link dropped while the last page of the output was on its way and the kernel had already cleared the terminal: ${offset} of ${outputEnd} bytes of the output were delivered, the rest was lost; the exit code is the command's own`)
+        break
+      }
       if (signalExit !== undefined) return signalExit
       const { output } = expectRoomTerminalResult(reply, "output")
       if (output.gap) throw new CommandFailure("kernel_output_lost", "the command wrote more than the terminal keeps; run it in a terminal and read as it goes")
