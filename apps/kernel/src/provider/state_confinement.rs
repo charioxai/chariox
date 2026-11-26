@@ -498,6 +498,7 @@ mod platform {
             // SAFETY: getuid takes no arguments and cannot fail.
             unsafe { libc::getuid() },
             std::env::var("DBUS_SESSION_BUS_ADDRESS").ok(),
+            &[PathBuf::from("/tmp")],
         );
         for folder in &session.folders {
             wrapped.extend(["--tmpfs".to_string(), path_arg(folder)]);
@@ -543,12 +544,16 @@ mod platform {
 
     /// The user manager's sockets (`systemd/`), the session bus (`bus`,
     /// `dbus-1/`) and the bus the environment names, of the runtime folder
-    /// `XDG_RUNTIME_DIR` names and of `/run/user/<uid>`, where they exist. The
-    /// rest of the runtime folder stays the agent's.
+    /// `XDG_RUNTIME_DIR` names and of `/run/user/<uid>`, and the session buses
+    /// `dbus-launch` leaves as `dbus-*` sockets in the temp folders, where they
+    /// exist. A call to any of them can start a service outside the sandbox
+    /// (D-Bus activation), so each is replaced. The rest of the runtime
+    /// folder stays the agent's.
     pub(super) fn user_session_endpoints(
         runtime: Option<PathBuf>,
         uid: u32,
         bus_address: Option<String>,
+        temp_folders: &[PathBuf],
     ) -> UserSessionEndpoints {
         let mut endpoints = UserSessionEndpoints::default();
         let runtimes = runtime
@@ -569,6 +574,21 @@ mod platform {
                 .filter_map(|part| part.strip_prefix("unix:path="))
                 .map(|path| PathBuf::from(path.split(',').next().unwrap_or(path)))
         }));
+        for folder in temp_folders {
+            sockets.extend(
+                std::fs::read_dir(folder)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("dbus-"))
+                    .filter(|entry| {
+                        entry.file_type().is_ok_and(|kind| {
+                            std::os::unix::fs::FileTypeExt::is_socket(&kind)
+                        })
+                    })
+                    .map(|entry| entry.path()),
+            );
+        }
         endpoints.folders.retain(|folder| folder.is_dir());
         endpoints.folders.sort();
         endpoints.folders.dedup();
@@ -724,23 +744,36 @@ mod platform {
 
         #[test]
         fn the_user_manager_and_session_bus_are_named_where_they_exist() {
-            let root = crate::test_temp_dir::TestTempDir::new("user-session");
-            let runtime = root.path().join("run-user");
+            // A socket path must fit in SUN_LEN, which a test temp folder may not.
+            let root = PathBuf::from(format!("/tmp/smu-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let runtime = root.join("run-user");
             std::fs::create_dir_all(runtime.join("systemd")).unwrap();
             std::fs::write(runtime.join("bus"), "").unwrap();
-            let other = root.path().join("other-bus");
+            let other = root.join("other-bus");
             std::fs::write(&other, "").unwrap();
+            let temp = root.join("tmp");
+            std::fs::create_dir_all(&temp).unwrap();
+            let launched = temp.join("dbus-AbC123");
+            let _listener = std::os::unix::net::UnixListener::bind(&launched).unwrap();
+            std::fs::write(temp.join("dbus-not-a-socket"), "").unwrap();
             let endpoints = user_session_endpoints(
                 Some(runtime.clone()),
                 4_000_000_000,
                 Some(format!("unix:path={},guid=1", other.display())),
+                std::slice::from_ref(&temp),
             );
             assert_eq!(endpoints.folders, vec![runtime.join("systemd")]);
-            assert_eq!(endpoints.sockets, vec![other, runtime.join("bus")]);
             assert_eq!(
-                user_session_endpoints(None, 4_000_000_000, None),
+                endpoints.sockets,
+                vec![other, runtime.join("bus"), launched]
+            );
+            assert_eq!(
+                user_session_endpoints(None, 4_000_000_000, None, &[]),
                 UserSessionEndpoints::default()
             );
+            let _ = std::fs::remove_dir_all(&root);
         }
 
         #[test]
