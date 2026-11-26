@@ -29,6 +29,8 @@ export type KernelExecOptions = {
 export const EXEC_LINK_RETRY_MS = 2_000
 // The gateway's own answers for a request that did not get through; the command is not known to have stopped.
 const LINK_DROP_CODES = new Set(["kernel_connection_lost", "kernel_request_timeout", "kernel_offline", "kernel_unreachable"])
+/** A retry that was still unanswered when --timeout (and one more step) had passed. */
+class RetryOutlived extends Error {}
 const linkDropped = (error: unknown): boolean => LINK_DROP_CODES.has((error as { code?: unknown } | null)?.code as string)
 
 // How long an idle stdin (a pipe nobody writes to, as in an agent's tool shell) is given to show data or its end.
@@ -174,18 +176,29 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
   let leaveRunning = false
   // Every request after the terminal is open: a link that drops is waited for, never answered by closing the terminal
   // (that would end the command whose result is wanted). wait and read_output are by terminal and offset, so a retry is safe.
-  const sendThroughDrops: SendRequest = async body => {
+  // `build` makes the request afresh each try: a wait asks for what is left of --timeout, not its first length.
+  const sendThroughDrops = async (build: () => Record<string, unknown>): Promise<unknown> => {
     let told = false
+    let retrying = false
     for (;;) {
+      if (retrying && Date.now() >= deadline) { leaveRunning = true; throw linkLost(options, terminalId!, options.timeoutSeconds) }
       try {
-        return await sendUntilInterrupted(body)
+        const request = sendUntilInterrupted(build())
+        // A retry has the whole remaining budget and no more: one that never answers ends shortly after --timeout.
+        if (!retrying) return await request
+        request.catch(() => {})
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new RetryOutlived()), Math.max(0, deadline - Date.now()) + retryStepMs) })
+        try { return await Promise.race([request, late]) } finally { clearTimeout(timer) }
       } catch (error) {
+        if (error instanceof RetryOutlived) { leaveRunning = true; throw linkLost(options, terminalId!, options.timeoutSeconds) }
         if (!linkDropped(error)) throw error
         if (signalExit !== undefined) return undefined
         if (Date.now() >= deadline) { leaveRunning = true; throw linkLost(options, terminalId!, options.timeoutSeconds) }
         if (!told) { told = true; tell(`link to kernel ${options.kernel ?? "the kernel"} lost, waiting for it; the command keeps running as terminal ${terminalId}`) }
+        retrying = true
         let timer: ReturnType<typeof setTimeout> | undefined
-        await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, retryStepMs) }), interrupted])
+        await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, Math.min(retryStepMs, Math.max(0, deadline - Date.now()))) }), interrupted])
         clearTimeout(timer)
         if (signalExit !== undefined) return undefined
       }
@@ -198,9 +211,8 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
     deadline = Date.now() + options.timeoutSeconds * 1000
     let ended: unknown
     for (;;) {
-      const timeoutMs = Math.max(0, Math.min(WAIT_CHUNK_MS, deadline - Date.now()))
-      const reply = await sendThroughDrops(roomTerminalRequest(target, {
-        operation: "wait", terminal_id: terminalId, watches: [{ kind: "finished" }] as never, timeout_ms: timeoutMs,
+      const reply = await sendThroughDrops(() => roomTerminalRequest(target, {
+        operation: "wait", terminal_id: terminalId!, watches: [{ kind: "finished" }] as never, timeout_ms: Math.max(0, Math.min(WAIT_CHUNK_MS, deadline - Date.now())),
       }))
       if (signalExit !== undefined) return signalExit
       const { waited } = expectRoomTerminalResult(reply, "waited")
@@ -221,7 +233,7 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
       if (body) stdout.write(body.replace(/\r\n/g, "\n"))
     }
     for (;;) {
-      const reply = await sendThroughDrops(readRoomTerminalOutputRequest(target, terminalId, offset))
+      const reply = await sendThroughDrops(() => readRoomTerminalOutputRequest(target, terminalId!, offset))
       if (signalExit !== undefined) return signalExit
       const { output } = expectRoomTerminalResult(reply, "output")
       if (output.gap) throw new CommandFailure("kernel_output_lost", "the command wrote more than the terminal keeps; run it in a terminal and read as it goes")

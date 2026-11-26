@@ -452,3 +452,52 @@ test("the pause between tries never runs past --timeout", async () => {
   await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 1, retryStepMs: 5000, notice: () => {} }, down, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_link_lost")
   assert.ok(Date.now() - started < 2000, `ended after ${Date.now() - started} ms`)
 })
+
+// The kernel removes a finished one-command terminal as it answers the read of its last byte; a drop that loses
+// that answer leaves a retry with "no such terminal". The exit code is known from the wait; the lost page is said plainly.
+function lostLastPage(text: string, code: number, firstPage: number) {
+  const { send } = kernel(text, code)
+  const bytes = Buffer.from(text)
+  let lastReads = 0
+  const gone = () => Object.assign(new Error("this kernel has no terminal `t1`"), { code: "terminal_refused" })
+  return async (body: any) => {
+    const operation = operationOf(body)
+    if (operation === "read_output") {
+      const after = body.KernelTerminal.operation.after_offset
+      if (after === 0 && firstPage < bytes.length) {
+        return { RoomTerminal: { result: { result: "output", output: { terminal: terminal(ended(code), bytes.length), data_base64: bytes.subarray(0, firstPage).toString("base64"), next_offset: firstPage, gap: false } } } }
+      }
+      if (lastReads++ === 0) throw blip("kernel_connection_lost") // the kernel answered; the reply was lost with the link
+      throw gone()
+    }
+    if (operation === "close") throw gone()
+    if (operation === "list") return { RoomTerminal: { result: { result: "listed", terminals: [] } } }
+    return send(body)
+  }
+}
+
+test("B-1: the last output page lost with the link: the command's exit code comes back and one plain line says so", async () => {
+  const said = lines(), out = sink()
+  const code = await runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: said.notice }, lostLastPage("abc\r\n", 7, 99), out.stream)
+  assert.equal(code, 7)
+  assert.equal(said.seen.filter(line => /last page of the output/.test(line)).length, 1, JSON.stringify(said.seen))
+})
+
+test("B-2: the plain line says how much of the output was delivered", async () => {
+  const said = lines(), out = sink()
+  const code = await runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: said.notice }, lostLastPage("abcde123", 7, 5), out.stream)
+  assert.equal(code, 7)
+  assert.equal(out.text(), "abcde")
+  assert.match(said.seen.find(line => /last page of the output/.test(line)) ?? "", /5 of 8 bytes/)
+})
+
+test("a retried read that fails for another reason is still an error, not a lost page", async () => {
+  const { send } = kernel("abc", 0)
+  let reads = 0
+  const refused = async (body: any) => {
+    if (operationOf(body) === "read_output") { if (reads++ === 0) throw blip("kernel_connection_lost"); throw new CommandFailure("terminal_refused", "busy") }
+    if (operationOf(body) === "list") return { RoomTerminal: { result: { result: "listed", terminals: [terminal({ state: "ended" }, 3)] } } }
+    return send(body)
+  }
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, refused, sink().stream), /busy/)
+})
