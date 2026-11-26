@@ -302,7 +302,15 @@ export async function resolveCardRegion(host, command, scope, signal) {
     if (anchor?.tab_id === command.tab_id) forgetCardAnchor(host, key);
     return { released: true };
   }
-  if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) throw new UserDomainRefusal('stale_reference');
+  if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) {
+    // Row 655 (one card per Tab): the agent's newer request updated its plain card to another element of the same Tab;
+    // the card follows that element. A card bound to a proof or page text never changes its element.
+    const plain = anchor.tab_id === command.tab_id && !anchor.verification && anchor.doneText === null
+      && command.verification === undefined && command.done_text === undefined && command.app_confirmation !== true;
+    if (!plain) throw new UserDomainRefusal('stale_reference');
+    forgetCardAnchor(host, key);
+    anchor = null;
+  }
   const remembered = anchor?.binding ?? host.cardReferences.get(scope)?.get(command.tab_id);
   const completion = () => ({state:'condition_met',reason:JSON.stringify({reason:'Verification accepted',card_id:command.card_id,tab_id:command.tab_id,generation:anchor.binding.generation,document_id:anchor.binding.document_id,verification_result:anchor.verification.receipt})});
   // A card that waits for a response or for page text ends only when that happens: losing its element first is not completion.
@@ -415,6 +423,18 @@ export async function resolveCardRegion(host, command, scope, signal) {
         box = { ...box, rect: { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) } };
       }
     }
+    // Row 655/666: an anchor hidden inside a widget (the closed challenge's Verify button) shows the widget's visible
+    // frames (its checkbox) at a readable scale instead of the whole page; the agent is still told the anchor is hidden.
+    let anchorHidden = false;
+    if (box && box.done !== true && box.rect && !hasArea(box) && command.app_confirmation !== true && remembered.children.has(command.ref)) {
+      const extra = await widgetRects(connection, sessionId, tab, command.ref, true, null, world.contextId, box.viewport_width, box.viewport_height, null);
+      if (extra.length) {
+        const vw = box.viewport_width, vh = box.viewport_height;
+        const left = Math.max(0, Math.floor(Math.min(...extra.map(r => r.left - 16)))), top = Math.max(0, Math.floor(Math.min(...extra.map(r => r.top - 16))));
+        const right = Math.min(vw, Math.ceil(Math.max(...extra.map(r => r.right + 16)))), bottom = Math.min(vh, Math.ceil(Math.max(...extra.map(r => r.bottom + 16))));
+        if (right > left && bottom > top) { box = { ...box, rect: { x: left, y: top, width: right - left, height: bottom - top } }; anchorHidden = true; }
+      }
+    }
     if ((await current())?.loaderId !== remembered.document_id) return gone('Browser document changed');
     if (box === null) return goneElement();
     if (box.done === true) return { state: 'condition_met', reason: 'The page shows what the person was asked to reach' };
@@ -425,7 +445,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     const region = { tab_id: tab.tab_id, ref: command.ref, generation: host.generation, document_id: tab.document_id, origin, ...box,
       ...(config ? {verification:config} : {}), ...(command.done_text === undefined ? {} : {done_text:command.done_text}), ...(anchor?.verification?.receipt ? {verification_result:anchor.verification.receipt} : {}) };
     if (anchor) anchor.region = region;
-    return {state:'present',region};
+    return { state: 'present', region, ...(anchorHidden ? { anchor_hidden: true } : {}) };
   } catch (error) {
     if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return goneElement();
     if (/Execution context was destroyed|Cannot find context with specified id/.test(error?.message ?? '')) return gone('Browser document changed');

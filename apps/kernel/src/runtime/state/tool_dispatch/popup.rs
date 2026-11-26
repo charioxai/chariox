@@ -38,7 +38,7 @@ pub(in crate::runtime::state) const CANCEL_CHOICE_ID: &str = "cancel";
 pub(in crate::runtime::state) const DONE_CHOICE_ID: &str = "done";
 
 /// Row 655: what the agent is told when its card's element has no visible area when the card opens.
-pub(in crate::runtime::state) const HIDDEN_REGION_NOTE: &str = "The element is not visible on the page now (hidden, not opened yet, or off screen). The card shows the whole page so the person can take the step that reveals it (for example ticking the checkbox), and it moves to the element when it appears. Do not tell the person that the element or challenge is open.";
+pub(in crate::runtime::state) const HIDDEN_REGION_NOTE: &str = "The element is not visible on the page now (hidden, not opened yet, or off screen). The card shows the page, or the part of it the person can act on now (for example the checkbox), so the person can take the step that reveals it, and it moves to the element when it appears. Do not tell the person that the element or challenge is open.";
 
 /// Rows 574 / 655 (D107: a person card ends by the person's Done or Cancel, the agent, or its condition): a plain
 /// browser card has no condition that ends it, so the person says when the step is done. A card that waits for page
@@ -91,6 +91,77 @@ pub(in crate::runtime::state) fn popup_status<'a>(
 }
 
 impl KernelRuntimeState {
+    /// Row 655 (one card per Tab, Mac 11-26): the person sees one card for a page. A plain browser card the agent raises
+    /// on a Tab where its own plain card of this turn is open updates that card (same id, same wait); an open card of
+    /// an earlier turn on that Tab is closed as replaced before the new one registers. Hand-offs, App confirmations,
+    /// verification and page-text cards keep their own lifecycle.
+    pub(in crate::runtime::state) fn one_card_per_tab(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        task: &crate::durable_state::agent_lifecycle::AgentTaskExecution,
+        request: &crate::session::RuntimeInteraction,
+    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let plain = |view: &crate::session::RuntimeInteractionView| {
+            view.browser_region.verification.is_none() && view.browser_region.done_text.is_none()
+        };
+        let Some(view) = request.view().filter(|view| plain(view)) else {
+            return Ok(None);
+        };
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(existing) = session
+            .active_interactions()
+            .iter()
+            .find(|card| {
+                card.id() != request.id()
+                    && card.agent_id() == Some(agent_id)
+                    && card.handoff().is_none()
+                    && card.app_confirmation().is_none()
+                    && card
+                        .view()
+                        .is_some_and(|open| open.browser_region.tab_id == view.browser_region.tab_id)
+            })
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let wake = self
+            .owned
+            .durable_state_store
+            .agent_wake(existing.id())?
+            .filter(|wake| {
+                wake.kind == super::super::interaction_wake::KIND
+                    && wake.task_id == task.task_id
+                    && wake.room_id == session_id
+                    && wake.agent_id == agent_id
+            });
+        match wake {
+            Some(wake) if existing.view().is_some_and(|open| plain(open)) => {
+                self.owned
+                    .refresh_browser_region_request(session_id, existing.id(), request)?;
+                self.resume_browser_region_cards();
+                Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "interaction_id": existing.id(),
+                        "registration_id": wake.registration_id,
+                        "updated": true,
+                    }),
+                }))
+            }
+            _ => {
+                if let Err(error) = self.close_unavailable_browser_region_card(
+                    session_id,
+                    existing.id(),
+                    "Replaced by the agent's newer card on the same page".into(),
+                ) {
+                    tracing::warn!(interaction_id=%existing.id(), error=%crate::secret_redaction::redact_secrets(&error.to_string()), "older card on the Tab stays open");
+                }
+                Ok(None)
+            }
+        }
+    }
+
     /// The wake a card follows must be this agent's own live source, so the card
     /// can never be closed by someone else's event or wait for one that is over.
     fn card_condition_wake(
@@ -337,25 +408,24 @@ impl KernelRuntimeState {
         };
         let interaction_id =
             keyed_id.unwrap_or_else(|| format!("interaction-{:032x}", rand::random::<u128>()));
-        let view = if let Some(view) = args.view.as_ref() {
+        let (view, anchor_hidden) = if let Some(view) = args.view.as_ref() {
             if let Some(run) = provider_run {
                 self.user_domain_agent_authority(run)?;
             }
-            Some(
-                self.resolve_popup_view(
-                    session_id,
-                    agent_id,
-                    &interaction_id,
-                    &view.browser_region,
-                )
-                .await?,
-            )
+            let (view, hidden) = self
+                .resolve_popup_view_seen(session_id, agent_id, &interaction_id, &view.browser_region)
+                .await?;
+            (Some(view), hidden)
         } else {
-            None
+            (None, false)
         };
         // Row 655: the agent is told the truth when the element it named cannot be seen yet (a challenge frame
         // that opens only after a checkbox): it must not tell the person the step is open.
-        let page_note = hidden_region_note(view.as_ref());
+        let page_note = if anchor_hidden {
+            Some(HIDDEN_REGION_NOTE)
+        } else {
+            hidden_region_note(view.as_ref())
+        };
         let mut interaction = crate::session::RuntimeInteraction::new(
             interaction_id,
             agent_id,
@@ -380,6 +450,12 @@ impl KernelRuntimeState {
             interaction = interaction.with_view(view);
         }
         if let Some(task) = asking_task {
+            if let Some(mut updated) = self.one_card_per_tab(session_id, agent_id, &task, &interaction)? {
+                if let Some(note) = page_note {
+                    updated.payload["page_note"] = note.into();
+                }
+                return Ok(updated);
+            }
             let interaction_id = interaction.id().to_owned();
             let mut result = self.arm_interaction_wake_for_task(&task, interaction)?;
             if let Some(note) = page_note {

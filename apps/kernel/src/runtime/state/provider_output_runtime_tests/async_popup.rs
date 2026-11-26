@@ -1900,3 +1900,63 @@ fn row574_a_plain_browser_card_gets_a_done_choice_and_a_self_closing_one_does_no
         "a question without a page gets no Done"
     );
 }
+
+/// Row 655 (one card per Tab, Mac 11-26): the agent's second plain card on the same Tab in the same turn updates the
+/// open card (same id, same wait) instead of raising a second one.
+#[tokio::test]
+async fn row655_a_second_card_on_the_same_tab_updates_the_open_card() {
+    let f = fixture("async-popup-one-card-per-tab", true).await;
+    f.begin(&f.prompt_id);
+    let first = ask(&f, serde_json::json!({})).await;
+    let id = first["interaction_id"].as_str().unwrap().to_owned();
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(&id).unwrap();
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: browser_region(),
+        }));
+        sessions.restore_session(session);
+    }
+    let agent = f.runtime.owned.session_store.get_session(&f.room).unwrap().active_interactions()[0]
+        .agent_id()
+        .unwrap()
+        .to_owned();
+    let task = f.runtime.asking_task_for_turn(&f.room, &agent).unwrap();
+    let mut moved = browser_region();
+    moved.reference = "backend:43".into();
+    let request = crate::session::RuntimeInteraction::new(
+        "interaction-second".to_owned(),
+        &agent,
+        crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Info,
+        None,
+        "Now type the code from the email".to_owned(),
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "cancel",
+            "Cancel",
+            "cancel",
+            None,
+        )],
+        None,
+        None,
+        None,
+    )
+    .with_view(crate::session::RuntimeInteractionView {
+        browser_region: moved.clone(),
+    });
+    let updated = f
+        .runtime
+        .one_card_per_tab(&f.room, &agent, &task, &request)
+        .unwrap()
+        .expect("the open card on the Tab is updated");
+    assert_eq!(updated.payload["interaction_id"], id.as_str());
+    assert_eq!(updated.payload["updated"], true);
+    assert_eq!(updated.payload["registration_id"], first["registration_id"]);
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1, "one card for the Tab");
+    let card = &session.active_interactions()[0];
+    assert_eq!(card.id(), id);
+    assert_eq!(card.message(), "Now type the code from the email");
+    assert_eq!(card.view().unwrap().browser_region.reference, "backend:43");
+}

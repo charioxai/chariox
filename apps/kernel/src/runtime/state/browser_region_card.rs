@@ -8,6 +8,9 @@ use crate::transport::runtime_tools::RequestPopupBrowserRegionArgs;
 enum RegionObservation {
     Present {
         region: Box<RuntimeInteractionBrowserRegion>,
+        /// Row 655: the named element itself has no visible area; the region shows its widget's visible part.
+        #[serde(default)]
+        anchor_hidden: bool,
     },
     ConditionMet {
         reason: String,
@@ -236,7 +239,7 @@ impl KernelRuntimeState {
         match serde_json::from_value(result)
             .map_err(|_| region_error("browser region observation is invalid"))?
         {
-            RegionObservation::Present { region } => Ok(RuntimeInteractionView {
+            RegionObservation::Present { region, .. } => Ok(RuntimeInteractionView {
                 browser_region: *region,
             }),
             RegionObservation::ConditionMet { reason }
@@ -261,13 +264,33 @@ impl KernelRuntimeState {
         card_id: &str,
         target: &RequestPopupBrowserRegionArgs,
     ) -> Result<RuntimeInteractionView, DaemonError> {
+        Ok(self
+            .resolve_popup_view_seen(session_id, agent_id, card_id, target)
+            .await?
+            .0)
+    }
+
+    /// The card's view and whether the named element itself is hidden (row 655: the agent is told so).
+    pub(super) async fn resolve_popup_view_seen(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        card_id: &str,
+        target: &RequestPopupBrowserRegionArgs,
+    ) -> Result<(RuntimeInteractionView, bool), DaemonError> {
         match self
             .observe_card_region(session_id, agent_id, card_id, target, None, false)
             .await?
         {
-            RegionObservation::Present { region } => Ok(RuntimeInteractionView {
-                browser_region: *region,
-            }),
+            RegionObservation::Present {
+                region,
+                anchor_hidden,
+            } => Ok((
+                RuntimeInteractionView {
+                    browser_region: *region,
+                },
+                anchor_hidden,
+            )),
             RegionObservation::ConditionMet { .. } => Err(region_error(
                 "browser element is no longer current; take a fresh snapshot",
             )),
@@ -358,7 +381,7 @@ impl KernelRuntimeState {
                 )
                 .await
             {
-                Ok(RegionObservation::Present { region }) => {
+                Ok(RegionObservation::Present { region, .. }) => {
                     failures.observed();
                     if let Err(error) = self
                         .owned
@@ -426,7 +449,7 @@ impl KernelRuntimeState {
                 .observe_card_region(room, agent, id, &target, Some(previous), app_confirmation)
                 .await;
             match result {
-                Ok(RegionObservation::Present { region }) => {
+                Ok(RegionObservation::Present { region, .. }) => {
                     failures.observed();
                     if let Err(error) = self
                         .owned
@@ -670,6 +693,33 @@ impl KernelRuntimeOwnedState {
                 browser_region: region,
             },
         );
+        sessions.restore_session(session);
+        drop(sessions);
+        activity.record();
+        self.session_snapshot(room)?;
+        self.terminal_stream.notify_terminal_projection_change(room);
+        Ok(())
+    }
+
+    /// Row 655 (one card per Tab): the agent's newer request for the Tab its open card shows updates that card.
+    pub(super) fn refresh_browser_region_request(
+        &self,
+        room: &str,
+        id: &str,
+        request: &crate::session::RuntimeInteraction,
+    ) -> Result<(), DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| region_error("interaction store unavailable"))?;
+        let activity = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(room)?;
+        if !session.active_interactions().iter().any(|card| card.id() == id) {
+            return Err(region_error("browser card is no longer open"));
+        }
+        session.refresh_active_interaction(id, request);
         sessions.restore_session(session);
         drop(sessions);
         activity.record();

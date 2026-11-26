@@ -1257,6 +1257,16 @@ impl RuntimeSession {
         true
     }
 
+    pub(crate) fn refresh_active_interaction(&mut self, id: &str, request: &RuntimeInteraction) {
+        if let Some(interaction) = self
+            .active_interactions
+            .iter_mut()
+            .find(|interaction| interaction.id() == id)
+        {
+            *interaction = interaction.clone().refreshed_from(request);
+        }
+    }
+
     pub(crate) fn update_active_interaction_view(
         &mut self,
         id: &str,
