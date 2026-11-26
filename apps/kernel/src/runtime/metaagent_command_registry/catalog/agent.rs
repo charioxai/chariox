@@ -46,6 +46,20 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         description: "Without a Room ID, list the owner's open kernel decisions with their IDs, kinds, ages in milliseconds, and requesters when known. With a Room ID, list a page of that Room's pending cards, their text, choices, and whether your current authority can answer; when next_after is set, pass it as --after to continue. Use `agent answer <interaction> <choice|text> --room <room-id>` for answerable Room cards. Secrets, Vault unlock, passkeys, payment and owner verification stay owner-only. Guests cannot inspect the kernel decision list or other Rooms.",
     },
     MetaCommandDoc {
+        name: "room card",
+        aliases: &[],
+        usage: "room card <card-id> [room-id]",
+        examples: &["room card interaction-3f94ddcb", "room card interaction-3f94ddcb room-2"],
+        tags: &["room", "inspect"],
+        intents: &["see why a card does not take the person's input", "read a browser card's binding and control"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "the owner's rooms on this kernel",
+        routed: true,
+        description: "Read why a pending card is not taking the person's input. For a browser card it returns the Tab, generation and document the card is bound to, what the browser shows for that Tab now, who holds the Tab's input, the last input the kernel took and the last it refused with the reason, and findings in plain words. Pass the card id from `room cards`; the room defaults to your own. Names, ids and times only: no page content or typed text.",
+    },
+    MetaCommandDoc {
         name: "session overview",
         aliases: &["context", "agent list", "workflow list"],
         usage: "Use chariox.meta.session_overview for current session state.",
@@ -208,7 +222,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "agents below the caller; peers of the same owner with no more authority than the caller",
         routed: true,
-        description: "Stop the active turn of an agent below you, at any depth, and keep the agent. Its finish arrives as a child_finished event. A peer (an ordinary agent of this or another room of the same owner, never one above you) can be stopped too when its permission level and mode are at or below yours; --room names its room.",
+        description: "Stop the active turn of an agent below you, at any depth, and keep the agent. Its finish arrives as a child_finished event. A peer (another of the owner's agents in this or another room, a sub-agent included, never one above you) can be stopped too when its permission level and mode are at or below yours; --room names its room.",
     },
     MetaCommandDoc {
         name: "agent steer",
@@ -229,7 +243,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "agents below the caller; peers of the same owner with no more authority than the caller",
         routed: true,
-        description: "Send an urgent message to an agent: it steers the agent's running turn, or starts a turn if the agent is idle. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (an ordinary agent of this or another room, on this or another kernel, of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. With --reply-requested, the answer comes from a turn started by the request. When the request joins another turn, your inbox records why there is no answer. This is chariox.send_agent_message with urgent set.",
+        description: "Send an urgent message to an agent: it steers the agent's running turn, or starts a turn if the agent is idle. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (another of the owner's agents in this or another room of this kernel, sub-agents included, or an ordinary agent on another kernel of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. With --reply-requested, the answer comes from a turn started by the request. When the request joins another turn, your inbox records why there is no answer. This is chariox.send_agent_message with urgent set.",
     },
     MetaCommandDoc {
         name: "agent message",

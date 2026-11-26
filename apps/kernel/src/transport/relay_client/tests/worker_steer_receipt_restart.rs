@@ -31,7 +31,6 @@ fn leased_prompt_submission_request(
         }),
         required_mcps: Vec::new(),
         remote_extension_manifest: Default::default(),
-        provider_launch_credential: None,
         native_skill_selections: Default::default(),
     }
 }

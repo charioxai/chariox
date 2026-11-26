@@ -280,17 +280,11 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     assert_eq!(
         updated
             .payload
-            .pointer("/WorkflowCodeArtifactUpdated/artifact/definition/workflow/alias")
+            .pointer("/WorkflowCodeArtifactUpdated/artifact/metadata/name")
             .and_then(serde_json::Value::as_str),
-        Some("meta_scripted_flow_updated")
+        Some("meta-flow")
     );
-    assert_eq!(
-        updated
-            .payload
-            .pointer("/WorkflowCodeArtifactUpdated/artifact/metadata/history/1/action")
-            .and_then(serde_json::Value::as_str),
-        Some("updated")
-    );
+    assert!(updated.payload.to_string().len() < 4_096);
     std::fs::remove_file(&schema_path)
         .expect("schema source file should be removable after artifact update");
 
@@ -312,37 +306,28 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
-    assert_eq!(
-        validated
-            .payload
-            .pointer("/WorkflowCodeValidated/result/definition/workflow/run_output_schema")
-            .and_then(serde_json::Value::as_str),
-        Some("final")
-    );
+    assert!(validated
+        .payload
+        .pointer("/WorkflowCodeValidated/result/definition")
+        .is_none());
+    assert!(validated
+        .payload
+        .pointer("/WorkflowCodeValidated/result/source_sha256")
+        .is_some_and(serde_json::Value::is_string));
 
-    let applied = router
-        .runtime_state
-        .dispatch_meta_runtime_tool_call_for_agent(
-            session.id(),
-            metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-            serde_json::json!({
-                "name": "meta-flow",
-                "provider_rebindings": [
-                    { "node": "planner", "provider": "dev-stub", "model": "default" }
-                ]
-            }),
-        )
-        .await
-        .expect("metaagent should apply saved workflow-code artifact");
+    let applied = apply_with_definition_and_session(
+        &router,
+        session.id(),
+        metaagent.id(),
+        serde_json::json!({
+            "name": "meta-flow",
+            "provider_rebindings": [
+                { "node": "planner", "provider": "dev-stub", "model": "default" }
+            ]
+        }),
+    )
+    .await;
     assert!(applied.ok, "{:?}", applied.payload);
-    assert_eq!(
-        applied
-            .payload
-            .pointer("/WorkflowCodeApplied/result/compile/definition/nodes/0/agent/provider")
-            .and_then(serde_json::Value::as_str),
-        Some("dev-stub")
-    );
     assert_eq!(
         applied
             .payload

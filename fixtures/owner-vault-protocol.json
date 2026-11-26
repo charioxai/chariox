@@ -1,6 +1,6 @@
 {
   "local": 1015,
-  "peer": 452,
+  "peer": 454,
   "requests": [
     {
       "OwnerVault": {
@@ -69,6 +69,17 @@
           "value_kind": "secret"
         }
       }
+    },
+    {
+      "OwnerVault": {
+        "action": "run_privileged",
+        "id": "credential-1",
+        "argv": [
+          "whoami"
+        ],
+        "machine": "this",
+        "timeout_seconds": 30
+      }
     }
   ],
   "responses": [
@@ -108,6 +119,23 @@
         "result": {
           "action": "deleted",
           "id": "entry"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "privileged_run",
+          "id": "credential-1",
+          "outcome": {
+            "status": "exited",
+            "exit_code": 0,
+            "stdout": "root\n",
+            "stderr": "",
+            "machine": "kernel-1",
+            "ran_as": "root",
+            "truncated": false
+          }
         }
       }
     }

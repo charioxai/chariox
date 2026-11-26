@@ -138,12 +138,7 @@ impl KernelRuntimeState {
         } = subject;
         let agent = agent.as_deref();
         let request_id = &request_id;
-        // The owner authorized this agent's task with /sudo; its remote work needs no second decision.
-        if let Some(agent) = agent {
-            if self.sudo_task_authorizes_agent(&room, agent).await {
-                return Ok(Approval::Owner);
-            }
-        }
+        // The one rentals toggle decides (row 405): no /sudo shortcut around its single card.
         if self
             .owned
             .durable_state_store

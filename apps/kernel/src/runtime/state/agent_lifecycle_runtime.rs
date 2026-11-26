@@ -554,6 +554,16 @@ impl KernelRuntimeOwnedState {
                 };
             }
         }
+        if !cancelled {
+            // Row 554: what would strand the agent gets a wake first; the turn end is never refused.
+            let answer = super::agent_task_projection::task_public_outputs(
+                &entries,
+                prompt.id(),
+                Some(answer_run),
+            )
+            .concat();
+            self.arm_wakes_at_turn_end(room, agent, prompt.id(), run, &answer);
+        }
         match self
             .durable_state_store
             .agent_lifecycle(Operation::Settle {
@@ -800,6 +810,26 @@ impl KernelRuntimeState {
         );
         // Only an urgent message acts on its recipient's turn; any other waits for the next one.
         if !event.urgent {
+            // Row 554: an idle recipient with nothing armed has no next turn coming: this message starts it.
+            if self
+                .held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
+                .is_none()
+                && self
+                    .owned
+                    .release_queued_for_stranded(target_room, target.id())?
+            {
+                self.spawn_agent_inbox_delivery(
+                    target_room.to_owned(),
+                    target.id().to_owned(),
+                    event.sequence,
+                );
+                self.publish_task_change(target_room);
+                let name = target.alias().unwrap_or(target.agent_ref());
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({"status":"starting","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::started_note(name)}),
+                });
+            }
             self.publish_task_change(target_room);
             let mut payload = serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))});
             if let Some(note) =

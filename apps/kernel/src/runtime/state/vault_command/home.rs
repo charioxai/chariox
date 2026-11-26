@@ -46,6 +46,7 @@ impl KernelRuntimeState {
         request_id: &str,
         host: &str,
         use_binding: &crate::config::VaultUseBinding,
+        env_uses: &[(String, crate::config::VaultUseTarget)],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
         let response = self
             .send_vault_request_to_home(
@@ -56,6 +57,7 @@ impl KernelRuntimeState {
                         request_id: request_id.to_string(),
                         host: host.to_string(),
                         use_binding: use_binding.clone(),
+                        env_uses: env_uses.to_vec(),
                     },
                 },
             )
@@ -177,6 +179,7 @@ impl KernelRuntimeState {
                     request_id,
                     host,
                     use_binding,
+                    env_uses,
                 } => {
                     check_capture_request(&request_id, None)?;
                     let committed = state
@@ -186,6 +189,7 @@ impl KernelRuntimeState {
                             &request_id,
                             &host,
                             &use_binding,
+                            &env_uses,
                         )
                         .await?;
                     Ok(HomeVaultCaptureAnswer::Prepared { committed })

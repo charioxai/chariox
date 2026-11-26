@@ -162,12 +162,14 @@ async function confirmationReference(host, scope, command) {
   return ref;
 }
 
-// After the kernel restarted, a plain card keeps its Tab (the browser brings it back) but
-// its document, generation and element are new. The card is bound again to the Tab's whole
-// page, so the person sees the page fresh and finishes it there. A card that waits for a
-// response, page text or a verification never rebinds: its proof belongs to one document.
+// After the kernel restarted, or after the card's own Tab navigated, a card keeps its Tab but its
+// document, generation and element are new. The card is bound again to the Tab's whole page, so the
+// person sees the page as it is now and finishes it there. A card that waits for page text keeps
+// waiting for it on the new page (the person's step goes on across navigations); a verification
+// never rebinds: its proof belongs to one document.
 async function rebindCardRegion(host, command, scope, key) {
-  if (!key || command.verification !== undefined || command.done_text !== undefined || command.app_confirmation === true || command.release === true) throw new UserDomainRefusal('stale_reference');
+  if (!key || command.verification !== undefined || command.app_confirmation === true || command.release === true) throw new UserDomainRefusal('stale_reference');
+  if (command.done_text !== undefined && (typeof command.done_text !== 'string' || !command.done_text.trim() || command.done_text.length > 200)) throw new UserDomainRefusal('stale_reference');
   const tab = await host.displayTarget({ tab_id: command.tab_id, generation: host.generation });
   const connection = await host.browser.ensureConnection();
   const sessionId = await host.browser.ensureTargetSession(connection, tab.target_id);
@@ -178,7 +180,7 @@ async function rebindCardRegion(host, command, scope, key) {
   const ref = `backend:${node.backendNodeId}`;
   forgetCardAnchor(host, key);
   rememberCardReferences(host, scope, tab, { dom_nodes: [{ document_index: 0, node_ref: ref }] });
-  return resolveCardRegion(host, { op: command.op, card_id: command.card_id, tab_id: command.tab_id, ref }, scope);
+  return resolveCardRegion(host, { op: command.op, card_id: command.card_id, tab_id: command.tab_id, ref, ...(command.done_text !== undefined ? { done_text: command.done_text } : {}) }, scope);
 }
 
 export async function resolveCardRegion(host, command, scope, signal) {
@@ -200,7 +202,8 @@ export async function resolveCardRegion(host, command, scope, signal) {
   // A card that waits for a response or for page text ends only when that happens: losing its element first is not completion.
   const gone = async reason => {
     if (anchor?.verification?.receipt?.result === 'accepted') return completion();
-    // After a restart the anchor is gone but the command still names the verification: its proof is lost, which is unavailable, never completion.
+    // After a restart the anchor is gone but the command still names the verification: its proof is lost, which is reported as
+    // unavailable (never completion). The kernel keeps the person's card pending and binds it again without the proof.
     if (anchor?.verification || command.verification !== undefined || command.done_text !== undefined) return {state:'unavailable',reason};
     return {state:'condition_met',reason};
   };
@@ -226,6 +229,12 @@ export async function resolveCardRegion(host, command, scope, signal) {
   const browser = host.browser, connection = await browser.ensureConnection();
   const sessionId = await browser.ensureTargetSession(connection, tab.target_id);
   const current = async () => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree?.frame;
+  // A page that navigates takes its element with it: the element is gone because the document changed, which is a navigation
+  // of the card's Tab (the person's step goes on), not the element being removed from the page the card was raised on.
+  const goneElement = async () => {
+    const now = await current().catch(() => null);
+    return gone(now?.loaderId !== undefined && now.loaderId !== remembered.document_id ? 'Browser document changed' : 'Browser element disappeared');
+  };
   const frame = await current();
   if (frame?.loaderId !== remembered.document_id) return gone('Browser document changed');
   if (key) {
@@ -247,7 +256,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     if (anchor && (anchor.verification || anchor.doneText !== null) && !anchor.elementResolver) {
       const resolved=await connection.send('DOM.resolveNode',{backendNodeId:Number(command.ref.slice(8)),executionContextId:world.contextId},sessionId);
       objectId=resolved.object?.objectId;
-      if(!objectId)return gone('Browser element disappeared');
+      if(!objectId)return goneElement();
       const tracked = await connection.send('Runtime.callFunctionOn', {objectId,functionDeclaration:String(trackCardElement),returnByValue:false},sessionId);
       if (tracked.exceptionDetails || !tracked.result?.objectId) throw new Error('Browser card element tracking could not start');
       anchor.elementResolver = tracked.result.objectId;
@@ -259,23 +268,23 @@ export async function resolveCardRegion(host, command, scope, signal) {
       if (objectId) await connection.send('Runtime.releaseObject',{objectId},sessionId);
       objectId = undefined;
       const resolved = await connection.send('Runtime.callFunctionOn', {objectId:anchor.elementResolver,functionDeclaration:'function(){return this()}',returnByValue:false},sessionId);
-      if (resolved.exceptionDetails) return gone('Browser element disappeared');
+      if (resolved.exceptionDetails) return goneElement();
       objectId = resolved.result?.objectId;
-      if (!objectId) return gone('Browser element disappeared');
+      if (!objectId) return goneElement();
     }
     if (remembered.children.has(command.ref)) {
       box = await childFrameBox(browser, connection, sessionId, tab, command);
     } else {
       const resolved = objectId ? {object:{objectId}} : await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
       objectId = resolved.object?.objectId;
-      if (!objectId) return gone('Browser element disappeared');
+      if (!objectId) return goneElement();
       const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }, { value: command.done_text ?? null }, ...(anchor?.elementResolver ? [{ objectId: anchor.elementResolver }] : [])], returnByValue: true, awaitPromise: true }, sessionId);
       if (signal?.aborted) throw new Error('Browser card observation cancelled');
       if (reply.exceptionDetails) throw new Error('Browser card geometry could not be read');
       box = reply.result?.value;
     }
     if ((await current())?.loaderId !== remembered.document_id) return gone('Browser document changed');
-    if (box === null) return gone('Browser element disappeared');
+    if (box === null) return goneElement();
     if (box.done === true) return { state: 'condition_met', reason: 'The page shows what the person was asked to reach' };
     if (!box || ![box.rect?.x, box.rect?.y, box.rect?.width, box.rect?.height, box.viewport_width, box.viewport_height].every(v => Number.isSafeInteger(v) && v >= 0)) throw new Error('Invalid browser card geometry');
     // Only the site origin is projected: URLs can contain userinfo and secret query parameters.
@@ -286,7 +295,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     if (anchor) anchor.region = region;
     return {state:'present',region};
   } catch (error) {
-    if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return gone('Browser element disappeared');
+    if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return goneElement();
     if (/Execution context was destroyed|Cannot find context with specified id/.test(error?.message ?? '')) return gone('Browser document changed');
     if (error instanceof BrowserSnapshotError && ['stale_document_reference', 'stale_element_reference'].includes(error.code)) return gone('Browser document changed');
     throw error;

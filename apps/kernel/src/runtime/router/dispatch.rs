@@ -276,6 +276,14 @@ impl CommandRouter {
         }
         if let Err(error) = self
             .runtime_state
+            .ensure_kernel_restart_allowed(&command, &request)
+        {
+            let result = Err(error);
+            log_command_completed(&command_trace, &result);
+            return result;
+        }
+        if let Err(error) = self
+            .runtime_state
             .ensure_vault_change_allowed(&command, &request)
         {
             let result = Err(error);

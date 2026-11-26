@@ -3509,7 +3509,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
 #[tokio::test]
 async fn a02_r6_interrupted_delivery_retries_without_an_owner_interaction() {
     use crate::durable_state::agent_lifecycle::{
-        occurrence, Operation, Outcome, DELIVERY_TIMEOUT_MS,
+        occurrence, InboxEvent, Operation, Outcome, DELIVERY_TIMEOUT_MS,
     };
     let worktree = crate::test_support::TestWorktree::new("am2-r6-late-receipt");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -3570,9 +3570,15 @@ async fn a02_r6_interrupted_delivery_retries_without_an_owner_interaction() {
     );
     runtime.sweep_agent_lifecycle().await.unwrap();
     runtime.task_work_settled().await;
+    // Row 554: the agent is idle with nothing armed, so the message starts its turn and every
+    // sweep tries again until the provider takes it: only the time of the last try moves.
+    let untimed = |mut events: Vec<InboxEvent>| {
+        events.iter_mut().for_each(|e| e.attempted_at_ms = None);
+        events
+    };
     assert_eq!(
-        store.agent_inbox(session.id(), agent.id(), 0).unwrap(),
-        retry
+        untimed(store.agent_inbox(session.id(), agent.id(), 0).unwrap()),
+        untimed(retry.clone())
     );
     assert!(
         store

@@ -16,6 +16,11 @@ async fn auth(f: &Fixture) -> String {
 }
 
 fn mcp_payload(result: crate::transport::runtime_tools::RuntimeToolResult) -> Value {
+    mcp_page(result).0
+}
+
+/// The page and the size of the text the agent receives.
+fn mcp_page(result: crate::transport::runtime_tools::RuntimeToolResult) -> (Value, usize) {
     assert!(result.ok, "{}", result.payload);
     let (content, _) = crate::transport::mcp_server::runtime_tool_content_for_test(result.payload);
     let text = content[0]["text"].as_str().unwrap();
@@ -23,7 +28,7 @@ fn mcp_payload(result: crate::transport::runtime_tools::RuntimeToolResult) -> Va
         text.len() < 64 * 1024 && !text.contains("Result exceeded the 64 KiB MCP text limit"),
         "MCP must return a complete page"
     );
-    serde_json::from_str(text).unwrap()
+    (serde_json::from_str(text).unwrap(), text.len())
 }
 
 #[tokio::test]
@@ -33,7 +38,7 @@ async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
     let token = auth(&f).await;
     let mut agents = vec![f.agent.clone()];
     let now = crate::session::unix_epoch_ms();
-    for i in 1..60 {
+    for i in 1..70 {
         let mut app = f.app.lock().await;
         let peer = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -72,12 +77,14 @@ async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
     }
 
     let page = |arguments| async {
-        mcp_payload(
+        let (page, bytes) = mcp_page(
             f.runtime
                 .dispatch_authenticated_runtime_tool_call(&token, AGENTS, arguments)
                 .await
                 .unwrap(),
-        )
+        );
+        assert!(bytes < 16 * 1024, "page of {bytes} bytes");
+        page
     };
 
     let first = page(json!({})).await;
@@ -89,11 +96,32 @@ async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
         let rows = current["agents"].as_array().unwrap();
         assert!(!rows.is_empty());
         for row in rows {
-            assert!(row["state"].is_string());
-            assert!(row["queued_prompt_count"].is_number());
+            let mut fields: Vec<_> = row
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            fields.sort_unstable();
+            assert_eq!(
+                fields,
+                [
+                    "alias",
+                    "execution_mode",
+                    "has_active_prompt",
+                    "id",
+                    "model",
+                    "parent_agent_id",
+                    "permission_level",
+                    "provider",
+                    "queued_prompt_count",
+                    "state",
+                    "waiting_on"
+                ]
+            );
             roster.push(row["id"].as_str().unwrap().to_string());
         }
-        assert!(roster.len() <= 60, "cursor advanced");
+        assert!(roster.len() <= 70, "cursor advanced");
         let cursor = &current["next_agents_cursor"];
         if cursor.is_null() {
             break;
@@ -115,6 +143,35 @@ async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
     agents.sort();
     assert_eq!(roster, agents);
 
+    // The listing is compact; one agent's full detail stays a lookup away.
+    let detail = mcp_payload(
+        f.runtime
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+                json!({"agent": "@peer-7"}),
+            )
+            .await
+            .unwrap(),
+    );
+    let detail = detail["agent"].as_object().unwrap();
+    for field in [
+        "agent_ref",
+        "address",
+        "account_profile",
+        "extensions",
+        "location",
+        "liveness",
+        "execution_mode",
+        "permission_level",
+        "failure",
+    ] {
+        assert!(
+            detail.contains_key(field),
+            "{field} missing from the detail"
+        );
+    }
+
     let mut args = json!({"include_history": true});
     let mut tasks = Vec::new();
     loop {
@@ -125,16 +182,16 @@ async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
             rows.iter()
                 .map(|row| row["task_id"].as_str().unwrap().to_string()),
         );
-        assert!(tasks.len() <= 178, "cursor advanced");
+        assert!(tasks.len() <= 208, "cursor advanced");
         let cursor = &current["next_tasks_cursor"];
         if cursor.is_null() {
             break;
         }
         args = json!({"include_history": true, "tasks_cursor": cursor});
     }
-    assert_eq!(tasks.first().unwrap(), "past-task-59-2");
+    assert_eq!(tasks.first().unwrap(), "past-task-69-2");
     assert_eq!(tasks.last().unwrap(), &primary.task_id);
-    assert_eq!(tasks.len(), 178);
+    assert_eq!(tasks.len(), 208);
 }
 
 #[tokio::test]

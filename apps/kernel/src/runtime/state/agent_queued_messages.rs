@@ -16,6 +16,11 @@ pub(crate) fn queued_note(agent: &str) -> String {
     format!("queued for {agent}'s next turn; send with urgent: true to start or steer now")
 }
 
+/// What the sender is told when the recipient was idle with nothing armed and the message started its turn.
+pub(crate) fn started_note(agent: &str) -> String {
+    format!("{agent} was idle with nothing armed, so this message starts its turn now; no urgent flag needed")
+}
+
 impl KernelRuntimeOwnedState {
     /// The room's queued messages as the person's queue shows them.
     pub(super) fn queued_agent_messages_of(

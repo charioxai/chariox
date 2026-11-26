@@ -1390,7 +1390,8 @@ export class KernelBrowserHost {
     if (command.op === "snapshot") {
       const snapshot = await this.browser.snapshot(binding);
       rememberCardReferences(this, scope, tab, snapshot);
-      return this.observe({ generation: this.generation, snapshot }, tab, scope);
+      const page = this.pageSize(tab.tab_id);
+      return this.observe({ generation: this.generation, snapshot, page_size: { css_width: page.width, css_height: page.height } }, tab, scope);
     }
     if (command.op === "input") {
       if (app) this.browser.appTabs.noteActivity(tab.target_id);

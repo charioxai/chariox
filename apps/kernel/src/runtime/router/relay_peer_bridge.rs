@@ -538,9 +538,6 @@ impl CommandRouter {
         provider_session_id: Option<String>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         relay_peer_runtime::launch_relay_leased_native_provider_run(
             &self.runtime_state,
@@ -554,7 +551,6 @@ impl CommandRouter {
             provider_session_id,
             required_mcps,
             remote_extension_manifest,
-            provider_launch_credential,
         )
         .await
     }
@@ -617,9 +613,6 @@ impl CommandRouter {
         git_context: Option<crate::transport::relay_peer::RemoteGitTurnContext>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
         native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         relay_peer_runtime::submit_relay_leased_prompt(
@@ -634,7 +627,6 @@ impl CommandRouter {
             git_context,
             required_mcps,
             remote_extension_manifest,
-            provider_launch_credential,
             native_skill_selections,
         )
         .await

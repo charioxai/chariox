@@ -1131,6 +1131,8 @@ fn access_request_error(code: &str, message: String) -> DaemonError {
 
 mod cover;
 mod delegate;
+#[cfg(test)]
+mod owner_authority_tests;
 mod policy;
 pub(crate) mod reach;
 #[cfg(test)]

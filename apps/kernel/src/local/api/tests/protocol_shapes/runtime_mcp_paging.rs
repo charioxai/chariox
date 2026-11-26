@@ -9,7 +9,7 @@ fn runtime_mcp_paging_accepts_continuation_arguments() {
     let bytes = include_bytes!("runtime-mcp-paging-1014.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "cd50fd329fc717ad53b5f92c0b0239ddab5f1b4ebb13f9c703cace724aac387a",
+        "6d5e8d3db35ac9f895aaafb9fcccf9d296b807f46b20037ab84dd1dbeb3bfc8d",
     );
     let fixture: Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

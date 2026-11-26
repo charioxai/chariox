@@ -1177,6 +1177,40 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         .credential_vault
         .path
         .clone();
+    // A capture on a leased worker whose env names an entry the home Vault does not hold is
+    // refused by the home before it asks for an unlock: nobody answers a card here, so a capture
+    // that reached the unlock would wait for one.
+    let typo = tokio::time::timeout(
+        Duration::from_secs(20),
+        worker_router
+            .runtime_state()
+            .dispatch_authenticated_runtime_tool_call(
+                &worker_token,
+                "chariox.vault.capture_command",
+                serde_json::json!({
+                    "request_id": "slice-capture-env-typo",
+                    "argv": ["/bin/true"],
+                    "host": "slice.example.com",
+                    "origin": "https://slice.example.com",
+                    "env": {"TOKEN": "not-registered"},
+                    "use_binding": binding,
+                }),
+            ),
+    )
+    .await
+    .expect("an unknown env entry is refused without waiting for an unlock")
+    .expect_err("the home Vault holds no such credential");
+    assert!(
+        typo.to_string()
+            .contains("unknown credential `not-registered`"),
+        "{typo}"
+    );
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(&home_vault_path)
+            .expect("the home Vault status reads")
+            .unlocked,
+        "the refusal asked for no unlock"
+    );
     // "Just this once": a capture that fails on the worker keeps that unlock, and its retry
     // stores under it; the Vault locks only after the store.
     crate::secret::unlock_chariox_encrypted_vault(
@@ -1303,6 +1337,63 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         retried.payload["credential_id"], captured_id,
         "a retry names the entry the home already committed, without running again: {:?}",
         retried.payload
+    );
+    // A retry of a capture that ran with an existing entry returns what the home committed, even
+    // after that entry is gone: nothing is validated against it, read or run again.
+    let env_input = tool(
+        "chariox.vault.capture_command",
+        serde_json::json!({
+            "request_id": "slice-env-input",
+            "argv": ["printf", "slice-env-input-value"],
+            "host": "slice.example.com",
+            "use_binding": binding,
+        }),
+    )
+    .await;
+    assert!(env_input.ok, "{:?}", env_input.payload);
+    let env_input_id = env_input.payload["credential_id"]
+        .as_str()
+        .expect("input handle")
+        .to_string();
+    let with_env = |argv: serde_json::Value| {
+        serde_json::json!({
+            "request_id": "slice-env-output",
+            "argv": argv,
+            "host": "slice.example.com",
+            "origin": "https://slice.example.com",
+            "env": {"SLICE_TOKEN": env_input_id},
+            "use_binding": binding,
+        })
+    };
+    let env_output = tool(
+        "chariox.vault.capture_command",
+        with_env(serde_json::json!([
+            "sh",
+            "-c",
+            "printf 'derived-%s' \"$SLICE_TOKEN\""
+        ])),
+    )
+    .await;
+    assert!(env_output.ok, "{:?}", env_output.payload);
+    let env_output_id = env_output.payload["credential_id"]
+        .as_str()
+        .expect("output handle")
+        .to_string();
+    let removed_input = tool(
+        "chariox.vault.remove_capture",
+        serde_json::json!({ "credential_id": env_input_id }),
+    )
+    .await;
+    assert!(removed_input.ok, "{:?}", removed_input.payload);
+    let env_retry = tool(
+        "chariox.vault.capture_command",
+        with_env(serde_json::json!(["sh", "-c", "exit 1"])),
+    )
+    .await;
+    assert!(
+        env_retry.ok && env_retry.payload["credential_id"] == env_output_id.as_str(),
+        "the retry names the committed entry although its input is gone: {:?}",
+        env_retry.payload
     );
     let from_file = tool(
         "chariox.vault.capture_file",

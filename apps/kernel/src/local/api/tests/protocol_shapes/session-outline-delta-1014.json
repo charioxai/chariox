@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1015,
+  "local_protocol": 1016,
   "request": {
     "GetSessionHistoryOutline": {
       "session_id": "s",

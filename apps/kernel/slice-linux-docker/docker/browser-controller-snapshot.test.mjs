@@ -213,3 +213,22 @@ test('MP-11 browser inventory scrubs page fields while preserving protocol metad
   assert.equal(clean.downloads[0].download_id, 'same-value'); assert.equal(clean.downloads[0].state, 'done');
   assert.equal(clean.downloads[0].name, '[redacted]'); assert.equal(clean.downloads[0].path, '/work/[redacted]');
 });
+
+test("row 559/553: each DOM document reports its scroll offset so a bound converts to a click point", async () => {
+  const connection = {
+    async send(method) {
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "root", loaderId: "page-1" } } };
+      if (method === "DOMSnapshot.captureSnapshot") return {
+        strings: ["DIV", "#document"],
+        documents: [{ documentURL: -1, scrollOffsetX: 12, scrollOffsetY: 500,
+          nodes: { backendNodeId: [5], nodeType: [1], nodeName: [0], parentIndex: [-1], attributes: [[]] },
+          layout: { nodeIndex: [0], bounds: [[100, 800, 600, 48]] } }],
+      };
+      return { nodes: [] };
+    },
+  };
+  const snapshot = await captureBrowserSnapshot({ connection, sessionId: "page", targetId: "target", documentId: "page-1",
+    browserGeneration: 1, snapshotRevision: 1 });
+  assert.deepEqual(snapshot.dom_documents[0].scroll, { x: 12, y: 500 });
+  assert.deepEqual(snapshot.dom_nodes[0].bounds, { x: 100, y: 800, width: 600, height: 48 });
+});

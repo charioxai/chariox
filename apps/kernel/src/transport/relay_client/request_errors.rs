@@ -83,15 +83,6 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             relay_error(code, &error.to_string(), false)
         }
         DaemonError::LocalTransport { operation, .. }
-            if *operation == "launch remote provider without credential" =>
-        {
-            relay_error(
-                crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
-                &error.to_string(),
-                false,
-            )
-        }
-        DaemonError::LocalTransport { operation, .. }
             if *operation
                 == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION =>
         {

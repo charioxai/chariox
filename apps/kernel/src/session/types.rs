@@ -14,7 +14,7 @@ pub use super::runtime_interactions::{
     RuntimeInteraction, RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
     RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
     RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
-    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionSecretRequest,
     RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
     RuntimeInteractionView, RuntimeProviderLogin,
 };

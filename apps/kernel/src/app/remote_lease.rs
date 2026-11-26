@@ -943,14 +943,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(agent)
     }
 
-    /// The agent the worker runs a leased agent as; `None` once the lease is gone.
-    pub(crate) fn backing_agent_id(&self, leased_agent_id: &str) -> Option<String> {
-        self.app
-            .leased_agents
-            .get(leased_agent_id)
-            .map(|leased| leased.backing_agent_id.clone())
-    }
-
     /// The backing agent's id while its turn runs.
     pub(crate) fn backing_agent_running_turn(
         &mut self,

@@ -1417,9 +1417,9 @@ impl KernelRuntimeState {
         .await
     }
 
-    /// A leased agent's turn goes on in a new process the way the home launched the first: the
-    /// worker never starts it from its own login, and the home's credential is the one the ended
-    /// process was launched with. `None` for an agent that is not a leased agent's backing agent.
+    /// A leased agent's turn goes on in a new process launched from the worker's own tracked
+    /// copy of the account (row 577), with no help from the home. `None` for an agent that is
+    /// not a leased agent's backing agent.
     async fn relaunch_leased_turn_provider(
         &self,
         session_id: &str,
@@ -1436,13 +1436,8 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
-        let credential = self.owned.leased_launch_credentials.for_profile(
-            agent_id,
-            &request.provider,
-            &request.account_profile,
-        );
         let run = self
-            .launch_provider_for_remote_lease_detached(request, credential)
+            .launch_provider_for_remote_lease_detached(request)
             .await?;
         self.wait_until_provider_run_is_running(run.id()).await?;
         Ok(Some(run.id().to_string()))

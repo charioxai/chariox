@@ -22,7 +22,8 @@ pub(crate) async fn execute_user_config_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetUserConfig(request) => {
-            execute_get_user_config_request(config_projection, request).await
+            let response = execute_get_user_config_request(config_projection, request).await?;
+            Ok(settings_for_caller(command, response))
         }
         LocalDaemonRequest::GetUserConfigSchema(request) => {
             execute_get_user_config_schema_request(request).await
@@ -418,3 +419,59 @@ fn credential_vault_status(
 
 #[cfg(test)]
 mod tests;
+
+/// Row 405: an agent reads the owner's settings, never the sections that can carry secrets
+/// (relay, kernel access, secret link, Vault, web bot auth); those read as their defaults.
+fn settings_for_caller(
+    command: &KernelCommand,
+    response: LocalDaemonResponse,
+) -> LocalDaemonResponse {
+    let agent = matches!(
+        command.caller.connection_class,
+        Some(
+            crate::local::KernelConnectionClass::KernelAgent
+                | crate::local::KernelConnectionClass::ExternalAgent
+        )
+    );
+    match response {
+        LocalDaemonResponse::UserConfig { path, mut config } if agent => {
+            config.relay = Default::default();
+            config.kernel_access = Default::default();
+            config.secret_link = Default::default();
+            config.credential_vault = Default::default();
+            config.web_bot_auth = Default::default();
+            LocalDaemonResponse::UserConfig { path, config }
+        }
+        response => response,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn an_agent_reads_settings_without_the_secret_sections() {
+    let mut config = crate::config::CharioxUserConfig::default();
+    config.relay.url = Some("https://relay.example".into());
+    let mut command = KernelCommand::from_local_request(
+        "c",
+        None,
+        None,
+        &LocalDaemonRequest::GetUserConfig(GetUserConfigRequest),
+    );
+    let response = || LocalDaemonResponse::UserConfig {
+        path: "p".into(),
+        config: config.clone(),
+    };
+    let LocalDaemonResponse::UserConfig { config: person, .. } =
+        settings_for_caller(&command, response())
+    else {
+        panic!("config")
+    };
+    assert_eq!(person.relay.url.as_deref(), Some("https://relay.example"));
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::KernelAgent);
+    let LocalDaemonResponse::UserConfig { config: agent, .. } =
+        settings_for_caller(&command, response())
+    else {
+        panic!("config")
+    };
+    assert_eq!(agent.relay.url, None);
+}

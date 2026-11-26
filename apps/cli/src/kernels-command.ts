@@ -74,6 +74,14 @@ export async function withKernel<T>(
   options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
   use: (send: SendRequest) => Promise<T>,
 ): Promise<T> {
+  // An agent's own shell: the kernel gave its run a credential for the kernel's own endpoint
+  // (CHARIOX_AGENT_CLI_TOKEN + CHARIOX_KERNEL_URL). It comes first, so the agent needs no access
+  // grant; the kernel's own gates then answer for what an agent may not do. An explicit --socket or
+  // --kernel is a different target and keeps the grant socket.
+  if (options.socket === undefined && options.kernel === undefined && agentCredentialInEnvironment()) {
+    const client = new LocalIpcClient(defaultKernelEndpoint(), localAgentClientOptions(options.commandId))
+    try { return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds)) } finally { await client.close() }
+  }
   if (options.kernel !== undefined) await requireKernelGateway(options.socket, options.timeoutSeconds)
   const client = kernelUnixClient(options.socket, { kernel: options.kernel, commandId: options.commandId })
   try {
@@ -84,6 +92,16 @@ export async function withKernel<T>(
       throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
     }))
   } finally { await client.close() }
+}
+
+// The kernel client removes the credential from the environment when it first uses it, so a process that has
+// seen it once keeps taking the agent route for its later requests.
+let agentProcess = false
+
+/** The kernel put its credential for this run in the environment: the run's shell is an agent's. */
+function agentCredentialInEnvironment(): boolean {
+  if (!agentProcess && process.env.CHARIOX_AGENT_CLI_TOKEN?.trim() && process.env.CHARIOX_KERNEL_URL?.trim()) agentProcess = true
+  return agentProcess
 }
 
 export function localAgentClientOptions(commandId: string | undefined) {
@@ -210,7 +228,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     const split = terminalVerb === "open" || (command === "exec" && !execPlace) ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)
     const options = split < 0 ? rest : rest.slice(0, split)
-    // `chariox kernels restart --browser` restarts the browser of a kernel (row 548); a bare `kernels` still lists them.
+    // `chariox kernels restart [--browser] [--kernel NAME]` restarts a kernel as a hot reload (row 551), or only its browser (row 548); a bare `kernels` still lists them.
     const kernelsRestart = command === "kernels" && rest[0] === "restart"
     const { flags, positionals } = parseArguments(kernelsRestart ? "kernels restart" : verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command, verb || terminalVerb || execPlace || kernelsRestart ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
@@ -233,7 +251,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         const stdin = await readExecInput(ownStdin(), { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
         try {
           process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
-            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process, kernel: kernel ?? undefined }, send, process.stdout))
         } finally {
           late.stop()
           if (late.arrived) process.stderr.write(`${LATE_STDIN_NOTICE}\n`)
@@ -253,12 +271,14 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     } else if (command === "guide") {
       console.log(guideText())
     } else if (kernelsRestart) {
-      // The browser is the only thing a person can restart here today; `--browser` names it, so a later `--kernel`-wide restart
-      // cannot be started by a missing flag.
-      if (!flags.has("--browser")) throw new CommandFailure("usage", usageOf("kernels restart"))
       kernel = (flags.get("--kernel") as string | undefined) ?? null
-      const response = await sendRequest({ KernelBrowser: { command: { op: "restart" } } }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) + 60 }) as { KernelBrowser?: { result: unknown } }
-      console.log(JSON.stringify(response.KernelBrowser?.result ?? response))
+      if (flags.has("--browser")) {
+        const response = await sendRequest({ KernelBrowser: { command: { op: "restart" } } }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) + 60 }) as { KernelBrowser?: { result: unknown } }
+        console.log(JSON.stringify(response.KernelBrowser?.result ?? response))
+      } else {
+        const response = await sendRequest({ RestartKernel: {} }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) }) as { KernelRestarting?: unknown }
+        console.log(JSON.stringify(response))
+      }
     } else if (command === "kernels") {
       const listed = await sendRequest({ ListGatewayKernels: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayKernelsListed: unknown }
       console.log(JSON.stringify(listed.GatewayKernelsListed))

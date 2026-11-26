@@ -301,6 +301,34 @@ whole, so a required field added without a default fails the build. At each rele
 with the release's own (`apps/kernel/tests/fixtures/hot_reload/README.md`).
 A change that would end something at a reload that a restart keeps alive is a bug in the handover.
 
+A planned reload never abandons agent turns and has no budget of its own; the caller's deadline
+decides. On SIGUSR2 the kernel keeps serving until every running Claude and Codex turn is at a
+safe point (no command holds the turn's runtime and no prompt, poll, abort or plan publication is queued
+for it), polling every 100 ms. The kernel accepts a safe point only after closing admission of
+new prompts, steers and plan publications (output polls simply do not start; an abort is never refused, a queued one counts
+as busy) and probing again. The last step before the reload commits runs under the admission lock:
+an abort that landed since the safe point, or anything busy, spoils it, admission opens again, the
+terminal handover is released and the kernel prepares again within the caller's deadline. So no
+command can take a turn's runtime between the probe and the commit; a refused reload opens
+admission again. A
+deadline that has passed, before or while the safe point is acquired, is never accepted, even by
+an empty probe. A restart requested through the
+kernel (a person or an agent) takes its requester's own wait, less the verification's time, as
+its deadline, so a reload it was told did not prepare never commits behind its back. The caller
+leaves its
+deadline in `hot-reload-request.json` (`{"deadline_unix_ms": N}`, next to `handover.json` in the
+kernel's private state directory) before the signal; the kernel reads and removes it once. A
+request file is not a handover or client shape: there is no protocol or `HANDOVER_FORMAT` bump.
+No file (an older caller) means no deadline: the kernel waits for the safe point as long as it
+takes. The caller writes its deadline a little earlier than its own rollback deadline and, on
+expiry, checks that the kernel PID is unchanged before rolling anything back. At the deadline the
+reload is **refused**: the kernel logs `hot reload refused; the kernel keeps running` with a reason
+that names the busy turns, changes nothing (same PID, connections, Vault, turns) and waits for the
+next request, which works as a fresh attempt. Once the safe point is reached the reload is
+committed and the shutdown watchdog in reload mode never abandons the handover (it logs
+`still handing over` once past the stop budget). A plain stop is unchanged: its fixed 10 s budget
+abandons provider sessions, closes them and exits.
+
 ### 3.4 Relay Server
 
 The relay server is a lightweight transport-forwarding layer.

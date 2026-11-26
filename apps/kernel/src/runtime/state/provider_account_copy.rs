@@ -6,7 +6,7 @@ use crate::provider_account_copy::{
     ProviderAccountCopyReceipt, MAX_COPY_CREDENTIAL_BYTES, PROVIDER_ACCOUNT_COPY_CAPABILITY,
 };
 
-fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
+pub(super) fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
     if config.user_config.credential_vault.backend
         == crate::config::CredentialVaultBackend::CharioxEncrypted
         && !crate::secret::chariox_encrypted_vault_status(expand_vault_path(

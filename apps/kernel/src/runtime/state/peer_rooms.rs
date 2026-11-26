@@ -1,5 +1,6 @@
 //! Peers across the rooms of one owner on this kernel: any agent that is neither above nor
-//! below the caller. A peer is addressed in its room; sub-agents stay hidden inside their tree.
+//! below the caller. A peer is addressed in its room. Row 405 (PA12): the owner's agents also name
+//! the owner's sub-agents in another room; for guests and other owners they stay hidden in their tree.
 use super::*;
 use crate::runtime::room_tool_admission::{denied, resolve_agent};
 
@@ -10,9 +11,79 @@ fn unavailable() -> DaemonError {
 }
 
 impl KernelRuntimeState {
-    /// The message target: in the caller's room by default, or an ordinary agent of another
-    /// room of the same owner when `room` names one.
+    /// The message target: in the caller's room by default, or, when `room` names another room
+    /// of the same owner, any of the owner's agents there (row 405, PA12: sub-agents too).
     pub(crate) fn resolve_message_target(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        room: Option<&str>,
+        reference: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.resolve_exact_message_target(session, sender, room, reference)
+            .map_err(|error| match error {
+                DaemonError::MachineRequest { code, message }
+                    if message.starts_with("agent is unavailable in ") =>
+                {
+                    let close = self.close_aliases(session, sender, reference);
+                    DaemonError::MachineRequest {
+                        message: if close.is_empty() {
+                            message
+                        } else {
+                            format!("{message}; close aliases: {}", close.join(", "))
+                        },
+                        code,
+                    }
+                }
+                error => error,
+            })
+    }
+
+    /// The agents `sender` can address whose alias contains the unknown name or is contained in
+    /// it, each with its Room: the near misses of a typed alias (`codexaccount`, `codexaccount-r2`).
+    fn close_aliases(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        reference: &str,
+    ) -> Vec<String> {
+        const MIN_CHARS: usize = 3;
+        const MAX_LISTED: usize = 5;
+        let wanted = reference.trim().trim_start_matches('@').to_lowercase();
+        if wanted.chars().count() < MIN_CHARS {
+            return Vec::new();
+        }
+        let mut close = Vec::new();
+        for room in self.reachable_rooms(session, sender) {
+            let Some(room_id) = room["id"].as_str() else {
+                continue;
+            };
+            let current = room_id == session.id();
+            for agent in self.session_agents(room_id) {
+                let Some(alias) = agent.alias().map(str::to_lowercase) else {
+                    continue;
+                };
+                if (!current && (agent.is_sub_agent() || agent.archived()))
+                    || alias.chars().count() < MIN_CHARS
+                    || !(alias.contains(&wanted) || wanted.contains(&alias))
+                {
+                    continue;
+                }
+                close.push(format!(
+                    "@{} (room `{room_id}`{})",
+                    agent.alias().unwrap_or_default(),
+                    room["name"]
+                        .as_str()
+                        .map_or_else(String::new, |name| format!(" \"{name}\""))
+                ));
+            }
+        }
+        close.sort();
+        close.truncate(MAX_LISTED);
+        close
+    }
+
+    fn resolve_exact_message_target(
         &self,
         session: &crate::session::RuntimeSession,
         sender: &crate::agent::AgentInstance,
@@ -28,7 +99,9 @@ impl KernelRuntimeState {
             return resolve_agent(&self.session_agents(room), room, reference).cloned();
         }
         if self.drives_as_room_guest(session, sender) {
-            return Err(unavailable());
+            return Err(denied(
+                "a guest of this room reaches only the agents in this room; ask the room's owner",
+            ));
         }
         let room = self
             .owned
@@ -40,12 +113,10 @@ impl KernelRuntimeState {
             .to_owned();
         let target =
             self.resolve_same_owner_room_agent(sender.owner_user_id(), &room, reference)?;
-        let store = &self.owned.agent_store;
-        if (!target.is_sub_agent()
-            || store.is_ancestor(sender.id(), &target)
-            || store.is_ancestor(target.id(), sender))
-            && !target.archived()
-        {
+        // Row 405 (PA12): the caller is the owner's agent (not a guest) and the room is the
+        // owner's, so the owner's sub-agents there are addressable as the owner can see them;
+        // what it may then do is the peer check's (the permission comparison stays).
+        if !target.archived() {
             return Ok(target);
         }
         Err(unavailable())
@@ -142,6 +213,22 @@ impl KernelRuntimeState {
     /// Inside one tree the tree decides: the agents above an agent control it, and an agent
     /// only messages the agents above it. Any other agent of the same owner is a peer and may
     /// steer or cancel when its authority is at least the target's.
+    /// Row 405: the owner's agents control any of the owner's agents: one above it, or a peer
+    /// the peer check admits (same owner; the owner's per-agent permission comparison stays).
+    pub(crate) fn authorize_agent_control(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        if actor.id() == target.id() {
+            return Err(denied("only the agents above an agent can control it"));
+        }
+        if self.owned.agent_store.is_ancestor(actor.id(), target) {
+            return Ok(());
+        }
+        self.authorize_peer_control(actor, target, PeerControl::Cancel)
+    }
+
     pub(crate) fn authorize_peer_control(
         &self,
         actor: &crate::agent::AgentInstance,
@@ -168,9 +255,8 @@ impl KernelRuntimeState {
             .session_store
             .get_session(target.session_id())
             .map_err(|_| unavailable())?;
-        if !self.same_owner(target_session.owner_user_id(), actor.owner_user_id())
-            || (target.session_id() != actor.session_id() && target.parent_agent_id().is_some())
-        {
+        // Row 405: any of the owner's agents, in any room.
+        if !self.same_owner(target_session.owner_user_id(), actor.owner_user_id()) {
             return Err(unavailable());
         }
         let actor_session = self.owned.session_store.get_session(actor.session_id())?;

@@ -78,7 +78,6 @@ async fn running_leased_turn() -> RunningLeasedTurn {
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             crate::transport::relay_peer::LeasedNativeSkills::default(),
         )
         .await

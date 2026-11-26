@@ -59,11 +59,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
         let skill_cache_root = self.leased_skill_cache_root(leased_agent_id)?;
+        // Row 577: a leased agent still named by the home's profile id launches from the
+        // worker's own tracked copy of that account.
+        let launch_account = self
+            .transferred_copy_for_lease(&lease, provider, &leased_agent.account_profile)?
+            .unwrap_or_else(|| leased_agent.account_profile.clone());
         let mut request = LaunchProviderRequest::new(
             leased_agent.backing_session_id.clone(),
             adapter_key,
             provider,
-            leased_agent.account_profile.clone(),
+            launch_account,
             model,
         )
         .with_agent_id(leased_agent.backing_agent_id.clone())

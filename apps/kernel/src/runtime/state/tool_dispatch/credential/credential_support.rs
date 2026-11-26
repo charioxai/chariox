@@ -161,3 +161,71 @@ mod tests {
         assert_eq!(metadata.updated_at_ms, metadata.created_at_ms);
     }
 }
+
+impl KernelRuntimeState {
+    /// Row 539: one card per secret. The card for one Vault entry asked by one agent has one id; a
+    /// repeat ask while that card is open returns the same ids (`deduplicated`), and only a settled
+    /// ask makes the next ask a new card.
+    pub(super) async fn raise_secret_card(
+        &self,
+        task: &crate::durable_state::agent_lifecycle::AgentTaskExecution,
+        session_id: &str,
+        agent_id: &str,
+        entry_id: &str,
+        build_interaction: impl FnOnce(String) -> crate::session::RuntimeInteraction,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(
+            serde_json::to_vec(&(session_id, agent_id, entry_id)).expect("identities serialize"),
+        );
+        let base: String = digest[..12].iter().map(|byte| format!("{byte:02x}")).collect();
+        let mut id = None;
+        for generation in 0..1000u32 {
+            let candidate = format!("credential-secret-{base}-{generation}");
+            match self.owned.durable_state_store.agent_wake(&candidate)? {
+                None => {
+                    id = Some(candidate);
+                    break;
+                }
+                Some(wake)
+                    if wake.kind == crate::runtime::state::interaction_wake::KIND
+                        && wake.room_id == session_id
+                        && wake.agent_id == agent_id
+                        && matches!(wake.state.as_str(), "starting" | "running") =>
+                {
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: true,
+                        payload: serde_json::json!({
+                            "interaction_id": candidate,
+                            "registration_id": wake.registration_id,
+                            "credential_id": entry_id,
+                            "status": "pending",
+                            "deduplicated": true,
+                        }),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        let id = id.ok_or_else(|| DaemonError::LocalTransport {
+            operation: "runtime_tool_request_credential_secret",
+            message: "too many settled requests for this credential".to_string(),
+        })?;
+        let interaction = build_interaction(id.clone());
+        let result = self.arm_interaction_wake_for_task(task, interaction)?;
+        self.announce_child_decision(session_id, &id).await?;
+        if let Ok(session) = self.owned.session_store.get_session(session_id) {
+            if let Some(ask) = session
+                .active_interactions()
+                .iter()
+                .find(|ask| ask.id() == id)
+            {
+                self.owned.alert_owner_of_ask(session_id, ask);
+            }
+        }
+        let mut payload = result.payload;
+        payload["credential_id"] = entry_id.into();
+        payload["status"] = "pending".into();
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+}

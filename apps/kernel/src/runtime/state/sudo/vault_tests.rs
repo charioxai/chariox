@@ -269,13 +269,14 @@ async fn vopen_plain_agent_generates_for_one_origin_without_a_prompt() {
         .unwrap();
     assert!(snapshot.active_interactions().is_empty());
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    // Row 405: the owner's plain agent needs no window for an ordinary request.
     assert!(call(
         &f,
         "chariox_kernel_request",
         json!({"request":{"ListSessions":null}})
     )
     .await
-    .is_err());
+    .is_ok());
 }
 
 #[tokio::test]
@@ -544,7 +545,8 @@ async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
 #[tokio::test]
 async fn vflag_blocking_popup_card_ends_before_the_provider_cut() {
     crate::test_support::isolated_env_test!();
-    for action in [false, true] {
+    // Row 405: an action card of the owner's agent runs at once, so only plain cards block.
+    for action in [false] {
         for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
             let f = fixture();
             let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
