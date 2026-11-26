@@ -314,6 +314,7 @@ mod task_scope;
 mod trace_projection;
 mod workflow_code_crud;
 mod workflow_code_patterns;
+mod workflow_code_reply_size;
 mod workflow_responsible;
 
 mod agents_run;
