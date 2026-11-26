@@ -18,6 +18,11 @@
     "event": "room_terminals_listed",
     "terminals": []
   },
+  "listed_unavailable": {
+    "event": "room_terminals_listed",
+    "terminals": [],
+    "unavailable": [{ "host_agent": "agent-w", "message": "worker kernel `k9` is too old to list its terminals, which may still be running there; update it" }]
+  },
   "heartbeat": {
     "event": "heartbeat"
   },
