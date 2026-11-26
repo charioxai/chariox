@@ -844,7 +844,10 @@ fn the_mask_follows_the_one_list_of_protected_folders() {
         folders: listed.clone(),
     });
     for folder in &listed {
-        assert!(before.contains(folder), "{folder:?} is listed but not masked");
+        assert!(
+            before.contains(folder),
+            "{folder:?} is listed but not masked"
+        );
     }
     let added = kernel.home.join("added-secret-folder");
     std::fs::create_dir_all(&added).unwrap();

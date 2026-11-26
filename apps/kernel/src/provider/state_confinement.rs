@@ -582,9 +582,9 @@ mod platform {
                     .filter_map(Result::ok)
                     .filter(|entry| entry.file_name().to_string_lossy().starts_with("dbus-"))
                     .filter(|entry| {
-                        entry.file_type().is_ok_and(|kind| {
-                            std::os::unix::fs::FileTypeExt::is_socket(&kind)
-                        })
+                        entry
+                            .file_type()
+                            .is_ok_and(|kind| std::os::unix::fs::FileTypeExt::is_socket(&kind))
                     })
                     .map(|entry| entry.path()),
             );
@@ -594,8 +594,7 @@ mod platform {
         endpoints.folders.dedup();
         sockets.retain(|socket| {
             socket.is_absolute()
-                && std::fs::symlink_metadata(socket)
-                    .is_ok_and(|meta| !meta.is_dir())
+                && std::fs::symlink_metadata(socket).is_ok_and(|meta| !meta.is_dir())
                 && !endpoints
                     .folders
                     .iter()
