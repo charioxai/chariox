@@ -1105,6 +1105,12 @@ mod tests {
             .prepare_provider_launch_request(reload, config.runtime_mcp_url())
             .unwrap();
         assert_eq!(reloaded.provider_account_env, local_env);
+        // Row 614: a reload (hot-reload relaunch, in-place account switch, resume, wake) is
+        // prepared by the same builder as a first launch and keeps the agent's CLI endpoint.
+        assert!(
+            reloaded.agent_cli_endpoint.is_some(),
+            "a reloaded agent run must receive its CLI credential"
+        );
         let serialized = serde_json::to_value(&run).unwrap();
         assert!(serialized.get("resolved_provider_account").is_none());
         let restored: crate::provider::RuntimeProviderRun =
@@ -1119,6 +1125,10 @@ mod tests {
             .prepare_provider_launch_request(restored_reload, config.runtime_mcp_url())
             .expect("restored account roots must retain the home authority");
         assert_eq!(restored_prepared.provider_account_env, local_env);
+        assert!(
+            restored_prepared.agent_cli_endpoint.is_some(),
+            "a run restored from stored state is relaunched with its CLI credential"
+        );
         // Managed providers retain roots in --setenv and host bind arguments,
         // not in the scrubbed parent environment. Restoring those runs must
         // preserve the same authority without a new serialized field.
