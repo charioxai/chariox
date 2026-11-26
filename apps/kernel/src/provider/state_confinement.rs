@@ -466,6 +466,30 @@ mod platform {
         for folder in &secrets.folders {
             wrapped.extend(["--remount-ro".to_string(), path_arg(folder)]);
         }
+        // The user's service manager and session bus would start a process
+        // outside this sandbox, where the folders above are not covered. Their
+        // sockets are replaced here, after the agent's own paths are mounted,
+        // so no environment of the agent can name them back.
+        let session = user_session_endpoints(
+            std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+            // SAFETY: getuid takes no arguments and cannot fail.
+            unsafe { libc::getuid() },
+            std::env::var("DBUS_SESSION_BUS_ADDRESS").ok(),
+        );
+        for folder in &session.folders {
+            wrapped.extend(["--tmpfs".to_string(), path_arg(folder)]);
+            wrapped.extend(["--remount-ro".to_string(), path_arg(folder)]);
+        }
+        for socket in &session.sockets {
+            wrapped.extend([
+                "--ro-bind".to_string(),
+                "/dev/null".to_string(),
+                path_arg(socket),
+            ]);
+        }
+        for name in USER_SESSION_ENVIRONMENT {
+            wrapped.extend(["--unsetenv".to_string(), (*name).to_string()]);
+        }
         wrapped.extend([
             "--setenv".to_string(),
             STATE_CONFINEMENT_MARKER_ENV.to_string(),
@@ -479,6 +503,65 @@ mod platform {
         wrapped.push(program);
         wrapped.extend(args);
         Ok((path_arg(&sandbox.env), wrapped))
+    }
+
+    /// Environment that names the user's session bus.
+    const USER_SESSION_ENVIRONMENT: &[&str] = &["DBUS_SESSION_BUS_ADDRESS"];
+
+    /// What reaches the user's service manager or session bus from a process
+    /// that shares the user's runtime folder.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    pub(super) struct UserSessionEndpoints {
+        /// Folders of sockets, replaced by empty read-only ones.
+        pub(super) folders: Vec<PathBuf>,
+        /// Socket files, replaced by an empty file.
+        pub(super) sockets: Vec<PathBuf>,
+    }
+
+    /// The user manager's sockets (`systemd/`), the session bus (`bus`,
+    /// `dbus-1/`) and the bus the environment names, of the runtime folder
+    /// `XDG_RUNTIME_DIR` names and of `/run/user/<uid>`, where they exist. The
+    /// rest of the runtime folder stays the agent's.
+    pub(super) fn user_session_endpoints(
+        runtime: Option<PathBuf>,
+        uid: u32,
+        bus_address: Option<String>,
+    ) -> UserSessionEndpoints {
+        let mut endpoints = UserSessionEndpoints::default();
+        let runtimes = runtime
+            .into_iter()
+            .chain([PathBuf::from(format!("/run/user/{uid}"))])
+            .filter(|runtime| runtime.is_absolute());
+        let mut sockets = Vec::new();
+        for runtime in runtimes {
+            for folder in ["systemd", "dbus-1"] {
+                endpoints.folders.push(runtime.join(folder));
+            }
+            sockets.push(runtime.join("bus"));
+        }
+        sockets.extend(bus_address.iter().flat_map(|address| {
+            address
+                .split(',')
+                .flat_map(|part| part.split(';'))
+                .filter_map(|part| part.strip_prefix("unix:path="))
+                .map(|path| PathBuf::from(path.split(',').next().unwrap_or(path)))
+        }));
+        endpoints.folders.retain(|folder| folder.is_dir());
+        endpoints.folders.sort();
+        endpoints.folders.dedup();
+        sockets.retain(|socket| {
+            socket.is_absolute()
+                && std::fs::symlink_metadata(socket)
+                    .is_ok_and(|meta| !meta.is_dir())
+                && !endpoints
+                    .folders
+                    .iter()
+                    .any(|folder| socket.starts_with(folder))
+        });
+        sockets.sort();
+        sockets.dedup();
+        endpoints.sockets = sockets;
+        endpoints
     }
 
     pub(super) fn prefix_len(args: &[String]) -> Option<usize> {
@@ -615,6 +698,27 @@ mod platform {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn the_user_manager_and_session_bus_are_named_where_they_exist() {
+            let root = crate::test_temp_dir::TestTempDir::new("user-session");
+            let runtime = root.path().join("run-user");
+            std::fs::create_dir_all(runtime.join("systemd")).unwrap();
+            std::fs::write(runtime.join("bus"), "").unwrap();
+            let other = root.path().join("other-bus");
+            std::fs::write(&other, "").unwrap();
+            let endpoints = user_session_endpoints(
+                Some(runtime.clone()),
+                4_000_000_000,
+                Some(format!("unix:path={},guid=1", other.display())),
+            );
+            assert_eq!(endpoints.folders, vec![runtime.join("systemd")]);
+            assert_eq!(endpoints.sockets, vec![other, runtime.join("bus")]);
+            assert_eq!(
+                user_session_endpoints(None, 4_000_000_000, None),
+                UserSessionEndpoints::default()
+            );
+        }
 
         #[test]
         fn namespace_probe_names_nested_confinement_and_the_supported_drill_path() {
