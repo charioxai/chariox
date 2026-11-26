@@ -594,7 +594,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                                     "properties":{"challenge_id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string"},"accepted_json_pointer":{"type":"string","minLength":2,"maxLength":128}},
                                     "description":"For an actual site verification: one unique challenge id, exact same-origin POST URL without query/credentials, and JSON pointer to a boolean true on acceptance. Use wait:false and only Cancel, with no until or custom reply. The card remains on rejection, records only delivery/HTTP status/classification, and closes only on a positive response from this document. Show the card before requesting a fresh code; the person types inside its live region while you wait. Never infer acceptance from disappearance."}}
                         }},
-                        "description": "A live element of your snapshot (tab_id, node_ref as ref): pick what the person acts on now. The card follows it and closes with condition_met when it disappears or its document changes; until it shows, page_note and the whole page. Without done_text or verification it offers Done (choice_id done: their word, check the page)."
+                        "description": "Live element of your snapshot (tab_id, node_ref as ref) the person acts on; the card follows it and closes with condition_met when it goes or its document changes. No done_text: it offers Done (their word)."
                     },
                     "until": {
                         "type": "object",
