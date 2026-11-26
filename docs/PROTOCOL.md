@@ -7331,8 +7331,9 @@ Row 655/666 (11-26 evening, no shape change): the region takes in the visible fr
 child frames of the page's own origin-separated widget: from the page's frame tree and from the renderers whose parent is
 the page). An anchor hidden inside a widget (a closed challenge's Verify) shows the widget's visible part (its checkbox),
 and the agent still gets `page_note`. One card per Tab: a plain browser card raised on a Tab where the same agent's plain
-card of this turn is open updates that card (same `interaction_id`, `updated: true`, same `registration_id`); an open
-card of an earlier turn on that Tab ends `unavailable` ("Replaced by the agent's newer card on the same page").
+card is open replaces it. The older card ends `unavailable` ("Replaced by the agent's newer card on the same page")
+and the `wait:false` result of the new one names it as `replaced`. Hand-off, App confirmation, verification, page-text
+and `until` cards are never replaced.
 
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
 that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that

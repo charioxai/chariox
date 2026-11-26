@@ -302,15 +302,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     if (anchor?.tab_id === command.tab_id) forgetCardAnchor(host, key);
     return { released: true };
   }
-  if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) {
-    // Row 655 (one card per Tab): the agent's newer request updated its plain card to another element of the same Tab;
-    // the card follows that element. A card bound to a proof or page text never changes its element.
-    const plain = anchor.tab_id === command.tab_id && !anchor.verification && anchor.doneText === null
-      && command.verification === undefined && command.done_text === undefined && command.app_confirmation !== true;
-    if (!plain) throw new UserDomainRefusal('stale_reference');
-    forgetCardAnchor(host, key);
-    anchor = null;
-  }
+  if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) throw new UserDomainRefusal('stale_reference');
   const remembered = anchor?.binding ?? host.cardReferences.get(scope)?.get(command.tab_id);
   const completion = () => ({state:'condition_met',reason:JSON.stringify({reason:'Verification accepted',card_id:command.card_id,tab_id:command.tab_id,generation:anchor.binding.generation,document_id:anchor.binding.document_id,verification_result:anchor.verification.receipt})});
   // A card that waits for a response or for page text ends only when that happens: losing its element first is not completion.

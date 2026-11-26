@@ -701,33 +701,6 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
-    /// Row 655 (one card per Tab): the agent's newer request for the Tab its open card shows updates that card.
-    pub(super) fn refresh_browser_region_request(
-        &self,
-        room: &str,
-        id: &str,
-        request: &crate::session::RuntimeInteraction,
-    ) -> Result<(), DaemonError> {
-        let _mutation = self
-            .pending_interactions
-            .mutation
-            .lock()
-            .map_err(|_| region_error("interaction store unavailable"))?;
-        let activity = self.begin_managed_activity_mutation();
-        let mut sessions = self.session_store.write();
-        let mut session = sessions.get_session(room)?;
-        if !session.active_interactions().iter().any(|card| card.id() == id) {
-            return Err(region_error("browser card is no longer open"));
-        }
-        session.refresh_active_interaction(id, request);
-        sessions.restore_session(session);
-        drop(sessions);
-        activity.record();
-        self.session_snapshot(room)?;
-        self.terminal_stream.notify_terminal_projection_change(room);
-        Ok(())
-    }
-
     pub(super) fn update_browser_region_card(
         &self,
         room: &str,

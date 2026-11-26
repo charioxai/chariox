@@ -91,23 +91,29 @@ pub(in crate::runtime::state) fn popup_status<'a>(
 }
 
 impl KernelRuntimeState {
-    /// Row 655 (one card per Tab, Mac 11-26): the person sees one card for a page. A plain browser card the agent raises
-    /// on a Tab where its own plain card of this turn is open updates that card (same id, same wait); an open card of
-    /// an earlier turn on that Tab is closed as replaced before the new one registers. Hand-offs, App confirmations,
-    /// verification and page-text cards keep their own lifecycle.
+    /// Row 655 (one card per Tab, Mac 11-26): the person sees one card for a page. When the agent raises a plain
+    /// browser card on a Tab where its own plain card is open, that older card ends `unavailable` ("Replaced by the
+    /// agent's newer card on the same page") before the new one registers, so the card and its durable wake stay one
+    /// record. Hand-offs, App confirmations, verification, page-text and condition-bound (`until`) cards on either side
+    /// keep their own lifecycle and are never replaced. Returns the replaced card's id.
     pub(in crate::runtime::state) fn one_card_per_tab(
         &self,
         session_id: &str,
         agent_id: &str,
-        task: &crate::durable_state::agent_lifecycle::AgentTaskExecution,
         request: &crate::session::RuntimeInteraction,
-    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
-        let plain = |view: &crate::session::RuntimeInteractionView| {
-            view.browser_region.verification.is_none() && view.browser_region.done_text.is_none()
+    ) -> Result<Option<String>, DaemonError> {
+        let plain = |card: &crate::session::RuntimeInteraction| {
+            card.closes_with_wake().is_none()
+                && card.handoff().is_none()
+                && card.app_confirmation().is_none()
+                && card.view().is_some_and(|view| {
+                    view.browser_region.verification.is_none() && view.browser_region.done_text.is_none()
+                })
         };
-        let Some(view) = request.view().filter(|view| plain(view)) else {
+        if !plain(request) {
             return Ok(None);
-        };
+        }
+        let tab = &request.view().expect("plain card has a view").browser_region.tab_id;
         let session = self.owned.session_store.get_session(session_id)?;
         let Some(existing) = session
             .active_interactions()
@@ -115,81 +121,19 @@ impl KernelRuntimeState {
             .find(|card| {
                 card.id() != request.id()
                     && card.agent_id() == Some(agent_id)
-                    && card.handoff().is_none()
-                    && card.app_confirmation().is_none()
-                    && card
-                        .view()
-                        .is_some_and(|open| open.browser_region.tab_id == view.browser_region.tab_id)
+                    && plain(card)
+                    && card.view().is_some_and(|open| open.browser_region.tab_id == *tab)
             })
-            .cloned()
+            .map(|card| card.id().to_owned())
         else {
             return Ok(None);
         };
-        let wake = self
-            .owned
-            .durable_state_store
-            .agent_wake(existing.id())?
-            .filter(|wake| {
-                wake.kind == super::super::interaction_wake::KIND
-                    && wake.task_id == task.task_id
-                    && wake.room_id == session_id
-                    && wake.agent_id == agent_id
-            });
-        match wake {
-            Some(wake) if existing.view().is_some_and(|open| plain(open)) => {
-                self.owned
-                    .refresh_browser_region_request(session_id, existing.id(), request)?;
-                self.resume_browser_region_cards();
-                Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "interaction_id": existing.id(),
-                        "registration_id": wake.registration_id,
-                        "updated": true,
-                    }),
-                }))
-            }
-            _ => {
-                if let Err(error) = self.close_unavailable_browser_region_card(
-                    session_id,
-                    existing.id(),
-                    "Replaced by the agent's newer card on the same page".into(),
-                ) {
-                    tracing::warn!(interaction_id=%existing.id(), error=%crate::secret_redaction::redact_secrets(&error.to_string()), "older card on the Tab stays open");
-                }
-                Ok(None)
-            }
-        }
-    }
-
-    /// The wake a card follows must be this agent's own live source, so the card
-    /// can never be closed by someone else's event or wait for one that is over.
-    fn card_condition_wake(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        wake_id: &str,
-    ) -> Result<String, DaemonError> {
-        let wake = self
-            .owned
-            .durable_state_store
-            .agent_wake(wake_id)?
-            .filter(|wake| wake.room_id == session_id && wake.agent_id == agent_id)
-            .ok_or_else(|| {
-                popup_error(&format!(
-                    "until `{wake_id}` is not a wake source you armed in this room"
-                ))
-            })?;
-        if wake.kind == super::super::interaction_wake::KIND {
-            return Err(popup_error("a card cannot follow another card"));
-        }
-        if !matches!(wake.state.as_str(), "scheduled" | "starting" | "running") {
-            return Err(popup_error(&format!(
-                "until `{wake_id}` already ended ({}); check it with events.wakes instead of asking",
-                wake.state
-            )));
-        }
-        Ok(wake.id)
+        self.close_unavailable_browser_region_card(
+            session_id,
+            &existing,
+            "Replaced by the agent's newer card on the same page".into(),
+        )?;
+        Ok(Some(existing))
     }
 
     pub(super) async fn dispatch_popup_tool(
@@ -450,14 +394,12 @@ impl KernelRuntimeState {
             interaction = interaction.with_view(view);
         }
         if let Some(task) = asking_task {
-            if let Some(mut updated) = self.one_card_per_tab(session_id, agent_id, &task, &interaction)? {
-                if let Some(note) = page_note {
-                    updated.payload["page_note"] = note.into();
-                }
-                return Ok(updated);
-            }
+            let replaced = self.one_card_per_tab(session_id, agent_id, &interaction)?;
             let interaction_id = interaction.id().to_owned();
             let mut result = self.arm_interaction_wake_for_task(&task, interaction)?;
+            if let Some(replaced) = replaced {
+                result.payload["replaced"] = replaced.into();
+            }
             if let Some(note) = page_note {
                 result.payload["page_note"] = note.into();
             }

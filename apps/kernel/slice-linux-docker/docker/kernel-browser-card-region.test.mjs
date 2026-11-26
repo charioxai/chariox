@@ -659,16 +659,6 @@ test('666 final rerun: cross-process widget frames missing from the page\'s own 
   assert.ok(open.y + open.height < 700, 'the page\'s ad frame of another origin is not');
 }));
 
-test('655 one card per Tab: a plain card follows the newer element the agent named on its Tab; a page-text card never switches', () => withHost(async ({ host, snapshot, region }) => {
-  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [{ node_ref: 'backend:42', document_index: 0 }, { node_ref: 'backend:43', document_index: 0 }], dom_documents: [] });
-  await snapshot();
-  assert.equal((await region({ card_id: 'one' })).state, 'present');
-  const moved = await region({ card_id: 'one', ref: 'backend:43' });
-  assert.equal(moved.state, 'present', 'the updated card follows the new element');
-  assert.equal(moved.region.ref, 'backend:43');
-  await assert.rejects(region({ card_id: 'one', ref: 'backend:42', done_text: 'Signed in' }), /refused|stale_reference/, 'a card cannot change into a page-text card on another element');
-}));
-
 test('655 a hidden anchor inside a widget (the closed challenge\'s Verify) shows the widget\'s visible checkbox, not the whole page, and says the anchor is hidden', () => withHost(async ({ host, snapshot, region, state }) => {
   const ref = 'frame:challenge:c-doc:backend:43';
   host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });

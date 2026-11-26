@@ -506,17 +506,6 @@ impl RuntimeInteraction {
         self.view.as_ref()
     }
 
-    /// Row 655 (one card per Tab): the same open card takes the agent's newer request for its Tab (what it says, its
-    /// choices and the element it shows); its identity, audience and wait stay.
-    pub(crate) fn refreshed_from(mut self, request: &RuntimeInteraction) -> Self {
-        self.title = request.title.clone();
-        self.message = request.message.clone();
-        self.choices = request.choices.clone();
-        self.custom_choice = request.custom_choice.clone();
-        self.view = request.view.clone();
-        self
-    }
-
     pub(crate) fn with_view(mut self, view: RuntimeInteractionView) -> Self {
         self.view = Some(view);
         self

@@ -1901,62 +1901,61 @@ fn row574_a_plain_browser_card_gets_a_done_choice_and_a_self_closing_one_does_no
     );
 }
 
-/// Row 655 (one card per Tab, Mac 11-26): the agent's second plain card on the same Tab in the same turn updates the
-/// open card (same id, same wait) instead of raising a second one.
+/// Row 655 (one card per Tab, Mac 11-26): the agent's newer plain card on the same Tab replaces its open plain card
+/// (the older one ends unavailable, so card and durable wake stay one record); a page-text, verification or
+/// condition-bound card is never replaced.
 #[tokio::test]
-async fn row655_a_second_card_on_the_same_tab_updates_the_open_card() {
+async fn row655_a_newer_card_on_the_same_tab_replaces_the_open_one_but_never_a_special_card() {
     let f = fixture("async-popup-one-card-per-tab", true).await;
     f.begin(&f.prompt_id);
-    let first = ask(&f, serde_json::json!({})).await;
-    let id = first["interaction_id"].as_str().unwrap().to_owned();
-    {
-        let mut sessions = f.runtime.owned.session_store.write();
-        let mut session = sessions.get_session(&f.room).unwrap();
-        let card = session.remove_active_interaction(&id).unwrap();
-        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
-            browser_region: browser_region(),
-        }));
-        sessions.restore_session(session);
-    }
+    let first = seed_card(&f, browser_region()).await;
     let agent = f.runtime.owned.session_store.get_session(&f.room).unwrap().active_interactions()[0]
         .agent_id()
         .unwrap()
         .to_owned();
-    let task = f.runtime.asking_task_for_turn(&f.room, &agent).unwrap();
-    let mut moved = browser_region();
-    moved.reference = "backend:43".into();
-    let request = crate::session::RuntimeInteraction::new(
-        "interaction-second".to_owned(),
-        &agent,
-        crate::session::RuntimeInteractionKind::Choice,
-        crate::session::RuntimeInteractionLevel::Info,
-        None,
-        "Now type the code from the email".to_owned(),
-        vec![crate::session::RuntimeInteractionChoice::new(
-            "cancel",
-            "Cancel",
-            "cancel",
+    let request = |region: crate::session::RuntimeInteractionBrowserRegion| {
+        crate::session::RuntimeInteraction::new(
+            format!("interaction-new-{:x}", rand::random::<u64>()),
+            &agent,
+            crate::session::RuntimeInteractionKind::Choice,
+            crate::session::RuntimeInteractionLevel::Info,
             None,
-        )],
-        None,
-        None,
-        None,
-    )
-    .with_view(crate::session::RuntimeInteractionView {
-        browser_region: moved.clone(),
-    });
-    let updated = f
-        .runtime
-        .one_card_per_tab(&f.room, &agent, &task, &request)
+            "Now type the code from the email".to_owned(),
+            vec![crate::session::RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None)],
+            None,
+            None,
+            None,
+        )
+        .with_view(crate::session::RuntimeInteractionView { browser_region: region })
+    };
+    let replaced = f.runtime.one_card_per_tab(&f.room, &agent, &request(browser_region())).unwrap();
+    assert_eq!(replaced.as_deref(), Some(first.as_str()), "the open plain card on the Tab is replaced");
+    let open = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(open.active_interactions().iter().all(|card| card.id() != first), "the older card is closed");
+    let told = answers(&f, &first);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["status"], "unavailable");
+    assert_eq!(told[0]["reply"], "Replaced by the agent's newer card on the same page");
+    // A page-text card on the Tab keeps its own lifecycle; so does a new request that waits for page text.
+    let mut waiting = browser_region();
+    waiting.done_text = Some("Signed in".into());
+    let text_card = seed_card(&f, waiting.clone()).await;
+    assert_eq!(f.runtime.one_card_per_tab(&f.room, &agent, &request(browser_region())).unwrap(), None);
+    assert_eq!(f.runtime.one_card_per_tab(&f.room, &agent, &request(waiting)).unwrap(), None);
+    assert!(f.runtime.owned.session_store.get_session(&f.room).unwrap().active_interactions().iter().any(|card| card.id() == text_card));
+}
+
+async fn seed_card(f: &Fixture, region: crate::session::RuntimeInteractionBrowserRegion) -> String {
+    let id = ask(f, serde_json::json!({}))["interaction_id"]
+        .as_str()
         .unwrap()
-        .expect("the open card on the Tab is updated");
-    assert_eq!(updated.payload["interaction_id"], id.as_str());
-    assert_eq!(updated.payload["updated"], true);
-    assert_eq!(updated.payload["registration_id"], first["registration_id"]);
-    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-    assert_eq!(session.active_interactions().len(), 1, "one card for the Tab");
-    let card = &session.active_interactions()[0];
-    assert_eq!(card.id(), id);
-    assert_eq!(card.message(), "Now type the code from the email");
-    assert_eq!(card.view().unwrap().browser_region.reference, "backend:43");
+        .to_owned();
+    let mut sessions = f.runtime.owned.session_store.write();
+    let mut session = sessions.get_session(&f.room).unwrap();
+    let card = session.remove_active_interaction(&id).unwrap();
+    session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
+        browser_region: region,
+    }));
+    sessions.restore_session(session);
+    id
 }
