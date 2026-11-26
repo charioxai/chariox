@@ -423,8 +423,10 @@ impl KernelRuntimeState {
         if let Some(view) = view {
             interaction = interaction.with_view(view);
         }
+        // Row 655 (one card per Tab): a waiting card and a wait:false card alike replace the agent's open plain card on
+        // their Tab (popupcard 11-26: a wait:false card followed by a waiting one left both open).
+        let replaced = self.one_card_per_tab(session_id, agent_id, &interaction)?;
         if let Some(task) = asking_task {
-            let replaced = self.one_card_per_tab(session_id, agent_id, &interaction)?;
             let interaction_id = interaction.id().to_owned();
             let mut result = self.arm_interaction_wake_for_task(&task, interaction)?;
             if let Some(replaced) = replaced {
@@ -533,14 +535,15 @@ impl KernelRuntimeState {
                 operation: "runtime_tool_request_popup",
                 message: format!("popup interaction dropped before resolution: {error}"),
             })?;
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "interaction_id": interaction_id,
-                "status": popup_status(resolution.status, resolution.choice_id.as_deref()),
-                "choice_id": resolution.choice_id,
-                "reply": resolution.reply,
-            }),
-        })
+        let mut payload = serde_json::json!({
+            "interaction_id": interaction_id,
+            "status": popup_status(resolution.status, resolution.choice_id.as_deref()),
+            "choice_id": resolution.choice_id,
+            "reply": resolution.reply,
+        });
+        if let Some(replaced) = replaced {
+            payload["replaced"] = replaced.into();
+        }
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
 }

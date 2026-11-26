@@ -7332,7 +7332,7 @@ child frames of the page's own origin-separated widget: from the page's frame tr
 the page). An anchor hidden inside a widget (a closed challenge's Verify) shows the widget's visible part (its checkbox),
 and the agent still gets `page_note`. One card per Tab: a plain browser card raised on a Tab where the same agent's plain
 card is open replaces it. The older card ends `unavailable` ("Replaced by the agent's newer card on the same page")
-and the `wait:false` result of the new one names it as `replaced`. Hand-off, App confirmation, verification, page-text
+and the new card's result (wait:false or waiting) names it as `replaced`. Hand-off, App confirmation, verification, page-text
 and `until` cards are never replaced.
 
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
