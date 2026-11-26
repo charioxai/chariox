@@ -19,6 +19,9 @@ const STALL_FAULT_ENV: &str = "CHARIOX_WAKE_SCHEDULER_STALL_FILE";
 /// settlement of that agent's tasks does not end.
 const TASK_STALL_FAULT_ENV: &str = "CHARIOX_SWEEP_TASK_STALL_FILE";
 
+/// What a report of a lost watch tells its agent to do: the kernel never starts the work again, the agent does.
+const LOST_NEXT_STEP: &str = "what it watched is gone: start it again and watch the new one";
+
 pub(crate) struct AgentWakeMonitor {
     pub(super) started_at_ms: u64,
     scheduler_tick_ms: AtomicU64,
@@ -458,10 +461,10 @@ impl KernelRuntimeState {
             self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
                 id: wake.id.clone(),
                 exit_code: None,
-                tail: format!("process_lost: the kernel restarted; it is not supervised and is not relaunched{orphans}"),
+                tail: format!("process_lost: the kernel restarted; it is not supervised and is not relaunched{orphans}; {LOST_NEXT_STEP}"),
                 now,
             })?;
-            self.wake_notice(&wake, format!("Wake alert: watched process '{}' was lost when the kernel restarted; it is not relaunched{orphans}", wake.label));
+            self.wake_notice(&wake, format!("Wake alert: watched process '{}' was lost when the kernel restarted; it is not relaunched{orphans}; {LOST_NEXT_STEP}", wake.label));
             self.schedule_wake_delivery(&wake);
         }
         Ok(())
@@ -528,7 +531,7 @@ impl KernelRuntimeState {
         self.wake_notice(
             wake,
             format!(
-                "Wake alert: '{}' was lost ({reason}); it is not relaunched",
+                "Wake alert: '{}' was lost ({reason}); it is not relaunched; {LOST_NEXT_STEP}",
                 wake.label
             ),
         );
