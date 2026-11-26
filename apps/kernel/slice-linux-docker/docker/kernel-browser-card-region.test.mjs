@@ -11,6 +11,7 @@ import { KernelBrowserHost, scheduleHostRequest } from './kernel-browser-host.mj
 import { PassThrough } from 'node:stream';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { BrowserControllerStdioServer } from './browser-controller.mjs';
+import { BrowserControllerError } from './browser-controller-cdp.mjs';
 
 async function withHost(run) {
   const root = await mkdtemp(path.join(tmpdir(), 'card-region-'));
@@ -272,6 +273,18 @@ test('666 review: the person closes the card\'s Tab through the host (its anchor
   assert.deepEqual(await region({ card_id: 'closed-by-host', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
   assert.deepEqual(await region({ card_id: 'closed-by-host', done_text: 'Signed in', generation: 1, document_id: 'doc' }), { state: 'unavailable', reason: 'Browser tab closed' });
   await assert.rejects(region({ card_id: 'fresh-card' }), error => error instanceof UserDomainRefusal);
+}));
+
+test('666 review: a popup that closed itself is still listed until the next inventory read: its gone browser target ends the open card as closed', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'self-closed' })).state, 'present');
+  const live = host.displayTarget;
+  host.displayTarget = () => { throw new BrowserControllerError('browser_target_not_found', 'browser target "target" is not available'); };
+  assert.equal(host.tabs.has('one'), true, 'the Tab is still listed');
+  assert.deepEqual(await region({ card_id: 'self-closed', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
+  host.displayTarget = () => { throw new BrowserControllerError('browser_cdp_timeout', 'slow'); };
+  await assert.rejects(region({ card_id: 'other-error' , generation: 1, document_id: 'doc' }), error => error.code === 'browser_cdp_timeout', 'another failure is not a closed Tab');
+  host.displayTarget = live;
 }));
 
 test('546 an element that went away with a navigation is a changed document, not a removed element', () => withHost(async ({ snapshot, region, node, state }) => {

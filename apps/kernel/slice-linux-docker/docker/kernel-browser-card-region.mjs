@@ -322,15 +322,23 @@ export async function resolveCardRegion(host, command, scope, signal) {
   // anchor first). A new card on a closed Tab is refused.
   const openCard = anchor || command.document_id !== undefined && command.generation === host.generation;
   if (openCard && host.browser && !host.tabs.has(command.tab_id)) return gone('Browser tab closed');
+  // A popup that closed itself can still be listed until the next inventory read: its browser target being gone is the
+  // same closure, read on this observation (never 15 s of retries that end as unavailable).
+  const cardTab = async binding => {
+    try { return await host.displayTarget(binding); }
+    catch (error) { if (openCard && error?.code === 'browser_target_not_found') return null; throw error; }
+  };
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
-    const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
+    const tab = await cardTab({ tab_id: command.tab_id, generation: command.generation });
+    if (!tab) return gone('Browser tab closed');
     if (tab.document_id !== command.document_id) return gone('Browser document changed');
     return { state: 'unavailable', reason: 'Browser region reference expired; take a fresh snapshot and ask again' };
   }
   if (!remembered || !remembered.refs.has(command.ref) || !validReference(command.ref)) throw new UserDomainRefusal('stale_reference');
   if (remembered.generation !== host.generation || command.generation !== undefined && command.generation !== host.generation) return gone('Browser restarted');
   if (command.document_id !== undefined && command.document_id !== remembered.document_id) return gone('Browser document changed');
-  const tab = await host.displayTarget({ tab_id: command.tab_id, generation: remembered.generation });
+  const tab = await cardTab({ tab_id: command.tab_id, generation: remembered.generation });
+  if (!tab) return gone('Browser tab closed');
   if (tab.document_id !== remembered.document_id) return gone('Browser document changed');
   if (command.done_text !== undefined && (typeof command.done_text !== 'string' || !command.done_text.trim() || command.done_text.length > 200)) throw new Error('Browser card done text must be 1 to 200 characters');
   if (command.done_text !== undefined && remembered.children.has(command.ref)) throw new Error('Browser card done text needs a page element, not a frame');
