@@ -680,6 +680,13 @@ impl CommandRouter {
 
         let mut created_slice = None;
         if let Some(slice_create) = spawn.slice_create.take() {
+            // The slice runs on this machine; refuse a named other machine before anything is set up.
+            if let Err(error) = self.runtime_state.refuse_unhostable_slice_worker(
+                spawn.kernel_ref.as_deref(),
+                &crate::slice::SliceBackendKind::LocalDocker,
+            ) {
+                return Ok(meta_command_failure_result(command, error));
+            }
             let worktree_id = spawn
                 .worktree_id
                 .clone()

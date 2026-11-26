@@ -70,7 +70,10 @@ impl KernelRuntimeState {
             });
         }
         let config = self.owned.config_projection.snapshot();
-        self.refuse_unhostable_slice_worker(&config, &request)?;
+        self.refuse_unhostable_slice_worker(
+            request.worker_kernel_ref.as_deref(),
+            &request.backend,
+        )?;
         self.validate_slice_development_selection(
             request.development.as_ref(),
             &request.backend,
@@ -135,19 +138,17 @@ impl KernelRuntimeState {
     /// Cloud-hosted slice workers register under the identity this kernel mints, so a request that
     /// names another worker could only fail at start, after leaving a record that blocks that
     /// machine. Refuse before any record exists.
-    fn refuse_unhostable_slice_worker(
+    pub(crate) fn refuse_unhostable_slice_worker(
         &self,
-        config: &crate::config::DaemonConfig,
-        request: &crate::local::CreateSliceRequest,
+        worker_kernel_ref: Option<&str>,
+        backend: &crate::slice::SliceBackendKind,
     ) -> Result<(), DaemonError> {
-        let Some(worker) = request
-            .worker_kernel_ref
-            .as_deref()
-            .filter(|worker| !worker.trim().is_empty())
-        else {
+        let config = self.owned.config_projection.snapshot();
+        let config = &config;
+        let Some(worker) = worker_kernel_ref.filter(|worker| !worker.trim().is_empty()) else {
             return Ok(());
         };
-        if request.backend != crate::slice::SliceBackendKind::LocalDocker
+        if *backend != crate::slice::SliceBackendKind::LocalDocker
             || !crate::runtime::cloud_relay_control::hosted_slice_launch(config)
             || crate::slice::machine_scoped_slice_worker_ref(worker, &config.host_machine_id)
         {
