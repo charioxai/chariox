@@ -338,3 +338,31 @@ async fn c4_a_revoked_grant_refuses_the_earlier_started_child_again() {
         .unwrap();
     assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
 }
+
+// Row 480 (D137, option A): a process outside the holder's tree is covered only by an explicit
+// `chariox access cover --pid <pid>` from the approved agent, so its refusal names that command
+// and that process's pid.
+#[tokio::test]
+async fn c2b_the_refusal_for_a_process_outside_the_tree_names_the_cover_command_and_its_pid() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let mut stranger = Client::start(&kernel.root);
+    let _grant = grant(&mut kernel, &mut holder).await;
+    let refused = stranger.request(serde_json::json!({"GetSessionState": {"session_id": SESSION}}));
+    assert_eq!(
+        refused["error"]["code"], "kernel_access_not_covered",
+        "{refused}"
+    );
+    let message = refused["error"]["message"].as_str().unwrap();
+    let named = format!("chariox access cover --pid {}", stranger.child.id());
+    assert!(message.contains(&named), "{message}");
+    assert!(!message.contains("<its pid>"), "{message}");
+    // The same words reach a process whose cover request is refused.
+    let cover = stranger.cover(stranger.child.id());
+    assert_eq!(
+        cover["error"]["code"], "kernel_access_not_covered",
+        "{cover}"
+    );
+    let message = cover["error"]["message"].as_str().unwrap();
+    assert!(message.contains(&named), "{message}");
+}
