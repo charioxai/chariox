@@ -134,6 +134,26 @@ async fn answer_secret(f: &Fixture, id: &str, choice: &str, reply: Option<&str>)
     answer_secret_result(f, id, choice, reply).await.unwrap();
 }
 
+/// The answer on the fixture's own runtime, so a lock the test holds on it is the one the save waits on.
+async fn answer_on_fixture_runtime(
+    f: &Fixture,
+    id: &str,
+    reply: &str,
+) -> Result<(), DaemonError> {
+    f.runtime
+        .answer_terminal_runtime_interaction(
+            &f.room,
+            id,
+            "secret",
+            Some(reply),
+            Some("local"),
+            None,
+            None,
+            Some(crate::local::KernelConnectionClass::Terminal),
+        )
+        .await
+}
+
 async fn answer_secret_result(
     f: &Fixture,
     id: &str,
@@ -459,9 +479,12 @@ fn an_accepted_answer_commits_when_the_save_crosses_the_deadline() {
         };
         let answer = async {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            answer_secret_result(&f, &id, "secret", Some(CANARY)).await
+            let started = std::time::Instant::now();
+            let result = answer_on_fixture_runtime(&f, &id, CANARY).await;
+            (result, started.elapsed())
         };
-        let ((), answered) = tokio::join!(hold, answer);
+        let ((), (answered, took)) = tokio::join!(hold, answer);
+        assert!(took >= Duration::from_millis(1500), "the save really waited on the Vault lock: {took:?}");
         answered.expect("the answer was accepted before the deadline and must commit");
         assert!(secret_cards(&f).is_empty());
         assert!(crate::credential::CharioxCredentialRegistry::user()
@@ -530,7 +553,7 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
         };
         let answer = async {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            answer_secret_result(&f, &id, "secret", Some(CANARY)).await
+            answer_on_fixture_runtime(&f, &id, CANARY).await
         };
         let destroy = async {
             tokio::time::sleep(Duration::from_millis(600)).await;
@@ -548,15 +571,8 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
                 .owned
                 .withdraw_agent_interactions(&f.room, Some(&f.agent))
                 .unwrap();
-            eprintln!(
-                "DIAG after destroy: cards {:?}, task {:?}, wake {:?}",
-                secret_cards(&f),
-                f.task(&task.task_id).state,
-                f.store().agent_wake(&id).unwrap().map(|w| w.state)
-            );
         };
         let ((), answered, ()) = tokio::join!(hold, answer, destroy);
-        eprintln!("DIAG answered: {:?}", answered.as_ref().map(|_| "ok").map_err(|e| e.to_string()));
         assert!(answered.is_err(), "an answer for a withdrawn card is refused");
         assert!(crate::credential::CharioxCredentialRegistry::user()
             .unwrap()
