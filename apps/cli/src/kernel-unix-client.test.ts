@@ -78,11 +78,46 @@ test("several running kernels are listed, not guessed", () => withBareHome(home 
   startKernelHome(home, join(home, ".chariox/dev/machines/local"), "kernel-a", 55139)
   startKernelHome(home, join(home, ".chariox/dev/machines/md"), "kernel-b", 55141)
   assert.throws(() => kernelUnixClient(), (error: unknown) => error instanceof CommandFailure
-    && error.code === "kernel_ambiguous" && error.message.includes("machines/local") && error.message.includes("machines/md") && /CHARIOX_HOME/.test(error.message))
+    && error.code === "kernel_ambiguous" && error.message.includes("machines/local") && error.message.includes("machines/md")
+    && error.message.includes("port 55139") && error.message.includes("port 55141")
+    && error.message.includes(`--socket ${defaultKernelUnixSocketPath("kernel-a", join(home, ".chariox/dev/machines/local"))}`) && /CHARIOX_HOME/.test(error.message))
 }))
 
 test("an explicit CHARIOX_HOME is never widened to the Setup kernels", () => withBareHome(home => {
   startKernelHome(home, join(home, ".chariox/dev/machines/local"), "kernel-setup", 55139)
   process.env.CHARIOX_HOME = join(home, "elsewhere")
   assert.throws(() => kernelUnixClient(), (error: unknown) => error instanceof CommandFailure && error.code === "kernel_unreachable")
+}))
+
+function retainDefaultEndpoint(home: string, kernelId: string): void {
+  mkdirSync(join(home, ".chariox/kernels"), { recursive: true })
+  writeFileSync(join(home, ".chariox/kernels/registry.json"), JSON.stringify({ kernels: { "127.0.0.1:43118": { kernel_id: kernelId } } }))
+}
+
+test("a retained default-port identity of a stopped kernel does not shadow the running Setup kernel", () => withBareHome(home => {
+  retainDefaultEndpoint(home, "kernel-stopped")
+  const kernelHome = join(home, ".chariox/dev/machines/local")
+  startKernelHome(home, kernelHome, "kernel-setup", 55139)
+  assert.equal(kernelUnixClient().socketPath, `ws+unix://${defaultKernelUnixSocketPath("kernel-setup", kernelHome)}`)
+}))
+
+test("a retained default-port identity does not win over another running kernel", () => withBareHome(home => {
+  retainDefaultEndpoint(home, "kernel-dev")
+  startKernelHome(home, join(home, ".chariox"), "kernel-dev", 43118)
+  startKernelHome(home, join(home, ".chariox/dev/machines/local"), "kernel-setup", 55139)
+  assert.throws(() => kernelUnixClient(), (error: unknown) => error instanceof CommandFailure && error.code === "kernel_ambiguous")
+}))
+
+test("an explicitly selected port never falls through to another running kernel", () => withBareHome(home => {
+  startKernelHome(home, join(home, ".chariox/dev/machines/local"), "kernel-setup", 55139)
+  process.env.CHARIOX_KERNEL_PORT = "55239"
+  assert.throws(() => kernelUnixClient(), (error: unknown) => error instanceof CommandFailure && error.code === "kernel_unreachable" && error.message.includes("55239"))
+}))
+
+test("an explicitly selected port finds the running kernel that serves it", () => withBareHome(home => {
+  const kernelHome = join(home, ".chariox/dev/machines/md")
+  startKernelHome(home, join(home, ".chariox/dev/machines/local"), "kernel-setup", 55139)
+  startKernelHome(home, kernelHome, "kernel-md", 55141)
+  process.env.CHARIOX_KERNEL_PORT = "55141"
+  assert.equal(kernelUnixClient().socketPath, `ws+unix://${defaultKernelUnixSocketPath("kernel-md", kernelHome)}`)
 }))
