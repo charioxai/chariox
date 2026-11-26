@@ -1,7 +1,7 @@
 //! Row 552: what an agent's kernel_browser action returns about the tabs. The host answers every
 //! action with the whole tab list and each tab's favicon (about 9k tokens with 14 tabs open); an
 //! agent needs the acted tab and, only when tabs opened or closed, that change. The full list is
-//! the answer to an explicit `state` (or `start`) read, still without the icon bytes.
+//! the answer to an explicit `state`, `start`, `restart` or `stop` (the browser's whole new state), still without the icon bytes.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 pub(super) type SeenTabs = BTreeSet<String>;
 
 /// Rewrites the host's reply for the agent. `op` is the command's op, `acting_tab` its `tab_id`.
-/// A read of the state (or a start) lists every tab; any other action answers with the acted tab,
+/// A read of the state (or a start, restart or stop) lists every tab; any other action answers with the acted tab,
 /// the tab count and, only when tabs opened or closed since the agent last heard, that change.
 /// Icons never reach the agent.
 pub(super) fn slim_agent_reply(
@@ -33,7 +33,7 @@ pub(super) fn slim_agent_reply(
     }
     let id = |tab: &Value| tab["tab_id"].as_str().map(str::to_owned);
     let ids: SeenTabs = tabs.iter().filter_map(id).collect();
-    if matches!(op, "state" | "start") {
+    if matches!(op, "state" | "start" | "restart" | "stop") {
         object.insert("tabs".into(), Value::Array(tabs));
         *seen = ids;
         return payload;
