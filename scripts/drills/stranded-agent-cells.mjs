@@ -24,6 +24,8 @@ const skipBackstopWait = flags.get("--skip-backstop-wait") === "1"
 // A pre-reload timer longer than the provider process's idle limit (5 min) is the case under test; shorter keeps a diagnostic run brief.
 const longMs = Number(flags.get("--long-ms") ?? 1800000)
 const onlyLong = flags.get("--only-long") === "1"
+// Replace the hot reload by a cold restart: the kernel is killed and started again on its state, and the Vault is unlocked after it.
+const cold = flags.get("--cold") === "1"
 // A Vault unlock that lapses before the wake is due: the delivery is refused with an unlock card, and an unlock then starts the agent.
 const vaultMinutes = Number(flags.get("--vault-minutes") ?? 0)
 const reunlockAfterS = Number(flags.get("--reunlock-after-s") ?? 0)
@@ -154,6 +156,15 @@ try {
     await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, "the arming turn completes", 240000)
     longTimer = { r, wake: { next_due_ms: Date.now() + longMs } }
   })
+  // A process watch armed before the restart: a hot reload hands it over (its end wakes the agent); a cold restart loses it, and the
+  // agent is told what is gone and what to do.
+  let watcher = null
+  await attempt("7", async () => {
+    const r = await room("c7")
+    await prompt(r, r.agent, 'Call the chariox events_process tool once with argv ["sleep","240"] and label "NW554-WATCH". Do NOT call events_yield and do not wait. End your turn at once with the single word ARMED.')
+    await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, "the watch is armed", 240000)
+    watcher = r
+  })
   // An agent that is idle with nothing armed, before the reload: it must start a turn after it.
   let idleAgent = null
   await attempt("6", async () => {
@@ -166,8 +177,15 @@ try {
   // The hot reload: SIGUSR2 replaces the program in place and keeps the PID.
   const pid = k.pid
   if (pid) {
-    process.kill(pid, "SIGUSR2")
-    k.note("hot-reload-requested", { pid })
+    if (cold) {
+      await k.coldRestart("SIGKILL")
+      // The Vault is locked after a cold restart: the owner unlocks it (here, the drill, with the passphrase it made).
+      await k.rpc({ UnlockCredentialVault: { passphrase, duration: { kind: "until_kernel_stops" }, surface: "terminal" } })
+      k.note("vault-unlocked-after-the-cold-restart", {})
+    } else {
+      process.kill(pid, "SIGUSR2")
+      k.note("hot-reload-requested", { pid })
+    }
     await until(async () => { try { return !!(await k.rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, "kernel back after the hot reload", 180000)
     const kept = backstop ? (await wakesOf(backstop.r.R, backstop.r.agent)).find(w => w.id === backstop.id && live(w)) : null
     cell("2-backstop-survives-the-hot-reload", backstop ? !!kept : null, { kept: kept ? kept.state : null })
@@ -188,6 +206,21 @@ try {
       const woke = await until(async () => done(await turnsOf(timerAgent.R, timerAgent.agent)).length >= 2, "the timer armed before the reload wakes its agent", 330000).then(() => true, () => false)
       cell("5-timer-armed-before-the-reload-wakes-the-agent", woke)
       if (!woke) exitCode = 1
+    })
+    // The watch armed before the restart: handed over by a hot reload (its end wakes the agent), lost by a cold one (the agent is told).
+    if (watcher) await attempt("7-after", async () => {
+      await reattach(watcher)
+      if (cold) {
+        const told = await until(async () => done(await turnsOf(watcher.R, watcher.agent)).slice(1).some(turn => /process_lost/.test(text(turn))), "the agent is told the watch was lost", 420000).then(() => true, () => false)
+        const turns = done(await turnsOf(watcher.R, watcher.agent))
+        save("turns-7-cold.json", turns)
+        const next = turns.slice(1).some(turn => /start it again and watch the new one/.test(text(turn)))
+        cell("c-a-watch-armed-before-a-cold-restart-is-reported-lost-to-the-agent", told, { process_lost: told })
+        cell("c-the-report-says-what-to-do-next", told ? next : null, { start_it_again: next })
+      } else {
+        const woke = await until(async () => done(await turnsOf(watcher.R, watcher.agent)).length >= 2, "the watch armed before the reload ends and wakes its agent", 420000).then(() => true, () => false)
+        cell("c-a-watch-armed-before-a-hot-reload-wakes-its-agent-at-its-end", woke)
+      }
     })
     // A backstop armed after the reload, to be woken by it.
     afterReload = await stated("c2r", false).catch(() => null)
