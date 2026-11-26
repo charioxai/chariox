@@ -244,7 +244,6 @@ impl KernelRuntimeState {
         use crate::provider_account_copy::{
             failure, TRANSFER_SIGN_IN_REQUIRED, TRANSFER_TARGET_NOT_OWNED, TRANSFER_WORKER_OUTDATED,
         };
-        use sha2::Digest;
         let config = self.config_snapshot().await;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         // The existing Vault unlock card, held until the owner answers it; the guard closes the
@@ -308,16 +307,8 @@ impl KernelRuntimeState {
             .map_err(|_| failure(TRANSFER_TARGET_NOT_OWNED))?;
         // One operation per (account, worker): a retry returns the saved receipt, so a copy the
         // worker already holds is never sent twice.
-        let operation_id = format!(
-            "lease-{}",
-            &format!(
-                "{:x}",
-                sha2::Sha256::digest(format!(
-                    "{}\0{home_profile_id}\0{worker_kernel_id}",
-                    config.daemon_id
-                ))
-            )[..32]
-        );
+        let operation_id =
+            lease_copy_operation_id(&config.daemon_id, home_profile_id, worker_kernel_id, None);
         let request = crate::local::CopyProviderAccountToKernelRequest {
             provider: "claude".to_string(),
             account_profile: home_profile_id.to_string(),
@@ -384,5 +375,136 @@ impl KernelRuntimeState {
         );
         self.wait_for_account_login(agent.session_id(), agent_id, &owner, &id, login)
             .await
+    }
+}
+
+/// Row 577: what the home records when the worker answered that it no longer holds its copy.
+const WORKER_LOST_COPY: &str = "the worker no longer holds the account copy";
+
+/// The copy operation for this account on this worker. A retry of one copy keeps its id, so a
+/// copy whose answer was lost is never sent twice; the copy that replaces one the worker lost is a
+/// new operation, named by when the loss was recorded.
+fn lease_copy_operation_id(
+    home_kernel_id: &str,
+    home_profile_id: &str,
+    worker_kernel_id: &str,
+    recovery: Option<u64>,
+) -> String {
+    use sha2::Digest;
+    let input = format!("{home_kernel_id}\0{home_profile_id}\0{worker_kernel_id}");
+    let _ = recovery;
+    format!(
+        "lease-{}",
+        &format!("{:x}", sha2::Sha256::digest(input))[..32]
+    )
+}
+
+/// When the home recorded that `worker_kernel_id` lost its copy, while that recovery has not
+/// finished.
+fn lost_copy_generation(
+    materializations: &[ProviderAccountMaterializationStatus],
+    worker_kernel_id: &str,
+) -> Option<u64> {
+    materializations
+        .iter()
+        .find(|status| {
+            status.target_kind == ProviderAccountMaterializationTargetKind::Copy
+                && status.target_ref == worker_kernel_id
+                && status.state == ProviderAccountMaterializationState::Error
+                && status.last_error.as_deref() == Some(WORKER_LOST_COPY)
+        })
+        .map(|status| status.observed_at_ms)
+}
+
+#[cfg(test)]
+mod lease_copy_operation_tests {
+    use super::*;
+
+    fn copy_status(
+        state: ProviderAccountMaterializationState,
+        error: Option<&str>,
+        at: u64,
+    ) -> ProviderAccountMaterializationStatus {
+        ProviderAccountMaterializationStatus {
+            target_kind: ProviderAccountMaterializationTargetKind::Copy,
+            target_ref: "worker".into(),
+            state,
+            observed_at_ms: at,
+            last_error: error.map(str::to_string),
+        }
+    }
+
+    fn operation_for(materializations: &[ProviderAccountMaterializationStatus]) -> String {
+        lease_copy_operation_id(
+            "home",
+            "claude-1",
+            "worker",
+            lost_copy_generation(materializations, "worker"),
+        )
+    }
+
+    // Review P2 (row 577): the worker lost the copy it had installed. Its record of the first copy
+    // is immutable, so the copy that replaces it must be a new operation, or the worker replays the
+    // old receipt and refuses it (`provider_account_copy_conflict`) on every later prompt.
+    #[test]
+    fn the_copy_after_the_worker_lost_its_copy_is_a_new_operation() {
+        let first = operation_for(&[]);
+        let lost = [copy_status(
+            ProviderAccountMaterializationState::Error,
+            Some(WORKER_LOST_COPY),
+            1_000,
+        )];
+        assert_ne!(
+            operation_for(&lost),
+            first,
+            "a recovery reused the completed copy's operation"
+        );
+        // A retry of that same recovery (its answer lost) keeps its operation.
+        assert_eq!(operation_for(&lost), operation_for(&lost));
+        // A second loss later is another new copy.
+        let lost_again = [copy_status(
+            ProviderAccountMaterializationState::Error,
+            Some(WORKER_LOST_COPY),
+            2_000,
+        )];
+        assert_ne!(operation_for(&lost_again), operation_for(&lost));
+    }
+
+    // A copy that did not finish (its answer may be lost) retries under the same operation, so the
+    // worker answers from its receipt and nothing is installed twice.
+    #[test]
+    fn a_copy_that_did_not_finish_retries_under_the_same_operation() {
+        let unfinished = [copy_status(
+            ProviderAccountMaterializationState::Error,
+            Some("the account copy to the worker did not finish"),
+            1_000,
+        )];
+        assert_eq!(operation_for(&unfinished), operation_for(&[]));
+        let other_worker = [ProviderAccountMaterializationStatus {
+            target_ref: "another-worker".into(),
+            ..copy_status(
+                ProviderAccountMaterializationState::Error,
+                Some(WORKER_LOST_COPY),
+                1_000,
+            )
+        }];
+        assert_eq!(operation_for(&other_worker), operation_for(&[]));
+    }
+
+    // The recovery path records the loss with the marker the next copy reads.
+    #[test]
+    fn the_recorded_loss_names_the_recovery_and_a_finished_copy_clears_it() {
+        let lost = [copy_status(
+            ProviderAccountMaterializationState::Error,
+            Some(WORKER_LOST_COPY),
+            7,
+        )];
+        assert_eq!(lost_copy_generation(&lost, "worker"), Some(7));
+        let done = [copy_status(
+            ProviderAccountMaterializationState::Materialized,
+            None,
+            8,
+        )];
+        assert_eq!(lost_copy_generation(&done, "worker"), None);
     }
 }
