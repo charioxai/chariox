@@ -116,6 +116,7 @@ async fn running_leased_turn() -> RunningLeasedTurn {
             completion_recorded: false,
             settlement_requested: false,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         });
     RunningLeasedTurn {
         runtime,

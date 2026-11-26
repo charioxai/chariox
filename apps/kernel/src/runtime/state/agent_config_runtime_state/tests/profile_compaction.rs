@@ -694,6 +694,7 @@ async fn a_leased_turn_finishes_on_its_account_when_the_worker_holds_no_credenti
             completion_recorded: false,
             settlement_requested: false,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         });
 
     runtime

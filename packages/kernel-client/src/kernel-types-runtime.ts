@@ -52,7 +52,7 @@ export type AgentLiveness = {
   stalled?: boolean
 }
 
-export type AgentWaitKind = "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held" | "card"
+export type AgentWaitKind = "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held" | "card" | "tool"
 
 export type AgentWaitingOn = {
   kind: AgentWaitKind

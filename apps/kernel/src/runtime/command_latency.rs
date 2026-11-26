@@ -868,6 +868,7 @@ mod tests {
             completion_recorded: true,
             settlement_requested: true,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         };
 
         let fields = provider_turn_completion_fields(&run, Some(&turn), Some(&activity), 2_075);
