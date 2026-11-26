@@ -32,7 +32,7 @@ struct RunArgs {
 pub(crate) fn privileged_run_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PRIVILEGED_RUN.into(),
-        description: "Run one command (argv, no shell) as root with sudo on this machine, outside your sandbox. The kernel types the sudo password from Vault entry credential_id; you never see it ([vault:id] in results). The entry is the owner's command_stdin entry for this machine; a refusal names its origin.".into(),
+        description: "Run one command (argv, no shell) as root with sudo on this machine. The kernel types the sudo password from credential_id, the owner's command_stdin Vault entry for this machine; you never see it.".into(),
         input_schema: serde_json::json!({"type":"object","required":["argv","credential_id"],"properties":{
             "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},
             "credential_id":{"type":"string"},
