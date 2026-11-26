@@ -66,7 +66,17 @@ const fold = async (id, tries = 100) => {
   if (watched) {
     await chrome.tabs.update(id, { active: true });
     if (epoch === selectionEpoch) await chrome.windows.update(main.id, { focused: true });
-  } else if (previous !== undefined) await chrome.tabs.update(previous, { active: true }).catch(() => {});
+  } else if (previous !== undefined) {
+    // A Tab moved in behind the shown one keeps the size of the window it came from and is not laid out in this one:
+    // it paints nothing, so no view or screenshot of it can start. Select it once and put the shown Tab back in the
+    // same step (as for a Tab Chrome activates on opening), which lays it out at this window's size.
+    // A person's selection made during either wait is newer than this fold and keeps the view.
+    const moved = await chrome.tabs.get(id);
+    if (epoch !== selectionEpoch) return;
+    if (!moved.active) await chrome.tabs.update(id, { active: true }).catch(() => {});
+    if (epoch !== selectionEpoch) return;
+    await chrome.tabs.update(previous, { active: true }).catch(() => {});
+  }
 };
 chrome.tabs.onCreated.addListener(tab => { const agent = Date.now() <= (agentOpeners.get(tab.openerTabId) ?? 0); made.set(tab.id, { opener: tab.openerTabId, agent, initial: true, at: Date.now() }); if (made.size > 64) made.delete(made.keys().next().value); keepShown(tab, shown.get(tab.windowId), agent); fold(tab.id).catch(() => {}); });
 chrome.tabs.onAttached.addListener(id => fold(id).catch(() => {}));
@@ -109,7 +119,7 @@ const favicon = async target => {
   }
 };
 globalThis.charioxTabs = {
-  revision: 9,
+  revision: 10,
   favicon,
   // Physical Chrome input and show_tab announce the person's choice before dispatch.
   personSelection() { selectionEpoch++; for (const tab of made.values()) { tab.initial = false; tab.agent = false; } agentOpeners.clear(); },
@@ -196,7 +206,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 9",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 10",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
