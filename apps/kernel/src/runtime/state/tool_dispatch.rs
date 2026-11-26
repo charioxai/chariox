@@ -28,9 +28,11 @@ mod home_extension_authorizer;
 mod notification;
 mod popup;
 pub(in crate::runtime::state) use popup::{
-    add_person_done, blocking_popup_timeout_seconds, hidden_region_note, popup_status,
-    CANCEL_CHOICE_ID,
+    blocking_popup_timeout_seconds, popup_status, CANCEL_CHOICE_ID,
 };
+// Rows 574/655: the card rules the popup tests check directly; production code reaches them inside `popup`.
+#[cfg(test)]
+pub(in crate::runtime::state) use popup::{add_person_done, hidden_region_note};
 pub(super) fn authorize_remote_home_context_for_peer(
     state: &KernelRuntimeState,
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
