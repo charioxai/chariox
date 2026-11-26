@@ -441,9 +441,7 @@ fn owner_vault_is_not_a_kernel_access_operation() {
 /// These operations must run on the kernel that holds their authority.
 fn authorize_local_only_request(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
     match request {
-        LocalDaemonRequest::CloudAccountKernels(_) => Err(error(
-            "Manage linked kernels from the owner's enrolled kernel directly",
-        )),
+        LocalDaemonRequest::CloudAccountKernels(_) => Err(Refusal::LocalOnly.error()),
         LocalDaemonRequest::RoomTerminal(terminal)
             if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecPlace { .. }) =>
         {

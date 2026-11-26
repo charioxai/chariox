@@ -804,7 +804,7 @@ impl KernelRuntimeState {
         };
         // The requester sat inside the holder when the request arrived (checked on submit),
         // and the grant binds to the holder identity the owner saw, not to the requester.
-        if !same_agent || !holder.alive() || requester.is_some_and(|peer| !holder.contains(peer)) {
+        if !same_agent || !holder.alive() || requester.is_some_and(|peer| !peer.alive()) {
             state.remember_request_outcome(
                 &holder,
                 KernelAccessStatusReason {
