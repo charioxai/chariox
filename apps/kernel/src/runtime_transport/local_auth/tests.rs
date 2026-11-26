@@ -296,19 +296,6 @@ fn provider_environments_carry_neither_the_token_nor_its_path() {
     assert!(!environment.contains(&*file.path().to_string_lossy()));
 }
 
-/// Row 614 cell (e): a caller without the owner's token, inside the sandbox the
-/// kernel gave an agent, is told a step that works there: the credential of its
-/// own run, then the Unix socket for an external agent.
-#[test]
-fn the_refusal_names_the_agent_credential_and_the_unix_socket() {
-    let (local, auth) = local_token_auth();
-    let socket = Path::new("/tmp/kernel.sock");
-    let message = local.rejection_message(43_909, socket);
-    assert!(message.contains("CHARIOX_AGENT_CLI_TOKEN"), "{message}");
-    assert!(message.contains("ws+unix:///tmp/kernel.sock"), "{message}");
-    assert!(!message.contains(auth.token()), "{message}");
-}
-
 #[cfg(unix)]
 struct TempHome {
     path: PathBuf,

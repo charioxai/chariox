@@ -1417,43 +1417,27 @@ pub(crate) fn apply_managed_provider_isolation(
 }
 
 fn agent_cli(request: &LaunchProviderRequest) -> Option<(PathBuf, &Path)> {
-    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
     let socket = request.local_access_socket.as_deref()?;
     if !socket.metadata().ok()?.file_type().is_socket() {
         return None;
     }
-    Some((chariox_cli_executable()?, socket))
-}
-
-/// The `chariox` command with every link resolved: the file a sandbox binds in.
-pub(crate) fn chariox_cli_executable() -> Option<PathBuf> {
-    chariox_cli_command()?.canonicalize().ok()
-}
-
-/// The `chariox` command an agent's shell runs, as the install names it:
-/// `CHARIOX_CLI_BIN` when set (an override), otherwise the `chariox` that sits
-/// beside the running kernel program (a release bundle's bin/). A link is kept as
-/// a link, so the folder that names the command is the folder for PATH.
-pub(crate) fn chariox_cli_command() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("CHARIOX_CLI_BIN") {
-        return runnable(PathBuf::from(path));
-    }
-    chariox_cli_beside(&std::env::current_exe().ok()?)
-}
-
-pub(crate) fn chariox_cli_beside(kernel: &Path) -> Option<PathBuf> {
-    let bin = kernel.parent()?;
-    ["chariox", "chariox-cli"]
-        .into_iter()
-        .find_map(|name| runnable(bin.join(name)))
-}
-
-fn runnable(path: PathBuf) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = path.metadata().ok()?;
-    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some(path)
+    let executable = |path: PathBuf| {
+        let path = path.canonicalize().ok()?;
+        let metadata = path.metadata().ok()?;
+        (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some(path)
+    };
+    let cli = if let Some(path) = std::env::var_os("CHARIOX_CLI_BIN") {
+        executable(PathBuf::from(path))?
+    } else {
+        let kernel = std::env::current_exe().ok()?;
+        let bin = kernel.parent()?;
+        ["chariox", "chariox-cli"]
+            .into_iter()
+            .find_map(|name| executable(bin.join(name)))?
+    };
+    Some((cli, socket))
 }
 
 #[cfg(any(target_os = "linux", test))]

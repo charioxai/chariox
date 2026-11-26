@@ -117,13 +117,9 @@ impl CommandRouter {
         &self,
         command: &KernelCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        // Row 405 + row 614: an agent of the kernel's owner lists the owner's kernels too, so it can
-        // name them in cross-kernel requests: the owner's live agent (`dispatch_as_owner_agent`) and
-        // the agent's own shell with its per-run CLI credential (`chariox kernels`). Both are a
-        // `KernelAgent` acting for the kernel's owner.
-        let owner_agent = command.caller.connection_class
-            == Some(KernelConnectionClass::KernelAgent)
-            && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        // Row 405: the owner's live agent (`dispatch_as_owner_agent`) lists the owner's kernels
+        // too, so it can name them in cross-kernel requests.
+        let owner_agent = self.is_owner_agent_reach(command);
         if !owner_agent
             && !matches!(
                 command.caller.connection_class,
@@ -131,7 +127,7 @@ impl CommandRouter {
             )
         {
             return Err(error(
-                "only a Chariox terminal, a local grant holder or an agent of the kernel's owner can list kernels",
+                "only a Chariox terminal, a local grant holder or the owner's agent can list kernels",
             ));
         }
         let kernels = self
