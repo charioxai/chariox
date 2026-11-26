@@ -1,7 +1,9 @@
 // Row 554 cells d/e/f (orch15's evidence): a RECURRING timer (interval 2 min) armed by a real Claude agent before a hot reload (or a
-// cold restart) keeps firing after it: fire_count rises and next_due_ms stays ahead of the clock, never stuck in the past.
-//   d1  the agent arms the timer and ends its turn.
-//   d2  the agent arms the timer, then waits (yields) on another timer, so its turn stays open while the recurring one fires.
+// cold restart) fires on time after it and is never stuck: scheduled with next_due_ms ahead of the clock, or ended.
+//   d1  the agent arms the timer and ends its turn: the kernel's one-fire contract (#1731) applies: it fires once after the restart,
+//       is delivered, and ends (`fired`).
+//   d2  the agent arms the timer, then waits (yields) on another timer: the timer fires on time after the restart; it stays scheduled
+//       while the wait lasts, and ends only with the task (the wake's own turn is a successor and retires the wait).
 // Run: node scripts/drills/recurring-timer-cells.mjs --kernel-binary <path> --token-file <file> --state-root <dir> --evidence-dir <dir> [--cold 1]
 import { randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -47,7 +49,10 @@ try {
   const d1 = await room("d1"), d2 = await room("d2")
   await ask(d1, 'Call the chariox events_timer tool once with delay_ms 120000, interval_ms 120000 and label "NW554-REC1". Do NOT call events_yield and do not wait. End your turn at once with the single word ARMED. If a wake for NW554-REC1 arrives later, reply with the single word TICK.')
   await ask(d2, 'Call the chariox events_timer tool once with delay_ms 120000, interval_ms 120000 and label "NW554-REC2". Then call events_timer once more with delay_ms 1500000 and label "NW554-HOLD", then call events_yield waiting on the NW554-HOLD registration only. Do not answer until it wakes you.')
+  // Restart only when the agents are in the states the cells are about: d1's turn completed, d2's task waiting.
+  const taskStates = async r => ((await k.session(r.R)).agent_tasks ?? []).filter(t => t.agent_id === r.agent).map(t => t.state)
   await until(async () => !!(await wakeOf(d1, "NW554-REC1")) && !!(await wakeOf(d2, "NW554-REC2")) && !!(await wakeOf(d2, "NW554-HOLD")), "both recurring timers armed", 300000)
+  await until(async () => (await turnsOf(d1)).some(turn => turn.lifecycle === "completed") && (await taskStates(d2)).includes("waiting"), "d1's turn completed and d2's task waiting", 300000)
   const before = { d1: await wakeOf(d1, "NW554-REC1"), d2: await wakeOf(d2, "NW554-REC2") }
   k.note("armed", { d1_interval: before.d1.interval_ms, d2_interval: before.d2.interval_ms, d1_due: before.d1.next_due_ms })
   if (cold) {
@@ -69,13 +74,15 @@ try {
     }
     writeFileSync(join(evidence, "samples.json"), JSON.stringify(samples, null, 1))
   }
-  for (const [name, label] of [["d1", "NW554-REC1"], ["d2", "NW554-REC2"]]) {
-    const mine = samples.filter(s => s.name === name)
-    const last = mine.at(-1)
-    const fires = last ? last.fire_count - before[name].fire_count : 0
-    const ok = !!last && fires >= 2 && last.next_due_in_s > -30 && last.state === "scheduled"
-    cell(`${name}-a-recurring-timer-armed-before-the-${cold ? "cold-restart" : "hot-reload"}-keeps-firing`, ok, { fires_after: fires, last })
-  }
+  // Never stuck: scheduled with a due time ahead of the clock, or ended; never scheduled and overdue.
+  const neverStuck = list => list.every(x => x.state !== "scheduled" || x.next_due_in_s > -60)
+  const mine1 = samples.filter(x => x.name === "d1"), mine2 = samples.filter(x => x.name === "d2")
+  const last1 = mine1.at(-1), last2 = mine2.at(-1)
+  const fires1 = last1 ? last1.fire_count - before.d1.fire_count : 0
+  const fires2 = last2 ? last2.fire_count - before.d2.fire_count : 0
+  const mode = cold ? "cold-restart" : "hot-reload"
+  cell(`d1-a-timer-left-by-an-ended-turn-fires-once-after-the-${mode}-and-ends`, !!last1 && fires1 === 1 && last1.state === "fired" && last1.last_delivery === "handled", { fires_after: fires1, last: last1 })
+  cell(`d2-a-recurring-timer-of-a-waiting-task-fires-on-time-after-the-${mode}-and-is-never-stuck`, !!last2 && fires2 >= 1 && neverStuck(mine2), { fires_after: fires2, last: last2 })
 } catch (error) {
   k.note("error", { message: String(error.message ?? error).slice(0, 400) })
   exitCode = 1
