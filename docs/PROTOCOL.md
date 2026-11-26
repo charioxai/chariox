@@ -7776,6 +7776,10 @@ list, so a change of stock or rate needs a fresh decision. Agents use the same l
 card names the chosen option, and its title names the requesting agent and the one-line purpose it gave
 (a kernel-local tool argument: no wire shape changes). The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
+### Vault capture with env — relay peer 454 (provisional)
+
+- relay peer 454 (provisional): `CaptureForHomeVault` `Prepare` carries `env_uses`, the existing Vault entries the worker's `chariox.vault.capture_command` runs with (`origin` and `env`). The home checks each against its origin before it asks for an unlock, so an unknown entry or a wrong origin is refused at once.
+
 ### Machines without asking — local 1015 (relay peer 452)
 
 One owner setting decides whether an agent's machine acquisition (`chariox.machines.acquire`, and the

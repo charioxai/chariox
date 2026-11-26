@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 pub(crate) const VAULT_USE_ENV: &str = "chariox.vault.use_env";
 /// Returned per stream; the tail is kept, where failures usually are.
 const RETURNED_BYTES: usize = 32 * 1024;
-const MAX_VARIABLES: usize = 16;
+pub(super) const MAX_VARIABLES: usize = 16;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,7 +147,7 @@ impl KernelRuntimeState {
 }
 
 /// An agent's captured values stay in the session that captured them.
-fn variable_name(name: &str) -> bool {
+pub(super) fn variable_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 128
         && chars
@@ -158,7 +158,7 @@ fn variable_name(name: &str) -> bool {
 
 /// Masks the injected values in the whole stream before cutting it, so no
 /// partial value survives at the cut; then sanitizes each line.
-fn masked(raw: &[u8], masks: &[(String, Zeroizing<String>)]) -> (String, bool) {
+pub(super) fn masked(raw: &[u8], masks: &[(String, Zeroizing<String>)]) -> (String, bool) {
     let mut text = Zeroizing::new(String::from_utf8_lossy(raw).into_owned());
     for (id, value) in masks {
         for value in [value.as_str(), value.trim()] {
