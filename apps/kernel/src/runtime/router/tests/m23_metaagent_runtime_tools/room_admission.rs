@@ -2024,6 +2024,71 @@ async fn blocked_peer_in_other_room() {
     }
 }
 
+// Row 405 (review of #1695): the owner's live agent reaches the downstream handlers of the owner's
+// kernel too, not only the reach classifier: kernel files, access grants and the owner's cards
+// through `chariox_kernel_request`.
+#[test]
+fn room_admission_an_owners_agent_reaches_kernel_files_grants_and_cards() {
+    run_large_stack_async_test("room-owner-agent-handlers", owner_agent_handlers);
+}
+
+async fn owner_agent_handlers() {
+    let env = TestMetaRuntimeEnv::new("room-owner-agent-handlers");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_owned();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let file = workspace.join("owner-file.txt");
+    std::fs::write(&file, "x").unwrap();
+    let call = |request: serde_json::Value| {
+        router.dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox_kernel_request",
+            serde_json::json!({ "request": request }),
+        )
+    };
+    for request in [
+        serde_json::json!({"StatKernelFile": {"path": file.to_string_lossy(), "with_sha256": false}}),
+        serde_json::json!({"ListKernelDirectory": {"path": workspace.to_string_lossy()}}),
+        serde_json::json!({"ListKernelAccessGrants": {}}),
+        serde_json::json!({"ListOwnerInteractions": {}}),
+    ] {
+        let result = call(request.clone()).await;
+        assert!(matches!(&result, Ok(r) if r.ok), "{request}: {result:?}");
+    }
+    // Revoking a grant that does not exist may fail, but never for who is asking.
+    let result =
+        call(serde_json::json!({"RevokeKernelAccessGrant": {"grant_id": "no-such-grant"}})).await;
+    let message = match &result {
+        Ok(_) => String::new(),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        !message.contains("only a Chariox terminal")
+            && !message.contains("only the kernel's owner"),
+        "{result:?}"
+    );
+}
+
 // PA11 (row 363): after a handover, an orchestrator controls a predecessor's agents in the same
 // room (re-parents, renames, deletes) with no card: owner authority, not tree position.
 #[test]
