@@ -1796,6 +1796,9 @@ mod tests {
             "`view.browser_region`",
             "only a Cancel choice",
             "closes by itself when the step is done",
+            "`done_text`",
+            "`choice_id: \"done\"` is only the person's word",
+            "look at the page yourself",
             "or to start one if it is idle",
             "`chariox.agent_auth_register`",
         ] {
