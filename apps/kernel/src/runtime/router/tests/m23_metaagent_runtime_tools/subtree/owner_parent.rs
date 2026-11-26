@@ -121,12 +121,13 @@ fn a_cycle_is_refused_for_an_agent_with_the_owners_sentence() {
 async fn cycle() {
     let world = world("owner-parent-cycle").await;
     let owner = owner_move(&world, "a", Some("d")).await.unwrap_err();
+    let a = world.ids["a"].clone();
     for command in [
-        "agent parent a d",
-        "agent parent a b",
-        "agent parent peer peer",
+        format!("agent parent {a} d"),
+        format!("agent parent {a} b"),
+        "agent parent peer peer".to_owned(),
     ] {
-        let refused = room_command(&world, "peer", command).await;
+        let refused = room_command(&world, "peer", &command).await;
         assert!(!refused.ok, "{command}: {refused:?}");
         assert!(
             error_text(&refused)
