@@ -8846,3 +8846,22 @@ serves all three, so the option choice, request-id handling, refusals and owner 
 
 `machine-acquire-1014.json` and its SHA-256 test pin the shapes. The CLI verbs are `chariox machine options | acquire |
 status | release`.
+
+### One card per secret request — local 1016
+
+`chariox.request_credential_secret` returns at once inside a running turn: `{interaction_id, registration_id,
+credential_id, status: "pending"}`. The agent yields on the `registration_id`; the person's answer wakes it with
+`{status, choice_id, reply: null, credential_id, stored}`, never the secret. The kernel stores the typed value in the
+Vault entry the card names, before the card closes; a store the Vault refuses leaves the card open.
+
+- One card per room, agent and Vault entry: asking again while its card is open returns the same ids with
+  `deduplicated: true`. Only a settled ask (answered, cancelled, withdrawn) makes the next ask a new card.
+- The agent withdraws its open request with `chariox.events.cancel_wake` and `wake_id` = `interaction_id`; the card closes
+  on every client.
+- The card has no deadline unless `prompt.timeout_sec` is set; the entry spec is stored with the card, so a kernel reload
+  keeps it and a late answer still stores.
+- `RuntimeInteraction.secret_request { credential, overwrite }` (additive; old clients ignore it) names the entry the
+  card's secret input fills. A person answers it; an agent answering on their behalf is refused.
+- Outside a running turn the call keeps its earlier blocking form.
+
+`secret_card.rs` pins the card shape.
