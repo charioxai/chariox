@@ -34,8 +34,35 @@ fn popup_error(message: &str) -> DaemonError {
 /// The choice every agent question carries so the person can always decline.
 pub(in crate::runtime::state) const CANCEL_CHOICE_ID: &str = "cancel";
 
+/// Rows 574 / 655: the person's own word that a plain browser card's step is done (never a proof: the agent checks the page).
+pub(in crate::runtime::state) const DONE_CHOICE_ID: &str = "done";
+
 /// Row 655: what the agent is told when its card's element has no visible area when the card opens.
 pub(in crate::runtime::state) const HIDDEN_REGION_NOTE: &str = "The element is not visible on the page now (hidden, not opened yet, or off screen). The card shows the whole page so the person can take the step that reveals it (for example ticking the checkbox), and it moves to the element when it appears. Do not tell the person that the element or challenge is open.";
+
+/// Rows 574 / 655 (D107: a person card ends by the person's Done or Cancel, the agent, or its condition): a plain
+/// browser card has no condition that ends it, so the person says when the step is done. A card that waits for page
+/// text or a verification closes by itself and carries no Done; an agent's own Done is kept, never doubled.
+pub(in crate::runtime::state) fn add_person_done(
+    view: Option<&crate::transport::runtime_tools::RequestPopupViewArgs>,
+    choices: &mut Vec<crate::session::RuntimeInteractionChoice>,
+) {
+    let plain = view.is_some_and(|view| {
+        view.browser_region.done_text.is_none() && view.browser_region.verification.is_none()
+    });
+    if plain
+        && !choices.iter().any(|choice| {
+            choice.id() == DONE_CHOICE_ID || choice.label().trim().eq_ignore_ascii_case("done")
+        })
+    {
+        choices.push(crate::session::RuntimeInteractionChoice::new(
+            DONE_CHOICE_ID,
+            "Done",
+            DONE_CHOICE_ID,
+            Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+        ));
+    }
+}
 
 /// Row 655: the note for a card whose element has no visible area (the documented empty crop).
 pub(in crate::runtime::state) fn hidden_region_note(
@@ -240,6 +267,7 @@ impl KernelRuntimeState {
                 )
             })
             .collect::<Vec<_>>();
+        add_person_done(args.view.as_ref(), &mut choices);
         if choices.iter().all(|choice| choice.id() != CANCEL_CHOICE_ID) {
             choices.push(crate::session::RuntimeInteractionChoice::new(
                 CANCEL_CHOICE_ID,

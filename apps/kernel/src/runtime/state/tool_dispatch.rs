@@ -28,7 +28,7 @@ mod home_extension_authorizer;
 mod notification;
 mod popup;
 pub(in crate::runtime::state) use popup::{
-    blocking_popup_timeout_seconds, hidden_region_note, popup_status, CANCEL_CHOICE_ID,
+    add_person_done, blocking_popup_timeout_seconds, hidden_region_note, popup_status, CANCEL_CHOICE_ID,
 };
 pub(super) fn authorize_remote_home_context_for_peer(
     state: &KernelRuntimeState,

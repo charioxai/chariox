@@ -7315,6 +7315,11 @@ move to the element when it gains area and back to the page when it loses it. A 
 still never moves the card under the pointer. The card carries one Cancel: an agent choice labelled Cancel under
 another id is the card's own Cancel (`choice_id: "cancel"`, status `cancelled`).
 
+Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
+that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that
+id or a choice labelled Done). The agent hears `status: "answered"`, `choice_id: "done"`: the person's word, which
+the agent checks on the page. A card with `done_text` or a verification closes by itself and has no Done.
+
 Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region row655`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
 
