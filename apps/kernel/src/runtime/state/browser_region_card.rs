@@ -45,6 +45,10 @@ fn keeps_card_pending(
         // A restart (a hot reload is a planned one) and a navigation keep the card the same way: the person must not notice
         // either. A card waiting for text goes on waiting on the page that came back; a proof is lost with the old document.
         "Browser restarted" | "Browser document changed" => waiting == waiting_for_text,
+        // Rows 574 / 655 (D107): a plain card has no condition of its own, so its element going away (a sign-in page
+        // replacing its email step with the password step in the same document) is not the person finishing: the card
+        // stays and shows the page; it ends by Done, Cancel or the agent. A card waiting for text keeps AU-03's rule.
+        "Browser element disappeared" => !waiting && !waiting_for_text,
         _ => false,
     }
 }
@@ -778,11 +782,18 @@ mod tests {
             true,
             false
         ));
-        // The Tab closing or its element disappearing still ends the card.
-        assert!(!keeps_card_pending(
+        // Rows 574 / 655: a plain card outlives its element (it ends by Done/Cancel/the agent); a card waiting for text
+        // still reports the loss as unavailable, and an App confirmation keeps its own rules.
+        assert!(keeps_card_pending(
             "Browser element disappeared",
             &plain,
             false,
+            false
+        ));
+        assert!(!keeps_card_pending(
+            "Browser element disappeared",
+            &plain,
+            true,
             false
         ));
         assert!(!keeps_card_pending(

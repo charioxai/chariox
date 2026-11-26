@@ -7330,7 +7330,10 @@ another id is the card's own Cancel (`choice_id: "cancel"`, status `cancelled`).
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
 that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that
 id or a choice labelled Done). The agent hears `status: "answered"`, `choice_id: "done"`: the person's word, which
-the agent checks on the page. A card with `done_text` or a verification closes by itself and has no Done.
+the agent checks on the page. A card with `done_text` or a verification closes by itself and has no Done. A plain
+card also outlives its element: when the element goes away in the same document (a sign-in replacing its email step
+with the password step), the kernel binds the same card to the Tab's page, as after a navigation, instead of
+resolving `condition_met`; it ends by Done, Cancel, the agent or its Tab closing.
 
 Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region row655`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
