@@ -138,7 +138,7 @@ impl KernelRuntimeState {
         } = subject;
         let agent = agent.as_deref();
         let request_id = &request_id;
-        // The one rentals toggle decides (row 405): no /sudo shortcut around its single card.
+        // The one machine acquisition toggle decides (row 405): no /sudo shortcut around its single card.
         if self
             .owned
             .durable_state_store
