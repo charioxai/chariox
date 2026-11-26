@@ -4,6 +4,7 @@ import test from "node:test"
 import { Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
 import { Readable } from "node:stream"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { MAX_INLINE_STDIN_BYTES, lateStdin, ownStdin, readExecInput, runKernelExec } from "./kernel-exec.js"
 
 const ended = (code: number) => ({ state: "ended", outcome: { reason: "program_exited", exit_code: code, signal: null } })
@@ -305,4 +306,87 @@ test("a close that fails while the terminal is still listed is named with the wa
     return send(body)
   }
   await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30 }, stuck, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_terminal_left_open")
+})
+
+// A relay blip: the gateway answers a request in flight with one of these (retryable) codes while the command keeps running on the kernel.
+const blip = (code: string) => Object.assign(new CommandFailure(code, `link ${code}`))
+const operationOf = (body: any) => body.KernelTerminal.operation.operation
+const lines = () => { const seen: string[] = []; return { seen, notice: (line: string) => { seen.push(line) } } }
+
+for (const code of ["kernel_connection_lost", "kernel_request_timeout", "kernel_offline", "kernel_unreachable"]) {
+  test(`a wait that fails with ${code} is retried on the same terminal and the command's real exit code comes back`, async () => {
+    const { sent, send } = kernel("built\r\n", 7)
+    let dropped = 0
+    const flaky = async (body: any) => {
+      if (operationOf(body) === "wait" && dropped++ < 3) throw code === "kernel_offline" ? new LocalIpcError("kernel request", "offline", code, false) : blip(code)
+      return send(body)
+    }
+    const out = sink(), said = lines()
+    assert.equal(await runKernelExec({ command: ["make"], timeoutSeconds: 30, kernel: "nelpx", retryStepMs: 1, notice: said.notice }, flaky, out.stream), 7)
+    assert.equal(out.text(), "built\n")
+    const operations = sent.map(operationOf)
+    assert.equal(operations.filter(name => name === "open").length, 1, "one terminal, never a second command")
+    assert.equal(operations.indexOf("close"), operations.length - 1, "the terminal is closed only after the output was read, never during the blip")
+    assert.equal(said.seen.length, 1, "one plain line for the whole outage")
+    assert.match(said.seen[0]!, /link to kernel nelpx lost, waiting for it; the command keeps running as terminal t1/)
+  })
+}
+
+test("a read_output that fails during a blip is retried from the same offset", async () => {
+  const { sent, send } = kernel("abc\r\n", 0)
+  let dropped = false
+  const flaky = async (body: any) => {
+    if (operationOf(body) === "read_output" && !dropped) { dropped = true; throw blip("kernel_connection_lost") }
+    return send(body)
+  }
+  const out = sink()
+  assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, flaky, out.stream), 0)
+  assert.equal(out.text(), "abc\n")
+  const reads = sent.filter(body => operationOf(body) === "read_output")
+  assert.deepEqual(reads.map(body => body.KernelTerminal.operation.offset ?? body.KernelTerminal.operation.since ?? 0), reads.map(() => reads[0].KernelTerminal.operation.offset ?? reads[0].KernelTerminal.operation.since ?? 0))
+})
+
+test("a link that is down past --timeout is named, the command is not stopped, and its terminal is findable", async () => {
+  const { sent, send } = kernel("x", 0)
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") throw blip("kernel_offline")
+    return send(body)
+  }
+  const said = lines()
+  await assert.rejects(runKernelExec({ command: ["make"], timeoutSeconds: 1, kernel: "nelpx", retryStepMs: 20, notice: said.notice }, down, sink().stream), (error: unknown) => {
+    if (!(error instanceof CommandFailure) || error.code !== "exec_link_lost") return false
+    const text = JSON.stringify(error.message) + JSON.stringify(error.details)
+    return /not stopped/.test(text) && /terminal t1/.test(text) && /nelpx/.test(text) && /terminal wait --kernel nelpx --terminal t1/.test(text) && /terminal read --kernel nelpx --terminal t1/.test(text) && /terminal close --kernel nelpx --terminal t1/.test(text) && /60 s/.test(text)
+  })
+  assert.equal(sent.some(body => operationOf(body) === "close"), false, "no close: it would end the command it cannot report on")
+  assert.equal(said.seen.length, 1)
+})
+
+test("a failure that is not a link drop still closes the terminal as before", async () => {
+  const { sent, send } = kernel("x", 0)
+  const refused = async (body: any) => {
+    if (operationOf(body) === "wait") throw new CommandFailure("terminal_refused", "no")
+    return send(body)
+  }
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, refused, sink().stream), /no/)
+  assert.equal(sent.at(-1).KernelTerminal.operation.operation, "close")
+})
+
+test("Ctrl-C while waiting for a dropped link closes the terminal and returns 130", async () => {
+  const { sent, send } = kernel("x", 0)
+  const signals = new EventEmitter() as NodeJS.Process
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") { setTimeout(() => signals.emit("SIGINT"), 30); throw blip("kernel_connection_lost") }
+    return send(body)
+  }
+  const code = await runKernelExec({ command: ["x"], timeoutSeconds: 30, signals, retryStepMs: 1000, notice: () => {} }, down, sink().stream)
+  assert.equal(code, 130)
+  assert.equal(sent.at(-1).KernelTerminal.operation.operation, "close")
+  for (const name of ["SIGINT", "SIGTERM", "SIGHUP"]) assert.equal(signals.listenerCount(name), 0)
+})
+
+test("a drop while the terminal is being opened is not retried: its id is unknown, nothing is waited on", async () => {
+  let requests = 0
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, async () => { requests++; throw blip("kernel_connection_lost") }, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "kernel_connection_lost")
+  assert.equal(requests, 1)
 })
