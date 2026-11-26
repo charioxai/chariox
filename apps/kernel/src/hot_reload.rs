@@ -1145,7 +1145,13 @@ impl Prepared {
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
 
 type RestartAnswer = tokio::sync::oneshot::Sender<Result<(), String>>;
-static RESTART_REQUESTS: OnceLock<tokio::sync::mpsc::UnboundedSender<RestartAnswer>> =
+/// A requested restart with the deadline its requester's wait gives it, fixed when it was enqueued:
+/// time spent behind another reload counts against it.
+struct RestartRequest {
+    answer: RestartAnswer,
+    deadline: Instant,
+}
+static RESTART_REQUESTS: OnceLock<tokio::sync::mpsc::UnboundedSender<RestartRequest>> =
     OnceLock::new();
 /// How long the kernel keeps serving after it prepared a requested restart: the answer to the request leaves first.
 const RESTART_REPLY_GRACE: Duration = Duration::from_millis(400);
@@ -1318,7 +1324,7 @@ async fn wait_for_safe_point(
 /// changes nothing: the kernel keeps running and waits for the next one; a requester is told why.
 pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     use tokio::signal::unix::{signal, SignalKind};
-    let (restart_tx, mut restarts) = tokio::sync::mpsc::unbounded_channel::<RestartAnswer>();
+    let (restart_tx, mut restarts) = tokio::sync::mpsc::unbounded_channel::<RestartRequest>();
     let _ = RESTART_REQUESTS.set(restart_tx);
     let mut requests = match signal(SignalKind::user_defined2()) {
         Ok(requests) => requests,
@@ -1334,13 +1340,23 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     loop {
         let answer = tokio::select! {
             signalled = requests.recv() => { if signalled.is_none() { break; } None }
-            asked = restarts.recv() => match asked { Some(answer) => Some(answer), None => break },
+            asked = restarts.recv() => match asked { Some(request) => Some(request), None => break },
         };
-        // A request answers within the requester's own wait: its deadline is that wait's, so a
-        // reload it was told "did not prepare in time" never commits behind its back.
-        let requested_deadline = answer
-            .as_ref()
-            .map(|_| Instant::now() + requested_reload_patience());
+        // A request answers within the requester's own wait: its deadline was fixed when it was
+        // enqueued, so a reload it was told "did not prepare in time" never commits behind its back,
+        // and a request that waited behind another reload past its deadline is refused unprepared.
+        let (answer, requested_deadline) = match answer {
+            Some(request) => {
+                if Instant::now() >= request.deadline || request.answer.is_closed() {
+                    let _ = request.answer.send(Err(
+                        "the hot reload did not prepare in time; nothing was changed and every agent keeps running".to_string(),
+                    ));
+                    continue;
+                }
+                (Some(request.answer), Some(request.deadline))
+            }
+            None => (None, None),
+        };
         match prepare(&terminals, &handover_path, requested_deadline).await {
             Ok(terminals) => {
                 *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -1372,15 +1388,26 @@ pub async fn request_restart() -> Result<(), String> {
     let Some(requests) = RESTART_REQUESTS.get() else {
         return Err("hot reload is unavailable on this kernel".into());
     };
-    let (answer, reply) = tokio::sync::oneshot::channel();
-    requests
-        .send(answer)
-        .map_err(|_| "hot reload is unavailable on this kernel".to_string())?;
+    let reply = enqueue_restart(requests)?;
     match tokio::time::timeout(request_wait(), reply).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err("the kernel is already stopping".into()),
         Err(_) => Err("the hot reload did not prepare in time".into()),
     }
+}
+
+/// Queues a restart request with its deadline, fixed now.
+fn enqueue_restart(
+    requests: &tokio::sync::mpsc::UnboundedSender<RestartRequest>,
+) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    let (answer, reply) = tokio::sync::oneshot::channel();
+    requests
+        .send(RestartRequest {
+            answer,
+            deadline: Instant::now() + requested_reload_patience(),
+        })
+        .map_err(|_| "hot reload is unavailable on this kernel".to_string())?;
+    Ok(reply)
 }
 
 /// How long a requester of a restart waits for the answer.
@@ -1836,6 +1863,26 @@ mod tests {
             &gate, &late, &committed, &busy, None
         ));
         assert!(!*gate.read().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_requests_deadline_is_fixed_when_it_is_enqueued_not_when_it_is_dequeued() {
+        let (requests, mut queue) = tokio::sync::mpsc::unbounded_channel::<RestartRequest>();
+        let before = Instant::now();
+        let _first = enqueue_restart(&requests).unwrap();
+        let _second = enqueue_restart(&requests).unwrap();
+        // Another reload holds the queue; the second request is dequeued much later.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let first = queue.recv().await.unwrap();
+        let second = queue.recv().await.unwrap();
+        let patience = requested_reload_patience();
+        for request in [&first, &second] {
+            assert!(request.deadline >= before + patience);
+            assert!(
+                request.deadline <= Instant::now() + patience - Duration::from_millis(40),
+                "the deadline did not restart when the request was dequeued"
+            );
+        }
     }
 
     #[test]
