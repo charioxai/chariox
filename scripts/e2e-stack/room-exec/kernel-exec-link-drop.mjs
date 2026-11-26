@@ -71,6 +71,12 @@ async function targetTerminals() {
   const listed = await run(['terminal', 'list', '--kernel', fixture.target])
   return { code: listed.code, text: listed.stdout, stderr: listed.stderr }
 }
+// The command has started on the target and the CLI has had time to read the open's answer: a drop while that answer
+// is still in flight leaves the terminal id unknown, which is the open case (not retried), not what these cells exercise.
+async function commandStarted(file) {
+  await until(async () => (await lineCount(file)) === 1, 'command started on the target', 60_000)
+  await delay(3_000)
+}
 const lineCount = async file => (await readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean).length
 
 try {
@@ -83,7 +89,7 @@ try {
     const started = path.join(work, 'c1-started')
     const body = `echo x >> '${started}'; i=1; while [ $i -le ${ticks} ]; do echo tick $i; i=$((i+1)); sleep 10; done; echo finished; exit 5`
     const child = native(execOn(ticks * 10 + 300, body))
-    await until(async () => (await lineCount(started)) === 1, 'command started on the target', 60_000)
+    await commandStarted(started)
     await delay(30_000)
     const droppedAt = Date.now()
     await dropLink()
@@ -106,7 +112,7 @@ try {
   await cell('C2-link-down-past-timeout', async () => {
     const started = path.join(work, 'c2-started')
     const child = native(execOn(20, `echo x >> '${started}'; sleep 60; echo late; exit 4`))
-    await until(async () => (await lineCount(started)) === 1, 'command started on the target', 60_000)
+    await commandStarted(started)
     await dropLink()
     const result = await child.finished
     assert.notEqual(result.code, 0)
@@ -129,7 +135,7 @@ try {
   await cell('C4-ctrl-c-during-drop', async () => {
     const started = path.join(work, 'c4-started')
     const child = native(execOn(120, `echo x >> '${started}'; sleep 100; echo never`))
-    await until(async () => (await lineCount(started)) === 1, 'command started on the target', 60_000)
+    await commandStarted(started)
     await dropLink()
     await delay(8_000)
     child.kill('SIGINT')
@@ -148,7 +154,7 @@ try {
   await cell('C5-finished-while-down', async () => {
     const started = path.join(work, 'c5-started')
     const child = native(execOn(120, `echo x >> '${started}'; sleep 8; echo fin; exit 3`))
-    await until(async () => (await lineCount(started)) === 1, 'command started on the target', 60_000)
+    await commandStarted(started)
     await dropLink()
     await delay(20_000)
     await restoreLink()
