@@ -412,19 +412,24 @@ impl DurableKernelStateStore {
         )
     }
     /// The tasks a lifecycle sweep can act on: unfinished or unreadable ones, cancelled ones whose
-    /// terminal outcome is not recorded yet, and finished ones that carry obligations or still
-    /// owe their terminal outcome. Recorded plain history stays out of the sweep.
+    /// terminal outcome is not recorded yet, and finished ones that carry an obligation still
+    /// requiring resolution or still owe their terminal outcome. Recorded plain history, and
+    /// tasks whose obligations all ended, stay out of the sweep (row 690): a settled obligation
+    /// is never acted on again, so reading, decoding and visiting its task on every pass is cost
+    /// that grows for ever.
     pub(crate) fn agent_tasks_to_sweep(&self) -> Result<Vec<AgentTaskExecution>, DaemonError> {
         self.read_tasks(
             "agent.lifecycle.sweep_tasks",
-            "rowid IN (\
+            &format!(
+                "rowid IN (\
              SELECT rowid FROM agent_tasks WHERE state IN ('working','waiting','blocked') \
              UNION SELECT rowid FROM agent_tasks WHERE state IS NULL \
-             UNION SELECT rowid FROM agent_tasks WHERE obligated=1 \
+             UNION SELECT rowid FROM agent_tasks WHERE obligated=1 AND {OWES_RESOLUTION} \
              UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_cancelled_pending \
               WHERE state='cancelled' AND terminal_outcome_recorded=0 \
              UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_done_pending \
-              WHERE state='done' AND terminal_outcome_recorded=0)",
+              WHERE state='done' AND terminal_outcome_recorded=0)"
+            ),
             [],
         )
     }
@@ -485,35 +490,40 @@ impl DurableKernelStateStore {
         filter: &str,
         values: impl rusqlite::Params,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
-        let db = self.lock_connection(operation)?;
-        let mut q = db
-            .prepare_cached(&format!(
-                "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
-            ))
-            .map_err(sql)?;
-        #[cfg(test)]
-        q.reset_status(rusqlite::StatementStatus::VmStep);
-        let rows = q
-            .query_map(values, |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
+        // The rows are copied out under the shared read connection; their payloads are decoded after
+        // it is released, so decoding a long ledger never holds up the other readers (row 690).
+        let rows = {
+            let db = self.lock_connection(operation)?;
+            let mut q = db
+                .prepare_cached(&format!(
+                    "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
                 ))
-            })
-            .map_err(sql)?;
-        let tasks = rows
-            .map(|row| {
-                let (id, room, agent, prompt, payload) = row.map_err(sql)?;
+                .map_err(sql)?;
+            #[cfg(test)]
+            q.reset_status(rusqlite::StatementStatus::VmStep);
+            let rows = q
+                .query_map(values, |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(sql)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql)?;
+            #[cfg(test)]
+            TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+            rows
+        };
+        rows.into_iter()
+            .map(|(id, room, agent, prompt, payload)| {
                 Ok(decode_task(&id, &room, &agent, &prompt, &payload)
                     .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
             })
-            .collect();
-        #[cfg(test)]
-        TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
-        tasks
+            .collect()
     }
     /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
     /// order. Older finished tasks are not read, so a long room costs a read no more.
@@ -1417,6 +1427,12 @@ fn write_task(
     }
     Ok(())
 }
+/// A task holds an obligation that still requires resolution: the SQL of
+/// `AgentObligation::requires_resolution` (open or settling, or failed after an accepted dispatch).
+const OWES_RESOLUTION: &str = "EXISTS (SELECT 1 FROM json_each(agent_tasks.payload,'$.obligations') AS o \
+     WHERE json_extract(o.value,'$.status') IN ('open','settling') \
+        OR (json_extract(o.value,'$.status')='failed' \
+            AND json_extract(o.value,'$.dispatch_state') IS NOT 'rejected'))";
 /// Tasks are kept after they finish, so the lookups that run on every turn and every sweep
 /// read an index instead of decoding the whole ledger. An unreadable payload indexes as NULL.
 fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {

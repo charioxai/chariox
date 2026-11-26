@@ -684,3 +684,49 @@ fn inbox_accepts_only_for_the_active_generation_and_settles_failed_occurrences_w
     };
     assert_eq!((routes[0].1.pending, routes[0].1.failed), (0, 2));
 }
+
+/// Row 690: the maintenance pump asks for dev installations once a second; with none, and no App
+/// registry write since the look, it has nothing to read.
+#[test]
+fn a_store_with_no_dev_installation_is_known_empty_until_an_app_registry_write() {
+    let database = Database::new();
+    let store = database.open();
+    assert!(
+        !store.dev_app_installations_known_empty(),
+        "nothing is known before the first look"
+    );
+    assert!(store.active_dev_app_installations().unwrap().is_empty());
+    assert!(store.dev_app_installations_known_empty());
+    assert_eq!(store.dev_installation_reads_for_test(), 1);
+
+    store.mutate_app_installation("owner", create("todo")).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while store.dev_app_installations_known_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an applied App registry write never made the pump look again"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(store.active_dev_app_installations().unwrap().is_empty());
+    assert!(store.dev_app_installations_known_empty());
+}
+
+/// The scan never waits for the shared read connection: while another reader holds it the pump
+/// gets "busy" at once, and the store is still not known to be empty.
+#[test]
+fn the_dev_installation_scan_does_not_wait_for_a_busy_connection() {
+    let database = Database::new();
+    let store = database.open();
+    let held = store.connection.lock().unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(store.active_dev_app_installations_if_free().unwrap(), None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert!(!store.dev_app_installations_known_empty());
+    drop(held);
+    assert_eq!(
+        store.active_dev_app_installations_if_free().unwrap(),
+        Some(Vec::new())
+    );
+    assert!(store.dev_app_installations_known_empty());
+}
