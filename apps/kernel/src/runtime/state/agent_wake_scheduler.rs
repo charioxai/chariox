@@ -421,17 +421,24 @@ impl KernelRuntimeState {
     /// reported lost and never relaunched. Descendants it left running are
     /// identified by their wake marker and stopped.
     pub(super) fn recover_lost_agent_processes(&self, now: u64) -> Result<(), DaemonError> {
-        self.recover_lost_agent_processes_with(now, super::agent_process_group::reap_orphans)
+        self.recover_lost_agent_processes_with(
+            now,
+            super::agent_process_group::reap_orphans,
+            crate::provider::managed_provider_isolation_required(),
+        )
     }
 
     /// `reap` stops the orphans of the given wakes (wake id -> created at) and
     /// returns how many each had; it is a parameter so a failed cleanup can be tested.
+    /// `isolated`: the managed PID namespace makes the scan complete; without it
+    /// only processes carrying the wake marker are found.
     pub(super) fn recover_lost_agent_processes_with(
         &self,
         now: u64,
         reap: impl FnOnce(
             &std::collections::BTreeMap<String, u64>,
         ) -> std::io::Result<std::collections::BTreeMap<String, usize>>,
+        isolated: bool,
     ) -> Result<(), DaemonError> {
         let monitor = &self.owned.agent_wakes;
         let lost: Vec<_> = self
@@ -467,7 +474,7 @@ impl KernelRuntimeState {
             };
             // Without the managed PID namespace, survivors are found only by
             // their inherited wake marker.
-            if !crate::provider::managed_provider_isolation_required() {
+            if !isolated {
                 orphans.push_str("; descendants that cleared their environment or have a live parent outside the watched session cannot be attributed and may still be running");
             }
             let outcome = match &stopped {

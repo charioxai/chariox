@@ -34,18 +34,19 @@ fn watched_before_the_restart(f: &Fixture, id: &str, age_ms: u64) -> AgentWake {
 }
 
 fn lost_report(f: &Fixture) -> (String, String) {
-    lost_report_with(f, |_| Ok(Default::default()))
+    lost_report_with(f, true, |_| Ok(Default::default()))
 }
 
 /// The report when the restart's orphan cleanup answers as `reap` says.
 fn lost_report_with(
     f: &Fixture,
+    isolated: bool,
     reap: impl FnOnce(
         &std::collections::BTreeMap<String, u64>,
     ) -> std::io::Result<std::collections::BTreeMap<String, usize>>,
 ) -> (String, String) {
     f.runtime
-        .recover_lost_agent_processes_with(crate::session::unix_epoch_ms(), reap)
+        .recover_lost_agent_processes_with(crate::session::unix_epoch_ms(), reap, isolated)
         .unwrap();
     let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
     assert_eq!(events.len(), 1, "the waiting agent hears of the loss once");
@@ -67,7 +68,7 @@ async fn a_watch_lost_across_a_restart_says_when_it_was_last_seen_that_it_is_gon
     let f = fixture("lost-process-cell2", false).await;
     watched_before_the_restart(&f, "watch-a", 3 * HOUR_MS);
     // The process was still running at the restart, so recovery stopped it.
-    let (tail, notice) = lost_report_with(&f, |wakes| {
+    let (tail, notice) = lost_report_with(&f, true, |wakes| {
         Ok(wakes.keys().map(|id| (id.clone(), 1)).collect())
     });
     for (what, text) in [("the answer", &tail), ("the room notice", &notice)] {
@@ -112,7 +113,7 @@ async fn a_watch_whose_process_ended_while_the_kernel_was_down_says_so() {
 async fn a_watch_whose_leftover_process_was_stopped_says_the_kernel_stopped_it() {
     let f = fixture("lost-process-stopped", false).await;
     watched_before_the_restart(&f, "watch-c", HOUR_MS);
-    let (tail, notice) = lost_report_with(&f, |wakes| {
+    let (tail, notice) = lost_report_with(&f, true, |wakes| {
         Ok(wakes.keys().map(|id| (id.clone(), 2)).collect())
     });
     for (what, text) in [("the answer", &tail), ("the room notice", &notice)] {
@@ -136,7 +137,7 @@ async fn a_watch_whose_leftover_process_was_stopped_says_the_kernel_stopped_it()
 async fn a_watch_whose_cleanup_is_unconfirmed_does_not_claim_the_job_is_gone() {
     let f = fixture("lost-process-unconfirmed", false).await;
     watched_before_the_restart(&f, "watch-d", HOUR_MS);
-    let (tail, notice) = lost_report_with(&f, |_| {
+    let (tail, notice) = lost_report_with(&f, true, |_| {
         Err(std::io::Error::other("settlement deadline expired"))
     });
     for (what, text) in [("the answer", &tail), ("the room notice", &notice)] {
@@ -155,4 +156,50 @@ async fn a_watch_whose_cleanup_is_unconfirmed_does_not_claim_the_job_is_gone() {
             );
         }
     }
+}
+
+// Without the managed PID namespace the scan only finds processes that kept
+// their wake marker and have no live outside parent: an Ok result cannot show
+// that nothing is left. The report must say what was found and tell the owner
+// to check before starting the work again; it must not say the work is gone.
+async fn unisolated_report(name: &str, reap: impl FnOnce(&std::collections::BTreeMap<String, u64>) -> std::io::Result<std::collections::BTreeMap<String, usize>>) -> (String, String) {
+    let f = fixture(name, false).await;
+    watched_before_the_restart(&f, "watch-e", HOUR_MS);
+    lost_report_with(&f, false, reap)
+}
+
+fn assert_check_before_restart(tail: &str, notice: &str) {
+    for (what, text) in [("the answer", tail), ("the room notice", notice)] {
+        assert!(
+            text.contains("cannot rule out") && text.contains("may still be running"),
+            "{what} says survivors cannot be ruled out: {text}"
+        );
+        assert!(
+            text.contains("check for what remains before starting it again"),
+            "{what} tells the owner to check before restarting: {text}"
+        );
+        for claim in ["is gone", "start it again and watch the new one"] {
+            assert!(
+                !text.contains(claim),
+                "{what} must not say `{claim}` when termination is not established: {text}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_unisolated_scan_that_stopped_processes_does_not_claim_the_job_is_gone() {
+    let (tail, notice) = unisolated_report("lost-process-unisolated-stopped", |wakes| {
+        Ok(wakes.keys().map(|id| (id.clone(), 1)).collect())
+    })
+    .await;
+    assert!(tail.contains("stopped the processes it could attribute"), "{tail}");
+    assert_check_before_restart(&tail, &notice);
+}
+
+#[tokio::test]
+async fn an_unisolated_scan_that_found_nothing_does_not_claim_the_job_is_gone() {
+    let (tail, notice) = unisolated_report("lost-process-unisolated-none", |_| Ok(Default::default())).await;
+    assert!(tail.contains("no process of it was found"), "{tail}");
+    assert_check_before_restart(&tail, &notice);
 }
