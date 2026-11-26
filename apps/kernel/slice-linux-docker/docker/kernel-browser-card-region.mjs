@@ -316,9 +316,12 @@ export async function resolveCardRegion(host, command, scope, signal) {
   // A card bound under an earlier controller generation outlives a restart only by rebinding: tell the
   // kernel the browser restarted before the empty reference memory reads as a changed document.
   if (command.generation !== undefined && command.generation !== host.generation) return gone('Browser restarted');
-  // Row 666: the open card's Tab closed (a sign-in popup closes itself when the person is done): the card ends now like
-  // any card whose Tab closed, never as an element that is no longer available. A new card on a closed Tab is refused.
-  if (anchor && !host.tabs.has(command.tab_id)) return gone('Browser tab closed');
+  // Row 666: the open card's Tab closed (a sign-in popup closes itself when the person is done, or the person closes it):
+  // the card ends now like any card whose Tab closed, never as an element that is no longer available. An open card is
+  // one with an anchor, or one the kernel observes again with its bound document (the host's own close retires the
+  // anchor first). A new card on a closed Tab is refused.
+  const openCard = anchor || command.document_id !== undefined && command.generation === host.generation;
+  if (openCard && host.browser && !host.tabs.has(command.tab_id)) return gone('Browser tab closed');
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
     const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
     if (tab.document_id !== command.document_id) return gone('Browser document changed');

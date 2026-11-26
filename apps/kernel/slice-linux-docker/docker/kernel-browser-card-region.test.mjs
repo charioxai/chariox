@@ -261,6 +261,19 @@ test('666 review: the card\'s Tab was the last tracked Tab (the keepalive page i
   assert.deepEqual(await region({ card_id: 'last-tab', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
 }));
 
+test('666 review: the person closes the card\'s Tab through the host (its anchor is retired first): the open card still ends as closed; a new card there is refused', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'closed-by-host' })).state, 'present');
+  host.browser.manageTab = async () => {}; host.rebindWindows = async () => {};
+  host.reconcile = async () => { host.tabs.delete('one'); return host.tabState(); };
+  await host.request({ op: 'close', tab_id: 'one', generation: 1 });
+  assert.equal(host.tabs.has('one'), false);
+  host.displayTarget = () => { throw new UserDomainRefusal('stale_reference', 'display_retired'); };
+  assert.deepEqual(await region({ card_id: 'closed-by-host', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
+  assert.deepEqual(await region({ card_id: 'closed-by-host', done_text: 'Signed in', generation: 1, document_id: 'doc' }), { state: 'unavailable', reason: 'Browser tab closed' });
+  await assert.rejects(region({ card_id: 'fresh-card' }), error => error instanceof UserDomainRefusal);
+}));
+
 test('546 an element that went away with a navigation is a changed document, not a removed element', () => withHost(async ({ snapshot, region, node, state }) => {
   await snapshot();
   node.isConnected = false; state.document_id = 'replacement';
