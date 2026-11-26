@@ -8,6 +8,7 @@ use crate::local::{
     AccountLimitValues, ControlPlaneRequest, KernelConnectionClass, LimitApprovalKind,
     LocalDaemonRequest,
 };
+use crate::runtime::command::KernelCommand;
 use crate::runtime::state::machine_acquisition::limits::AccountLimits;
 
 fn current() -> AccountLimits {
