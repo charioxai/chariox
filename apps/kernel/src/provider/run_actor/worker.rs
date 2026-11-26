@@ -212,7 +212,8 @@ impl ProviderRunWorkerDeps {
                         }),
                     );
                 }
-                self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
+                // Terminate marks nothing: the run is gone, so what was queued for it is too.
+                self.in_flight.reset_prompt_io_in_flight(&provider_run_id);
                 self.output_poll_delays
                     .lock()
                     .expect("provider output poll delay map poisoned")
@@ -299,6 +300,7 @@ impl ProviderRunWorkerDeps {
                         settlement_retry_attempt: 0,
                     },
                 );
+                self.in_flight.clear_plan_publication_in_flight(&run_id);
                 self.completion_signal.record_completion(&run_id);
                 let receipt = result.map_err(|error| error.to_string());
                 let _ = response.send(receipt);
