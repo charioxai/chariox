@@ -97,7 +97,9 @@ async fn apply_with_definition_and_session(
                                 .display()
                                 .to_string(),
                             source: arguments["source"].as_str().unwrap_or_default().to_string(),
-                            language: None,
+                            language: arguments
+                                .get("language")
+                                .and_then(|language| serde_json::from_value(language.clone()).ok()),
                             provider_rebindings: Vec::new(),
                             agent_rebindings: Vec::new(),
                         },
