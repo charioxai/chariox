@@ -7305,7 +7305,7 @@ id, never `condition_met`. App confirmations are not person steps on a page and 
 
 Row 655 (no shape change): an element the person cannot see has no visible area, and the card is the empty crop
 `rect: {x:0, y:0, width:0, height:0}`, never a box sized as if it were on screen. This covers an element that is not
-rendered, is hidden (visibility or opacity), sits in a frame its owner hides, or is clipped to nothing by the viewport
+rendered, is hidden (visibility), sits in a frame its owner hides, or is clipped to nothing by the viewport
 (a challenge frame parked above the page until its checkbox is ticked). At registration the host gives such an element
 the existing geometry window (one second) to appear. If it is still not visible, the card is registered in the empty
 crop, and the `wait:false` result carries `page_note`: a plain sentence telling the agent that the element is not

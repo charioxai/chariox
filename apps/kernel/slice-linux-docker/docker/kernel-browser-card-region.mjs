@@ -7,11 +7,11 @@ import { BrowserSnapshotError } from './browser-controller-snapshot.mjs';
 import { BrowserCardVerification, validateCardVerification } from './kernel-browser-card-verification.mjs';
 
 const validReference = ref => typeof ref === 'string' && /^(?:frame:.+:)?backend:[1-9][0-9]{0,15}$/.test(ref);
-// Row 655: what the person can see of an element. An element that is not rendered, hidden (visibility/opacity),
+// Row 655: what the person can see of an element. An element that is not rendered, hidden (visibility),
 // inside a hidden or offscreen frame, or clipped to nothing by the viewport has no visible area: the card shows the
 // documented empty crop for it (never a box sized as if it were on screen), and a card is never registered on it as
 // if the person could reach it. The registration wait stays inside the existing geometry window.
-const visibilityOptions = '{visibilityProperty:true,opacityProperty:true}';
+const visibilityOptions = '{visibilityProperty:true}';
 const emptyCrop = (viewport_width, viewport_height) => ({ rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width, viewport_height });
 const hasArea = box => box?.rect?.width > 0 && box.rect.height > 0;
 const registrationWaitMs = 1_000;
@@ -150,7 +150,7 @@ function watchBox(previous, doneText, resolveAnchor) {
     const r = node.getBoundingClientRect(), w = innerWidth, h = innerHeight;
     // Row 655: hidden, not rendered or clipped to nothing by the viewport is the empty crop.
     if (r.right <= r.left || r.bottom <= r.top || Math.min(w, r.right) <= Math.max(0, r.left) || Math.min(h, r.bottom) <= Math.max(0, r.top)
-      || typeof node.checkVisibility === 'function' && !node.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return { rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width: w, viewport_height: h };
+      || typeof node.checkVisibility === 'function' && !node.checkVisibility({ visibilityProperty: true })) return { rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width: w, viewport_height: h };
     const x = Math.max(0, Math.min(w, Math.floor(r.left - 16)));
     const y = Math.max(0, Math.min(h, Math.floor(r.top - 16)));
     const right = Math.max(x, Math.min(w, Math.ceil(r.right + 16)));
