@@ -4,7 +4,7 @@
     "MP-10",
     "MP-11"
   ],
-  "local_protocol": 1015,
+  "local_protocol": 1017,
   "peer_protocol": 452,
   "allocation": "Local 1015 (relay peer unchanged; the Landing 14 union bumps once): a default visible-page display_subscribe may ask resize_rebind of a kernel that advertises display_resize_rebind_v1; the kernel keeps that subscription across a Browser window resize and its frames carry binding_sequence (the new window epoch input must name)",
   "subscribe": {

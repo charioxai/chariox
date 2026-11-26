@@ -8843,6 +8843,11 @@ serves all three, so the option choice, request-id handling, refusals and owner 
   answer for up to 300 s (`acquisition_denied` when refused or expired).
 - `status { allocation_ref }` and `release { allocation_ref }` answer the allocation's `Machine` state; a release is
   confirmed when `status` reads `deleted`.
+- `status {}` without `allocation_ref` (local 1017, provisional; the L15 landing renumbers) answers `Machine(Machines)`: every
+  allocation of the owner that is not deleted, whoever made it, each row with `class_id`, `region`, `created_at` and
+  `hard_stop_at` when the service lists them (the same optional fields a `ControlPlane` `list` machine row now carries);
+  `saved_states` is empty. The agent tool is the same mode: `chariox.machines.status` with no `allocation_ref`. Release stays
+  with the owner's authority. The shape is pinned by the `machine_list_1017_shapes_and_hash` protocol test.
 
 `machine-acquire-1014.json` and its SHA-256 test pin the shapes. The CLI verbs are `chariox machine options | acquire |
 status | release`.

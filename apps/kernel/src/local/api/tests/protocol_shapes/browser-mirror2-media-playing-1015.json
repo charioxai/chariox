@@ -3,7 +3,7 @@
     "MP-08",
     "MP-10"
   ],
-  "local_protocol": 1015,
+  "local_protocol": 1017,
   "peer_protocol": 452,
   "allocation": "Local 1015 (relay peer 452, Landing 14): additive mirror v2 header media_playing (a mirrored video or audio element plays, muted or not); absent means nothing plays",
   "subscribe": {
