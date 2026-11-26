@@ -2045,17 +2045,16 @@ async fn owner_agent_handlers() {
             workspace.to_string_lossy(),
         ))
         .unwrap();
-    let auth = launch_test_provider(
+    let run = launch_test_provider(
         &mut app,
         session.id(),
         agent.id(),
         "dev-stub",
         "dev-stub",
         "room-model",
-    )
-    .runtime_mcp_auth_token()
-    .unwrap()
-    .to_owned();
+    );
+    let auth = run.runtime_mcp_auth_token().unwrap().to_owned();
+    let run_id = run.id().to_owned();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let file = workspace.join("owner-file.txt");
     std::fs::write(&file, "x").unwrap();
@@ -2086,6 +2085,31 @@ async fn owner_agent_handlers() {
         !message.contains("only a Chariox terminal")
             && !message.contains("only the kernel's owner"),
         "{result:?}"
+    );
+    // The file-change subscription asks the same question with only the caller: the owner's live
+    // agent may watch files; a reach identity of a run that does not exist may not.
+    let caller = |id: String| {
+        let mut caller = crate::runtime::command::KernelCaller::for_source(
+            &crate::runtime::command::KernelCommandSource::LocalIpc,
+        )
+        .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+        caller.caller_id = id;
+        caller.user_id = Some(agent.owner_user_id().to_owned());
+        caller
+    };
+    let watch = |id: String| {
+        router.authorize_file_watch(
+            crate::runtime::command::KernelCommandSource::LocalIpc,
+            caller(id),
+        )
+    };
+    assert!(
+        watch(format!("reach:{run_id}")).is_ok(),
+        "the owner's live agent watches files"
+    );
+    assert!(
+        watch("reach:no-such-run".into()).is_err(),
+        "an unknown run's identity is refused"
     );
 }
 
