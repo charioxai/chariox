@@ -396,6 +396,10 @@ pub struct KernelSudoTurn {
     /// on, `None` for a local agent. Any other placement ends the window.
     #[serde(skip)]
     pub placement: Option<String>,
+    /// Kernel memory only (row 569): what the owner's own `/sudo` prompt named about the account's
+    /// machine limits, parsed once when it was submitted. Never read from display text.
+    #[serde(skip)]
+    pub limit_grant: Option<crate::runtime::state::LimitGrant>,
 }
 
 /// Protocol 484: the host asks to extend a live sudo window. The kernel opens

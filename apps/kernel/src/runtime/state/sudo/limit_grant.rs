@@ -5,12 +5,12 @@
 //! window. Authority never re-reads text. The grammar is strict: the whole prompt is the grant,
 //! so a look-alike or a longer sentence grants nothing and the agent raises through a card.
 //!
-//! Self-contained on purpose: the limits code wires it in after the L14 union
-//! (`mod limit_grant;` in `sudo/mod.rs`, `KernelSudoTurn.limit_grant`).
+//! The parsed grant lives on the window (`KernelSudoTurn.limit_grant`, kernel memory only), and
+//! `machine_acquisition::limits` reads it when an agent raises a limit.
 
 /// The raise the owner named. A field the prompt does not name is not granted.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LimitGrant {
+pub struct LimitGrant {
     /// "Machines at once" may be raised to this many, and no more.
     pub machines_at_once: Option<u32>,
     /// "Spend per day" may be raised to this amount (millionths of `currency`), and no more.
@@ -19,7 +19,7 @@ pub(crate) struct LimitGrant {
 
 /// A raise an agent asks for: only the fields that go above the current value.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct RequestedRaise {
+pub struct RequestedRaise {
     pub machines_at_once: Option<u32>,
     pub spend_per_day_micros: Option<u64>,
 }

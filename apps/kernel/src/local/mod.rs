@@ -387,6 +387,11 @@ pub use api::{
 };
 
 pub use api::{
+    AccountLimitValues, AccountLimitsReading, LimitApproval, LimitApprovalKind, LimitScope,
+    MachineLimitsReading, NoAskLimitsReading,
+};
+
+pub use api::{
     ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse, MachineAcquisitionChoice,
     MachineAcquisitionEstimate, MachineAcquisitionOffer, MachineAcquisitionPeriod,
     MachineAcquisitionRequest, MachineAcquisitionResult, MachineAcquisitionTerms,

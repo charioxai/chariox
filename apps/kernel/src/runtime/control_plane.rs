@@ -53,8 +53,10 @@ pub(crate) async fn execute_acquire(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     // Owner and grant holders acquire as the owner, so a retry from another process finds its request.
     let key = format!("owner:{}", state.kernel_owner_user_id());
+    // The no-ask limits are the kernel's own: who asks decides whether a raise needs the person.
+    let caller = state.agent_caller(command)?;
     let result = state
-        .machine_acquire(&key, request.clone(), |request, _| async move {
+        .machine_acquire(&key, request.clone(), caller, |request, _| async move {
             match execute(config, state, command, gateway, &request).await? {
                 LocalDaemonResponse::ControlPlane { result } => Ok(result),
                 _ => Err(unavailable(
@@ -109,6 +111,61 @@ pub(crate) async fn execute(
             ))
         };
     };
+    let with_approval: ControlPlaneRequest;
+    if matches!(request, ControlPlaneRequest::SetLimits { .. }) {
+        // An agent's change of the account limits is the kernel's to authorize, whatever path it
+        // took here: a lower goes straight on, a raise needs the person's /sudo or card.
+        let read = || async {
+            let answer = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+                profile.api_url.clone(),
+                "/control-plane",
+                cloud_request_body(
+                    &profile.account_id,
+                    credential,
+                    &ControlPlaneRequest::Limits {},
+                ),
+            )
+            .await?;
+            crate::runtime::state::machine_acquisition::limits::AccountLimits::from_response(
+                &answer,
+            )
+            .ok_or_else(|| {
+                unavailable(
+                    "control_plane_binding_invalid",
+                    "The connected service returned another response type",
+                )
+            })
+        };
+        if state.agent_caller(command)?.is_some() {
+            let current = read().await?;
+            let approval = state
+                .authorize_account_change(command, &current, request)
+                .await?;
+            if let Some(approval) = approval {
+                // The card stayed open for a while: the limits it showed must still be the limits.
+                if read().await? != current {
+                    return Err(
+                        crate::runtime::state::machine_acquisition::limits::stale_limits(),
+                    );
+                }
+                if let ControlPlaneRequest::SetLimits {
+                    expected_version,
+                    machines_at_once,
+                    spend_per_day_micros,
+                    ..
+                } = request
+                {
+                    with_approval = ControlPlaneRequest::SetLimits {
+                        expected_version: *expected_version,
+                        machines_at_once: *machines_at_once,
+                        spend_per_day_micros: *spend_per_day_micros,
+                        approval: Some(approval),
+                    };
+                    request = &with_approval;
+                }
+            }
+        }
+    }
     let mut acquisition_hold = None;
     let mut approval_guard = None;
     if matches!(
@@ -161,8 +218,44 @@ pub(crate) async fn execute(
                 "The connected service did not return its machine offer",
             ));
         };
+        // The owner's limits for acquiring without asking never exceed the account's: read them fresh
+        // when that matters. A service that has no account limits bounds nothing.
+        let bound = if state.no_ask_enabled()
+            && machine_allocation
+                .as_ref()
+                .is_some_and(|capability| capability.actions.iter().any(|a| a == "limits"))
+        {
+            match crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+                profile.api_url.clone(),
+                "/control-plane",
+                cloud_request_body(
+                    &profile.account_id,
+                    credential,
+                    &ControlPlaneRequest::Limits {},
+                ),
+            )
+            .await
+            .ok()
+            .as_ref()
+            .and_then(crate::runtime::state::machine_acquisition::limits::AccountLimits::from_response)
+            {
+                Some(limits) => {
+                    crate::runtime::state::machine_acquisition::limits::AccountBound::Limits(
+                        limits,
+                    )
+                }
+                None => crate::runtime::state::machine_acquisition::limits::AccountBound::Unread,
+            }
+        } else {
+            crate::runtime::state::machine_acquisition::limits::AccountBound::None
+        };
         let approval = state
-            .approve_machine_acquisition(command, request, machine_allocation.as_ref())
+            .approve_machine_acquisition_within(
+                command,
+                request,
+                machine_allocation.as_ref(),
+                &bound,
+            )
             .await?;
         approval_guard = state.machine_approval_guard(command, request);
         // The approved request goes again as the approved one, and the service refuses it unless
@@ -238,8 +331,14 @@ pub(crate) async fn execute(
     {
         state.observe_acquired_machine(allocation_ref, machine, crate::session::unix_epoch_ms());
     }
+    let limits_request = matches!(
+        request,
+        ControlPlaneRequest::Limits {} | ControlPlaneRequest::SetLimits { .. }
+    );
     let mut result = sent.map_err(
         |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+            // The service's own words about the limits (who may change them, a stale version) stand.
+            _ if limits_request => error,
             Some(
                 "authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked",
             ) => unavailable(
@@ -260,6 +359,9 @@ pub(crate) async fn execute(
         ) | (
             ControlPlaneResponse::Machines { .. },
             ControlPlaneRequest::List {}
+        ) | (
+            ControlPlaneResponse::Limits { .. },
+            ControlPlaneRequest::Limits {} | ControlPlaneRequest::SetLimits { .. }
         )
     ) || (matches!(result, ControlPlaneResponse::Machine { .. })
         && !matches!(
@@ -267,6 +369,8 @@ pub(crate) async fn execute(
             ControlPlaneRequest::Capabilities {}
                 | ControlPlaneRequest::List {}
                 | ControlPlaneRequest::CancelJob { .. }
+                | ControlPlaneRequest::Limits {}
+                | ControlPlaneRequest::SetLimits { .. }
         ));
     if !response_matches {
         return Err(unavailable(

@@ -72,6 +72,45 @@ pub enum ControlPlaneRequest {
         request_id: String,
         expected_revision: u64,
     },
+    /// The account's machine limits, as the connected service holds them.
+    Limits {},
+    /// Change the account's limits. `expected_version` is the version the caller read. A raise by an
+    /// agent carries the person's `approval`, which only the kernel attaches (see `LimitApproval`).
+    SetLimits {
+        expected_version: u64,
+        machines_at_once: u32,
+        spend_per_day_micros: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<LimitApproval>,
+    },
+}
+
+/// The two numbers the account limits are made of; spend is in millionths of the account's currency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountLimitValues {
+    pub machines_at_once: u32,
+    pub spend_per_day_micros: u64,
+}
+
+/// How the person allowed an agent's raise: their `/sudo` naming it, or a card they accepted that
+/// showed exactly these old and new values. The service raises only from `from` to `to`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitApproval {
+    pub kind: LimitApprovalKind,
+    /// The sudo entry or the card's interaction id, kept for the audit.
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub from: AccountLimitValues,
+    pub to: AccountLimitValues,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitApprovalKind {
+    Sudo,
+    Card,
 }
 
 impl ControlPlaneRequest {
@@ -116,6 +155,12 @@ pub enum ControlPlaneResponse {
     },
     Capabilities {
         machine_allocation: Option<MachineAllocationCapability>,
+    },
+    Limits {
+        machines_at_once: u32,
+        spend_per_day_micros: u64,
+        currency: String,
+        version: u64,
     },
     Machines {
         machines: Vec<ControlPlaneMachineRow>,

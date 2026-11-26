@@ -119,11 +119,30 @@ pub(crate) enum Approval {
 }
 
 impl KernelRuntimeState {
+    /// With no account limits to bound the owner's own (the tests that predate them).
+    #[cfg(test)]
     pub(crate) async fn approve_machine_acquisition(
         &self,
         command: &KernelCommand,
         request: &ControlPlaneRequest,
         capability: Option<&MachineAllocationCapability>,
+    ) -> Result<Approval, DaemonError> {
+        self.approve_machine_acquisition_within(
+            command,
+            request,
+            capability,
+            &limits::AccountBound::None,
+        )
+        .await
+    }
+
+    /// `bound` is what the account's limits say now: the owner's no-ask limits never exceed them.
+    pub(crate) async fn approve_machine_acquisition_within(
+        &self,
+        command: &KernelCommand,
+        request: &ControlPlaneRequest,
+        capability: Option<&MachineAllocationCapability>,
+        bound: &limits::AccountBound,
     ) -> Result<Approval, DaemonError> {
         let Some(subject) = self.acquisition_subject(command, request)? else {
             return Ok(Approval::Owner);
@@ -160,6 +179,7 @@ impl KernelRuntimeState {
             agent.unwrap_or_default(),
             request,
             capability,
+            bound,
         )? {
             without_asking::Admission::Within(hold) => return Ok(Approval::WithoutAsking(hold)),
             without_asking::Admission::Off => None,
@@ -404,18 +424,12 @@ impl KernelRuntimeState {
         })
     }
 
-    /// Who asks for what: the Room and agent, the id of the owner's card, and the identity under
-    /// which its approved request is first sent. None when no owner decision applies.
-    fn acquisition_subject(
+    /// The agent behind a request (the Room it acts in and the owner it acts for), or `None` when the
+    /// kernel owner asks themselves. An agent acting for the owner through an access grant has no Room.
+    pub(crate) fn agent_caller(
         &self,
         command: &KernelCommand,
-        request: &ControlPlaneRequest,
-    ) -> Result<Option<AcquisitionSubject>, DaemonError> {
-        let (ControlPlaneRequest::Acquire { request_id, .. }
-        | ControlPlaneRequest::AcquireJob { request_id, .. }) = request
-        else {
-            return Ok(None);
-        };
+    ) -> Result<Option<AgentCaller>, DaemonError> {
         let agent_request = command.external_grant_id().is_some()
             || command.reach_caller_id().is_some()
             || command.caller.metaagent_id.is_some()
@@ -458,6 +472,29 @@ impl KernelRuntimeState {
                 ));
             }
         };
+        Ok(Some(AgentCaller {
+            room,
+            owner,
+            agent: agent.map(str::to_owned),
+        }))
+    }
+
+    /// Who asks for what: the Room and agent, the id of the owner's card, and the identity under
+    /// which its approved request is first sent. None when no owner decision applies.
+    fn acquisition_subject(
+        &self,
+        command: &KernelCommand,
+        request: &ControlPlaneRequest,
+    ) -> Result<Option<AcquisitionSubject>, DaemonError> {
+        let (ControlPlaneRequest::Acquire { request_id, .. }
+        | ControlPlaneRequest::AcquireJob { request_id, .. }) = request
+        else {
+            return Ok(None);
+        };
+        let Some(AgentCaller { room, owner, agent }) = self.agent_caller(command)? else {
+            return Ok(None);
+        };
+        let agent = agent.as_deref();
         let digest = crate::runtime::command::KernelCommand::from_local_request(
             request_id,
             None,
@@ -597,6 +634,13 @@ impl Drop for MachineApprovalGuard {
     }
 }
 
+/// The agent a request comes from (see `agent_caller`).
+pub(crate) struct AgentCaller {
+    pub(crate) room: String,
+    pub(crate) owner: String,
+    pub(crate) agent: Option<String>,
+}
+
 /// Who asks for what (see `acquisition_subject`).
 struct AcquisitionSubject {
     room: String,
@@ -672,6 +716,28 @@ impl Drop for PendingAcquisition {
         }
     }
 }
+/// The account's limits, when the connected service has them: `None` otherwise.
+async fn read_account_limits<P, F>(
+    capability: &MachineAllocationCapability,
+    plane: &P,
+) -> Result<Option<limits::AccountLimits>, DaemonError>
+where
+    P: Fn(ControlPlaneRequest, String) -> F,
+    F: std::future::Future<Output = Result<crate::local::ControlPlaneResponse, DaemonError>>,
+{
+    if !capability.actions.iter().any(|action| action == "limits") {
+        return Ok(None);
+    }
+    let response = plane(ControlPlaneRequest::Limits {}, "machines:limits".into()).await?;
+    limits::AccountLimits::from_response(&response)
+        .map(Some)
+        .ok_or_else(|| {
+            acquisition_error(
+                "invalid_response",
+                "The service returned no account limits",
+            )
+        })
+}
 fn money(amount_micros: u64) -> String {
     format!("{:.6}", amount_micros as f64 / 1_000_000.0)
         .trim_end_matches('0')
@@ -707,6 +773,16 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
 }
+
+/// The account's limits tools: listed only while the kernel has a connected account, like enrolling.
+pub(crate) fn limits_tool_specs() -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+    use crate::transport::runtime_tools::RuntimeToolSpec;
+    let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
+    [
+        ("chariox.machines.limits", "Read the account's machine limits (machines at once, spend per day) and the owner's limits for acquiring without asking.", schema(serde_json::json!({}),serde_json::json!([]))),
+        ("chariox.machines.set_limits", "Change a limit. A lower applies at once; a raise needs the person: their /sudo naming it, or a card you raise showing the old and new values (the call waits for it). scope account (default) or no_ask; spend in millionths.", schema(serde_json::json!({"scope":{"type":"string","enum":["account","no_ask"]},"machines_at_once":{"type":"integer","minimum":1},"spend_per_day_micros":{"type":"integer","minimum":0}}),serde_json::json!([]))),
+    ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
+}
 impl KernelRuntimeState {
     pub(crate) async fn machine_tool(
         &self,
@@ -723,11 +799,14 @@ impl KernelRuntimeState {
             region: Option<String>,
             timeout_s: Option<u64>,
             purpose: Option<String>,
+            scope: Option<crate::local::LimitScope>,
+            machines_at_once: Option<u32>,
+            spend_per_day_micros: Option<u64>,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use request_id, class_id, region, timeout_s and purpose for acquire, allocation_ref for status and release, and no arguments for options",
+                "Use request_id, class_id, region, timeout_s and purpose for acquire, allocation_ref for status and release, scope, machines_at_once and spend_per_day_micros for set_limits, and no arguments for options and limits",
             )
         })?;
         let runs = self
@@ -768,6 +847,12 @@ impl KernelRuntimeState {
             "chariox.machines.release" => MachineAcquisitionRequest::Release {
                 allocation_ref: allocation_ref()?,
             },
+            "chariox.machines.limits" => MachineAcquisitionRequest::Limits {},
+            "chariox.machines.set_limits" => MachineAcquisitionRequest::SetLimits {
+                scope: args.scope.unwrap_or_default(),
+                machines_at_once: args.machines_at_once,
+                spend_per_day_micros: args.spend_per_day_micros,
+            },
             _ => {
                 return Err(acquisition_error(
                     "invalid_request",
@@ -776,8 +861,18 @@ impl KernelRuntimeState {
             }
         };
         let origin = &reach.origin();
+        let caller = self
+            .owned
+            .agent_store
+            .get_agent(&reach.agent_id)
+            .ok()
+            .map(|agent| AgentCaller {
+                room: agent.session_id().to_owned(),
+                owner: reach.owner_user_id.clone(),
+                agent: Some(reach.agent_id.clone()),
+            });
         let result = self
-            .machine_acquire(&reach.agent_id, request, |request, command_id| async move {
+            .machine_acquire(&reach.agent_id, request, caller, |request, command_id| async move {
                 self.job_control_plane(origin, &request, &command_id).await
             })
             .await?;
@@ -808,6 +903,7 @@ impl KernelRuntimeState {
         &self,
         key: &str,
         request: MachineAcquisitionRequest,
+        caller: Option<AgentCaller>,
         plane: P,
     ) -> Result<MachineAcquisitionResult, DaemonError>
     where
@@ -833,6 +929,68 @@ impl KernelRuntimeState {
                 options: capability.offers,
                 default: capability.offer,
             }),
+            MachineAcquisitionRequest::Limits {} => {
+                let account = read_account_limits(&capability, &plane).await?;
+                Ok(MachineAcquisitionResult::Limits {
+                    limits: self.limits_reading(account.as_ref()),
+                })
+            }
+            MachineAcquisitionRequest::SetLimits {
+                scope,
+                machines_at_once,
+                spend_per_day_micros,
+            } => {
+                if machines_at_once.is_none() && spend_per_day_micros.is_none() {
+                    return Err(acquisition_error(
+                        "invalid_request",
+                        "Name machines_at_once or spend_per_day_micros to change",
+                    ));
+                }
+                let mut account = read_account_limits(&capability, &plane).await?;
+                match scope {
+                    crate::local::LimitScope::Account => {
+                        let current = account.clone().ok_or_else(limits::no_account_limits)?;
+                        let to = crate::local::AccountLimitValues {
+                            machines_at_once: machines_at_once
+                                .unwrap_or(current.values.machines_at_once),
+                            spend_per_day_micros: spend_per_day_micros
+                                .unwrap_or(current.values.spend_per_day_micros),
+                        };
+                        if to != current.values {
+                            let response = plane(
+                                ControlPlaneRequest::SetLimits {
+                                    expected_version: current.version,
+                                    machines_at_once: to.machines_at_once,
+                                    spend_per_day_micros: to.spend_per_day_micros,
+                                    approval: None,
+                                },
+                                "machines:set_limits".into(),
+                            )
+                            .await?;
+                            account = Some(limits::AccountLimits::from_response(&response).ok_or_else(
+                                || {
+                                    acquisition_error(
+                                        "invalid_response",
+                                        "The service returned no account limits",
+                                    )
+                                },
+                            )?);
+                        }
+                    }
+                    crate::local::LimitScope::NoAsk => {
+                        self.change_no_ask_limits(
+                            caller,
+                            machines_at_once,
+                            spend_per_day_micros,
+                            account.as_ref(),
+                        )
+                        .await?;
+                    }
+                }
+                Ok(MachineAcquisitionResult::Limits {
+                    limits: self.limits_reading(account.as_ref()),
+                })
+            }
             MachineAcquisitionRequest::Acquire {
                 request_id,
                 class_id,
@@ -956,6 +1114,7 @@ impl KernelRuntimeState {
 mod acquire_tests;
 mod build_toolchain;
 mod choice;
+pub(crate) mod limits;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
