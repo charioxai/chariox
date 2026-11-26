@@ -362,9 +362,10 @@ async fn the_person_resumes_or_cancels_a_blocked_task_and_an_unrelated_agent_can
     )
     .await;
     let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
-    // A sibling room agent is no ancestor of c.
+    // Row 405: a same-owner peer settles it only within its own authority. One whose permission
+    // is below c's is refused by the shared peer control check.
     let outsider = t
-        .agent_at("outsider", None, AgentPermissionLevel::Yolo)
+        .agent_at("outsider", None, AgentPermissionLevel::Required)
         .await;
     let refused = t
         .runtime
@@ -376,11 +377,8 @@ async fn the_person_resumes_or_cancels_a_blocked_task_and_an_unrelated_agent_can
             crate::local::UsageLimitStopAction::Cancel,
         )
         .await
-        .expect_err("only an agent above may settle it");
-    assert!(
-        refused.to_string().contains("only an agent above"),
-        "{refused}"
-    );
+        .expect_err("a peer below c's permission may not settle it");
+    assert!(!refused.to_string().is_empty(), "{refused}");
     assert_eq!(
         t.runtime
             .owned
@@ -413,6 +411,216 @@ async fn the_person_resumes_or_cancels_a_blocked_task_and_an_unrelated_agent_can
         )
         .await;
     assert!(none.is_err(), "no blocked task is left");
+}
+
+// Row 405: another of the owner's agents whose permission covers the target's settles a blocked
+// task through the same peer control check as an agent above it.
+#[tokio::test]
+async fn an_authorized_peer_cancels_a_blocked_task() {
+    let t = tree(
+        "blocked-card-peer",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
+    let peer = t.agent_at("peer", None, AgentPermissionLevel::Yolo).await;
+    t.runtime
+        .resolve_usage_limit_stop(
+            &t.room,
+            &t.c,
+            "local",
+            Some(&peer),
+            crate::local::UsageLimitStopAction::Cancel,
+        )
+        .await
+        .expect("an authorized peer cancels the blocked task");
+    for _ in 0..100 {
+        let state = t
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state;
+        if state == ExecutionState::Cancelled {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the peer's cancel did not settle the blocked task");
+}
+
+/// `agent resume` / `agent resume cancel <agent> [--room R]` as the Room command sends it.
+fn resume_request(
+    room: &str,
+    agent: &str,
+    action: crate::local::UsageLimitStopAction,
+) -> LocalDaemonRequest {
+    LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
+        session_id: room.into(),
+        agent_id: agent.into(),
+        execution_mode: None,
+        clear_execution_mode: false,
+        permission_level: None,
+        clear_permission_level: false,
+        max_context_tokens: None,
+        clear_max_context_tokens: false,
+        workspace_id: None,
+        clear_workspace_id: false,
+        worktree_id: None,
+        clear_worktree_id: false,
+        usage_limit: Some(action),
+        reason: None,
+    })
+}
+
+impl Tree {
+    /// A second Room of the same owner with one agent whose turn is admitted and blocked.
+    async fn blocked_agent_in_another_room(
+        &self,
+        worktree: &crate::test_support::TestWorktree,
+    ) -> (String, String, AgentTaskExecution) {
+        let (room, agent) = {
+            let mut app = self.app.lock().await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(worktree.session_request())
+                .unwrap();
+            crate::test_support::admit_room_test_turn(&mut app, session.id(), agent.id());
+            (session.id().to_owned(), agent.id().to_owned())
+        };
+        let session = self.runtime.owned.session_snapshot(&room).unwrap();
+        let prompt = session.active_prompt_for_agent(&agent).unwrap().clone();
+        let run = self
+            .runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&room, &agent)
+            .unwrap();
+        let store = &self.runtime.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: room.clone(),
+                agent: agent.clone(),
+                prompt: prompt.id().into(),
+                run: Some(run.id().into()),
+                now: 1,
+            })
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(&room), Some(&agent))
+            .unwrap()
+            .pop()
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Block {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                reason: INVALID_TURN_END.into(),
+            })
+            .unwrap();
+        let task = store.agent_task(&task.task_id).unwrap().unwrap();
+        assert_eq!(task.state, ExecutionState::Blocked);
+        (room, agent, task)
+    }
+}
+
+// Row 405: `agent resume` and `agent resume cancel` of a BLOCKED peer, as the Room command sends
+// them (UpdateAgentConfig with the usage-limit action): admitted for a same-owner peer whose
+// permission covers the target's, in this Room and in another Room of the owner; refused for a
+// lower-permission peer and for another account's caller. Real blocked tasks, real settlement.
+#[tokio::test]
+async fn resume_and_cancel_of_a_blocked_peer_in_this_room_and_another() {
+    use crate::local::UsageLimitStopAction::{Cancel, ResumeWhenBack};
+    let t = tree(
+        "blocked-card-peer-command",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let peer = t.agent_at("peer", None, AgentPermissionLevel::Yolo).await;
+    let lower = t
+        .agent_at("lower", None, AgentPermissionLevel::Required)
+        .await;
+    let state = |task: &AgentTaskExecution| {
+        t.runtime
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state
+    };
+
+    // This Room: the command is admitted for the peer, refused for the lower one.
+    let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
+    let command = resume_request(&t.room, &t.c, Cancel);
+    assert!(t
+        .runtime
+        .authorize_room_agent_request(&peer, &command)
+        .is_ok());
+    assert!(t
+        .runtime
+        .authorize_room_agent_request(&lower, &command)
+        .is_err());
+    for refused in [&lower] {
+        let error = t
+            .runtime
+            .resolve_usage_limit_stop(&t.room, &t.c, "local", Some(refused), Cancel)
+            .await
+            .expect_err("a lower-permission peer may not settle it");
+        assert!(!error.to_string().is_empty(), "{error}");
+    }
+    // Another account's caller is refused by the owner check before any peer comparison.
+    assert!(t
+        .runtime
+        .resolve_usage_limit_stop(&t.room, &t.c, "stranger", Some(&peer), Cancel)
+        .await
+        .is_err());
+    assert_eq!(state(&task), ExecutionState::Blocked);
+    // The peer resumes it (resume, not cancel).
+    let resume = resume_request(&t.room, &t.c, ResumeWhenBack);
+    assert!(t
+        .runtime
+        .authorize_room_agent_request(&peer, &resume)
+        .is_ok());
+    t.runtime
+        .resolve_usage_limit_stop(&t.room, &t.c, "local", Some(&peer), ResumeWhenBack)
+        .await
+        .expect("an authorized peer resumes the blocked task");
+    assert_ne!(state(&task), ExecutionState::Blocked);
+
+    // Another Room of the same owner: the same two outcomes.
+    let other_tree = crate::test_support::TestWorktree::new("blocked-card-peer-command-other");
+    let (room, agent, task) = t.blocked_agent_in_another_room(&other_tree).await;
+    let command = resume_request(&room, &agent, Cancel);
+    assert!(t
+        .runtime
+        .authorize_room_agent_request(&peer, &command)
+        .is_ok());
+    assert!(t
+        .runtime
+        .authorize_room_agent_request(&lower, &command)
+        .is_err());
+    assert!(t
+        .runtime
+        .resolve_usage_limit_stop(&room, &agent, "local", Some(&lower), Cancel)
+        .await
+        .is_err());
+    assert_eq!(state(&task), ExecutionState::Blocked);
+    t.runtime
+        .resolve_usage_limit_stop(&room, &agent, "local", Some(&peer), Cancel)
+        .await
+        .expect("an authorized peer cancels a blocked task in another Room");
+    for _ in 0..100 {
+        if state(&task) == ExecutionState::Cancelled {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the other-Room cancel did not settle the blocked task");
 }
 
 #[tokio::test]

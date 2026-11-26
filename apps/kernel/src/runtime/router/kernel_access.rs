@@ -98,16 +98,36 @@ impl CommandRouter {
         &self.kernel_gateway
     }
 
+    /// Row 405: the caller is the owner's live agent, dispatched by `dispatch_as_owner_agent`: a
+    /// `KernelAgent` whose reach is the one its own running provider turn holds, for the kernel's
+    /// owner. The downstream owner handlers (kernel files, grants, cards, machine watches) admit it
+    /// like a terminal; payments and secrets were refused by `reach_need` before dispatch.
+    fn is_owner_agent_reach(&self, command: &KernelCommand) -> bool {
+        command.caller.connection_class == Some(KernelConnectionClass::KernelAgent)
+            && command_caller_user_id(command) == self.config_projection.local_owner_user_id()
+            && self
+                .runtime_state
+                .reach_for_id(&command.caller.caller_id)
+                .is_some_and(|reach| {
+                    command.provider_run_id.as_deref() == Some(reach.run_id.as_str())
+                })
+    }
+
     pub(super) async fn list_gateway_machines(
         &self,
         command: &KernelCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if !matches!(
-            command.caller.connection_class,
-            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
-        ) {
+        // Row 405: the owner's live agent (`dispatch_as_owner_agent`) lists the owner's kernels
+        // too, so it can name them in cross-kernel requests.
+        let owner_agent = self.is_owner_agent_reach(command);
+        if !owner_agent
+            && !matches!(
+                command.caller.connection_class,
+                Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+            )
+        {
             return Err(error(
-                "only a Chariox terminal or local grant holder can list kernels",
+                "only a Chariox terminal, a local grant holder or the owner's agent can list kernels",
             ));
         }
         let kernels = self
@@ -249,18 +269,22 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::AttachmentsHeartbeated { lapsed })
     }
 
-    /// Pairing the gateway with a kernel, or forgetting one, is a person's act at
-    /// a Chariox terminal; a grant holder or a forwarded request never reaches it.
+    /// Pairing the gateway with a kernel carries an admission secret: a person's act at a
+    /// Chariox terminal. Forgetting one only reduces reach: an ordinary owner action that the
+    /// owner's agents also take (row 405), already admitted as the owner upstream.
     async fn machine_pairing(
         &self,
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let owner = command.is_terminal_caller()
-            && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        let as_owner =
+            command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        let owner = as_owner
+            && (command.is_terminal_caller()
+                || matches!(request, LocalDaemonRequest::ForgetGatewayKernel(_)));
         if !owner {
             return Err(denied(
-                "only the kernel's owner at a Chariox terminal can pair or forget a kernel",
+                "only the kernel's owner at a Chariox terminal can pair a kernel",
             ));
         }
         let outcome = match request {
@@ -290,7 +314,7 @@ impl CommandRouter {
             path: "/".into(),
             with_sha256: false,
         });
-        let command = KernelCommand::from_local_request_with_caller(
+        let mut command = KernelCommand::from_local_request_with_caller(
             "file-watch",
             source,
             caller,
@@ -298,16 +322,26 @@ impl CommandRouter {
             None,
             &request,
         );
+        // Row 405: a subscription carries only its caller. The owner's live agent is a
+        // `reach:<run>` identity; bind the run that identity names while it is live, so the
+        // owner check below sees the same pair `dispatch_as_owner_agent` sets.
+        if command.caller.connection_class == Some(KernelConnectionClass::KernelAgent) {
+            command.provider_run_id = self
+                .runtime_state
+                .reach_for_id(&command.caller.caller_id)
+                .map(|reach| reach.run_id);
+        }
         crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
             &self.config_projection.snapshot(),
             &request,
         )?;
         self.authorize_external_request(&command, &request)?;
         self.authorize_relay_collaborator_request(&command, &request)?;
-        if !matches!(
+        if !(matches!(
             command.caller.connection_class,
             Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
-        ) || command_caller_user_id(&command) != self.config_projection.local_owner_user_id()
+        ) || self.is_owner_agent_reach(&command))
+            || command_caller_user_id(&command) != self.config_projection.local_owner_user_id()
         {
             return Err(denied("only the kernel owner can watch machine files"));
         }
@@ -323,11 +357,11 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         use crate::runtime::kernel_files as files;
         use crate::runtime::kernel_trash as trash;
-        let owner = matches!(
+        let owner = (matches!(
             command.caller.connection_class,
             Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
-        ) && command_caller_user_id(command)
-            == self.config_projection.local_owner_user_id();
+        ) || self.is_owner_agent_reach(command))
+            && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
         if !owner {
             return Err(denied(
                 "only the kernel's owner at a Chariox terminal or as a local grant holder can use kernel files",
@@ -402,10 +436,11 @@ impl CommandRouter {
         ) {
             return Ok(None);
         }
-        if !matches!(
+        if !(matches!(
             command.caller.connection_class,
             Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
-        ) {
+        ) || self.is_owner_agent_reach(command))
+        {
             return Err(error(
                 "only a Chariox terminal or local grant holder can list cards or access grants, or revoke grants",
             ));

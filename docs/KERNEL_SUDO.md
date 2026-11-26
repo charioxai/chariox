@@ -1,5 +1,10 @@
 # Sudo windows (protocol 974)
 
+Row 405: the owner's agents no longer need `/sudo`. They act with the owner's authority on all the
+owner's kernels, except payments and secrets (`docs/KERNEL_ACCESS.md`, "The owner's agents act as
+the owner"). A window below still binds an agent's work and attribution; it adds no authority beyond
+the owner's, and it never covers payments or secrets.
+
 MP-08 / MP-10 / MP-11 A04. In a Chariox terminal, focus a local regular agent
 and enter `/sudo <prompt>`. Every connected host terminal receives one passkey
 popup naming the agent, the full prompt, its attachments (a note shows its
