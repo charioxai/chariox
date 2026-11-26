@@ -44,7 +44,11 @@ const execOn = (seconds, script) => ['exec', '--kernel', fixture.target, '--time
 async function cell(id, exercise) {
   if (only && !id.startsWith(only)) return
   try { results.push({ id, status: 'PASS', ...await exercise() }) }
-  catch (error) { results.push({ id, status: 'FAIL', message: String(error.message).slice(0, 900) }) }
+  catch (error) {
+    results.push({ id, status: 'FAIL', message: String(error.message).slice(0, 900) })
+    // A failed cell must not leave the relay down for the cells after it.
+    if (!relayUnit) await restoreLink().catch(() => undefined)
+  }
   await writeFile(path.join(fixture.evidence, 'results.json'), JSON.stringify(results, null, 2) + '\n')
   console.log(id, results.at(-1).status, results.at(-1).message ?? '')
 }
