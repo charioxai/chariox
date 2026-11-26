@@ -70,8 +70,8 @@ struct KernelSnapshotResult {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct PageSize {
-    css_width: f64,
-    css_height: f64,
+    css_width: serde_json::Number,
+    css_height: serde_json::Number,
 }
 
 impl RoomSecretObservations {
