@@ -160,3 +160,33 @@ fn c3_a_wait_the_agent_cancels_itself_starts_no_turn() {
         .collect();
     assert!(open.is_empty(), "{open:?}");
 }
+
+/// C6: an earlier task whose wait source ended and was handled, or that a newer task adopted,
+/// starts no turn when its deadline passes.
+#[test]
+fn c6_an_earlier_wait_whose_source_was_handled_starts_no_turn_at_its_deadline() {
+    let f = Fixture::new();
+    f.create("old", "timer", Some(1_000), None);
+    f.wait_on(&["old"]);
+    f.apply(Operation::FireWakes { now: 2_000 });
+    for e in f.inbox() {
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            handled: true,
+            now: 2_500,
+        });
+    }
+    begin(&f, "q");
+    f.create_in("q", "new", "timer", Some(30_000_000), None);
+    yield_in(&f, "q", &["new"], 40_000_000);
+    settle_in(&f, "q");
+    sweep(&f, 10_000_001);
+    let timed_out: Vec<_> = f
+        .inbox()
+        .into_iter()
+        .filter(|e| matches!(e.kind.as_str(), "deadline_reached" | "wait_recheck"))
+        .collect();
+    assert!(timed_out.is_empty(), "{timed_out:?}");
+}
