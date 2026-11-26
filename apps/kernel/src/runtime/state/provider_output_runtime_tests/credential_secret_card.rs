@@ -15,6 +15,28 @@ fn secret_request(entry: &str) -> serde_json::Value {
     })
 }
 
+/// The Room's Vault is already unlocked, so the only card is the secret's own, not the Room's unlock card.
+fn unlock_vault(f: &Fixture, name: &str) {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-secretcard-{name}-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config = f.runtime.owned.config_projection.snapshot();
+    config.user_config.credential_vault.path = dir.join("vault").display().to_string();
+    let path = std::path::Path::new(&config.user_config.credential_vault.path).to_path_buf();
+    crate::secret::create_chariox_encrypted_vault_for_test(&path, "synthetic-passphrase-only")
+        .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &path,
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    f.runtime.owned.config_projection.update(config);
+}
+
 async fn run_token(f: &Fixture) -> String {
     f.runtime
         .owned
@@ -27,9 +49,10 @@ async fn run_token(f: &Fixture) -> String {
 }
 
 /// Both calls block on the person today; the test gives each a short window, then looks at the cards.
-async fn ask_secret(f: &Fixture, entry: &str) {
+/// Returns the refusal the call ended with, if it ended with one.
+async fn ask_secret(f: &Fixture, entry: &str) -> Option<String> {
     let token = run_token(f).await;
-    let _ = tokio::time::timeout(
+    let ended = tokio::time::timeout(
         Duration::from_millis(600),
         f.runtime.dispatch_authenticated_runtime_tool_call(
             &token,
@@ -38,6 +61,30 @@ async fn ask_secret(f: &Fixture, entry: &str) {
         ),
     )
     .await;
+    eprintln!(
+        "DIAG ask_secret {entry}: {}",
+        match ended {
+            Ok(done) => format!("returned {:?}", done.map(|r| r.payload.to_string())),
+            Err(_) => "still waiting after 600 ms (call dropped)".to_string(),
+        }
+    );
+    eprintln!("DIAG cards after: {:?}", all_cards(f));
+    match ended {
+        Ok(Err(error)) => Some(error.to_string()),
+        _ => None,
+    }
+}
+
+fn all_cards(f: &Fixture) -> Vec<String> {
+    f.runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .map(|card| card.id().to_string())
+        .collect()
 }
 
 fn secret_cards(f: &Fixture) -> usize {
@@ -73,9 +120,12 @@ fn on_kernel_stack<F: std::future::Future<Output = ()> + Send + 'static>(body: F
 fn asking_twice_for_the_same_secret_raises_one_card() {
     on_kernel_stack(async {
         let f = fixture("secret-card-ask-twice", true).await;
+        unlock_vault(&f, "twice");
         f.begin(&f.prompt_id);
-        ask_secret(&f, "cf-mailbox-token").await;
-        ask_secret(&f, "cf-mailbox-token").await;
+        let first = ask_secret(&f, "cf-mailbox-token").await;
+        let retry = ask_secret(&f, "cf-mailbox-token").await;
+        assert_eq!(first, None);
+        assert_eq!(retry, None, "the retry joins the card, it is not refused");
         assert_eq!(secret_cards(&f), 1, "one card for one secret");
     });
 }
@@ -86,6 +136,7 @@ fn asking_twice_for_the_same_secret_raises_one_card() {
 fn a_retry_while_the_first_ask_is_open_joins_its_card() {
     on_kernel_stack(async {
         let f = fixture("secret-card-retry-joins", true).await;
+        unlock_vault(&f, "retry");
         f.begin(&f.prompt_id);
         let token = run_token(&f).await;
         let call = |label: &'static str| {
@@ -109,7 +160,15 @@ fn a_retry_while_the_first_ask_is_open_joins_its_card() {
             tokio::time::sleep(Duration::from_millis(500)).await;
             call("second").await
         };
+        let diag = async {
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                eprintln!("DIAG concurrent cards: {:?}", all_cards(&f));
+            }
+            std::future::pending::<()>().await
+        };
         let cards = tokio::select! {
+            _ = diag => unreachable!(),
             ended = call("first") => panic!("the first ask returned before anyone answered: {ended:?}"),
             ended = second => panic!("the second ask returned before anyone answered: {ended:?}"),
             cards = count => cards,
