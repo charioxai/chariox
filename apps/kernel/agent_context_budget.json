@@ -10,9 +10,9 @@
   "claude_worker_runtime_note_bytes": 702,
   "hidden_runtime_note_bytes": 5341,
   "codex_tools_listed": 137,
-  "codex_tools_list_json_bytes": 121769,
+  "codex_tools_list_json_bytes": 122066,
   "opencode_tools_listed": 4,
   "opencode_tools_list_json_bytes": 3620,
   "opencode_worker_tools_listed": 4,
-  "opencode_worker_tools_list_json_bytes": 2856
+  "opencode_worker_tools_list_json_bytes": 2851
 }
