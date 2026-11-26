@@ -231,6 +231,7 @@ impl KernelRuntimeState {
             specs.push(super::vault_command::capture_command_spec());
             specs.push(super::vault_command::copy_for_use_spec());
             specs.push(super::vault_command::use_env_spec());
+            specs.push(super::vault_command::privileged_run_spec());
             specs.push(super::vault_command::capture_file_spec());
             specs.push(super::vault_command::write_file_spec());
             specs.push(super::vault_command::remove_capture_spec());
@@ -528,6 +529,9 @@ impl KernelRuntimeState {
         }
         if tool_name == super::vault_command::VAULT_USE_ENV {
             return Box::pin(self.vault_use_env(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::PRIVILEGED_RUN {
+            return Box::pin(self.privileged_run(auth_token, arguments)).await;
         }
         if tool_name == super::vault_command::VAULT_CAPTURE_FILE {
             return Box::pin(self.vault_capture_file(auth_token, arguments)).await;

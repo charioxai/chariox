@@ -293,8 +293,9 @@ impl KernelRuntimeState {
         masks.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
         let output = run_command(
             self,
-            context.clone(),
+            Some(context.clone()),
             super::super::agent_process_watch::KernelCommand {
+                launch: super::super::agent_process_watch::KernelLaunch::Isolated,
                 argv,
                 cwd,
                 env,
@@ -309,7 +310,7 @@ impl KernelRuntimeState {
             KernelCommandExit::Exited(code) => {
                 return Err(error(format!(
                     "the command exited with code {code}; nothing was stored{}",
-                    stderr_excerpt(super::use_env::masked(&output.stderr, &masks).0.as_bytes())
+                    stderr_excerpt(super::mask::masked(&output.stderr, &masks).0.as_bytes())
                 )))
             }
             KernelCommandExit::TimedOut => {

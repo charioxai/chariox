@@ -285,6 +285,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == "chariox.load_kernel_computer"
                 || spec.name == "chariox.vault.capture_command"
                 || spec.name == "chariox.vault.use_env"
+                || spec.name == "chariox.privileged.run"
                 || spec.name == "chariox.vault.copy_for_use"
                 || spec.name == "chariox.vault.capture_file"
                 || spec.name == "chariox.vault.write_file"

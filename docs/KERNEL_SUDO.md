@@ -219,6 +219,21 @@ default and at most 240 s, after which it is stopped.
   effects is its own action. Uses depend on the declared destination, not the
   creating session.
 
+- `chariox.privileged.run {argv, credential_id, machine?, timeout_seconds?}` is not a sudo window: the
+  kernel runs one command as root with `sudo -S -k -p '' -- sh -c 'exec "$@" </dev/null' sh <timeout> -k 3 <seconds> <argv>` as its own user, outside
+  the agent's sandbox (the sandbox's no-new-privileges flag stops sudo for every agent command, and stays),
+  and types the sudo password from the Vault entry `credential_id` on sudo's stdin only: never argv,
+  environment or a file. The entry is the owner's: a `command_stdin` entry whose origin is
+  `https://<kernel id>.machine.chariox.invalid` (a refusal names the origin to use), so a password only
+  works on its own machine; each use is a Vault Activity line. The owner's agents may use it by default;
+  the entry is the person-held part. It returns `{status, exit_code, stdout, stderr, machine, ran_as,
+  truncated}` with the password read `[vault:<credential_id>]`; sudo's own refusals come back as
+  `wrong_password`, `not_in_sudoers`, `command_not_allowed`, `needs_terminal`, `kernel_cannot_elevate`,
+  `sudo_missing`, `timeout_missing` (no `timeout`, or `gtimeout` of Homebrew coreutils, found before the password is read), `machine_unknown` or `entry_wrong_machine`, each with the next step. The owner runs the
+  same command with `OwnerVault` `run_privileged {id, argv, machine?, timeout_seconds?}`
+  (`chariox request`). A program that runs as root can still read the kernel's own memory: the
+  guarantee is that no Chariox surface shows the password to the model.
+
 Two file tools complete the set:
 
 - `chariox.vault.capture_file {request_id, path, host, use_binding, label?, extract?,

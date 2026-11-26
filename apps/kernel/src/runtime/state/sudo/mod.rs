@@ -55,6 +55,8 @@ mod leased_route_tests;
 mod operation_tests;
 #[cfg(test)]
 mod parked_task_tests;
+#[cfg(test)]
+mod privileged_run_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
 #[cfg(test)]
