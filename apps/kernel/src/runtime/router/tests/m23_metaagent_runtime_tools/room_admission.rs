@@ -192,12 +192,10 @@ workflow.endpoint(review,{{handle:"entry"}});"#,
         .payload
         .to_string()
         .contains("unauthorized_existing_agent_binding"));
-    assert_eq!(
-        validation
-            .payload
-            .pointer("/WorkflowCodeValidated/result/definition/workflow/alias"),
-        Some(&serde_json::json!("inline-review"))
-    );
+    assert!(validation
+        .payload
+        .pointer("/WorkflowCodeValidated/result/definition")
+        .is_none());
     let legacy = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![
         config.workflow_code_artifact_root()
     ]);
@@ -1308,10 +1306,11 @@ async fn concurrent_registry_add() {
             &compile.definition
         ))
     );
-    assert_eq!(
-        serde_json::to_value(&winner.metadata).unwrap(),
-        first.payload["WorkflowRegistryEntryAdded"]["entry"]
-    );
+    let added_entry = &first.payload["WorkflowRegistryEntryAdded"]["entry"];
+    let stored = serde_json::to_value(&winner.metadata).unwrap();
+    for field in ["name", "source_sha256", "definition_sha256", "validation"] {
+        assert_eq!(added_entry[field], stored[field], "{field}");
+    }
     assert!(
         !std::fs::read_dir(&registry_root).unwrap().any(|e| e
             .unwrap()

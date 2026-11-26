@@ -71,23 +71,55 @@ async fn apply_with_definition_and_session(
             body["result"].get("compile").is_none(),
             "apply must not echo the definition"
         );
-        let validated = router
-            .runtime_state
-            .dispatch_meta_runtime_tool_call_for_agent(
-                session_id,
-                metaagent_id,
-                crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
-                arguments,
-            )
-            .await
-            .expect("metaagent should validate the applied workflow-code");
+        // The definition is read where it stays readable: the saved artifact, or a plain
+        // validation of the inline source (the local request keeps the full result).
+        let definition = if let Some(name) = arguments.get("name").and_then(|name| name.as_str()) {
+            let read = router
+                .runtime_state
+                .dispatch_meta_runtime_tool_call_for_agent(
+                    session_id,
+                    metaagent_id,
+                    crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL,
+                    serde_json::json!({ "name": name }),
+                )
+                .await
+                .expect("metaagent should read the applied artifact");
+            read.payload["WorkflowCodeArtifact"]["artifact"]["definition"].clone()
+        } else {
+            let (response, _) = router
+                .runtime_state
+                .execute_workflow_request(
+                    crate::local::LocalDaemonRequest::ValidateWorkflowCode(
+                        crate::local::ValidateWorkflowCodeRequest {
+                            session_id: session_id.to_string(),
+                            node_path: crate::workflow_code::discover_workflow_code_node_path()
+                                .expect("node should be available")
+                                .display()
+                                .to_string(),
+                            source: arguments["source"].as_str().unwrap_or_default().to_string(),
+                            language: None,
+                            provider_rebindings: Vec::new(),
+                            agent_rebindings: Vec::new(),
+                        },
+                    ),
+                    "local".to_string(),
+                    Some(metaagent_id.to_string()),
+                )
+                .await;
+            match response.expect("inline source should validate") {
+                crate::local::LocalDaemonResponse::WorkflowCodeValidated { result } => {
+                    serde_json::to_value(result.definition).expect("definition should serialize")
+                }
+                other => panic!("unexpected validate response: {other:?}"),
+            }
+        };
         let snapshot = router
             .runtime_state
             .session_snapshot(session_id)
             .await
             .expect("session should exist");
         payload["WorkflowCodeApplied"]["result"]["compile"] = serde_json::json!({
-            "definition": validated.payload["WorkflowCodeValidated"]["result"]["definition"].clone(),
+            "definition": definition,
         });
         payload["WorkflowCodeApplied"]["session"] =
             serde_json::to_value(snapshot).expect("session should serialize");
