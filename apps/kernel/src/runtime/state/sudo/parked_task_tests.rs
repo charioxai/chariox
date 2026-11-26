@@ -1364,3 +1364,56 @@ async fn exact_owner_task_cancellation_preserves_a_wait_the_fold_leaves_alone() 
     );
     assert_eq!(store.agent_task(&other.task_id).unwrap().unwrap(), other);
 }
+
+/// Stop of an idle agent still ends every parked task when the waits do not fold: a timer wait
+/// and a delegate wait are independent tasks, and one Stop cancels both and the timer.
+#[tokio::test]
+async fn stop_of_an_idle_agent_cancels_independent_parked_tasks_the_fold_leaves_alone() {
+    let f = fixture_with_options(None, true);
+    let helper = delegate_waiting_task(&f, "helper-wait-stop");
+    let timer = waiting_task(&f, "timer-wait-stop");
+    let store = &f.state.owned.durable_state_store;
+    for task in [&helper, &timer] {
+        assert_eq!(
+            store.agent_task(&task.task_id).unwrap().unwrap().state,
+            ExecutionState::Waiting,
+            "{} is still its own wait",
+            task.task_id
+        );
+    }
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        target_agent_id: None,
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-independent-waiting",
+        None,
+        None,
+        &request,
+    );
+    let response = f.router.dispatch(command, request).await.unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected task cancellation")
+    };
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    for original in [&helper, &timer] {
+        let stopped = store.agent_task(&original.task_id).unwrap().unwrap();
+        assert_eq!(
+            stopped.state,
+            ExecutionState::Cancelled,
+            "{}",
+            original.task_id
+        );
+        assert_eq!(stopped.reason, "Stopped by you", "{}", original.task_id);
+    }
+    assert_eq!(
+        store
+            .agent_wake("timer-timer-wait-stop")
+            .unwrap()
+            .unwrap()
+            .state,
+        "cancelled"
+    );
+}
