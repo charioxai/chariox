@@ -439,3 +439,71 @@ fn a_store_in_progress_holds_the_card_against_timeout_cancel_and_withdraw() {
         assert!(secret_cards(&f).is_empty());
     });
 }
+
+/// Review P2: an answer accepted inside its deadline commits even when the Vault write finishes after
+/// it; the real save is held past the deadline by the Vault's own lock.
+#[test]
+fn an_accepted_answer_commits_when_the_save_crosses_the_deadline() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-crossing", true).await;
+        let _home = Home::new(&f, "crossing");
+        f.begin(&f.prompt_id);
+        let asked = ask_secret_with(&f, secret_request_with("cf-crossing-token", Some(2)))
+            .await
+            .unwrap();
+        let id = asked["interaction_id"].as_str().unwrap().to_string();
+        let hold = async {
+            let guard = f.runtime.vault_observation_mutation_guard().await;
+            tokio::time::sleep(Duration::from_millis(2600)).await;
+            drop(guard);
+        };
+        let answer = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            answer_secret_result(&f, &id, "secret", Some(CANARY)).await
+        };
+        let ((), answered) = tokio::join!(hold, answer);
+        answered.expect("the answer was accepted before the deadline and must commit");
+        assert!(secret_cards(&f).is_empty());
+        assert!(crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .get("cf-crossing-token")
+            .unwrap()
+            .is_some());
+        let answers: Vec<_> = f
+            .store()
+            .agent_inbox(&f.room, &f.agent, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.source_id == id)
+            .map(|event| event.payload["public_answer"].clone())
+            .collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0]["stored"], true);
+    });
+}
+
+/// Review P2: a cancel that reaches the resolver while the secret is reserved is refused there, under
+/// the lock, whatever it checked before.
+#[test]
+fn a_cancel_that_reaches_the_resolver_during_a_store_is_refused_there() {
+    on_kernel_stack(|| async {
+        let f = fixture("secret-card-resolver", true).await;
+        let _home = Home::new(&f, "resolver");
+        f.begin(&f.prompt_id);
+        let asked = ask_secret(&f, "cf-resolver-token").await.unwrap();
+        let id = asked["interaction_id"].as_str().unwrap().to_string();
+        let reservation = f.runtime.owned.reserve_secret_store(&f.room, &id).unwrap();
+        let refused = f
+            .runtime
+            .owned
+            .resolve_runtime_interaction(&f.room, &id, "cancel", None, None, false);
+        assert!(refused.is_err(), "the resolver itself holds the card");
+        assert_eq!(secret_cards(&f), vec![id.clone()]);
+        drop(reservation);
+        f.runtime
+            .owned
+            .resolve_runtime_interaction(&f.room, &id, "cancel", None, None, false)
+            .unwrap();
+        assert!(secret_cards(&f).is_empty());
+    });
+}

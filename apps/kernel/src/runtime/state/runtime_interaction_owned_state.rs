@@ -489,7 +489,17 @@ impl KernelRuntimeOwnedState {
                 return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
             }
         }
-        if interaction.asking_task_id().is_some()
+        // Row 539: an answer being stored in the Vault is the only one that may settle its card, and its
+        // reservation (made inside its deadline, under this mutation) carries it past the deadline; any
+        // other answer, such as a cancel, waits for the store and is checked here under the same lock.
+        let reserved_secret = self.pending_interactions.secret_store_in_progress(interaction_id);
+        if reserved_secret && choice_id != "secret" {
+            return Err(interaction_error(
+                "The secret is being stored; answer again in a moment",
+            ));
+        }
+        if !reserved_secret
+            && interaction.asking_task_id().is_some()
             && interaction.timeout_sec().is_some_and(|seconds| {
                 interaction
                     .requested_at_ms()

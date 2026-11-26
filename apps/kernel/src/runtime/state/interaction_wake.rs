@@ -94,11 +94,6 @@ impl WakeDriver for InteractionWakeDriver {
         Ok(())
     }
     fn cancel(&self, wake: &AgentWake) -> Result<Cancel, DaemonError> {
-        if self.owned.pending_interactions.secret_store_in_progress(&wake.id) {
-            return Err(ledger::error(
-                "The secret is being stored; withdraw again in a moment",
-            ));
-        }
         self.owned.remove_async_question(
             wake,
             "Question withdrawn because its task, agent or wake was cancelled",
@@ -419,6 +414,12 @@ impl KernelRuntimeOwnedState {
             .mutation
             .lock()
             .map_err(|_| ledger::error("interaction store unavailable"))?;
+        // A secret answer being stored holds its card; the reservation is made under this same lock.
+        if self.pending_interactions.secret_store_in_progress(&wake.id) {
+            return Err(ledger::error(
+                "The secret is being stored; withdraw again in a moment",
+            ));
+        }
         let pending = self.pending_interactions.write().remove(&wake.id);
         self.forget_vault_payment_ask(&wake.id);
         let mut sessions = self.session_store.write();
