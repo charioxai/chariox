@@ -470,7 +470,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "the owner's reach: any agent of the Room, as the owner's own move",
         routed: true,
-        description: "Moves an agent, with its sub-agents, history and context, under a new parent in this Room; `none` makes it a Room agent. The new parent then prompts, steers and cancels it and the old parent no longer does. Refused under itself or one of its descendants, and for an agent of another Room. The person runs the same words as `chariox agent parent`.",
+        description: "Moves an agent, with its sub-agents, history and context, under a new parent in this Room; `none` makes it a Room agent. The agent keeps its id and leaves the old parent's tree for the new parent's (`agent children`, child events); it can no longer control the agent it was moved under. Agents of the owner keep controlling each other as peers, so the old parent is not locked out. Refused under itself or one of its descendants, and for an agent of another Room. The person runs the same words as `chariox agent parent`.",
     },
     MetaCommandDoc {
         name: "agent profiles",

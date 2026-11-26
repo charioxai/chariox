@@ -36,3 +36,10 @@ test("agent parent is a registered command with its two references", () => {
   assert.deepEqual(spec.args, ["AGENT", "PARENT|none"])
   assert.match(usageOf("agent parent"), /agent parent/)
 })
+
+test("the help says a move changes the tree, not who may steer: the owner's agents stay peers", () => {
+  const summary = COMMANDS.find(command => command.name === "agent parent")!.summary
+  assert.match(summary, /tree/)
+  assert.match(summary, /peers/)
+  assert.doesNotMatch(summary, /no longer does|no longer prompts|loses control/)
+})
