@@ -8,7 +8,51 @@ use crate::transport::room_shared_display::RoomDisplayAudience;
 use serde_json::{json, Value};
 
 impl KernelRuntimeState {
+    /// A person's web input (the card and the full Tab send `MirrorInput`) is logged with its
+    /// outcome like a display input: the agent that raised a card reads why it takes none.
     pub(super) async fn kernel_browser_mirror_request(
+        &self,
+        caller: &KernelCommand,
+        command: KernelBrowserCommand,
+        download_room: Option<&str>,
+    ) -> Result<Value, DaemonError> {
+        let input = match &command {
+            KernelBrowserCommand::MirrorInput {
+                tab_id,
+                generation,
+                document_id,
+                action,
+                ..
+            } => Some((
+                tab_id.clone(),
+                *generation,
+                document_id.clone(),
+                super::browser_input_log::mirror_action_kind(action),
+            )),
+            _ => None,
+        };
+        let result = self
+            .kernel_browser_mirror_request_unlogged(caller, command, download_room)
+            .await;
+        if let Some((tab_id, generation, document_id, kind)) = input {
+            self.browser_input_log.record(
+                &tab_id,
+                super::browser_input_log::InputOutcome {
+                    at_ms: crate::session::unix_epoch_ms(),
+                    kind,
+                    generation,
+                    document_id,
+                    reason: result
+                        .as_ref()
+                        .err()
+                        .map(super::browser_input_log::refusal_reason),
+                },
+            );
+        }
+        result
+    }
+
+    async fn kernel_browser_mirror_request_unlogged(
         &self,
         caller: &KernelCommand,
         command: KernelBrowserCommand,

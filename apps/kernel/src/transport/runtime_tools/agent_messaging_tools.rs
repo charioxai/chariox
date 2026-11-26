@@ -48,7 +48,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: LIST_SESSION_AGENTS_TOOL.to_string(),
-            description: "List Room agents (alias, state, queue) and tasks newest first. Use include_history for finished tasks and settled obligations. Use task_id for a task's obligations. Resume a list with next_*_cursor as *_cursor.".to_string(),
+            description: "List Room agents newest first, one compact row each (id, alias, state, provider, model, mode, permission level, parent, active prompt, queue, waiting on), and tasks. Use chariox.get_session_agent for one agent's full detail. Use include_history for finished tasks and settled obligations. Use task_id for a task's obligations. Resume a list with next_*_cursor as *_cursor.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

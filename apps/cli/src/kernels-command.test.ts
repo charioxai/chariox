@@ -382,7 +382,7 @@ test("an owner's settings command on the ordinary endpoint sends its command id,
   }
 })
 
-test("kernels restart --browser asks the named kernel to restart its browser, and --browser is required", async () => {
+test("kernels restart --browser asks the named kernel to restart its browser; without it the kernel restarts (row 551)", async () => {
   const kernel = await startFakeKernel((socket, frame) => {
     if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
     replyWith(socket, frame, { response: { KernelBrowser: { result: { state: "ready", tabs: [{ tab_id: "host-tab-1", opener_tab_id: "host-tab-0" }] } } } })
@@ -395,9 +395,10 @@ test("kernels restart --browser asks the named kernel to restart its browser, an
     await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--browser", "--socket", kernel.path])
     assert.equal(JSON.parse(printed.at(-1)!).tabs[0].opener_tab_id, "host-tab-0")
     await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--socket", kernel.path])
-    assert.match(errors.join(""), /usage/, "a restart without --browser is refused before anything is sent")
+    assert.deepEqual(errors, [], "a restart without --browser is the kernel's restart, not a usage error")
   } finally { console.log = log; process.stderr.write = written; process.exitCode = exitCode; await kernel.close() }
   const sent = kernel.frames.map(frame => frame.request).filter(request => "KernelBrowser" in request)
   assert.equal(sent.length, 1)
   assert.deepEqual(sent[0], { KernelBrowser: { command: { op: "restart" } } })
+  assert.equal(kernel.frames.map(frame => frame.request).filter(request => "RestartKernel" in request).length, 1, "and the bare restart asked the kernel to restart")
 })

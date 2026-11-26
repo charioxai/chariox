@@ -1213,6 +1213,95 @@ async fn a_captured_private_key_is_restored_byte_for_byte_and_loads() {
     f.state.shutdown_cleanup().await.unwrap();
 }
 
+/// Row 555: a setup script that needs a Vault token and prints a new secret is captured in one
+/// step; the token reaches the command as env and the new value goes from the process into the
+/// Vault, with no file between them.
+#[tokio::test]
+async fn capture_command_binds_another_vault_entry_as_env_and_stores_what_it_prints() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let token = capture(&f, "token", printing(SECRET), json!({"kind": "stdout"}))
+        .await
+        .unwrap();
+    let token_id = token["credential_id"].as_str().unwrap().to_string();
+    let files = |dir: &std::path::Path| {
+        let mut names = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let before = files(&workspace(&f));
+    let created = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "derived", "host": "api.example.com", "origin": "https://api.example.com",
+            "env": {"KEY": token_id}, "label": "derived key",
+            "argv": ["/bin/sh", "-c", "printf 'derived-%s\\n' \"$KEY\""],
+            "use_binding": {"target": {"kind": "command_environment", "name": "NEW", "origin": "https://api.example.com"}}}),
+    )
+    .await
+    .unwrap();
+    let derived_id = created["credential_id"].as_str().unwrap().to_string();
+    assert_ne!(derived_id, token_id);
+    assert_eq!(
+        stored(&f, &derived_id).as_str(),
+        format!("derived-{SECRET}"),
+        "the command got the token from the Vault and its output was stored"
+    );
+    assert!(!created.to_string().contains(SECRET), "{created}");
+    assert_eq!(files(&workspace(&f)), before, "no file was written");
+    // A failing command's stderr excerpt never carries the bound value.
+    let failed = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "fails", "host": "api.example.com", "origin": "https://api.example.com",
+            "env": {"KEY": token_id},
+            "argv": ["/bin/sh", "-c", "echo \"bad $KEY\" >&2; exit 3"],
+            "use_binding": {"target": {"kind": "command_environment", "name": "NEW", "origin": "https://api.example.com"}}}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(failed.contains("nothing was stored"), "{failed}");
+    assert!(!failed.contains(SECRET), "{failed}");
+    // Refused before the command runs: no origin, an origin the entry is not for, an unknown entry.
+    let ran = workspace(&f).join("ran");
+    let touch = json!([
+        "/bin/sh",
+        "-c",
+        format!("touch '{}'; echo x", ran.display())
+    ]);
+    let binding = json!({"target": {"kind": "command_environment", "name": "NEW", "origin": "https://api.example.com"}});
+    for (request, extra) in [
+        ("no-origin", json!({"env": {"KEY": token_id}})),
+        (
+            "wrong-origin",
+            json!({"origin": "https://other.example.com", "env": {"KEY": token_id}}),
+        ),
+        (
+            "unknown",
+            json!({"origin": "https://api.example.com", "env": {"KEY": "missing"}}),
+        ),
+    ] {
+        let mut arguments = json!({"request_id": request, "host": "api.example.com",
+            "argv": touch, "use_binding": binding});
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert!(call(&f, CAPTURE, arguments).await.is_err(), "{request}");
+    }
+    assert!(!ran.exists(), "a refused capture ran nothing");
+    let session =
+        serde_json::to_string(&f.state.owned.session_snapshot(&turn.session_id).unwrap()).unwrap();
+    assert!(!session.contains(SECRET) && !session.contains("derived-sk_"));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 #[tokio::test]
 async fn entries_are_named_by_description_in_use_env_write_file_and_copy_for_use() {
     crate::test_support::isolated_env_test!();

@@ -605,6 +605,45 @@ impl KernelRuntimeState {
         request: KernelBrowserDisplayRequest,
         download_room: Option<&str>,
     ) -> Result<serde_json::Value, DaemonError> {
+        // A person's input is logged with its outcome: a card that takes none shows nothing
+        // on the page, and the log is how the agent that raised it reads why.
+        let input = match &request {
+            KernelBrowserDisplayRequest::Input { binding, input }
+            | KernelBrowserDisplayRequest::RegionInput { binding, input, .. } => Some((
+                binding.tab_id.clone(),
+                binding.generation,
+                binding.document_id.clone(),
+                super::browser_input_log::input_kind(input),
+            )),
+            _ => None,
+        };
+        let result = self
+            .kernel_browser_display_request_unlogged(caller, request, download_room)
+            .await;
+        if let Some((tab_id, generation, document_id, kind)) = input {
+            self.browser_input_log.record(
+                &tab_id,
+                super::browser_input_log::InputOutcome {
+                    at_ms: crate::session::unix_epoch_ms(),
+                    kind,
+                    generation,
+                    document_id,
+                    reason: result
+                        .as_ref()
+                        .err()
+                        .map(super::browser_input_log::refusal_reason),
+                },
+            );
+        }
+        result
+    }
+
+    async fn kernel_browser_display_request_unlogged(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        request: KernelBrowserDisplayRequest,
+        download_room: Option<&str>,
+    ) -> Result<serde_json::Value, DaemonError> {
         let room_control = request.room_control();
         if let Some((id, generation, command)) = room_control {
             if self.is_room_display(id) {

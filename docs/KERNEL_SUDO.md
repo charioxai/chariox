@@ -193,14 +193,17 @@ launch path (managed isolation, the agent's resource domain, its own process
 session, settled at kernel shutdown) and wait for the command, 120 s by
 default and at most 240 s, after which it is stopped.
 
-- `chariox.vault.capture_command {request_id, argv, cwd?, host, use_binding, label?,
+- `chariox.vault.capture_command {request_id, argv, cwd?, host, origin?, env?: {NAME: credential_id}, use_binding, label?,
   extract?, timeout_seconds?}` stores a secret the command prints into the
   owner's Vault: the whole trimmed stdout, a JSON Pointer into stdout JSON, or
   a regex group. The required typed binding declares one environment name plus origin,
   stdin origin, or canonical absolute workspace file path, and records `created_by_kind = vault_capture` with the session,
   agent and provider run. The result is `{credential_id, label, host, length,
   created}`; stdout never leaves the kernel, and a failure says what went
-  wrong ("nothing was stored") with at most a sanitized stderr tail. The same
+  wrong ("nothing was stored") with at most a sanitized stderr tail. `origin` and `env` run the
+  command with existing Vault entries (an API token a setup command needs), checked as in
+  `use_env` before anything is unlocked or run; their values are masked in that stderr tail, so a
+  command that needs a token and prints a new secret is captured in one step with no file. The same
   `request_id` returns the committed handle without running the command again.
 - `chariox.vault.use_env {argv, origin, cwd?, env?: {NAME: credential_id}, stdin?,
   timeout_seconds?}` injects `env` credentials into the command's environment

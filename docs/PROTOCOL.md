@@ -7776,6 +7776,10 @@ list, so a change of stock or rate needs a fresh decision. Agents use the same l
 card names the chosen option, and its title names the requesting agent and the one-line purpose it gave
 (a kernel-local tool argument: no wire shape changes). The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
+### Vault capture with env — relay peer 454 (provisional)
+
+- relay peer 454 (provisional): `CaptureForHomeVault` `Prepare` carries `env_uses`, the existing Vault entries the worker's `chariox.vault.capture_command` runs with (`origin` and `env`). The home checks each against its origin before it asks for an unlock, so an unknown entry or a wrong origin is refused at once.
+
 ### Machines without asking — local 1015 (relay peer 452)
 
 One owner setting decides whether an agent's machine acquisition (`chariox.machines.acquire`, and the
@@ -8405,6 +8409,20 @@ active prompt id and the latest task's id, prompt id and execution state. Sub-ag
 their tree. The second returns pending card ids, complete question text, button ids and labels,
 text input metadata, and `answerable` with a refusal reason under the caller's current authority.
 No Vault value is returned.
+
+`chariox.room.run_command` also admits `room card <card-id> [room-id]` (the room defaults to the
+caller's own): why a pending card does not take the person's input. A card without a browser view
+returns `browser: null`. A browser card returns `browser.bound` (the Tab, element ref, generation,
+document id and origin it was raised on), `browser.tab` (what the kernel's browser model knows of
+that Tab now: `tab_known`, its generation and document id, and `input_held_by`, the actors that hold
+the Tab's input with kind and label), `browser.input` (`last_taken` and `last_refused`, each with
+kind, time, age and the generation and document the input carried; a refusal adds its reason, a
+policy refusal as its stable `user_domain_*` code with its meaning) and `browser.findings`, each a
+`code` and a sentence (`tab_gone`, `generation_changed`, `document_changed`, `input_held`,
+`last_input_refused`, `no_input_seen`, `browser_unreadable`). The kernel keeps the last input taken
+and the last refused per Tab, by kind only: typed text and coordinates are never kept. It is read
+only, needs no sudo, follows the same room authority as `room cards`, and changes no serialized
+shape.
 
 `agent answer <interaction> <choice-id|text> --room <room-id>` answers a non-secret card in
 any room of the same owner on this kernel, including the caller's own room. It requires no

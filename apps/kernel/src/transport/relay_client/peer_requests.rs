@@ -2946,6 +2946,7 @@ mod tests {
                         },
                         value_kind: crate::config::VaultValueKind::Secret,
                     },
+                    env_uses: Vec::new(),
                 },
             }
         } else if kind == "credential" {

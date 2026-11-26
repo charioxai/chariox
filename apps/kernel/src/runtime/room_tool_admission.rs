@@ -234,7 +234,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         Some("room")
             if matches!(
                 tokens.get(1).map(String::as_str),
-                Some("list" | "agents" | "cards" | "create" | "delete")
+                Some("list" | "agents" | "cards" | "card" | "create" | "delete")
             ) =>
         {
             Ok(())

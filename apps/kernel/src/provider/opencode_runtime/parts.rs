@@ -249,6 +249,7 @@ fn emit_tool_summary(
     part: &OpenCodePart,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
+    state.note_tool_part(part);
     let summary = render_tool_transcript_update(part, remote_extension_manifest);
     let previous = state.emitted_tool_summaries.get(&part.id);
     if previous.map(String::as_str) != Some(summary.as_str()) {

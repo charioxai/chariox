@@ -127,6 +127,7 @@ mod tests {
     mod provider_run_read_owner;
     mod provider_run_selection_owner;
     mod recall_owner;
+    mod restart_kernel_owner;
     mod room_control_owner;
     mod room_environment_control_owner;
     use std::collections::BTreeMap;

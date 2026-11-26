@@ -1,6 +1,6 @@
 {
   "local": 1015,
-  "relayPeer": 452,
+  "relayPeer": 454,
   "retired_session_field": "max_agents",
   "requests": [
     { "GetRoomListSnapshot": null },
