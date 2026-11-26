@@ -377,7 +377,23 @@ async fn row36_j_the_parents_resume_restarts_the_stalled_turn() {
     // request again; poll, since the new prompt may start and settle between two looks.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     let retried = loop {
-        let room = team.runtime.owned.session_snapshot(&team.room).unwrap();
+        // A sub-agent's prompts live with the prompt owner, as the stall card's own checks read them.
+        let mut room = team
+            .runtime
+            .owned
+            .session_store
+            .get_session(&team.room)
+            .unwrap();
+        room.set_agents(
+            team.runtime
+                .owned
+                .agent_store
+                .get_session_agents(&team.room),
+        );
+        team.runtime
+            .owned
+            .prompt_state_owner
+            .project_into_session(&mut room);
         let state = room.prompt_states().get(&team.child);
         let next = state
             .into_iter()
