@@ -110,6 +110,11 @@ function kernelEnv(home, id, port) {
 }
 // One exclusive link: refuse existing unowned CLI executables rather than replacing them.
 function cliNames(id) { return ["chariox", "chariox-setup"].map(name => ({ name, link: id === "local" ? name : `${name}-${id}` })) }
+// The full CLI path and the first agent steps, so a person or an agent opening a fresh shell can start from the Setup text alone.
+export function cliCompletionText(home, id) {
+  const bin = `${home}/.local/bin`, name = cliNames(id)[0].link
+  return `Chariox CLI: ${bin}/${name}\nIf \`${name}\` is not found, add ${bin} to PATH.\nAn agent starts with \`${name} guide\`, then \`${name} access request --no-wait\`.`
+}
 async function cliLink(home, root, id, remove = false) {
   const bin = await tree(home, ".local/bin")
   for (const { name, link } of cliNames(id)) {
