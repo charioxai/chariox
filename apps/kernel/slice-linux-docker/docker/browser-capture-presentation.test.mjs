@@ -107,3 +107,15 @@ test('MP-11 owner replacement while its first isolated world is created keeps pr
  const capture=connection.send('Page.captureScreenshot',{},'session');await new Promise(resolve=>setImmediate(resolve));replace();created.resolve({documentId:'doc',contextId:9});
  await assert.rejects(capture,/presentation owner retired/);assert.equal(evaluated,false);assert.equal(fence.stable(Date.now()+100),false);
 });
+// Row 664: a Tab captured while not on screen (a popup kept behind its opener) paints no frames to prove restoration
+// with, and its capture changed nothing on the native window: the fence closes again instead of staying shut for every Tab.
+test('MP-08/MP-10 a Tab captured while hidden needs no restoration proof and leaves the fence open',async()=>{
+ const sent=[];const connection={send:async(method)=>{sent.push(method);if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Runtime.evaluate')return {result:{value:false}};return {frameTree:{frame:{id:'top'}},executionContextId:3};}};
+ fenceScreenshotPresentation(connection);
+ const hidden=new Map([['hidden',{visible:false}],['shown',{visible:true}]]);
+ connection.presentationFence.bindOwner({inputCapture:{visibilityBySession:hidden}},()=>{});
+ assert.deepEqual(await connection.send('Page.captureScreenshot',{},'hidden'),{data:'png'});
+ assert.deepEqual(sent,['Page.captureScreenshot'],'no proof is asked of a hidden Tab');
+ assert.equal(connection.presentationFence.stable(Date.now()+5),true,'native pixels are admitted again');
+ await assert.rejects(connection.send('Page.captureScreenshot',{},'shown'),/did not restore/,'a shown Tab still proves its restoration');
+});

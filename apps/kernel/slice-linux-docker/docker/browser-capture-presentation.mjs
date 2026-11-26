@@ -76,6 +76,10 @@ export function fenceScreenshotPresentation(connection) {
     fence.run(() => send(method, params, sessionId, options), async () => {
       const at = performance.timeOrigin + performance.now();
       try {
+        // A Tab that was not on screen when captured (a background Tab, a popup kept behind its opener) changed nothing
+        // on the native window. Captured while hidden, it paints no frames either: waiting for two failed the capture
+        // and kept this fence closed for every Tab, so no view could start until that Tab was shown.
+        if (fence.owner?.inputCapture?.visibilityBySession?.get(sessionId)?.visible === false) return;
         const proof = await presentationWorld(fence.owner, connection, sessionId);
         fence.timing?.event?.('capture_presentation_owner', { warm: Number(Boolean(proof)), world_cached: Number(Boolean(proof?.cached)) });
         let contextId = proof?.contextId;
