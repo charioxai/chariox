@@ -88,7 +88,7 @@ test('an App confirmation region is found by the host in the Tab document, never
   assert.equal(calls.includes('DOM.getDocument'), false, 'the base fake never saw the confirmation query');
 }));
 
-test('a plain card is bound again to the whole page after the browser restarted, and one that waits for text or a proof is not', () => withHost(async ({ host, snapshot, region, state }) => {
+test('a plain card is bound again to the whole page after the browser restarted, and one that waits for a proof is not', () => withHost(async ({ host, snapshot, region, state }) => {
   await snapshot();
   const first = await region({ card_id: 'person-card' });
   assert.equal(first.state, 'present');
@@ -117,10 +117,80 @@ test('a plain card is bound again to the whole page after the browser restarted,
   // The poll that follows names the new binding and keeps following the page.
   const followed = await region({ card_id: 'person-card', ref: 'backend:77', generation: 2, document_id: 'doc-2' });
   assert.equal(followed.state, 'present');
-  for (const refused of [{ done_text: 'Connected' }, { app_confirmation: true }, { release: true }]) {
+  for (const refused of [{ app_confirmation: true }, { release: true }, { verification: { challenge_id: 'x', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' } }]) {
     await assert.rejects(region({ card_id: 'person-card', ref: undefined, rebind: true, ...refused }), { code: 'user_domain_stale_reference' });
   }
   await assert.rejects(region({ card_id: undefined, ref: undefined, rebind: true }), { code: 'user_domain_stale_reference' });
+}));
+test('546 a done_text card is bound again to the page its Tab navigated to, keeps its text, and settles when the text shows there', () => withHost(async ({ host, snapshot, region, state, node }) => {
+  await snapshot();
+  const command = { card_id: 'person-nav', done_text: 'Welcome home' };
+  const first = await region(command);
+  assert.equal(first.state, 'present');
+  // The page navigates inside the person's step (a sign-in redirect): the observation reports the change, the kernel rebinds.
+  state.document_id = 'doc-2';
+  const moved = await region({ ...command, generation: 1, document_id: 'doc' });
+  assert.deepEqual(moved, { state: 'unavailable', reason: 'Browser document changed' });
+  const connection = await host.browser.ensureConnection(), base = connection.send;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: 77 } };
+    return base(method, params, session);
+  };
+  const again = await region({ card_id: 'person-nav', ref: undefined, rebind: true, done_text: 'Welcome home' });
+  assert.equal(again.state, 'present');
+  assert.equal(again.region.ref, 'backend:77');
+  assert.equal(again.region.document_id, 'doc-2');
+  assert.equal(again.region.done_text, 'Welcome home', 'the card keeps waiting for its text on the new page');
+  const followed = await region({ card_id: 'person-nav', ref: 'backend:77', generation: 1, document_id: 'doc-2', done_text: 'Welcome home' });
+  assert.equal(followed.state, 'present');
+  node.innerText = 'Welcome Home, Ada';
+  assert.deepEqual(await region({ card_id: 'person-nav', ref: 'backend:77', generation: 1, document_id: 'doc-2', done_text: 'Welcome home' }), { state: 'condition_met', reason: 'The page shows what the person was asked to reach' });
+}));
+test('546 a verification card survives its Tab navigating: it is bound to the new page without its proof, which lapsed with the old document', () => withHost(async ({ host, snapshot, region, state }) => {
+  const verification = { challenge_id: 'challenge-nav', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
+  await snapshot();
+  const first = await region({ card_id: 'verification-nav', verification });
+  assert.equal(first.state, 'present');
+  assert.ok(first.region.verification, 'the card watches for its proof');
+  state.document_id = 'doc-2';
+  // The observation reports the navigation as unavailable (the proof belongs to one document); the kernel rebinds, never completes.
+  assert.deepEqual(await region({ card_id: 'verification-nav', verification, generation: 1, document_id: 'doc' }), { state: 'unavailable', reason: 'Browser document changed' });
+  const connection = await host.browser.ensureConnection(), base = connection.send;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: 77 } };
+    return base(method, params, session);
+  };
+  const again = await region({ card_id: 'verification-nav', ref: undefined, rebind: true });
+  assert.equal(again.state, 'present');
+  assert.equal(again.region.document_id, 'doc-2');
+  assert.equal(again.region.verification, undefined, 'no proof is carried to a page where its input is gone');
+  assert.equal(host.cardAnchors.get('agent:a\0verification-nav')?.verification, undefined);
+}));
+test('546 a second navigation while the card is being rebound leaves it rebindable: the next rebind binds the newest page', () => withHost(async ({ host, snapshot, region, state }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'multi-step' })).state, 'present');
+  state.document_id = 'doc-2';
+  assert.equal((await region({ card_id: 'multi-step', generation: 1, document_id: 'doc' })).reason, 'Browser document changed');
+  const connection = await host.browser.ensureConnection(), base = connection.send;
+  let redirected = false;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') { if (!redirected) { redirected = true; state.document_id = 'doc-3'; } return { node: { backendNodeId: 77 } }; }
+    return base(method, params, session);
+  };
+  // The page redirects again after the new anchor was installed: the rebind reports the change (never throws, never completes).
+  const interrupted = await region({ card_id: 'multi-step', ref: undefined, rebind: true });
+  assert.notEqual(interrupted.state, 'present');
+  assert.equal(interrupted.reason, 'Browser document changed');
+  // The kernel retries the rebind itself (the old reference is stale by now); it binds the newest page.
+  const again = await region({ card_id: 'multi-step', ref: undefined, rebind: true });
+  assert.equal(again.state, 'present');
+  assert.equal(again.region.document_id, 'doc-3');
 }));
 test('a verification card whose proof was lost with the restart settles unavailable, never as a completed card', () => withHost(async ({ host, snapshot, region }) => {
   const verification = { challenge_id: 'challenge-one', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
@@ -169,6 +239,12 @@ test('MP-08/MP-11 removing the element or replacing its document settles conditi
   assert.deepEqual(await region({ generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser document changed' });
   // A later snapshot must not rebind an already-open card to the replacement.
   await snapshot();
+  assert.deepEqual(await region({ generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser document changed' });
+}));
+
+test('546 an element that went away with a navigation is a changed document, not a removed element', () => withHost(async ({ snapshot, region, node, state }) => {
+  await snapshot();
+  node.isConnected = false; state.document_id = 'replacement';
   assert.deepEqual(await region({ generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser document changed' });
 }));
 

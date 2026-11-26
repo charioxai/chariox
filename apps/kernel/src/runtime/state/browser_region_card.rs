@@ -17,6 +17,37 @@ enum RegionObservation {
     },
 }
 
+/// What the watcher does after it tried to bind a card to the page its Tab shows now.
+enum PageChangeFlow {
+    /// Observe again.
+    Continue,
+    /// The card is settled: stop watching.
+    Done,
+}
+
+/// Row 546 (Miguel's D3 decision, row 78): the person's step goes on across navigations of the card's own Tab.
+/// A restart (plain cards only) or a navigation keeps the card pending; it ends by the person's choice, the agent's
+/// cancel, its page-text condition, or its Tab closing. A verification's proof belongs to one document: on the new
+/// page the card stays pending without it (it re-arms only if the agent raises or updates the card for that page).
+fn keeps_card_pending(
+    reason: &str,
+    previous: &RuntimeInteractionBrowserRegion,
+    app_confirmation: bool,
+    waiting_for_text: bool,
+) -> bool {
+    if app_confirmation {
+        return false;
+    }
+    // A card that waits for page text or a proof is observed as unavailable, a plain card as condition met.
+    let waiting = previous.done_text.is_some() || previous.verification.is_some();
+    match reason {
+        // After a restart the card's proof is lost, so a card waiting for text or a proof is unavailable (unchanged).
+        "Browser restarted" => !waiting && !waiting_for_text,
+        "Browser document changed" => waiting == waiting_for_text,
+        _ => false,
+    }
+}
+
 fn region_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_request_popup",
@@ -132,6 +163,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         card_id: &str,
         tab_id: &str,
+        done_text: Option<&str>,
     ) -> Result<RegionObservation, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -140,7 +172,10 @@ impl KernelRuntimeState {
             ));
         }
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id":tab_id, "rebind":true});
+        let mut params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id":tab_id, "rebind":true});
+        if let Some(text) = done_text {
+            params["done_text"] = serde_json::json!(text);
+        }
         let result = self
             .kernel_browser_operation(&user, Some(agent_id), "host.browser", params)
             .await?;
@@ -286,6 +321,75 @@ impl KernelRuntimeState {
         }
     }
 
+    /// The Tab shows another page than the card's (a restart brought the browser back, or the page navigated):
+    /// the card is bound again to the Tab's whole page and the person carries on there. A card that waits for
+    /// page text keeps waiting for it on the new page; if it is already there the card completes.
+    async fn rebind_after_page_change(
+        &self,
+        room: &str,
+        agent: &str,
+        id: &str,
+        previous: &RuntimeInteractionBrowserRegion,
+        reason: &str,
+        failures: &mut ObservationFailures,
+    ) -> PageChangeFlow {
+        // The rebind itself is retried: a second navigation during it leaves the old reference stale, so going back
+        // to the outer poll would settle the card unavailable while the person is still signing in.
+        loop {
+            match self
+                .rebind_card_region(
+                    room,
+                    agent,
+                    id,
+                    &previous.tab_id,
+                    previous.done_text.as_deref(),
+                )
+                .await
+            {
+                Ok(RegionObservation::Present { region }) => {
+                    failures.observed();
+                    if let Err(error) = self
+                        .owned
+                        .rebind_browser_region_card(room, id, previous, *region)
+                    {
+                        tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card rebind retained for retry");
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    return PageChangeFlow::Continue;
+                }
+                // The text the card waits for is on the page now: the card's condition is met.
+                Ok(RegionObservation::ConditionMet { reason }) if previous.done_text.is_some() => {
+                    if self.close_browser_region_card(room, id, reason).is_ok() {
+                        return PageChangeFlow::Done;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    return PageChangeFlow::Continue;
+                }
+                Ok(_) | Err(_) => {
+                    if !failures.exhausted() {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    // The page change is not the person finishing, and the page was never shown again: the agent
+                    // is told the card is unavailable, never that its step is done.
+                    let message = if reason == "Browser restarted" {
+                        "Browser restarted and the page could not be shown again; take a fresh snapshot and ask again"
+                    } else {
+                        "The page changed and could not be shown again; take a fresh snapshot and ask again"
+                    };
+                    if self
+                        .close_unavailable_browser_region_card(room, id, message.into())
+                        .is_ok()
+                    {
+                        return PageChangeFlow::Done;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    return PageChangeFlow::Continue;
+                }
+            }
+        }
+    }
+
     async fn follow_browser_region_card(&self, room: &str, id: &str) {
         let mut failures = ObservationFailures::default();
         loop {
@@ -321,49 +425,21 @@ impl KernelRuntimeState {
                     }
                 }
                 Ok(RegionObservation::ConditionMet { reason }) => {
-                    // A restart is not the person finishing: a plain card keeps its Tab and is
-                    // bound again to the page the browser brought back.
-                    if reason == "Browser restarted"
-                        && !app_confirmation
-                        && previous.verification.is_none()
-                        && previous.done_text.is_none()
-                    {
-                        match self
-                            .rebind_card_region(room, agent, id, &previous.tab_id)
-                            .await
+                    // A restart or a navigation of the card's own Tab is not the person finishing: the
+                    // card keeps its Tab and is bound again to the page the Tab shows now.
+                    if keeps_card_pending(&reason, previous, app_confirmation, false) {
+                        match Box::pin(self.rebind_after_page_change(
+                            room,
+                            agent,
+                            id,
+                            previous,
+                            &reason,
+                            &mut failures,
+                        ))
+                        .await
                         {
-                            Ok(RegionObservation::Present { region }) => {
-                                failures.observed();
-                                if let Err(error) = self
-                                    .owned
-                                    .rebind_browser_region_card(room, id, previous, *region)
-                                {
-                                    tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card rebind retained for retry");
-                                    tokio::time::sleep(Duration::from_millis(250)).await;
-                                }
-                                continue;
-                            }
-                            Ok(_) | Err(_) => {
-                                if !failures.exhausted() {
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    continue;
-                                }
-                                // The restart is not the person finishing, and the page was never
-                                // shown again: the agent is told the card is unavailable, never
-                                // that its step is done.
-                                if self
-                                    .close_unavailable_browser_region_card(
-                                        room,
-                                        id,
-                                        "Browser restarted and the page could not be shown again; take a fresh snapshot and ask again".into(),
-                                    )
-                                    .is_ok()
-                                {
-                                    return;
-                                }
-                                tokio::time::sleep(Duration::from_millis(250)).await;
-                                continue;
-                            }
+                            PageChangeFlow::Continue => continue,
+                            PageChangeFlow::Done => return,
                         }
                     }
                     if self.close_browser_region_card(room, id, reason).is_ok() {
@@ -372,6 +448,23 @@ impl KernelRuntimeState {
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
                 Ok(RegionObservation::Unavailable { reason }) => {
+                    // A card that waits for page text is still waiting after its Tab navigated: the text can
+                    // appear on the page the Tab shows now.
+                    if keeps_card_pending(&reason, previous, app_confirmation, true) {
+                        match Box::pin(self.rebind_after_page_change(
+                            room,
+                            agent,
+                            id,
+                            previous,
+                            &reason,
+                            &mut failures,
+                        ))
+                        .await
+                        {
+                            PageChangeFlow::Continue => continue,
+                            PageChangeFlow::Done => return,
+                        }
+                    }
                     if self
                         .close_unavailable_browser_region_card(room, id, reason)
                         .is_ok()
@@ -526,9 +619,9 @@ impl KernelRuntimeOwnedState {
         if card.view().is_none_or(|v| v.browser_region != *expected) {
             return Ok(());
         }
+        // A rebind never creates or keeps a proof: the proof belonged to the old document, the card goes on without it.
         if region.tab_id != expected.tab_id
             || region.verification.is_some()
-            || expected.verification.is_some()
             || region.done_text != expected.done_text
         {
             return Err(region_error(
@@ -598,6 +691,101 @@ impl KernelRuntimeOwnedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn region(done_text: Option<&str>, verification: bool) -> RuntimeInteractionBrowserRegion {
+        RuntimeInteractionBrowserRegion {
+            tab_id: "tab-one".into(),
+            reference: "backend:42".into(),
+            generation: 1,
+            document_id: "doc-one".into(),
+            origin: "https://claude.ai".into(),
+            rect: crate::session::RuntimeInteractionBrowserRect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 40,
+            },
+            viewport_width: 1280,
+            viewport_height: 800,
+            verification: verification.then(|| {
+                serde_json::from_value(serde_json::json!({
+                    "challenge_id": "c",
+                    "url": "https://example.com/verify",
+                    "accepted_json_pointer": "/accepted"
+                }))
+                .expect("verification config")
+            }),
+            verification_result: None,
+            done_text: done_text.map(str::to_owned),
+        }
+    }
+
+    /// Row 546: a navigation of the card's own Tab is the page moving on inside the person's step, not the step ending.
+    #[test]
+    fn a_navigation_of_the_cards_own_tab_keeps_a_person_card_pending() {
+        let plain = region(None, false);
+        let waiting = region(Some("Welcome home"), false);
+        let proof = region(None, true);
+        // A plain card is observed as condition met, a card waiting for text as unavailable.
+        assert!(keeps_card_pending(
+            "Browser document changed",
+            &plain,
+            false,
+            false
+        ));
+        assert!(keeps_card_pending(
+            "Browser document changed",
+            &waiting,
+            false,
+            true
+        ));
+        // A restart keeps only a plain card (its text proof is lost with the old document).
+        assert!(keeps_card_pending(
+            "Browser restarted",
+            &plain,
+            false,
+            false
+        ));
+        assert!(!keeps_card_pending(
+            "Browser restarted",
+            &waiting,
+            false,
+            true
+        ));
+        // A verification belongs to one document, an App confirmation is not a person step on a page.
+        // A verification card survives the navigation as pending; its proof lapses with the old document.
+        assert!(keeps_card_pending(
+            "Browser document changed",
+            &proof,
+            false,
+            true
+        ));
+        assert!(!keeps_card_pending(
+            "Browser restarted",
+            &proof,
+            false,
+            true
+        ));
+        assert!(!keeps_card_pending(
+            "Browser document changed",
+            &plain,
+            true,
+            false
+        ));
+        // The Tab closing or its element disappearing still ends the card.
+        assert!(!keeps_card_pending(
+            "Browser element disappeared",
+            &plain,
+            false,
+            false
+        ));
+        assert!(!keeps_card_pending(
+            "Browser element disappeared",
+            &waiting,
+            false,
+            true
+        ));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn browser_region_card_source_failure_budget_resets_only_on_observation() {
