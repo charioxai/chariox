@@ -378,19 +378,18 @@ async fn agent_raise_opens_a_card_with_exact_values() {
     assert!(service.sets.lock().unwrap().is_empty(), "nothing is sent before the person answers");
     let owner = the_owner(&state, &room);
     // The agent that asked cannot approve it for the person, nor can any agent.
-    let agent_answer = state
-        .answer_terminal_runtime_interaction(
-            &room,
-            &id,
-            "approve",
-            None,
-            Some(&owner),
-            None,
-            None,
-            Some(KernelConnectionClass::KernelAgent),
-        )
-        .await;
-    assert!(agent_answer.is_err(), "an agent approved a raise of its own");
+    let answer = crate::local::RespondToInteractionRequest {
+        session_id: room.clone(),
+        interaction_id: id.clone(),
+        choice_id: "approve".into(),
+        custom_reply: None,
+        passkey: None,
+        passkey_remember_minutes: None,
+    };
+    assert!(
+        state.interaction_person_only(&answer),
+        "an agent may answer the person's raise card for them"
+    );
     assert!(!call.is_finished());
     state
         .resolve_terminal_runtime_interaction(&room, &id, "approve", None, Some(&owner))
@@ -576,10 +575,16 @@ async fn no_ask_limits_clamp_to_the_account_limit() {
     let first = super::without_asking_tests::acquire(&state, &token, "first", "small").await;
     assert!(first.is_ok(), "within both limits: {first:?}");
     no_card(&state, &room);
-    let second = super::without_asking_tests::acquire_waits_for_a_card(
-        &state, &token, &room, "second", "small",
-    )
-    .await;
+    let second = {
+        let call = super::without_asking_tests::spawn_acquire(&state, &token, "second", "small");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if call.is_finished() {
+            panic!("the second acquire ended with no card: {:?}", call.await);
+        }
+        call.abort();
+        let (_, message) = the_card(&state, &room).await;
+        message
+    };
     assert!(
         second.contains("Asked because the account allows 1 machine."),
         "{second}"

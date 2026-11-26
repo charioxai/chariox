@@ -372,7 +372,7 @@ pub(super) async fn acquire_waits_for_a_card(
     waits_for_a_card(state, room, call).await
 }
 
-fn spawn_acquire(
+pub(super) fn spawn_acquire(
     state: &KernelRuntimeState,
     token: &str,
     request_id: &str,
