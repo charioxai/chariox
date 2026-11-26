@@ -258,7 +258,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 452 carries file slices as bytes: the `content` of `FileSliceRead`, `WriteLeasedAgentFile` and
 /// `ProjectEnvironmentFilePulled` is `data_base64` in the peer plaintext, which is lifted out of the JSON, and a
 /// kernel that offers `x-chariox-relay-peer-binary: v1` sends and takes peer requests and replies as `CXR3`/`CXR2` frames.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
+/// Peer 453 (local 1016) carries the optional `unavailable` list of a Room terminal list.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 453;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2825,7 +2826,7 @@ mod room_terminal_peer_shapes {
         let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&response).unwrap(), wire);
         let RelayPeerResponse::RoomTerminal {
-            result: RoomTerminalResult::Listed { terminals },
+            result: RoomTerminalResult::Listed { terminals, .. },
         } = response
         else {
             panic!("a list answers a list");
@@ -2841,6 +2842,27 @@ mod room_terminal_peer_shapes {
             .unwrap()
             .remove("scope");
         assert!(serde_json::from_value::<RelayPeerResponse>(old).is_err());
+    }
+
+    /// A Room-wide list names the machines it could not ask; an empty list stays off the wire.
+    #[test]
+    fn a_terminal_list_names_the_machines_it_could_not_ask() {
+        let wire = serde_json::json!({"kind": "room_terminal", "result": {
+            "result": "listed", "terminals": [],
+            "unavailable": [{"host_agent": "agent-2", "message": "worker kernel `k` is too old to list its terminals, which may still be running there; update it"}]
+        }});
+        let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
+        let RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Listed { unavailable, .. },
+        } = &response
+        else {
+            panic!("a list answers with terminals: {response:?}");
+        };
+        assert_eq!(unavailable[0].host_agent, "agent-2");
+        assert_eq!(serde_json::to_value(&response).unwrap(), wire);
+        let empty = serde_json::json!({"kind": "room_terminal", "result": {"result": "listed", "terminals": []}});
+        let response: RelayPeerResponse = serde_json::from_value(empty.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&response).unwrap(), empty);
     }
 
     #[test]

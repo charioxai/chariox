@@ -207,6 +207,98 @@ async fn room_terminal_output_is_pushed_to_one_subscription_without_read_request
     );
 }
 
+/// Row 549: a viewer whose tabs arrive by the stream is told of a machine the list could not ask, as the polling
+/// list is: the local terminal's tab is not taken for the whole Room.
+#[tokio::test]
+async fn the_pushed_tabs_name_a_worker_the_list_could_not_ask() {
+    let _guard = relay_client_test_guard().await;
+    let worktree = crate::test_support::TestWorktree::new("room_terminal_stream_unavailable");
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let (session_id, agent_id) = (session.id().to_string(), agent.id().to_string());
+    app.agents()
+        .bind_remote_execution(
+            &agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "kernel-too-old".to_string(),
+                worker_machine_id: "machine-too-old".to_string(),
+                execution_lease_id: "old-lease".to_string(),
+                leased_agent_id: "old-leased-agent".to_string(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1,
+                ),
+                worker_worktree_id: None,
+            },
+        )
+        .unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let RoomTerminalResult::Opened { terminal: opened } = terminal(
+        &router,
+        &session_id,
+        RoomTerminalOperation::Open {
+            cols: 80,
+            rows: 24,
+            title: None,
+            command: None,
+            stdin: None,
+        },
+    )
+    .await
+    else {
+        panic!("the Room terminal should open");
+    };
+    let key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&key).unwrap();
+    approve_test_terminal(&config, &public_key);
+    let (tx, _answers, mut rx) = RelayOutgoingSender::channel(256);
+    let tasks = RelaySubscriptionTasks::default();
+    handle_relay_subscribe(
+        &router,
+        &tx,
+        &tasks,
+        &Arc::new(RelayEventRuntime::for_tests(64)),
+        "subscribe-1".into(),
+        "stream-1".into(),
+        session_id.clone(),
+        opened.terminal_id.clone(),
+        Some(owner_identity()),
+        public_key,
+        Some("room_terminal".into()),
+        Some(0),
+        Some(1000),
+    )
+    .await
+    .unwrap();
+    let listed = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let (_, _, header, _) = next_event(&mut rx, &key).await;
+            if header["event"] == "room_terminals_listed" {
+                break header;
+            }
+        }
+    })
+    .await;
+    for task in tasks.lock().await.values() {
+        task.handle.abort();
+    }
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    let listed = listed.expect("the stream starts with the viewer's tabs");
+    assert_eq!(listed["terminals"][0]["terminal_id"], opened.terminal_id);
+    assert_eq!(
+        listed["unavailable"][0]["host_agent"], agent_id,
+        "the worker that was not asked is named beside the tabs: {listed}"
+    );
+}
+
 #[tokio::test]
 async fn a_room_terminal_stream_without_a_start_offset_is_refused() {
     let _guard = relay_client_test_guard().await;

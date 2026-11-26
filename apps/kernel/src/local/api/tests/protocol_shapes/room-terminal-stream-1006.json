@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1015,
-  "peer_protocol": 452,
+  "local_protocol": 1016,
+  "peer_protocol": 453,
   "subscription_scope": "room_terminal",
   "attachment_id": ["term-1a2b", "term-1a2b@agent-w"],
   "output_header": {
@@ -17,6 +17,11 @@
   "listed": {
     "event": "room_terminals_listed",
     "terminals": []
+  },
+  "listed_unavailable": {
+    "event": "room_terminals_listed",
+    "terminals": [],
+    "unavailable": [{ "host_agent": "agent-w", "message": "worker kernel `k9` is too old to list its terminals, which may still be running there; update it" }]
   },
   "heartbeat": {
     "event": "heartbeat"

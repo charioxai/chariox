@@ -152,7 +152,7 @@ export type RoomTerminalResult =
   | { readonly result: "exec_cancelled" }
   | { readonly result: "exec_closed" }
   | { readonly result: "opened"; readonly terminal: RoomTerminalSummary }
-  | { readonly result: "listed"; readonly terminals: readonly RoomTerminalSummary[] }
+  | { readonly result: "listed"; readonly terminals: readonly RoomTerminalSummary[]; /** Machines the list could not ask, with what to do; their terminals may exist and are not in `terminals`. */ readonly unavailable?: readonly { readonly host_agent: string; readonly message: string }[] }
   | { readonly result: "snapshot"; readonly snapshot: RoomTerminalSnapshot }
   | { readonly result: "input"; readonly input: RoomTerminalInputResult }
   | { readonly result: "resized"; readonly terminal: RoomTerminalSummary }
