@@ -20,11 +20,11 @@ specification and architecture docs remain the source of truth for behavior.
 An agent started by hand in this checkout (Claude Code, Codex, OpenCode) connects to the local kernel through the CLI. It needs no environment variables: the CLI finds the one running local kernel itself, and says what to start when there is none.
 
 ```sh
-pnpm start:cli guide                                          # the agent guide (the first run builds the CLI)
+pnpm start:cli guide                                          # the agent guide
 pnpm start:cli access request --no-wait --reason "what for"   # asks the owner; poll `access status` until it prints granted
 ```
 
-On a machine installed by Chariox Setup the CLI is `~/.local/bin/chariox`: run `chariox guide`, then `chariox access request --no-wait`. Details: [`docs/KERNEL_ACCESS.md`](docs/KERNEL_ACCESS.md#for-agents).
+The first run builds the CLI and takes about 5 minutes (it prints one line saying so); later runs start at once. On a machine installed by Chariox Setup the CLI is `~/.local/bin/chariox`: run `chariox guide`, then `chariox access request --no-wait`. Details: [`docs/KERNEL_ACCESS.md`](docs/KERNEL_ACCESS.md#for-agents).
 
 ## Repository Structure
 

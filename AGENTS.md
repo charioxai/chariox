@@ -4,7 +4,7 @@ Chariox's open-source runtime: kernel (`apps/kernel`, Rust), relay (`apps/relay`
 
 ## Connecting to a kernel
 
-An agent started by hand here reaches the local kernel with `pnpm start:cli guide`, then `pnpm start:cli access request --no-wait --reason "what for"` (on a Setup-installed machine: `~/.local/bin/chariox guide`, then `chariox access request --no-wait`). No environment variables are needed; the owner approves, and `access status` prints `granted`. Details: `docs/KERNEL_ACCESS.md`, section For agents.
+An agent started by hand here reaches the local kernel with `pnpm start:cli guide`, then `pnpm start:cli access request --no-wait --reason "what for"` (on a Setup-installed machine: `~/.local/bin/chariox guide`, then `chariox access request --no-wait`). The first run builds the CLI, about 5 minutes; later runs start at once. No environment variables are needed; the owner approves, and `access status` prints `granted`. Details: `docs/KERNEL_ACCESS.md`, section For agents.
 
 ## Commands
 
