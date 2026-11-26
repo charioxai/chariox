@@ -702,4 +702,8 @@ pub use workspace::*;
 /// `{"kind":"all"}`, every login of the owner on the source kernel; the package carries the source Vault's key sealed
 /// for a target with no Vault; a machine row carries the service's `reason`; `context_transfer` hands the kernel that
 /// acquired a machine its transfer ticket. Capabilities `managed_context_all_providers_v1`, `agent_machine_install_v1`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
+/// Local 1017 (relay peer 454; 1016 / 453 are the Landing 15 union's): the account's machine limits. `ControlPlaneRequest`
+/// `limits` and `set_limits` (a raise by an agent carries the kernel's `approval`: a /sudo or an accepted card, with the exact old
+/// and new values), `ControlPlaneResponse::Limits`, and `MachineAcquisition` `limits` / `set_limits` with `MachineLimitsReading`
+/// (the account's limits and the owner's no-ask limits with what applies once the account's bound them).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1017;

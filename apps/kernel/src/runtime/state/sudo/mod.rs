@@ -54,6 +54,8 @@ mod leased_owner_tests;
 #[cfg(test)]
 mod leased_route_tests;
 #[cfg(test)]
+mod limit_authority_tests;
+#[cfg(test)]
 mod operation_tests;
 #[cfg(test)]
 mod parked_task_tests;

@@ -1121,4 +1121,6 @@ mod tests;
 pub(in crate::runtime::state) mod tool_tests;
 pub(crate) mod without_asking;
 #[cfg(test)]
+mod limits_tests;
+#[cfg(test)]
 mod without_asking_tests;

@@ -239,7 +239,7 @@ async fn answer(
 
 /// A kernel with the owner's offload settings, one running agent connected to `api_url`, and the
 /// agent's tool token.
-async fn agent_kernel(
+pub(super) async fn agent_kernel(
     api_url: String,
     settings: crate::config::UserAgentsConfig,
 ) -> (
@@ -340,11 +340,11 @@ fn ledger_key(state: &KernelRuntimeState, agent: &str, request_id: &str) -> Stri
 }
 
 /// The only running agent's id.
-fn only_agent(state: &KernelRuntimeState) -> String {
+pub(super) fn only_agent(state: &KernelRuntimeState) -> String {
     state.owned.agent_store.list_agents()[0].id().to_owned()
 }
 
-async fn acquire(
+pub(super) async fn acquire(
     state: &KernelRuntimeState,
     token: &str,
     request_id: &str,
@@ -361,7 +361,7 @@ async fn acquire(
 }
 
 /// Starts an acquire that must wait for the owner, and returns its card's message once it is shown.
-async fn acquire_waits_for_a_card(
+pub(super) async fn acquire_waits_for_a_card(
     state: &KernelRuntimeState,
     token: &str,
     room: &str,
@@ -1057,7 +1057,7 @@ async fn a_retry_that_fails_reauthorization_keeps_a_lost_answer_counted() {
         timeout_s: None,
     };
     let without_asking::Admission::Within(hold) = state
-        .admit_without_asking(&room, &agent, &retry, None)
+        .admit_without_asking(&room, &agent, &retry, None, &limits::AccountBound::None)
         .unwrap()
     else {
         panic!("a retry of an admitted request goes ahead without asking");

@@ -75,6 +75,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     summary: "acquire a machine of CLASS (and REGION when the class is offered in several); prints the allocation with its state. Reuse --request-id to retry after a lost answer or a refusal: it returns the machine the first try got and never acquires twice; use a new one only when the answer says the old one was closed. When the person asked to approve agent acquisitions, their card is raised and this waits for the answer",
     note: "Charges continue until the machine is deleted: run machine release when finished.",
   },
+  { name: "machine limits", brief: "Read the machine limits", flags: [KERNEL, TIMEOUT, SOCKET], summary: "the account's limits (machines at once, spend per day) and the person's limits for acquiring without asking, with what applies after the account's bound them" },
+  {
+    name: "machine set-limits", brief: "Change a machine limit",
+    flags: [{ name: "--scope", value: "account|no-ask" }, { name: "--machines", value: "N" }, { name: "--spend", value: "AMOUNT" }, KERNEL, TIMEOUT, SOCKET],
+    summary: "change machines at once and/or spend per day (AMOUNT in the account's currency) of the account (default) or of the person's no-ask limits. A lower applies at once. A raise needs the person: their /sudo naming it, or their card showing the old and new values, which this waits for",
+  },
   { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "the allocation's state and its verified kernel target; release it before it is no longer needed to stop charges" },
   { name: "machine release", brief: "Release an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "delete an acquired machine; read machine status until its state is deleted" },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
