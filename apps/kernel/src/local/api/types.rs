@@ -696,7 +696,7 @@ pub use workspace::*;
 /// Local 1015 (relay peer unchanged): a default visible-page `display_subscribe` may ask `resize_rebind` of a kernel that
 /// advertises `display_resize_rebind_v1`; the kernel keeps that subscription across a resize of the Browser window (same
 /// Tab re-admitted on the new window) and its frames carry `binding_sequence`, the new window epoch.
-/// Local 1016 (relay peer 453; provisional, restamped at merge): `RestartKernel` restarts a kernel as a hot reload and `KernelRestarting` answers it once the
+/// Local 1016 (relay peer 453, Landing 15): `RestartKernel` restarts a kernel as a hot reload and `KernelRestarting` answers it once the
 /// reload is prepared; a reload that cannot be prepared is refused with its reason and the kernel keeps running. `chariox kernels restart` sends it.
 /// Local 1016 (relay peer 453): a managed install plan and the provider-account portability preflight may name
 /// `{"kind":"all"}`, every login of the owner on the source kernel; the package carries the source Vault's key sealed
