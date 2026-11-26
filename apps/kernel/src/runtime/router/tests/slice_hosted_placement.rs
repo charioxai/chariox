@@ -42,7 +42,7 @@ async fn create(
     worker: Option<&str>,
 ) -> Result<LocalDaemonResponse, crate::error::DaemonError> {
     let request = create_request(name, worker);
-    let command = KernelCommand::from_local_request(&format!("cmd-{name}"), None, None, &request);
+    let command = KernelCommand::from_local_request(format!("cmd-{name}"), None, None, &request);
     router.dispatch(command, request).await
 }
 
