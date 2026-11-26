@@ -484,7 +484,6 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_settings_notices: agent_settings_change::PendingSettingsNotices,
-    leased_launch_credentials: std::sync::Arc<leased_launch_credentials::LeasedLaunchCredentials>,
     /// When the kernel last sent a usage-limit resume, to stagger the next one.
     usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
     /// The agents whose claimed resume this kernel is still sending.
@@ -724,7 +723,6 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
-mod leased_launch_credentials;
 mod leased_profile_transition_runtime;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -1438,7 +1436,6 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
                 pending_settings_notices: Default::default(),
-                leased_launch_credentials: Default::default(),
                 usage_limit_resumes: Default::default(),
                 usage_limit_sends: Default::default(),
                 usage_limit_resume_failures: Default::default(),

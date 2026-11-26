@@ -231,68 +231,42 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
     assert!(!format!("{materialization:?}").contains("bmV2ZXItbG9nLXRoaXM"));
 }
 
+// Row 577: a leased request never carries a provider credential. An older home that still
+// sends one is refused as an unknown field, so the token cannot ride a request by accident.
 #[test]
-fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
+fn leased_prompt_peer_request_carries_no_provider_credential() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         crate::test_support::expected_relay_peer_protocol_version()
     );
-    let request = RelayPeerRequest::SubmitLeasedPrompt {
-        leased_agent_id: "leased-agent-1".to_string(),
-        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
-            provider: "claude".to_string(),
-            account_profile: "work".to_string(),
-            model: None,
-            effort: None,
+    let shape = serde_json::json!({
+        "kind": "submit_leased_prompt",
+        "leased_agent_id": "leased-agent-1",
+        "expected_profile": {
+            "provider": "claude",
+            "account_profile": "work",
+            "model": null,
+            "effort": null
         },
-        provider_resume_state: None,
-        prompt: "continue".to_string(),
-        hidden_system_context: String::new(),
-        attachments: Vec::new(),
-        workflow_context: None,
-        git_context: None,
-        required_mcps: Vec::new(),
-        remote_extension_manifest: Default::default(),
-        provider_launch_credential: Some(
-            crate::transport::relay_peer::RemoteProviderLaunchCredential {
-                provider: "claude".to_string(),
-                account_profile: "work".to_string(),
-                secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
-                    "setup-token-secret".to_string(),
-                ),
-            },
-        ),
-        native_skill_selections: Default::default(),
-    };
-    let debug = format!("{request:?}");
-    assert!(!debug.contains("setup-token-secret"));
-    let mut value = serde_json::to_value(&request).expect("request should serialize");
-    assert_eq!(
-        value.pointer("/provider_launch_credential/provider"),
-        Some(&serde_json::json!("claude"))
-    );
-    assert_eq!(
-        value.pointer("/provider_launch_credential/account_profile"),
-        Some(&serde_json::json!("work"))
-    );
-    assert_eq!(
-        value.pointer("/provider_launch_credential/secret_input"),
-        Some(&serde_json::json!("setup-token-secret"))
-    );
+        "prompt": "continue"
+    });
+    let request: RelayPeerRequest =
+        serde_json::from_value(shape.clone()).expect("the credential-free shape decodes");
+    let encoded = serde_json::to_string(&request).expect("request should serialize");
+    assert!(!encoded.contains("credential"), "{encoded}");
 
-    value
-        .as_object_mut()
-        .expect("request object")
-        .remove("provider_launch_credential");
-    let legacy_shape: RelayPeerRequest =
-        serde_json::from_value(value).expect("missing optional credential stays compatible");
-    assert!(matches!(
-        legacy_shape,
-        RelayPeerRequest::SubmitLeasedPrompt {
-            provider_launch_credential: None,
-            ..
-        }
-    ));
+    let mut with_credential = shape;
+    with_credential["provider_launch_credential"] = serde_json::json!({
+        "provider": "claude",
+        "account_profile": "work",
+        "secret_input": "setup-token-secret"
+    });
+    let refused = serde_json::from_value::<RelayPeerRequest>(with_credential)
+        .expect_err("a request that carries a provider credential must not decode");
+    assert!(
+        !refused.to_string().contains("setup-token-secret"),
+        "{refused}"
+    );
 }
 
 // MP-08 / MP-10 / MP-11: a leased turn carries the home-validated `From <Provider>`
@@ -323,7 +297,6 @@ fn submit_leased_prompt_carries_native_skill_selections() {
         git_context: None,
         required_mcps: Vec::new(),
         remote_extension_manifest: Default::default(),
-        provider_launch_credential: None,
         native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills {
             catalog_revision: 9,
             selections: vec![selection.clone()],
@@ -368,7 +341,6 @@ fn submit_leased_prompt_carries_a_body_only_catalog_revision() {
         git_context: None,
         required_mcps: Vec::new(),
         remote_extension_manifest: Default::default(),
-        provider_launch_credential: None,
         native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills {
             catalog_revision: 9,
             selections: Vec::new(),
@@ -658,15 +630,6 @@ async fn proxied_peer_requests_are_handled_through_relay() {
             git_context: None,
             required_mcps: Vec::new(),
             remote_extension_manifest: Default::default(),
-            provider_launch_credential: Some(
-                crate::transport::relay_peer::RemoteProviderLaunchCredential {
-                    provider: "claude".to_string(),
-                    account_profile: "work".to_string(),
-                    secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
-                        "relay-secret-canary".to_string(),
-                    ),
-                },
-            ),
             native_skill_selections: Default::default(),
         },
     )

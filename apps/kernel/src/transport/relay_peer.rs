@@ -259,14 +259,15 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `ProjectEnvironmentFilePulled` is `data_base64` in the peer plaintext, which is lifted out of the JSON, and a
 /// kernel that offers `x-chariox-relay-peer-binary: v1` sends and takes peer requests and replies as `CXR3`/`CXR2` frames.
 /// Provisional peer 454: the home's capture preparation carries the existing Vault entries the worker's command runs with (`env_uses`), so the home refuses an unknown one before it unlocks.
+/// Peer 453 (local 1016, row 577, provisional): a leased native-launch or prompt request carries no provider launch
+/// credential; a worker launches a leased Claude agent from its own tracked copy of the account. A request that
+/// still carries the field is refused as an unknown field.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 454;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
 /// MP-08/MP-11: typed leased Computer grants require peer 109.
 pub(crate) const MINIMUM_LEASED_COMPUTER_PEER_VERSION: u32 = 109;
-pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
-    "provider_launch_credential_required";
 /// The worker refused a leased prompt before admission because the selected
 /// account cannot start work there; repeating the prompt cannot repair it.
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
@@ -744,28 +745,6 @@ impl Drop for RemoteFileBytes {
 impl std::fmt::Debug for RemoteFileBytes {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("[redacted Project file bytes]")
-    }
-}
-
-/// One provider launch secret carried only inside an encrypted kernel-to-kernel
-/// request. The worker validates the provider/profile binding, moves the value
-/// into its in-memory launch environment, and never writes it to a provider
-/// credential file or durable kernel state.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteProviderLaunchCredential {
-    pub provider: String,
-    pub account_profile: String,
-    pub secret_input: RemoteCredentialSecretInput,
-}
-
-impl std::fmt::Debug for RemoteProviderLaunchCredential {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RemoteProviderLaunchCredential")
-            .field("provider", &self.provider)
-            .field("account_profile", &self.account_profile)
-            .field("secret_input", &"[redacted]")
-            .finish()
     }
 }
 
@@ -1302,8 +1281,6 @@ pub enum RelayPeerRequest {
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
     },
     SendLeasedNativeProviderInput {
         leased_agent_id: String,
@@ -1345,8 +1322,6 @@ pub enum RelayPeerRequest {
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
         /// Source-bound `From <Provider>` skills the home validated; the worker
         /// applies its own harness invocation and never receives native packages.
         #[serde(default, skip_serializing_if = "LeasedNativeSkills::is_unbound")]

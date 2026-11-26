@@ -698,4 +698,8 @@ pub use workspace::*;
 /// Tab re-admitted on the new window) and its frames carry `binding_sequence`, the new window epoch.
 /// Local 1016 (relay peer 453; provisional, restamped at merge): `RestartKernel` restarts a kernel as a hot reload and `KernelRestarting` answers it once the
 /// reload is prepared; a reload that cannot be prepared is refused with its reason and the kernel keeps running. `chariox kernels restart` sends it.
+/// Local 1016 (relay peer 453): a managed install plan and the provider-account portability preflight may name
+/// `{"kind":"all"}`, every login of the owner on the source kernel; the package carries the source Vault's key sealed
+/// for a target with no Vault; a machine row carries the service's `reason`; `context_transfer` hands the kernel that
+/// acquired a machine its transfer ticket. Capabilities `managed_context_all_providers_v1`, `agent_machine_install_v1`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;

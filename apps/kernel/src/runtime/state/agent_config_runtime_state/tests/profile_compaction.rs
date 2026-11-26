@@ -660,35 +660,17 @@ async fn a_leased_turn_finishes_on_its_account_when_the_worker_holds_no_credenti
 {
     let (_root, app, runtime, session, agent, run, lease) = compact_fixture_with_lease(true).await;
     let lease = lease.unwrap();
-    let default_account = runtime
-        .owned
-        .agent_store
-        .get_agent(&agent)
-        .unwrap()
-        .provider_account_profile()
-        .to_string();
     let next_account = runtime
         .owned
         .provider_account_profiles
         .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "next")
         .unwrap()
         .profile_id;
-    // The worker holds only the credential the home launched the running process with.
+    // The worker holds only the accounts copied to it.
     runtime
         .owned
         .provider_run_projection
         .mark_leased_provider_run(run.id());
-    runtime.owned.leased_launch_credentials.keep(
-        &agent,
-        run.id(),
-        crate::transport::relay_peer::RemoteProviderLaunchCredential {
-            provider: "claude".into(),
-            account_profile: default_account,
-            secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
-                "synthetic-launch-credential".into(),
-            ),
-        },
-    );
     sync_active_prompt(&app, &session, &agent).await;
     runtime
         .owned
@@ -898,7 +880,7 @@ async fn a_prompt_queued_during_compaction_reaches_the_committed_profile() {
 }
 
 #[tokio::test]
-async fn a_leased_backlog_uses_the_next_home_launch_credential_and_receipt() {
+async fn a_leased_backlog_uses_the_workers_own_account_and_receipt() {
     crate::test_support::isolated_env_test!();
     assert_queued_prompt_reaches_committed_profile(true).await;
 }
@@ -1122,16 +1104,6 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
                 }),
                 Vec::new(),
                 crate::extension::RemoteExtensionManifest::default(),
-                Some(
-                    crate::transport::relay_peer::RemoteProviderLaunchCredential {
-                        provider: lease.provider.clone(),
-                        account_profile: lease.account_profile.clone(),
-                        secret_input:
-                            crate::transport::relay_peer::RemoteCredentialSecretInput::new(
-                                "synthetic-home-token".into(),
-                            ),
-                    },
-                ),
                 Default::default(),
             )
             .await
@@ -1191,8 +1163,8 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
     assert_ne!(current.id(), run.id());
     if leased {
         assert!(
-            credential_matches.exists(),
-            "cold launch must receive the home's credential"
+            !credential_matches.exists(),
+            "a leased cold launch carries no credential from the home"
         );
         assert!(runtime
             .owned

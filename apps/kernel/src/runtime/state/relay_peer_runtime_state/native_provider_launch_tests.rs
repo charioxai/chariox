@@ -53,7 +53,6 @@ impl NativeLeaseFixture {
                 None,
                 Vec::new(),
                 crate::extension::RemoteExtensionManifest::default(),
-                None,
             )
             .await
     }
@@ -227,7 +226,6 @@ async fn concurrent_relay_native_launches_serialize_and_reuse_one_worker_run() {
                 None,
                 Vec::new(),
                 crate::extension::RemoteExtensionManifest::default(),
-                None,
             )
             .await
     });
@@ -246,7 +244,6 @@ async fn concurrent_relay_native_launches_serialize_and_reuse_one_worker_run() {
                 None,
                 Vec::new(),
                 crate::extension::RemoteExtensionManifest::default(),
-                None,
             )
             .await
     });
@@ -282,7 +279,7 @@ async fn concurrent_relay_native_launches_serialize_and_reuse_one_worker_run() {
 // MP-08 / MP-10 / MP-11: a typed cold-launch preflight rejection is
 // retryable with the selected credential, not a settled prompt rejection.
 #[tokio::test]
-async fn cold_claude_credential_preflight_does_not_fence_the_home_prompt() {
+async fn a_cold_claude_prompt_needs_no_credential_from_the_home() {
     let profile_root = crate::test_support::TestWorktree::new("cold-claude-credential-profile");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(profile_root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -318,58 +315,21 @@ async fn cold_claude_credential_preflight_does_not_fence_the_home_prompt() {
             Some(context),
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await
-        .expect_err("a cold run requires the selected Claude credential");
+        .expect_err("the fake worker has no signed-in account to launch");
+    // Row 577: the home sends no credential. Whatever the worker answers, it never asks the
+    // home for one.
+    assert_no_home_credential_request(&error);
+}
+
+fn assert_no_home_credential_request(error: &DaemonError) {
+    let text = error.to_string();
     assert!(
-        matches!(
-            &error,
-            DaemonError::LocalTransport {
-                operation: "launch remote provider without credential",
-                ..
-            }
-        ),
-        "expected credential preflight, got {error:?}"
-    );
-    let receipt = fixture
-        .state
-        .query_relay_leased_prompt_receipt(
-            &fixture.leased_agent_id,
-            "home-cold-credential-preflight",
-        )
-        .await
-        .expect("the same home prompt can query its preflight");
-    assert!(
-        receipt.is_none(),
-        "credential preflight must leave this exact home prompt retryable"
-    );
-    let leased_id = fixture.leased_agent_id.clone();
-    let begun = fixture
-        .state
-        .with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app)
-                .begin_leased_prompt_receipt(&leased_id, "home-cold-credential-preflight")
-        })
-        .await
-        .unwrap();
-    assert!(
-        begun.is_none(),
-        "credential retry must be a fresh admission"
-    );
-    let receipt = fixture
-        .state
-        .query_relay_leased_prompt_receipt(
-            &fixture.leased_agent_id,
-            "home-cold-credential-preflight",
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        receipt.phase,
-        crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
+        !text.contains("launch remote provider without credential")
+            && !text.contains("provider_launch_credential_required"),
+        "the worker must not ask the home for a credential: {error:?}"
     );
 }
 
@@ -411,7 +371,6 @@ async fn unavailable_claude_profile_leaves_the_prompt_open_for_a_fresh_handover(
             Some(context),
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await
@@ -432,24 +391,14 @@ async fn unavailable_claude_profile_leaves_the_prompt_open_for_a_fresh_handover(
 }
 
 #[tokio::test]
-async fn stale_active_run_hint_requires_cold_claude_credential_on_worker() {
+async fn stale_active_run_hint_cold_launches_from_the_workers_own_account() {
     let fixture = native_lease_fixture();
 
-    let error = fixture
-        .launch("sonnet")
-        .await
-        .expect_err("a missing hinted worker run must not silently cold-launch Claude");
+    let outcome = fixture.launch("sonnet").await;
 
-    match error {
-        DaemonError::LocalTransport { operation, message } => {
-            assert_eq!(operation, "launch remote provider without credential");
-            assert!(message.contains(
-                crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-            ));
-        }
-        other => panic!("unexpected worker cold-launch error: {other}"),
+    if let Err(error) = &outcome {
+        assert_no_home_credential_request(error);
     }
-    assert!(fixture.state.owned.provider_store.list_runs().is_empty());
 }
 
 #[tokio::test]
@@ -501,4 +450,87 @@ async fn leased_permission_session_grant_ends_after_a_scope_round_trip() {
             .covering(&agent.backing_agent_id, &scope, &grant)
             .is_none());
     }
+}
+
+// Row 577: on an owner-enrolled worker the copy sits under the account authority (`local`), while
+// the lease and its backing agent belong to the Cloud user; the launch still finds the copy.
+#[tokio::test]
+async fn a_cloud_owned_lease_launches_from_the_copy_under_the_account_authority() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        relay_url: "wss://cloud-relay".into(),
+        user_id: "cloud-owner".into(),
+        realm_id: "test".into(),
+        ..Default::default()
+    });
+    let authority =
+        crate::account_profile::provider_account_authority_owner_user_id(&config, "cloud-owner");
+    assert_ne!(authority, "cloud-owner");
+    let mut app = crate::app::DaemonApp::bootstrap(config).expect("worker app should bootstrap");
+    let registry = app.provider_account_profile_registry();
+    let copy = registry
+        .create_managed(&authority, "claude", "copy")
+        .unwrap();
+    registry
+        .record_transfer_origin(
+            &authority,
+            &crate::account_profile::ManagedContextProviderAccountReceipt {
+                context_id: "context".into(),
+                package_sha256: "package".into(),
+                materialization_sha256: "materialization".into(),
+                provider: "claude".into(),
+                profile_id: copy.profile_id.clone(),
+            },
+            "home-kernel",
+            "home-work",
+        )
+        .unwrap();
+    let request = {
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let lease = runtime
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "cloud-owner",
+            )
+            .unwrap();
+        let leased = runtime
+            .create_leased_agent(
+                &lease.id,
+                "claude",
+                "home-work",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        runtime
+            .prepare_leased_native_provider_launch(
+                &leased.id,
+                "claude",
+                "claude",
+                "home-work",
+                "sonnet",
+                None,
+                None,
+                None,
+                Vec::new(),
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .unwrap()
+    };
+    assert_eq!(request.account_profile, copy.profile_id);
+    let state = runtime_state_from_app(app);
+    let prepared = state
+        .owned
+        .prepare_leased_provider_launch_account(request)
+        .expect("the copy is found under the account authority");
+    assert_eq!(prepared.account_profile, copy.profile_id);
 }

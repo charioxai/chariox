@@ -91,7 +91,6 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await;
@@ -176,7 +175,6 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
         None,
         Vec::new(),
         crate::extension::RemoteExtensionManifest::default(),
-        None,
         Default::default(),
     );
     tokio::pin!(submission);
@@ -244,7 +242,6 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
         None,
         Vec::new(),
         crate::extension::RemoteExtensionManifest::default(),
-        None,
         Default::default(),
     ));
     poll_fn(|cx| {
@@ -326,7 +323,6 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await
@@ -391,7 +387,6 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
             Some(git_context.clone()),
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
     };
@@ -489,16 +484,20 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
     };
-    // Without a live run, the worker still requires the home's credential.
-    assert!(submit()
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains(crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE));
+    // Without a live run, the worker launches from its own account and never asks the home
+    // for a credential (row 577).
+    let cold = submit().await;
+    if let Err(error) = &cold {
+        assert!(
+            !error
+                .to_string()
+                .contains("provider_launch_credential_required"),
+            "{error:?}"
+        );
+    }
     assert!(app
         .lock()
         .await
@@ -775,7 +774,6 @@ async fn fresh_leased_prompt_receives_home_resume_state() {
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await
@@ -830,4 +828,83 @@ fn fresh_leased_agent_resume_state_clears_stale_backing_thread_and_preserves_liv
         app.providers().get_run(run.id()).unwrap().resume_state(),
         &worker_state
     );
+}
+
+// Review P2 (row 577), seen live: the worker lost its copy of the home's Claude account. The
+// record it still lists under the home's profile id holds no login, so the worker answers that
+// the account is missing (the home then copies it again), never "not signed in". A login the
+// worker itself holds is still its account (its own unsigned default keeps its existing refusal,
+// see leased_claude_prompt_admits_on_the_home_credential_run_without_a_worker_login).
+#[test]
+fn a_leased_claude_agent_without_its_copy_reads_as_a_missing_account() {
+    crate::test_support::isolated_env_test!();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let registry = app.provider_account_profile_registry();
+    // The record the home registered here under its own id when it placed the agent: a replica
+    // with no login of its own.
+    let mirrored = registry
+        .materialize_replica(
+            owner,
+            &crate::account_profile::ProviderAccountMaterialization {
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
+                    owner_user_id: owner.to_string(),
+                    provider: "claude".to_string(),
+                    profile_id: "claude-home-record".to_string(),
+                    label: "Home account record".to_string(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                    is_default: false,
+                },
+                files: Vec::new(),
+                generated_at_ms: 1,
+            },
+        )
+        .unwrap()
+        .profile_id;
+    let own = registry
+        .create_managed(owner, "claude", "Own login")
+        .unwrap()
+        .profile_id;
+    crate::test_support::authenticate_provider_account(&registry, owner, "claude", &own).unwrap();
+    for (home_agent, profile, missing) in
+        [("lost-copy", &mirrored, true), ("own-login", &own, false)]
+    {
+        let execution_lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease("home-kernel", "home-session", home_agent, false, owner)
+            .unwrap();
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &execution_lease.id,
+                "claude",
+                profile,
+                Some("haiku".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let leased = app.leased_agents.get(&lease.id).cloned().unwrap();
+        let resolved = RemoteLeaseRuntime::new(&mut app)
+            .resolve_leased_profile_account(&leased, "claude", profile);
+        if missing {
+            match resolved {
+                Err(DaemonError::LocalTransport { operation, .. }) => assert_eq!(
+                    operation,
+                    crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
+                    "a lost copy must read as a missing account"
+                ),
+                other => {
+                    panic!("a lost copy resolved as {other:?}, so the home never copies it again")
+                }
+            }
+        } else {
+            assert_eq!(resolved.unwrap(), *own);
+        }
+    }
 }
