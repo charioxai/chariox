@@ -15,7 +15,7 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -1145,16 +1145,186 @@ impl Prepared {
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
 
 type RestartAnswer = tokio::sync::oneshot::Sender<Result<(), String>>;
-static RESTART_REQUESTS: OnceLock<tokio::sync::mpsc::UnboundedSender<RestartAnswer>> =
+/// A requested restart with the deadline its requester's wait gives it, fixed when it was enqueued:
+/// time spent behind another reload counts against it.
+struct RestartRequest {
+    answer: RestartAnswer,
+    deadline: Instant,
+}
+static RESTART_REQUESTS: OnceLock<tokio::sync::mpsc::UnboundedSender<RestartRequest>> =
     OnceLock::new();
 /// How long the kernel keeps serving after it prepared a requested restart: the answer to the request leaves first.
 const RESTART_REPLY_GRACE: Duration = Duration::from_millis(400);
+
+/// Running agent turns whose runtime a command holds right now cannot be
+/// handed over: they are not at a safe point. Set once by the provider runtime.
+type BusyTurns = Box<dyn Fn() -> Vec<String> + Send + Sync>;
+static BUSY_TURNS: OnceLock<BusyTurns> = OnceLock::new();
+
+pub(crate) fn watch_busy_turns(probe: impl Fn() -> Vec<String> + Send + Sync + 'static) {
+    let _ = BUSY_TURNS.set(Box::new(probe));
+}
+
+const SAFE_POINT_POLL: Duration = Duration::from_millis(100);
+
+/// Where the caller of a reload leaves its deadline, next to the handover.
+/// A request, not a handover: nothing reads it after the signal.
+fn reload_request_path(handover_path: &std::path::Path) -> PathBuf {
+    handover_path.with_file_name("hot-reload-request.json")
+}
+
+/// The caller's deadline for this reload, once: the file is removed as it is
+/// read, so one attempt's deadline never decides the next. No readable file
+/// means no deadline: the reload waits for its safe point as long as it takes.
+fn take_reload_deadline(handover_path: &std::path::Path) -> Option<Instant> {
+    let path = reload_request_path(handover_path);
+    let body = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let at_ms = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()?
+        .get("deadline_unix_ms")?
+        .as_u64()?;
+    let left_ms = at_ms.saturating_sub(crate::session::unix_epoch_ms());
+    Some(Instant::now() + Duration::from_millis(left_ms))
+}
+
+/// New provider work (a prompt, a steer) is admitted while this is open. The reload closes
+/// it once, right before accepting a safe point, so no command can take a turn's runtime
+/// between the probe and the handover; a refused reload opens it again.
+static ADMISSION_CLOSED: std::sync::RwLock<bool> = std::sync::RwLock::new(false);
+
+const ADMISSION_CLOSED_REASON: &str =
+    "the kernel is preparing a planned reload; try again in a moment";
+
+/// Held by a command while it registers its work, so a closing reload sees it.
+pub(crate) fn admit_provider_work(
+) -> Result<std::sync::RwLockReadGuard<'static, bool>, &'static str> {
+    admit_into(&ADMISSION_CLOSED)
+}
+
+fn admit_into(
+    gate: &std::sync::RwLock<bool>,
+) -> Result<std::sync::RwLockReadGuard<'_, bool>, &'static str> {
+    let guard = gate
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *guard {
+        Err(ADMISSION_CLOSED_REASON)
+    } else {
+        Ok(guard)
+    }
+}
+
+fn set_admission_closed(closed: bool) {
+    *ADMISSION_CLOSED
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = closed;
+    // A new attempt starts clean; an opened gate is no longer committed.
+    LATE_ABORTS.store(0, std::sync::atomic::Ordering::SeqCst);
+    COMMITTED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Aborts admitted while the gate was closed and the reload not yet committed. An abort is never
+/// refused (the cancellation is committed before it is queued), so it spoils the safe point
+/// instead: the commit check sees it and the reload waits for the next one.
+static LATE_ABORTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static COMMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Held by an abort while it registers its work: never refused, but counted when it lands
+/// between the safe point and the commit.
+pub(crate) fn admit_abort() -> std::sync::RwLockReadGuard<'static, bool> {
+    admit_abort_into(&ADMISSION_CLOSED, &LATE_ABORTS, &COMMITTED)
+}
+
+fn admit_abort_into<'a>(
+    gate: &'a std::sync::RwLock<bool>,
+    late: &std::sync::atomic::AtomicUsize,
+    committed: &std::sync::atomic::AtomicBool,
+) -> std::sync::RwLockReadGuard<'a, bool> {
+    let guard = gate
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *guard && !committed.load(std::sync::atomic::Ordering::SeqCst) {
+        late.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    guard
+}
+
+/// The last step before the reload commits, with admission held shut by the write lock: no
+/// abort arrived since the safe point and nothing is busy. Otherwise the safe point was
+/// spoiled: admission opens again and the caller waits for the next one.
+fn commit_safe_point_into(
+    gate: &std::sync::RwLock<bool>,
+    late: &std::sync::atomic::AtomicUsize,
+    committed: &std::sync::atomic::AtomicBool,
+    busy: &(dyn Fn() -> Vec<String> + Sync),
+    deadline: Option<Instant>,
+) -> bool {
+    let mut closed = gate
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The caller's deadline decides here too: terminal preparation and this lock can have
+    // used it up, and a reload that commits after it would start after the caller's rollback.
+    let spoiled = late.swap(0, std::sync::atomic::Ordering::SeqCst) > 0
+        || !busy().is_empty()
+        || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+    if spoiled {
+        *closed = false;
+        false
+    } else {
+        committed.store(true, std::sync::atomic::Ordering::SeqCst);
+        true
+    }
+}
+
+/// Waits until no running turn is held by a command, or the caller's deadline
+/// passes: then the reload is refused with the busy turns named and nothing
+/// has changed. The kernel keeps serving meanwhile. A safe point is accepted
+/// only with admission closed and a second probe empty, so work admitted
+/// between the first probe and the close is seen; an expired deadline is
+/// never accepted, even by an empty probe.
+async fn wait_for_safe_point(
+    busy: &(dyn Fn() -> Vec<String> + Sync),
+    deadline: Option<Instant>,
+    poll: Duration,
+    close_admission: &(dyn Fn() + Sync),
+    open_admission: &(dyn Fn() + Sync),
+) -> Result<(), String> {
+    loop {
+        let mut expired = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        let mut turns = busy();
+        if turns.is_empty() && !expired {
+            close_admission();
+            turns = busy();
+            if turns.is_empty() && !deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(());
+            }
+            // Spoiled by work admitted before the close, or the deadline passed while
+            // the kernel was acquiring the safe point: admission opens again.
+            open_admission();
+            expired = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        }
+        if expired {
+            turns.sort();
+            return Err(if turns.is_empty() {
+                "the reload's deadline passed before the kernel reached a safe point; nothing was changed and every agent keeps running".to_string()
+            } else {
+                format!(
+                    "{} running agent turns are busy and cannot be handed over yet ({}); the reload's deadline passed, so nothing was changed and every agent keeps running",
+                    turns.len(),
+                    turns.join(", ")
+                )
+            });
+        }
+        tokio::time::sleep(poll).await;
+    }
+}
 
 /// Completes when a hot reload is prepared, on a SIGUSR2 or on a request (`request_restart`). A refused request
 /// changes nothing: the kernel keeps running and waits for the next one; a requester is told why.
 pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     use tokio::signal::unix::{signal, SignalKind};
-    let (restart_tx, mut restarts) = tokio::sync::mpsc::unbounded_channel::<RestartAnswer>();
+    let (restart_tx, mut restarts) = tokio::sync::mpsc::unbounded_channel::<RestartRequest>();
     let _ = RESTART_REQUESTS.set(restart_tx);
     let mut requests = match signal(SignalKind::user_defined2()) {
         Ok(requests) => requests,
@@ -1170,9 +1340,24 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     loop {
         let answer = tokio::select! {
             signalled = requests.recv() => { if signalled.is_none() { break; } None }
-            asked = restarts.recv() => match asked { Some(answer) => Some(answer), None => break },
+            asked = restarts.recv() => match asked { Some(request) => Some(request), None => break },
         };
-        match prepare(&terminals).await {
+        // A request answers within the requester's own wait: its deadline was fixed when it was
+        // enqueued, so a reload it was told "did not prepare in time" never commits behind its back,
+        // and a request that waited behind another reload past its deadline is refused unprepared.
+        let (answer, requested_deadline) = match answer {
+            Some(request) => {
+                if Instant::now() >= request.deadline || request.answer.is_closed() {
+                    let _ = request.answer.send(Err(
+                        "the hot reload did not prepare in time; nothing was changed and every agent keeps running".to_string(),
+                    ));
+                    continue;
+                }
+                (Some(request.answer), Some(request.deadline))
+            }
+            None => (None, None),
+        };
+        match prepare(&terminals, &handover_path, requested_deadline).await {
             Ok(terminals) => {
                 *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some(Prepared::new(terminals, handover_path));
@@ -1203,32 +1388,95 @@ pub async fn request_restart() -> Result<(), String> {
     let Some(requests) = RESTART_REQUESTS.get() else {
         return Err("hot reload is unavailable on this kernel".into());
     };
-    let (answer, reply) = tokio::sync::oneshot::channel();
-    requests
-        .send(answer)
-        .map_err(|_| "hot reload is unavailable on this kernel".to_string())?;
-    match tokio::time::timeout(VERIFY_TIMEOUT * 3, reply).await {
+    let reply = enqueue_restart(requests)?;
+    match tokio::time::timeout(request_wait(), reply).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err("the kernel is already stopping".into()),
         Err(_) => Err("the hot reload did not prepare in time".into()),
     }
 }
 
+/// Queues a restart request with its deadline, fixed now.
+fn enqueue_restart(
+    requests: &tokio::sync::mpsc::UnboundedSender<RestartRequest>,
+) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    let (answer, reply) = tokio::sync::oneshot::channel();
+    requests
+        .send(RestartRequest {
+            answer,
+            deadline: Instant::now() + requested_reload_patience(),
+        })
+        .map_err(|_| "hot reload is unavailable on this kernel".to_string())?;
+    Ok(reply)
+}
+
+/// How long a requester of a restart waits for the answer.
+fn request_wait() -> Duration {
+    VERIFY_TIMEOUT * 3
+}
+
+/// A requester's own wait decides its reload's deadline (no number of its own): the refusal reaches
+/// it, with the busy turns named, before it gives up, with the verification's time kept back.
+fn requested_reload_patience() -> Duration {
+    request_wait().saturating_sub(VERIFY_TIMEOUT)
+}
+
 async fn prepare(
     terminals: &RoomTerminalService,
+    handover_path: &std::path::Path,
+    requested_deadline: Option<Instant>,
 ) -> Result<Vec<(TerminalHandover, OwnedFd)>, String> {
     let start = START.get().ok_or("the kernel program path is unknown")?;
+    let file_deadline = take_reload_deadline(handover_path);
+    let deadline = match (file_deadline, requested_deadline) {
+        (Some(file), Some(requested)) => Some(file.min(requested)),
+        (file, requested) => file.or(requested),
+    };
     verify(start).await?;
-    let handing = terminals.clone();
-    match tokio::task::spawn_blocking(move || handing.hand_over()).await {
-        Ok(Ok(terminals)) => Ok(terminals),
-        Ok(Err(error)) => {
-            terminals.release_handover();
-            Err(error.to_string())
+    loop {
+        if let Some(busy) = BUSY_TURNS.get() {
+            wait_for_safe_point(
+                busy.as_ref(),
+                deadline,
+                SAFE_POINT_POLL,
+                &|| set_admission_closed(true),
+                &|| set_admission_closed(false),
+            )
+            .await?;
         }
-        Err(error) => {
-            terminals.release_handover();
-            Err(error.to_string())
+        let handing = terminals.clone();
+        let handed = match tokio::task::spawn_blocking(move || handing.hand_over()).await {
+            Ok(Ok(handed)) => handed,
+            Ok(Err(error)) => {
+                terminals.release_handover();
+                set_admission_closed(false);
+                return Err(error.to_string());
+            }
+            Err(error) => {
+                terminals.release_handover();
+                set_admission_closed(false);
+                return Err(error.to_string());
+            }
+        };
+        let committed = match BUSY_TURNS.get() {
+            Some(busy) => commit_safe_point_into(
+                &ADMISSION_CLOSED,
+                &LATE_ABORTS,
+                &COMMITTED,
+                busy.as_ref(),
+                deadline,
+            ),
+            None => true,
+        };
+        if committed {
+            return Ok(handed);
+        }
+        // An abort (or other work) landed during terminal preparation: that safe point is
+        // spoiled. Nothing was committed; prepare again within the caller's deadline.
+        terminals.release_handover();
+        drop(handed);
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err("the reload's deadline passed before the kernel reached a safe point; nothing was changed and every agent keeps running".to_string());
         }
     }
 }
@@ -1449,6 +1697,361 @@ mod tests {
         create_chariox_encrypted_vault_for_test, unlock_existing_chariox_encrypted_vault,
         VaultUnlockLease,
     };
+
+    async fn safe_point(
+        busy: &(dyn Fn() -> Vec<String> + Sync),
+        deadline: Option<Instant>,
+        poll: Duration,
+    ) -> Result<(), String> {
+        wait_for_safe_point(busy, deadline, poll, &|| {}, &|| {}).await
+    }
+
+    #[tokio::test]
+    async fn a_reload_accepts_no_safe_point_that_work_admitted_before_the_close_has_spoiled() {
+        // The first probe is empty; work registered before admission closed shows in the second.
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let closed = std::sync::atomic::AtomicBool::new(false);
+        let reopened = std::sync::atomic::AtomicUsize::new(0);
+        let probe = || {
+            let probe = probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if probe == 1 {
+                vec!["run-a".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        wait_for_safe_point(
+            &probe,
+            Some(Instant::now() + Duration::from_secs(5)),
+            Duration::from_millis(10),
+            &|| closed.store(true, std::sync::atomic::Ordering::SeqCst),
+            &|| {
+                closed.store(false, std::sync::atomic::Ordering::SeqCst);
+                reopened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        )
+        .await
+        .expect("the work finished, the next probe pair is empty");
+        assert_eq!(
+            reopened.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a spoiled safe point opens admission again before it waits"
+        );
+        assert!(
+            closed.load(std::sync::atomic::Ordering::SeqCst),
+            "the accepted safe point keeps admission closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reload_whose_deadline_passed_is_refused_even_when_nothing_is_busy() {
+        let nothing_busy = || Vec::<String>::new();
+        let closed = std::sync::atomic::AtomicBool::new(false);
+        let reason = wait_for_safe_point(
+            &nothing_busy,
+            Some(Instant::now() - Duration::from_millis(1)),
+            Duration::from_millis(10),
+            &|| closed.store(true, std::sync::atomic::Ordering::SeqCst),
+            &|| {},
+        )
+        .await
+        .expect_err("the caller has begun its own rollback: do not commit");
+        assert!(reason.contains("deadline passed"), "{reason}");
+        assert!(reason.contains("every agent keeps running"), "{reason}");
+        assert!(!closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_deadline_that_passes_while_the_safe_point_is_acquired_refuses_and_reopens_admission()
+    {
+        let nothing_busy = || Vec::<String>::new();
+        let closed = std::sync::atomic::AtomicBool::new(false);
+        let reason = wait_for_safe_point(
+            &nothing_busy,
+            Some(Instant::now() + Duration::from_millis(40)),
+            Duration::from_millis(10),
+            &|| {
+                // Acquiring the admission lock took longer than the caller had left.
+                std::thread::sleep(Duration::from_millis(80));
+                closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+            &|| closed.store(false, std::sync::atomic::Ordering::SeqCst),
+        )
+        .await
+        .expect_err("the deadline passed before the safe point was accepted");
+        assert!(reason.contains("deadline passed"), "{reason}");
+        assert!(
+            !closed.load(std::sync::atomic::Ordering::SeqCst),
+            "a refused reload leaves admission open"
+        );
+    }
+
+    #[test]
+    fn the_commit_check_refuses_when_an_abort_landed_after_the_safe_point_and_reopens_admission() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let gate = std::sync::RwLock::new(true);
+        let late = AtomicUsize::new(0);
+        let committed = AtomicBool::new(false);
+        let nothing_busy = || Vec::<String>::new();
+        // An abort is never refused while the gate is closed, but it is counted.
+        drop(admit_abort_into(&gate, &late, &committed));
+        assert_eq!(late.load(Ordering::SeqCst), 1);
+        assert!(!commit_safe_point_into(
+            &gate,
+            &late,
+            &committed,
+            &nothing_busy,
+            None
+        ));
+        assert!(
+            !*gate.read().unwrap(),
+            "the spoiled safe point opens admission again"
+        );
+        assert!(!committed.load(Ordering::SeqCst));
+        // The next attempt, with no late abort and nothing busy, commits and stays closed.
+        *gate.write().unwrap() = true;
+        assert!(commit_safe_point_into(
+            &gate,
+            &late,
+            &committed,
+            &nothing_busy,
+            None
+        ));
+        assert!(*gate.read().unwrap());
+        assert!(committed.load(Ordering::SeqCst));
+        // After the commit an abort is the shutdown's own: not counted.
+        drop(admit_abort_into(&gate, &late, &committed));
+        assert_eq!(late.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_commit_check_refuses_an_expired_deadline_even_when_nothing_is_busy() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let gate = std::sync::RwLock::new(true);
+        let late = AtomicUsize::new(0);
+        let committed = AtomicBool::new(false);
+        let nothing_busy = || Vec::<String>::new();
+        // Terminal preparation used the caller's time up: the last probe is empty, too late.
+        let expired = Instant::now() - Duration::from_millis(1);
+        assert!(!commit_safe_point_into(
+            &gate,
+            &late,
+            &committed,
+            &nothing_busy,
+            Some(expired)
+        ));
+        assert!(!*gate.read().unwrap(), "admission is open again");
+        assert!(!committed.load(Ordering::SeqCst));
+        *gate.write().unwrap() = true;
+        assert!(commit_safe_point_into(
+            &gate,
+            &late,
+            &committed,
+            &nothing_busy,
+            Some(Instant::now() + Duration::from_secs(30))
+        ));
+    }
+
+    #[test]
+    fn the_commit_check_refuses_when_something_is_busy_at_the_last_moment() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        let gate = std::sync::RwLock::new(true);
+        let late = AtomicUsize::new(0);
+        let committed = AtomicBool::new(false);
+        let busy = || vec!["run-a".to_string()];
+        assert!(!commit_safe_point_into(
+            &gate, &late, &committed, &busy, None
+        ));
+        assert!(!*gate.read().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_requests_deadline_is_fixed_when_it_is_enqueued_not_when_it_is_dequeued() {
+        let (requests, mut queue) = tokio::sync::mpsc::unbounded_channel::<RestartRequest>();
+        let before = Instant::now();
+        let _first = enqueue_restart(&requests).unwrap();
+        let _second = enqueue_restart(&requests).unwrap();
+        // Another reload holds the queue; the second request is dequeued much later.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let first = queue.recv().await.unwrap();
+        let second = queue.recv().await.unwrap();
+        let patience = requested_reload_patience();
+        for request in [&first, &second] {
+            assert!(request.deadline >= before + patience);
+            assert!(
+                request.deadline <= Instant::now() + patience - Duration::from_millis(40),
+                "the deadline did not restart when the request was dequeued"
+            );
+        }
+    }
+
+    #[test]
+    fn a_requested_restart_is_refused_before_its_requester_stops_waiting() {
+        // The refusal, with the busy turns named, reaches the requester inside its own wait,
+        // and the verification keeps its time: a reload it was told did not prepare never commits.
+        assert!(requested_reload_patience() + VERIFY_TIMEOUT <= request_wait());
+        assert!(requested_reload_patience() > Duration::ZERO);
+    }
+
+    #[test]
+    fn admission_is_refused_while_a_reload_holds_it_closed_and_opens_again() {
+        let gate = std::sync::RwLock::new(false);
+        assert!(admit_into(&gate).is_ok());
+        *gate.write().unwrap() = true;
+        let refused = admit_into(&gate).unwrap_err();
+        assert!(refused.contains("try again"), "{refused}");
+        *gate.write().unwrap() = false;
+        assert!(admit_into(&gate).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_reload_goes_ahead_when_every_running_turn_can_be_handed_over() {
+        let nothing_busy = || Vec::<String>::new();
+        safe_point(
+            &nothing_busy,
+            Some(Instant::now() + Duration::from_millis(200)),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("no busy turn: nothing to wait for");
+    }
+
+    #[tokio::test]
+    async fn a_reload_waits_for_a_busy_turn_to_reach_a_safe_point() {
+        let polls = std::sync::atomic::AtomicUsize::new(0);
+        let busy_twice = || {
+            if polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                vec!["run-a".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        safe_point(
+            &busy_twice,
+            Some(Instant::now() + Duration::from_secs(5)),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("the turn became safe within the wait");
+        assert!(polls.load(std::sync::atomic::Ordering::SeqCst) >= 3);
+    }
+
+    #[tokio::test]
+    async fn a_reload_is_refused_with_the_busy_turns_named_when_none_reaches_a_safe_point() {
+        let started = Instant::now();
+        let busy = || vec!["run-b".to_string(), "run-a".to_string()];
+        let reason = safe_point(
+            &busy,
+            Some(Instant::now() + Duration::from_millis(150)),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect_err("a turn that never frees up refuses the reload");
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert!(
+            reason.contains("run-a") && reason.contains("run-b"),
+            "{reason}"
+        );
+        assert!(reason.contains("2 running agent turns"), "{reason}");
+        assert!(
+            !reason.contains("Error") && !reason.contains("panicked"),
+            "{reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_reload_changes_nothing_and_a_second_attempt_can_go_ahead() {
+        let busy = std::sync::atomic::AtomicBool::new(true);
+        let probe = || {
+            if busy.load(std::sync::atomic::Ordering::SeqCst) {
+                vec!["run-a".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        safe_point(
+            &probe,
+            Some(Instant::now() + Duration::from_millis(50)),
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap_err();
+        assert!(!handing_over(), "a refusal prepares no handover");
+        busy.store(false, std::sync::atomic::Ordering::SeqCst);
+        safe_point(
+            &probe,
+            Some(Instant::now() + Duration::from_millis(50)),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("the second attempt goes ahead");
+    }
+
+    #[tokio::test]
+    async fn a_reload_without_a_deadline_waits_for_the_safe_point_however_long_it_takes() {
+        let polls = std::sync::atomic::AtomicUsize::new(0);
+        let busy_for_a_while = || {
+            if polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 30 {
+                vec!["run-a".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        safe_point(&busy_for_a_while, None, Duration::from_millis(5))
+            .await
+            .expect("no deadline: the kernel never gives up the reload on its own");
+    }
+
+    #[test]
+    fn the_callers_deadline_is_read_once_from_the_request_file() {
+        let dir = std::env::temp_dir().join(format!("hr-request-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let handover = dir.join("handover.json");
+        assert_eq!(
+            take_reload_deadline(&handover),
+            None,
+            "no file: no deadline"
+        );
+        let at = crate::session::unix_epoch_ms() + 5_000;
+        std::fs::write(
+            reload_request_path(&handover),
+            serde_json::json!({ "deadline_unix_ms": at }).to_string(),
+        )
+        .unwrap();
+        let deadline = take_reload_deadline(&handover).expect("the file names a deadline");
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            left > Duration::from_secs(3) && left <= Duration::from_secs(5),
+            "{left:?}"
+        );
+        assert!(
+            !reload_request_path(&handover).exists(),
+            "a deadline belongs to one attempt"
+        );
+        assert_eq!(take_reload_deadline(&handover), None);
+        std::fs::write(reload_request_path(&handover), "not json").unwrap();
+        assert_eq!(
+            take_reload_deadline(&handover),
+            None,
+            "an unreadable request is no deadline"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_deadline_already_past_refuses_a_busy_reload_at_once() {
+        let dir = std::env::temp_dir().join(format!("hr-past-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let handover = dir.join("handover.json");
+        std::fs::write(
+            reload_request_path(&handover),
+            serde_json::json!({ "deadline_unix_ms": 1 }).to_string(),
+        )
+        .unwrap();
+        let deadline = take_reload_deadline(&handover).unwrap();
+        assert!(deadline <= Instant::now());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_taken_preferred_port_falls_back_but_an_exact_port_fails() {

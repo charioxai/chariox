@@ -15,6 +15,12 @@ impl ProviderRunActorMailbox {
     ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, DaemonError> {
         let run_id = run.id().to_string();
         let (response, receipt) = tokio::sync::oneshot::channel();
+        let admission = crate::hot_reload::admit_provider_work().map_err(|reason| {
+            provider_actor_enqueue_error("publish Claude plan", &run_id, reason.to_string())
+        })?;
+        self.in_flight
+            .mark_plan_publication_in_flight(run_id.clone());
+        drop(admission);
         self.worker_for_run(&run_id)
             .try_send(ProviderRunActorCommand::PublishClaudePlan {
                 run,
@@ -24,6 +30,7 @@ impl ProviderRunActorMailbox {
                 response,
             })
             .map_err(|error| {
+                self.in_flight.clear_plan_publication_in_flight(&run_id);
                 provider_actor_enqueue_error("publish Claude plan", &run_id, error.to_string())
             })?;
         self.operation_lanes.record_command_enqueued();
@@ -40,7 +47,17 @@ impl ProviderRunActorMailbox {
         envelope: PromptEnvelope,
     ) -> Result<tokio::sync::oneshot::Receiver<ProviderPromptSubmitReceipt>, DaemonError> {
         let (acceptance, receipt) = tokio::sync::oneshot::channel();
+        // A planned reload that accepted its safe point admits no new work until the
+        // successor serves; the guard keeps the probe and this mark in one order.
+        let admission = crate::hot_reload::admit_provider_work().map_err(|reason| {
+            provider_actor_enqueue_error(
+                "enqueue structured prompt submit",
+                &provider_run_id,
+                reason.to_string(),
+            )
+        })?;
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
+        drop(admission);
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Submit {
             session_id,
@@ -87,7 +104,15 @@ impl ProviderRunActorMailbox {
         admission: Option<crate::provider::ProviderUtilityAdmission>,
         stop: Option<crate::provider::UtilityStop>,
     ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
+        let reload_admission = crate::hot_reload::admit_provider_work().map_err(|reason| {
+            provider_actor_enqueue_error(
+                "enqueue provider utility",
+                &provider_run_id,
+                reason.to_string(),
+            )
+        })?;
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
+        drop(reload_admission);
         let sender = self.worker_for_run(&provider_run_id);
         let (response_tx, response_rx) = std::sync::mpsc::channel();
         match sender.try_send(ProviderRunActorCommand::Utility {
@@ -123,8 +148,13 @@ impl ProviderRunActorMailbox {
         prompt_id: String,
         run: RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
+        // Never refused for a planned reload: the cancellation state is committed before
+        // this call, so a refusal would leave the prompt Cancelling with no abort queued.
+        // One that lands between the safe point and the commit spoils that safe point.
+        let admission = crate::hot_reload::admit_abort();
         self.utility_cancellations.cancel(&provider_run_id);
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
+        drop(admission);
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Abort {
             session_id,
@@ -248,7 +278,14 @@ impl ProviderRunActorMailbox {
         provider_run_id: String,
         run: RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
-        if !self.mark_structured_output_poll_in_flight(provider_run_id.clone()) {
+        // While a planned reload holds admission closed no poll starts: the next one
+        // runs in the successor.
+        let Ok(admission) = crate::hot_reload::admit_provider_work() else {
+            return Ok(false);
+        };
+        let marked = self.mark_structured_output_poll_in_flight(provider_run_id.clone());
+        drop(admission);
+        if !marked {
             return Ok(false);
         }
         #[cfg(test)]
