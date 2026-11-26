@@ -35,7 +35,7 @@ impl PromptStateOwner {
         agent_id: &str,
         commit: impl FnOnce() -> Result<T, DaemonError>,
     ) -> Result<T, DaemonError> {
-        let _owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+        let _owner = crate::runtime::checked_lock::lock_checked("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.ensure_unarchived_agent(session, agent_id)?;
         commit()

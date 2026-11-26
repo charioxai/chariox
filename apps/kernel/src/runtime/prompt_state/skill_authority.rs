@@ -19,7 +19,7 @@ impl PromptStateOwner {
         let mut sessions = sessions.write();
         let session = sessions.get_session(session_id)?;
         let mut owner =
-            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+            crate::runtime::checked_lock::lock_checked("prompt_state_owner", &self.state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(&session, agent_id);
         let previous = state

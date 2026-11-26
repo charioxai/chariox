@@ -12,6 +12,9 @@ use super::stall_watchdog::{self, Watch};
 
 #[cfg(test)]
 pub(crate) const LOCK_ORDER: &[(&str, u16)] = &[
+    // The kernel's documented order: activity -> session -> prompt owner -> agent.
+    ("session_state", 2),
+    ("prompt_state_owner", 3),
     ("room_list_launch_target", 5),
     ("provider_managed_admission", 10),
     ("provider_move_admission", 20),
@@ -177,57 +180,154 @@ impl<T> Drop for CheckedMutexGuard<'_, T> {
     }
 }
 
-/// Locks a plain std mutex. Only a contended wait registers with the stall watchdog, so an
-/// uncontended lock costs one `try_lock` and a wait that never ends is named, with its call
-/// site, at the watchdog's threshold.
+/// A guard of a plain std lock taken through [`lock_checked`], [`read_checked`] or
+/// [`write_checked`]: the stall watchdog sees its hold as it sees a [`CheckedMutex`] hold,
+/// and tests check it against [`LOCK_ORDER`].
+pub struct CheckedStdGuard<G> {
+    guard: G,
+    _watch: Watch,
+    #[cfg(test)]
+    identity: usize,
+}
+
+impl<G: Deref> Deref for CheckedStdGuard<G> {
+    type Target = G::Target;
+    fn deref(&self) -> &G::Target {
+        &self.guard
+    }
+}
+
+impl<G: DerefMut> DerefMut for CheckedStdGuard<G> {
+    fn deref_mut(&mut self) -> &mut G::Target {
+        &mut self.guard
+    }
+}
+
+impl<G> Drop for CheckedStdGuard<G> {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            if let Some(index) = held.iter().rposition(|(id, _)| *id == self.identity) {
+                held.remove(index);
+            }
+        });
+    }
+}
+
+/// Runs the same order check as [`CheckedMutex::lock`] for a plain std lock at `identity`.
 #[track_caller]
-pub(crate) fn lock_watched<'a, T>(
+fn check_std_order(name: &'static str, identity: usize) {
+    #[cfg(test)]
+    HELD.with(|held| {
+        let rank = LOCK_ORDER
+            .iter()
+            .find(|(lock, _)| *lock == name)
+            .map_or(0, |(_, rank)| *rank);
+        assert!(
+            held.borrow()
+                .iter()
+                .all(|(id, previous)| *id != identity && *previous <= rank),
+            "lock order inversion for {} at {}",
+            name,
+            std::panic::Location::caller()
+        );
+    });
+    #[cfg(not(test))]
+    let _ = (name, identity);
+}
+
+fn checked_std_result<G>(
+    name: &'static str,
+    identity: usize,
+    location: &'static std::panic::Location<'static>,
+    result: LockResult<G>,
+) -> LockResult<CheckedStdGuard<G>> {
+    let wrap = |guard| {
+        #[cfg(test)]
+        {
+            let rank = LOCK_ORDER
+                .iter()
+                .find(|(lock, _)| *lock == name)
+                .map_or(0, |(_, rank)| *rank);
+            HELD.with(|held| held.borrow_mut().push((identity, rank)));
+        }
+        CheckedStdGuard {
+            guard,
+            _watch: stall_watchdog::watch_at(name, "lock_hold", location),
+            #[cfg(test)]
+            identity,
+        }
+    };
+    #[cfg(not(test))]
+    let _ = identity;
+    match result {
+        Ok(guard) => Ok(wrap(guard)),
+        Err(error) => Err(PoisonError::new(wrap(error.into_inner()))),
+    }
+}
+
+/// Locks a plain std mutex as a [`CheckedMutex`] would: an uncontended lock costs one
+/// `try_lock`; a contended wait and every hold are named, with their call site, at the
+/// stall watchdog's threshold.
+#[track_caller]
+pub(crate) fn lock_checked<'a, T>(
     name: &'static str,
     mutex: &'a Mutex<T>,
-) -> LockResult<MutexGuard<'a, T>> {
-    match mutex.try_lock() {
+) -> LockResult<CheckedStdGuard<MutexGuard<'a, T>>> {
+    let identity = mutex as *const Mutex<T> as usize;
+    let location = std::panic::Location::caller();
+    check_std_order(name, identity);
+    let result = match mutex.try_lock() {
         Ok(guard) => Ok(guard),
         Err(TryLockError::Poisoned(error)) => Err(error),
         Err(TryLockError::WouldBlock) => {
-            let _waiting =
-                stall_watchdog::watch_at(name, "lock_wait", std::panic::Location::caller());
+            let _waiting = stall_watchdog::watch_at(name, "lock_wait", location);
             mutex.lock()
         }
-    }
+    };
+    checked_std_result(name, identity, location, result)
 }
 
-/// [`lock_watched`] for the read side of a std `RwLock`.
+/// [`lock_checked`] for the read side of a std `RwLock`. A second read on the same thread
+/// is an inversion too: a waiting writer blocks it.
 #[track_caller]
-pub(crate) fn read_watched<'a, T>(
+pub(crate) fn read_checked<'a, T>(
     name: &'static str,
     lock: &'a RwLock<T>,
-) -> LockResult<RwLockReadGuard<'a, T>> {
-    match lock.try_read() {
+) -> LockResult<CheckedStdGuard<RwLockReadGuard<'a, T>>> {
+    let identity = lock as *const RwLock<T> as usize;
+    let location = std::panic::Location::caller();
+    check_std_order(name, identity);
+    let result = match lock.try_read() {
         Ok(guard) => Ok(guard),
         Err(TryLockError::Poisoned(error)) => Err(error),
         Err(TryLockError::WouldBlock) => {
-            let _waiting =
-                stall_watchdog::watch_at(name, "lock_wait", std::panic::Location::caller());
+            let _waiting = stall_watchdog::watch_at(name, "lock_wait", location);
             lock.read()
         }
-    }
+    };
+    checked_std_result(name, identity, location, result)
 }
 
-/// [`lock_watched`] for the write side of a std `RwLock`.
+/// [`lock_checked`] for the write side of a std `RwLock`.
 #[track_caller]
-pub(crate) fn write_watched<'a, T>(
+pub(crate) fn write_checked<'a, T>(
     name: &'static str,
     lock: &'a RwLock<T>,
-) -> LockResult<RwLockWriteGuard<'a, T>> {
-    match lock.try_write() {
+) -> LockResult<CheckedStdGuard<RwLockWriteGuard<'a, T>>> {
+    let identity = lock as *const RwLock<T> as usize;
+    let location = std::panic::Location::caller();
+    check_std_order(name, identity);
+    let result = match lock.try_write() {
         Ok(guard) => Ok(guard),
         Err(TryLockError::Poisoned(error)) => Err(error),
         Err(TryLockError::WouldBlock) => {
-            let _waiting =
-                stall_watchdog::watch_at(name, "lock_wait", std::panic::Location::caller());
+            let _waiting = stall_watchdog::watch_at(name, "lock_wait", location);
             lock.write()
         }
-    }
+    };
+    checked_std_result(name, identity, location, result)
 }
 
 #[cfg(test)]
@@ -277,6 +377,58 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn std_locks_follow_sessions_then_prompts() {
+        let sessions = RwLock::new(());
+        let prompts = Mutex::new(());
+        let owner = lock_checked("prompt_state_owner", &prompts).unwrap();
+        let inversion = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _sessions = write_checked("session_state", &sessions).unwrap();
+        }));
+        assert!(
+            inversion.is_err(),
+            "the prompt owner must not wait for the sessions"
+        );
+        drop(owner);
+        let read = read_checked("session_state", &sessions).unwrap();
+        let reentry = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _again = read_checked("session_state", &sessions).unwrap();
+        }));
+        assert!(
+            reentry.is_err(),
+            "a waiting writer blocks a second read on this thread"
+        );
+        let _owner = lock_checked("prompt_state_owner", &prompts).unwrap();
+        drop(read);
+    }
+
+    #[test]
+    fn a_contended_std_lock_wait_names_its_call_site() {
+        let capture = crate::logging::capture::start();
+        let prompts = std::sync::Arc::new(Mutex::new(()));
+        let holder = lock_checked("std_wait_lock_test", &prompts).unwrap();
+        let waiter = {
+            let prompts = std::sync::Arc::clone(&prompts);
+            std::thread::spawn(move || {
+                let _guard = lock_checked("std_wait_lock_test", &prompts).unwrap();
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let notice = loop {
+            if let Some(record) = capture.records().into_iter().find(|record| {
+                record.contains("std_wait_lock_test") && record.contains("lock_wait")
+            }) {
+                break record;
+            }
+            assert!(Instant::now() < deadline, "watchdog did not log the wait");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(notice.contains("checked_lock.rs"));
+        assert!(notice.contains("std_wait_lock_test"), "{notice}");
+        drop(holder);
+        waiter.join().unwrap();
     }
 
     #[test]

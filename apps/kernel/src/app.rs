@@ -835,7 +835,11 @@ impl DaemonApp {
         self.provider_process_projection.update_list(processes);
     }
 
-    pub fn sessions_mut(&self) -> std::sync::RwLockWriteGuard<'_, SessionService> {
+    pub fn sessions_mut(
+        &self,
+    ) -> crate::runtime::checked_lock::CheckedStdGuard<
+        std::sync::RwLockWriteGuard<'_, SessionService>,
+    > {
         self.sessions.write()
     }
 

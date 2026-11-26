@@ -9,6 +9,13 @@ use super::{
     RoomEnvironmentSnapshot, RuntimeProject, RuntimeSession, SessionConfigState, SessionService,
 };
 
+/// A read of the kernel's sessions; the stall watchdog sees its wait and its hold.
+pub(crate) type SessionReadGuard<'a> =
+    crate::runtime::checked_lock::CheckedStdGuard<RwLockReadGuard<'a, SessionService>>;
+/// A write of the kernel's sessions; the stall watchdog sees its wait and its hold.
+pub(crate) type SessionWriteGuard<'a> =
+    crate::runtime::checked_lock::CheckedStdGuard<RwLockWriteGuard<'a, SessionService>>;
+
 #[derive(Debug, Clone)]
 pub(crate) struct SessionStateStore {
     inner: Arc<RwLock<SessionService>>,
@@ -34,37 +41,43 @@ impl SessionStateStore {
     }
 
     #[track_caller]
-    pub(crate) fn read(&self) -> RwLockReadGuard<'_, SessionService> {
-        crate::runtime::checked_lock::read_watched("session_state", &self.inner)
+    pub(crate) fn read(&self) -> SessionReadGuard<'_> {
+        crate::runtime::checked_lock::read_checked("session_state", &self.inner)
             .expect("session state rwlock poisoned")
     }
 
     #[track_caller]
-    pub(crate) fn write(&self) -> RwLockWriteGuard<'_, SessionService> {
-        crate::runtime::checked_lock::write_watched("session_state", &self.inner)
+    pub(crate) fn write(&self) -> SessionWriteGuard<'_> {
+        crate::runtime::checked_lock::write_checked("session_state", &self.inner)
             .expect("session state rwlock poisoned")
     }
 
+    #[track_caller]
     pub(crate) fn snapshot(&self) -> SessionService {
         self.read().clone()
     }
 
+    #[track_caller]
     pub(crate) fn prompt_id_allocator(&self) -> super::PromptIdAllocator {
         self.read().prompt_id_allocator()
     }
 
+    #[track_caller]
     pub(crate) fn reserve_prompt_id(&self) -> String {
         self.read().reserve_prompt_id()
     }
 
+    #[track_caller]
     pub(crate) fn retire_ended_session(&self, session_id: &str) {
         self.write().retire_ended_session(session_id);
     }
 
+    #[track_caller]
     pub(crate) fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.read().get_session(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn session_owner_user_id(&self, session_id: &str) -> Option<String> {
         self.read().session_owner_user_id(session_id)
     }
@@ -80,22 +93,27 @@ impl SessionStateStore {
         }
     }
 
+    #[track_caller]
     pub(crate) fn has_session(&self, session_id: &str) -> bool {
         self.read().has_session(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn list_sessions(&self) -> Vec<RuntimeSession> {
         self.read().list_sessions()
     }
 
+    #[track_caller]
     pub(crate) fn list_non_ended_sessions_including_hidden(&self) -> Vec<RuntimeSession> {
         self.read().list_non_ended_sessions_including_hidden()
     }
 
+    #[track_caller]
     pub(crate) fn list_all_sessions(&self) -> Vec<RuntimeSession> {
         self.read().list_all_sessions()
     }
 
+    #[track_caller]
     pub(crate) fn list_projects(
         &self,
         owner_user_id: &str,
@@ -104,6 +122,7 @@ impl SessionStateStore {
         self.read().list_projects(owner_user_id, include_archived)
     }
 
+    #[track_caller]
     pub(crate) fn list_visible_projects(
         &self,
         owner_user_id: &str,
@@ -114,6 +133,7 @@ impl SessionStateStore {
             .list_visible_projects(owner_user_id, include_archived, is_member)
     }
 
+    #[track_caller]
     pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
         self.read().get_project(project_id)
     }
@@ -205,6 +225,7 @@ impl SessionStateStore {
             .collect())
     }
 
+    #[track_caller]
     pub(crate) fn sessions_in_project(
         &self,
         project_id: &str,
@@ -212,24 +233,29 @@ impl SessionStateStore {
         self.read().sessions_in_project(project_id)
     }
 
+    #[track_caller]
     pub(crate) fn durable_projects(&self) -> Vec<RuntimeProject> {
         self.read().durable_projects()
     }
 
+    #[track_caller]
     pub(crate) fn restore_projects(&self, projects: Vec<RuntimeProject>) {
         self.write().restore_projects(projects)
     }
 
+    #[track_caller]
     pub(crate) fn remove_projects_without_visible_sessions(
         &self,
     ) -> Result<Vec<RuntimeProject>, DaemonError> {
         self.write().remove_projects_without_visible_sessions()
     }
 
+    #[track_caller]
     pub(crate) fn reconcile_duplicate_project_names(&self) -> Vec<RuntimeProject> {
         self.write().reconcile_duplicate_project_names()
     }
 
+    #[track_caller]
     pub(crate) fn migrate_default_project_workspace(
         &self,
         session_id: &str,
@@ -245,6 +271,7 @@ impl SessionStateStore {
         )
     }
 
+    #[track_caller]
     pub(crate) fn set_project_pinned(
         &self,
         project_id: &str,
@@ -255,6 +282,7 @@ impl SessionStateStore {
             .set_project_pinned(project_id, pinned, caller_user_id)
     }
 
+    #[track_caller]
     pub(crate) fn create_project(
         &self,
         name: String,
@@ -263,6 +291,7 @@ impl SessionStateStore {
         self.write().create_project(name, caller_user_id)
     }
 
+    #[track_caller]
     pub(crate) fn rename_project(
         &self,
         project_id: &str,
@@ -273,6 +302,7 @@ impl SessionStateStore {
             .rename_project(project_id, name, caller_user_id)
     }
 
+    #[track_caller]
     pub(crate) fn update_project_workspaces(
         &self,
         project_id: &str,
@@ -283,6 +313,7 @@ impl SessionStateStore {
             .update_project_workspaces(project_id, workspace_ids, caller_user_id)
     }
 
+    #[track_caller]
     pub(crate) fn archive_project(
         &self,
         project_id: &str,
@@ -291,6 +322,7 @@ impl SessionStateStore {
         self.write().archive_project(project_id, caller_user_id)
     }
 
+    #[track_caller]
     pub(crate) fn restore_project_status(
         &self,
         project_id: &str,
@@ -300,6 +332,7 @@ impl SessionStateStore {
             .restore_project_status(project_id, caller_user_id)
     }
 
+    #[track_caller]
     pub(crate) fn delete_project_record(
         &self,
         project_id: &str,
@@ -309,6 +342,7 @@ impl SessionStateStore {
             .delete_project_record(project_id, caller_user_id)
     }
 
+    #[track_caller]
     pub(crate) fn create_session(
         &self,
         request: CreateSessionRequest,
@@ -316,6 +350,7 @@ impl SessionStateStore {
         self.write().create_session(request)
     }
 
+    #[track_caller]
     pub(crate) fn create_ephemeral_session(
         &self,
         request: CreateSessionRequest,
@@ -323,6 +358,7 @@ impl SessionStateStore {
         self.write().create_ephemeral_session(request)
     }
 
+    #[track_caller]
     pub(crate) fn restore_ephemeral_session(
         &self,
         session: RuntimeSession,
@@ -330,14 +366,17 @@ impl SessionStateStore {
         self.write().restore_ephemeral_session(session)
     }
 
+    #[track_caller]
     pub(crate) fn is_ephemeral_session(&self, session_id: &str) -> bool {
         self.read().is_ephemeral_session(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn restore_session(&self, session: RuntimeSession) -> RuntimeSession {
         self.write().restore_session(session)
     }
 
+    #[track_caller]
     pub(crate) fn commit_publication_runtime_configuration(
         &self,
         session: RuntimeSession,
@@ -346,6 +385,7 @@ impl SessionStateStore {
             .commit_publication_runtime_configuration(session)
     }
 
+    #[track_caller]
     pub(crate) fn restore_ended_session(
         &self,
         session_id: &str,
@@ -354,11 +394,13 @@ impl SessionStateStore {
             .transition_session(session_id, super::SessionStatus::Parked)
     }
 
+    #[track_caller]
     pub(crate) fn remove_restored_session(&self, session_id: &str) -> Option<RuntimeSession> {
         self.write().remove_restored_session(session_id)
     }
 
     #[cfg(test)]
+    #[track_caller]
     pub(crate) fn create_room_environment(
         &self,
         session_id: &str,
@@ -369,6 +411,7 @@ impl SessionStateStore {
             .create_room_environment(session_id, environment_id, viewport)
     }
 
+    #[track_caller]
     pub(crate) fn room_environment_snapshot(
         &self,
         session_id: &str,
@@ -376,6 +419,7 @@ impl SessionStateStore {
         self.read().room_environment_snapshot(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn room_environment_events_after(
         &self,
         session_id: &str,
@@ -385,6 +429,7 @@ impl SessionStateStore {
             .room_environment_events_after(session_id, cursor)
     }
 
+    #[track_caller]
     pub(crate) fn room_environment_action_history(
         &self,
         session_id: &str,
@@ -395,6 +440,7 @@ impl SessionStateStore {
             .room_environment_action_history(session_id, before_sequence, limit)
     }
 
+    #[track_caller]
     pub(crate) fn start_room_environment(
         &self,
         session_id: &str,
@@ -403,6 +449,7 @@ impl SessionStateStore {
         self.write().start_room_environment(session_id, viewport)
     }
 
+    #[track_caller]
     pub(crate) fn stop_room_environment(
         &self,
         session_id: &str,
@@ -410,6 +457,7 @@ impl SessionStateStore {
         self.write().stop_room_environment(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn begin_stop_room_environment(
         &self,
         session_id: &str,
@@ -417,6 +465,7 @@ impl SessionStateStore {
         self.write().begin_stop_room_environment(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn complete_stop_room_environment(
         &self,
         session_id: &str,
@@ -424,6 +473,7 @@ impl SessionStateStore {
         self.write().complete_stop_room_environment(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn retry_room_environment(
         &self,
         session_id: &str,
@@ -431,6 +481,7 @@ impl SessionStateStore {
         self.write().retry_room_environment(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn transition_room_environment(
         &self,
         session_id: &str,
@@ -440,6 +491,7 @@ impl SessionStateStore {
             .transition_room_environment(session_id, lifecycle)
     }
 
+    #[track_caller]
     pub(crate) fn update_room_environment_component_health(
         &self,
         session_id: &str,
@@ -455,6 +507,7 @@ impl SessionStateStore {
         )
     }
 
+    #[track_caller]
     pub(crate) fn set_room_browser_bar_visible_as_actor(
         &self,
         session_id: &str,
@@ -465,6 +518,7 @@ impl SessionStateStore {
             .set_room_browser_bar_visible_as_actor(session_id, actor, visible)
     }
 
+    #[track_caller]
     pub(crate) fn preview_update_room_environment_viewport_as_actor(
         &self,
         session_id: &str,
@@ -481,6 +535,7 @@ impl SessionStateStore {
             )
     }
 
+    #[track_caller]
     pub(crate) fn update_room_environment_viewport_as_actor(
         &self,
         session_id: &str,
@@ -496,6 +551,7 @@ impl SessionStateStore {
         )
     }
 
+    #[track_caller]
     pub(crate) fn update_room_environment_pointer_as_actor(
         &self,
         session_id: &str,
@@ -513,6 +569,7 @@ impl SessionStateStore {
         )
     }
 
+    #[track_caller]
     pub(crate) fn reconcile_room_environment_actors(
         &self,
         session_id: &str,
@@ -522,6 +579,7 @@ impl SessionStateStore {
             .reconcile_room_environment_actors(session_id, actors)
     }
 
+    #[track_caller]
     pub(crate) fn reconcile_room_environment_controller_tabs(
         &self,
         session_id: &str,
@@ -535,6 +593,7 @@ impl SessionStateStore {
         )
     }
 
+    #[track_caller]
     pub(crate) fn room_environment_prepare_app_recovery(
         &self,
         session_id: &str,
@@ -543,6 +602,7 @@ impl SessionStateStore {
             .room_environment_prepare_app_recovery(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn room_environment_cancel_app_recovery_focus(
         &self,
         session_id: &str,
@@ -551,6 +611,7 @@ impl SessionStateStore {
             .room_environment_cancel_app_recovery_focus(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn set_room_environment_app_tabs(
         &self,
         session_id: &str,
@@ -561,6 +622,7 @@ impl SessionStateStore {
             .set_room_environment_app_tabs(session_id, apps, app_panels)
     }
 
+    #[track_caller]
     pub(crate) fn room_environment_controller_tab_binding(
         &self,
         session_id: &str,
@@ -570,6 +632,7 @@ impl SessionStateStore {
             .room_environment_controller_tab_binding(session_id, tab_id)
     }
 
+    #[track_caller]
     pub(crate) fn room_environment_tab_id_for_controller_target(
         &self,
         session_id: &str,
@@ -579,6 +642,7 @@ impl SessionStateStore {
             .room_environment_tab_id_for_controller_target(session_id, controller_target_id)
     }
 
+    #[track_caller]
     pub(crate) fn register_room_environment_element_references(
         &self,
         session_id: &str,
@@ -596,6 +660,7 @@ impl SessionStateStore {
         )
     }
 
+    #[track_caller]
     pub(crate) fn resolve_room_environment_element_reference(
         &self,
         session_id: &str,
@@ -605,6 +670,7 @@ impl SessionStateStore {
             .resolve_room_environment_element_reference(session_id, reference_id)
     }
 
+    #[track_caller]
     pub(crate) fn submit_room_environment_action(
         &self,
         session_id: &str,
@@ -614,6 +680,7 @@ impl SessionStateStore {
             .submit_room_environment_action(session_id, request)
     }
 
+    #[track_caller]
     pub(crate) fn existing_room_environment_action(
         &self,
         session_id: &str,
@@ -623,6 +690,7 @@ impl SessionStateStore {
             .existing_room_environment_action(session_id, request)
     }
 
+    #[track_caller]
     pub(crate) fn finish_room_environment_action(
         &self,
         session_id: &str,
@@ -633,6 +701,7 @@ impl SessionStateStore {
             .finish_room_environment_action(session_id, action_id, terminal)
     }
 
+    #[track_caller]
     pub(crate) fn begin_room_environment_browser_controller_recovery(
         &self,
         session_id: &str,
@@ -641,6 +710,7 @@ impl SessionStateStore {
             .begin_room_environment_browser_controller_recovery(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn complete_room_environment_browser_controller_recovery(
         &self,
         session_id: &str,
@@ -649,6 +719,7 @@ impl SessionStateStore {
             .complete_room_environment_browser_controller_recovery(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn request_room_environment_takeover_as_actor(
         &self,
         session_id: &str,
@@ -659,6 +730,7 @@ impl SessionStateStore {
             .request_room_environment_takeover_as_actor(session_id, actor, target)
     }
 
+    #[track_caller]
     pub(crate) fn release_room_environment_input(
         &self,
         session_id: &str,
@@ -669,6 +741,7 @@ impl SessionStateStore {
             .release_room_environment_input(session_id, actor_id, target)
     }
 
+    #[track_caller]
     pub(crate) fn cancel_room_environment_action_as_actor(
         &self,
         session_id: &str,
@@ -679,6 +752,7 @@ impl SessionStateStore {
             .cancel_room_environment_action_as_actor(session_id, actor, action_id)
     }
 
+    #[track_caller]
     pub(crate) fn replace_publication_runtime_workflows(
         &self,
         session_id: &str,
@@ -694,14 +768,17 @@ impl SessionStateStore {
         )
     }
 
+    #[track_caller]
     pub(crate) fn end_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.write().end_session(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn delete_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.write().delete_session(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn delete_session_with_project_cleanup(
         &self,
         session_id: &str,
@@ -709,6 +786,7 @@ impl SessionStateStore {
         self.write().delete_session_with_project_cleanup(session_id)
     }
 
+    #[track_caller]
     pub(crate) fn set_active_provider_run(
         &self,
         session_id: &str,
@@ -718,6 +796,7 @@ impl SessionStateStore {
             .set_active_provider_run(session_id, provider_run_id)
     }
 
+    #[track_caller]
     pub(crate) fn mirror_agent_prompt_state(
         &self,
         session_id: &str,
@@ -729,6 +808,7 @@ impl SessionStateStore {
             .mirror_agent_prompt_state(session_id, agent_id, active_prompt, queued_prompts)
     }
 
+    #[track_caller]
     pub(crate) fn note_session_activity(
         &self,
         session_id: &str,
@@ -737,6 +817,7 @@ impl SessionStateStore {
         self.write().note_session_activity(session_id, timestamp_ms)
     }
 
+    #[track_caller]
     pub(crate) fn note_prompt_sent(
         &self,
         session_id: &str,
@@ -747,6 +828,7 @@ impl SessionStateStore {
             .note_prompt_sent(session_id, agent_id, timestamp_ms)
     }
 
+    #[track_caller]
     pub(crate) fn clear_agent_unread_output(
         &self,
         session_id: &str,
@@ -755,6 +837,7 @@ impl SessionStateStore {
         self.write().clear_agent_unread_output(session_id, agent_id)
     }
 
+    #[track_caller]
     pub(crate) fn note_agent_output_sequence(
         &self,
         session_id: &str,
@@ -765,6 +848,7 @@ impl SessionStateStore {
             .note_agent_output_sequence(session_id, agent_id, sequence)
     }
 
+    #[track_caller]
     pub(crate) fn record_workflow_node_thinking_trace_for_node_run(
         &self,
         session_id: &str,

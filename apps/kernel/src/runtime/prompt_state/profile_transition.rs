@@ -27,7 +27,7 @@ impl AgentProfileTransitionClaim {
         agent_id: &str,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut owner =
-            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+            crate::runtime::checked_lock::lock_checked("prompt_state_owner", &self.state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.key != PromptStateKey::new(session.id(), agent_id)
             || !owner
@@ -53,7 +53,7 @@ impl AgentProfileTransitionClaim {
 impl Drop for AgentProfileTransitionClaim {
     fn drop(&mut self) {
         let mut state =
-            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+            crate::runtime::checked_lock::lock_checked("prompt_state_owner", &self.state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state
             .profile_transitions
@@ -85,7 +85,7 @@ impl PromptStateOwner {
     /// A turn is running, or queued work is being prepared to start one.
     pub(crate) fn agent_turn_busy(&self, session: &RuntimeSession, agent_id: &str) -> bool {
         let mut state =
-            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+            crate::runtime::checked_lock::lock_checked("prompt_state_owner", &self.state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
         state.queue_promotions.contains(&key)
@@ -102,7 +102,7 @@ impl PromptStateOwner {
         moving: bool,
     ) -> Result<AgentProfileTransitionClaim, DaemonError> {
         let mut state =
-            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+            crate::runtime::checked_lock::lock_checked("prompt_state_owner", &self.state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
         if state.profile_transitions.contains_key(&key)
@@ -329,7 +329,7 @@ mod tests {
             vec!["second", "third"]
         );
         assert!(
-            !crate::runtime::checked_lock::lock_watched("prompt_state_owner", &owner.state)
+            !crate::runtime::checked_lock::lock_checked("prompt_state_owner", &owner.state)
                 .unwrap()
                 .profile_transitions
                 .contains_key(&PromptStateKey::new(session.id(), "agent-1"))
