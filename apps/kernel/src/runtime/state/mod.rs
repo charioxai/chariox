@@ -289,6 +289,8 @@ pub(crate) struct KernelRuntimeState {
     slice_auth_inspections: slice_auth_inspection::SliceAuthInspections,
     /// Parents holding a finished child's wake for the siblings still working.
     sibling_windows: child_finish_window::SiblingWindows,
+    /// The last input each Tab took and refused, for the agent whose card shows it.
+    browser_input_log: browser_input_log::BrowserInputLog,
     /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
     peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
     /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
@@ -757,6 +759,7 @@ mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
 pub(crate) use runtime_interaction_owned_state::{CardKind, LiveRoomCard};
+mod browser_input_log;
 mod browser_region_card;
 mod disk_pressure;
 mod disk_usage;
@@ -1271,6 +1274,7 @@ impl KernelRuntimeState {
             lifecycle_sweeps: Default::default(),
             slice_auth_inspections: Default::default(),
             sibling_windows: Default::default(),
+            browser_input_log: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
             unpaired_peer_follow_settlements: Default::default(),

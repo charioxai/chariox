@@ -905,6 +905,51 @@ impl KernelBrowserActors {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
+    /// What a card bound to `host_tab` meets in this model now: the generation and document it
+    /// has observed for the Tab and who holds the Tab's input. Names only; no page content.
+    pub(crate) fn card_tab_state(&self, host_tab: &str) -> Value {
+        let Ok(tab) = self.tab(host_tab) else {
+            return serde_json::json!({"tab_known": false, "generation": self.generation});
+        };
+        let document_id = self
+            .tabs
+            .controller_binding(&tab)
+            .ok()
+            .map(|binding| binding.document_id.clone());
+        // A takeover of the desktop holds the input of every Tab, so it refuses a card's input
+        // as the Tab's own takeover does: both are named, once per person, with what they hold.
+        let mut held: Vec<(String, Vec<&'static str>)> = Vec::new();
+        for owner in self.ledger.ownership() {
+            let holds = match &owner.target {
+                InputTarget::BrowserTab(owned) if owned == &tab => "tab",
+                InputTarget::Desktop => "desktop",
+                _ => continue,
+            };
+            match held.iter_mut().find(|(actor, _)| *actor == owner.actor_id) {
+                Some((_, holds_all)) => holds_all.push(holds),
+                None => held.push((owner.actor_id.clone(), vec![holds])),
+            }
+        }
+        let holders = held
+            .into_iter()
+            .map(|(actor_id, mut holds)| {
+                holds.sort_by_key(|held| *held == "desktop");
+                let actor = self.actors.get(&actor_id);
+                serde_json::json!({
+                    "actor_id": actor_id,
+                    "kind": actor.map(|actor| actor.kind),
+                    "label": actor.map(|actor| actor.display_label.as_str()),
+                    "holds": holds,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "tab_known": true,
+            "generation": self.generation,
+            "document_id": document_id,
+            "input_held_by": holders,
+        })
+    }
     pub(crate) fn snapshot(&self) -> Value {
         let translate = |target: &mut InputTarget| {
             if let InputTarget::BrowserTab(tab) = target {
@@ -951,6 +996,61 @@ mod tests {
     fn input(tab: &str) -> Value {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
     }
+    #[test]
+    fn card_tab_state_names_the_generation_the_document_and_who_holds_the_input() {
+        let mut model = ready();
+        let free = model.card_tab_state("host-tab-a");
+        assert_eq!(free["tab_known"], true);
+        assert_eq!(free["generation"], 1);
+        assert_eq!(free["document_id"], "d");
+        assert_eq!(free["input_held_by"], json!([]));
+        assert_eq!(model.card_tab_state("host-tab-gone")["tab_known"], false);
+        model
+            .takeover(human("terminal:person"), "host-tab-a", 1)
+            .unwrap();
+        let held = model.card_tab_state("host-tab-a");
+        assert_eq!(held["input_held_by"][0]["actor_id"], "terminal:person");
+        assert_eq!(held["input_held_by"][0]["kind"], "human");
+        assert_eq!(held["input_held_by"][0]["label"], "Human");
+        assert_eq!(
+            model.card_tab_state("host-tab-b")["input_held_by"],
+            json!([]),
+            "another Tab is not held"
+        );
+    }
+
+    /// A desktop takeover holds the input of every Tab, so a card on any Tab is refused by it: the
+    /// holder is named, once, with what it holds.
+    #[test]
+    fn card_tab_state_names_a_desktop_takeover_that_holds_every_tab() {
+        let mut model = ready();
+        model
+            .reconcile_desktop(&json!({"surface_id": "surface-1", "generation": "g1"}))
+            .unwrap();
+        model
+            .takeover_desktop(human("terminal:person"), "surface-1", "g1")
+            .unwrap();
+        let held = model.card_tab_state("host-tab-a");
+        let holders = held["input_held_by"].as_array().unwrap();
+        assert_eq!(holders.len(), 1, "{held:?}");
+        assert_eq!(holders[0]["actor_id"], "terminal:person");
+        assert_eq!(holders[0]["kind"], "human");
+        assert_eq!(holders[0]["holds"], json!(["desktop"]));
+        assert_eq!(
+            model.card_tab_state("host-tab-b")["input_held_by"][0]["holds"],
+            json!(["desktop"]),
+            "the desktop holds every Tab"
+        );
+        // The same person also holding the Tab is one holder that holds both.
+        model
+            .takeover(human("terminal:person"), "host-tab-a", 1)
+            .unwrap();
+        let both = model.card_tab_state("host-tab-a");
+        let holders = both["input_held_by"].as_array().unwrap();
+        assert_eq!(holders.len(), 1, "{both:?}");
+        assert_eq!(holders[0]["holds"], json!(["tab", "desktop"]));
+    }
+
     #[test]
     fn mp10_takeover_is_listed_on_the_tab_for_a_viewer_that_reloads() {
         let mut model = ready();
