@@ -146,6 +146,7 @@ fn assert_home_run_identity(native: bool) {
                 completion_recorded: false,
                 settlement_requested: false,
                 active_tools: Default::default(),
+                active_tool_started_at_ms: Default::default(),
             },
         );
         app.active_turn_store().start(ActiveTurnState::new(

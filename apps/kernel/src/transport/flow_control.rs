@@ -11,6 +11,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
             completion_recorded: false,
             settlement_requested: false,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         },
     );
     let active_turn = app
@@ -70,6 +71,7 @@ pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run
             completion_recorded: false,
             settlement_requested: true,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         });
 }
 

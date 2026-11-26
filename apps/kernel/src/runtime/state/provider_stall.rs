@@ -10,8 +10,14 @@ mod tests;
 const PREFIX: &str = "provider-stall-";
 
 pub(super) fn is_provider_stall_decision(interaction: &RuntimeInteraction) -> bool {
-    interaction.id().starts_with(PREFIX)
+    is_provider_stall_decision_id(interaction.id())
         && interaction.kernel_operation_id() == Some(interaction.id())
+}
+
+/// A stalled turn's card by its id. Only the kernel raises one with an operation owner, the only kind an
+/// answer by id exempts from the owner check.
+pub(super) fn is_provider_stall_decision_id(id: &str) -> bool {
+    id.starts_with(PREFIX)
 }
 
 #[derive(Clone)]
