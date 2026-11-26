@@ -63,8 +63,14 @@ async fn apply_with_definition_and_session(
     let mut payload = applied.payload.clone();
     if applied.ok {
         let body = &applied.payload["WorkflowCodeApplied"];
-        assert!(body.get("session").is_none(), "apply must not echo the session");
-        assert!(body["result"].get("compile").is_none(), "apply must not echo the definition");
+        assert!(
+            body.get("session").is_none(),
+            "apply must not echo the session"
+        );
+        assert!(
+            body["result"].get("compile").is_none(),
+            "apply must not echo the definition"
+        );
         let validated = router
             .runtime_state
             .dispatch_meta_runtime_tool_call_for_agent(
@@ -86,7 +92,10 @@ async fn apply_with_definition_and_session(
         payload["WorkflowCodeApplied"]["session"] =
             serde_json::to_value(snapshot).expect("session should serialize");
     }
-    crate::transport::runtime_tools::RuntimeToolResult { ok: applied.ok, payload }
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: applied.ok,
+        payload,
+    }
 }
 
 fn run_large_stack_async_test<Fut>(name: &str, test: fn() -> Fut)
