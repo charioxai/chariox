@@ -14,6 +14,7 @@ fn hot_gauge() -> exhaustion::Gauge {
         psi: 40.0,
         pool_bytes: 100 * 1024 * MIB,
         pool_used: 75 * 1024 * MIB,
+        headroom: u64::MAX,
     }
 }
 
@@ -22,6 +23,7 @@ fn calm_gauge() -> exhaustion::Gauge {
         psi: 1.0,
         pool_bytes: 100 * 1024 * MIB,
         pool_used: 30 * 1024 * MIB,
+        headroom: u64::MAX,
     }
 }
 

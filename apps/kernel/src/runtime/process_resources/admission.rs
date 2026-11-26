@@ -33,7 +33,7 @@ const FILLER_SETTLE: Duration = Duration::from_secs(2);
 /// Miguel 11-24: 5 s to full. A volume that its free space says is within this many seconds
 /// of full at the rate it is losing room is short of room now, whatever its floor: a
 /// runaway copy fills gigabytes in seconds (docs/PROCESS_RESOURCES.md).
-const FILL_HORIZON_SECONDS: u64 = 5;
+pub(super) const FILL_HORIZON_SECONDS: u64 = 5;
 /// Miguel 11-24: 128 MiB/s. An agent command writing this fast is a runaway (the memory
 /// runaway rate): within the fill horizon the fastest of them is stopped, and no slower
 /// writer is.
