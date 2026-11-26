@@ -2,14 +2,7 @@
 use super::*;
 use serde_json::Value;
 
-pub(super) const LIST_BYTES: usize = 28 * 1024;
 pub(super) const LIST_ROWS: u32 = 64;
-
-pub(super) fn page<K>(
-    rows: impl IntoIterator<Item = (K, Value)>,
-) -> Result<(Vec<Value>, Option<K>), DaemonError> {
-    page_with_budget(rows, LIST_BYTES)
-}
 
 pub(super) fn page_with_budget<K>(
     rows: impl IntoIterator<Item = (K, Value)>,
@@ -33,20 +26,6 @@ pub(super) fn page_with_budget<K>(
         last = Some(key);
     }
     Ok((result, None))
-}
-
-/// On an oversized row keep the fields that locate and identify it.
-pub(super) fn bounded_row(row: Value, fields: &[&str]) -> Value {
-    if row.to_string().len() + 3 <= LIST_BYTES {
-        return row;
-    }
-    let mut summary = serde_json::Map::from_iter(
-        fields
-            .iter()
-            .map(|key| (key.to_string(), row[*key].clone())),
-    );
-    summary.insert("details_omitted".into(), true.into());
-    summary.into()
 }
 
 pub(super) fn cursor_number(args: &Value, field: &str) -> Result<Option<i64>, DaemonError> {
