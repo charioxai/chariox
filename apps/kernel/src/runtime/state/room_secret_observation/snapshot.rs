@@ -61,7 +61,17 @@ impl RoomSecretObservations {
 struct KernelSnapshotResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     generation: Option<u64>,
+    /// The tab's own page size from the host: two numbers, never page text, and `find` needs it
+    /// to withhold a click point the input path would refuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page_size: Option<PageSize>,
     snapshot: BrowserControllerStructuredSnapshot,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct PageSize {
+    css_width: f64,
+    css_height: f64,
 }
 
 impl RoomSecretObservations {
