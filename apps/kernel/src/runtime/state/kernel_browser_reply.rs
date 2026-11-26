@@ -167,4 +167,40 @@ mod tests {
         assert_eq!(gone["tab_count"], 3);
         assert!(gone.get("tab").is_none());
     }
+    #[test]
+    fn a_start_a_restart_and_a_stop_answer_with_the_whole_tab_list_like_a_state_read() {
+        for op in ["state", "start", "restart", "stop"] {
+            let mut seen = SeenTabs::new();
+            let out = slim_agent_reply(op, None, reply(3), &mut seen);
+            assert_eq!(
+                out["tabs"].as_array().map(Vec::len),
+                Some(3),
+                "{op} lists every tab"
+            );
+            assert!(
+                out.get("tab_count").is_none(),
+                "{op} is not a compact action reply"
+            );
+        }
+        let mut seen = SeenTabs::new();
+        let stopped = slim_agent_reply(
+            "stop",
+            None,
+            json!({"state":"stopped","tabs":[]}),
+            &mut seen,
+        );
+        assert_eq!(
+            stopped["tabs"],
+            json!([]),
+            "a stop keeps its empty tab list"
+        );
+        for op in ["input", "open", "navigate", "close", "wait"] {
+            let mut seen = SeenTabs::new();
+            let out = slim_agent_reply(op, Some("host-tab-1"), reply(3), &mut seen);
+            assert!(
+                out.get("tabs").is_none(),
+                "{op} stays a compact action reply"
+            );
+        }
+    }
 }
