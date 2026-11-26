@@ -1001,6 +1001,38 @@ mod tests {
         );
     }
 
+    /// A desktop takeover holds the input of every Tab, so a card on any Tab is refused by it: the
+    /// holder is named, once, with what it holds.
+    #[test]
+    fn card_tab_state_names_a_desktop_takeover_that_holds_every_tab() {
+        let mut model = ready();
+        model
+            .reconcile_desktop(&json!({"surface_id": "surface-1", "generation": "g1"}))
+            .unwrap();
+        model
+            .takeover_desktop(human("terminal:person"), "surface-1", "g1")
+            .unwrap();
+        let held = model.card_tab_state("host-tab-a");
+        let holders = held["input_held_by"].as_array().unwrap();
+        assert_eq!(holders.len(), 1, "{held:?}");
+        assert_eq!(holders[0]["actor_id"], "terminal:person");
+        assert_eq!(holders[0]["kind"], "human");
+        assert_eq!(holders[0]["holds"], json!(["desktop"]));
+        assert_eq!(
+            model.card_tab_state("host-tab-b")["input_held_by"][0]["holds"],
+            json!(["desktop"]),
+            "the desktop holds every Tab"
+        );
+        // The same person also holding the Tab is one holder that holds both.
+        model
+            .takeover(human("terminal:person"), "host-tab-a", 1)
+            .unwrap();
+        let both = model.card_tab_state("host-tab-a");
+        let holders = both["input_held_by"].as_array().unwrap();
+        assert_eq!(holders.len(), 1, "{both:?}");
+        assert_eq!(holders[0]["holds"], json!(["tab", "desktop"]));
+    }
+
     #[test]
     fn mp10_takeover_is_listed_on_the_tab_for_a_viewer_that_reloads() {
         let mut model = ready();
