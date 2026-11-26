@@ -12,7 +12,9 @@ async fn old_worker_rig() -> (
     worker_rig(crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1).await
 }
 
-async fn worker_rig(peer_protocol: u32) -> (
+async fn worker_rig(
+    peer_protocol: u32,
+) -> (
     CommandRouter,
     String,
     String,
@@ -177,7 +179,11 @@ fn a_room_list_keeps_its_own_terminals_when_a_worker_cannot_be_reached() {
             vec![terminal.terminal_id.as_str()],
             "the Room's own terminal stays listed"
         );
-        assert_eq!(unavailable.len(), 1, "the worker that was not reached is named");
+        assert_eq!(
+            unavailable.len(),
+            1,
+            "the worker that was not reached is named"
+        );
         assert_eq!(unavailable[0].host_agent, agent);
         assert!(
             unavailable[0].message.contains("could not be reached"),
