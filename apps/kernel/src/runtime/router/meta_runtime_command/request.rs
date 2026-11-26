@@ -8,6 +8,7 @@ use crate::local::{
     SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
 };
 
+pub(super) const PARENT_USAGE: &str = "usage: agent parent <agent-ref> <new-parent-ref|none>";
 pub(super) const DEADLINE_USAGE: &str = "usage: agent deadline <agent-ref> <90s|30m|2h|1d|none> [--room <room>] | agent deadline get <agent-ref> [--room <room>]";
 
 pub(super) fn deadline_edit_time(value: &str) -> Result<Option<u64>, DaemonError> {
@@ -122,6 +123,24 @@ pub(super) fn meta_agent_request(
                 agent_id: agent.id().to_string(),
             }))
         }
+        Some("parent") => {
+            let usage = || meta_command_error(PARENT_USAGE);
+            let [_, reference, parent] = args else {
+                return Err(usage());
+            };
+            let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
+            // `none` makes the agent a room agent, as the owner's move to no parent does.
+            let parent_agent_id = if parent == "none" {
+                None
+            } else {
+                Some(room_command_agent(agents, metaagent, parent, room_tools)?.id().to_string())
+            };
+            Ok(LocalDaemonRequest::SetAgentParent(crate::local::SetAgentParentRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                parent_agent_id,
+            }))
+        }
         Some("deadline") => {
             let usage = || meta_command_error(DEADLINE_USAGE);
             match args.get(1..).unwrap_or_default() {
@@ -154,7 +173,7 @@ pub(super) fn meta_agent_request(
             crate::local::ListProviderAccountProfilesRequest { provider: None },
         )),
         _ => Err(meta_command_error(
-            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|revoke|usage|profiles|settings|resume> ...",
+            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|revoke|parent|usage|profiles|settings|resume> ...",
         )),
     }
 }

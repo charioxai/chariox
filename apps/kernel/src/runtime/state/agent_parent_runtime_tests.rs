@@ -221,7 +221,12 @@ impl LeasedTree {
                 agent_id: agent.to_string(),
                 parent_agent_id: Some(parent.to_string()),
             };
-            async move { runtime.set_agent_parent(USER, request).await.map(drop) }
+            async move {
+                runtime
+                    .set_agent_parent(USER, None, request)
+                    .await
+                    .map(drop)
+            }
         });
         self.answer_worker(placement).await
     }

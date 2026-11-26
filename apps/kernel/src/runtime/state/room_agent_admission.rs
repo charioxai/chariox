@@ -75,9 +75,6 @@ impl KernelRuntimeState {
         if matches!(request, LocalDaemonRequest::HideAgent(_)) {
             return Err(denied("only the owner can hide or unhide agents"));
         }
-        if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
-            return Err(denied("only the user can change an agent's parent"));
-        }
         let rooms_made_by_agents = self.room_agent_tools_enabled();
         if let (LocalDaemonRequest::DeleteSession(r), true) = (request, rooms_made_by_agents) {
             return self.authorize_created_room_delete(actor_id, &r.session_ref);

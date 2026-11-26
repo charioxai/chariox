@@ -275,6 +275,7 @@ async fn an_older_agent_placed_under_a_newer_sibling_is_listed_once_below_it() {
         .runtime
         .set_agent_parent(
             USER,
+            None,
             crate::local::SetAgentParentRequest {
                 session_id: family.room.clone(),
                 agent_id: older.clone(),

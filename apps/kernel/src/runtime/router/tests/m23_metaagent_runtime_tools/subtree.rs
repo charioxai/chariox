@@ -5,6 +5,7 @@ use crate::transport::runtime_tools::RuntimeToolResult;
 
 mod destructive_children;
 mod owner_delete;
+mod owner_parent;
 mod reply_size;
 mod waiting_children;
 
@@ -257,7 +258,7 @@ async fn prompt_table() {
 }
 
 #[test]
-fn only_the_user_moves_an_agent_in_the_tree() {
+fn the_owner_and_an_owners_agent_move_an_agent_in_the_tree() {
     run_large_stack_async_test("subtree-set-parent", set_parent);
 }
 
@@ -268,23 +269,32 @@ async fn set_parent() {
         agent_id: world.ids["d"].clone(),
         parent_agent_id: Some(world.ids["peer"].clone()),
     });
-    for who in ["a", "b", "peer", "q"] {
+    // An agent of the Room has the owner's reach; an agent of another Room has none.
+    for who in ["a", "b", "peer"] {
         assert!(
             world
                 .router
                 .runtime_state
-                .authorize_room_agent_request(
-                    &world
-                        .ids
-                        .get(who)
-                        .cloned()
-                        .unwrap_or_else(|| world.ids["a"].clone()),
-                    &request
-                )
-                .is_err(),
-            "{who} must not reparent anyone"
+                .authorize_room_agent_request(&world.ids[who], &request)
+                .is_ok(),
+            "{who} moves agents as the owner does"
         );
     }
+    let outsider = world
+        .router
+        .runtime_state
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.session_id() == world.other_room)
+        .unwrap();
+    assert!(
+        world
+            .router
+            .runtime_state
+            .authorize_room_agent_request(outsider.id(), &request)
+            .is_err(),
+        "an agent of another Room does not"
+    );
     let mut command = KernelCommand::from_local_request("user-set-parent", None, None, &request);
     command.caller = command
         .caller
