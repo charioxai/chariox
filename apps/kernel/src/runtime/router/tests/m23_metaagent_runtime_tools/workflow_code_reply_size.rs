@@ -336,3 +336,219 @@ async fn wfreply50_f_inner() {
     const BASELINE: usize = 26_203; // bytes on main 9d692c33f4e
     assert!(bytes <= BASELINE, "meta tool spec bytes: {bytes}");
 }
+
+fn assert_keys(value: &serde_json::Value, expected: &[&str], what: &str) {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{what} is not an object: {value}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    let mut expected = expected.to_vec();
+    expected.sort_unstable();
+    assert_eq!(keys, expected, "{what}: {value}");
+}
+
+reply_size_test!(
+    wfreply50_g_validate_reply_has_hash_and_validation_only,
+    wfreply50_g_inner
+);
+async fn wfreply50_g_inner() {
+    let Some(f) = Fixture::new("wfreply50-g") else {
+        return;
+    };
+    let source = padded_source();
+    let hash = crate::workflow_code::sha256_hex(source.as_bytes());
+    f.call(
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL,
+        serde_json::json!({ "name": "flow", "source": source }),
+    )
+    .await
+    .expect("create");
+    for arguments in [
+        serde_json::json!({ "name": "flow", "provider_rebindings": rebinding() }),
+        serde_json::json!({ "source": source }),
+    ] {
+        let validated = f
+            .call(
+                crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+                arguments,
+            )
+            .await
+            .expect("validate");
+        assert!(validated.ok);
+        assert_small(&validated.payload, "validate");
+        let result = &validated.payload["WorkflowCodeValidated"]["result"];
+        assert_keys(result, &["source_sha256", "validation"], "validate result");
+        assert_eq!(result["source_sha256"], hash);
+        assert_eq!(result["validation"]["ok"], true);
+    }
+    // A validation failure is shown in full, with its diagnostics.
+    let broken = format!(
+        "{SOURCE}\nworkflow.endpoint(missing_node, {{ handle: \"bad\" }})\n// {}",
+        "x".repeat(12_000)
+    );
+    let refused = f
+        .call(
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+            serde_json::json!({ "source": broken }),
+        )
+        .await;
+    let text = match &refused {
+        Err(error) => crate::error::runtime_tool::message(error),
+        Ok(result) => {
+            assert_eq!(
+                result.payload["WorkflowCodeValidated"]["result"]["validation"]["ok"],
+                false
+            );
+            result.payload.to_string()
+        }
+    };
+    assert!(
+        text.contains("missing_node"),
+        "the failure names the cause: {text}"
+    );
+    assert!(
+        text.len() < 4_096,
+        "validation failure reply is {} bytes",
+        text.len()
+    );
+    assert!(!text.contains(&"x".repeat(200)), "no source echo");
+}
+
+reply_size_test!(
+    wfreply50_h_update_reply_has_name_hash_validation_only,
+    wfreply50_h_inner
+);
+async fn wfreply50_h_inner() {
+    let Some(f) = Fixture::new("wfreply50-h") else {
+        return;
+    };
+    let source = padded_source();
+    f.call(
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL,
+        serde_json::json!({ "name": "flow", "source": source }),
+    )
+    .await
+    .expect("create");
+    let updated_source = source.replace("reply_size_flow", "reply_size_flow_updated");
+    let updated = f
+        .call(
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_UPDATE_TOOL,
+            serde_json::json!({ "name": "flow", "source": updated_source }),
+        )
+        .await
+        .expect("update");
+    assert!(updated.ok);
+    assert_small(&updated.payload, "update");
+    let metadata = &updated.payload["WorkflowCodeArtifactUpdated"]["artifact"];
+    assert_keys(metadata, &["metadata"], "update artifact");
+    assert_keys(
+        &metadata["metadata"],
+        &["name", "source_sha256", "validation"],
+        "update metadata",
+    );
+    assert_eq!(
+        metadata["metadata"]["source_sha256"],
+        crate::workflow_code::sha256_hex(updated_source.as_bytes())
+    );
+    assert_eq!(metadata["metadata"]["validation"]["ok"], true);
+    // The updated source and definition stay readable.
+    let read = f
+        .call(
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL,
+            serde_json::json!({ "name": "flow" }),
+        )
+        .await
+        .expect("read");
+    let artifact = &read.payload["WorkflowCodeArtifact"]["artifact"];
+    assert_eq!(artifact["source"], updated_source);
+    assert_eq!(
+        artifact["definition"]["workflow"]["alias"],
+        "reply_size_flow_updated"
+    );
+}
+
+reply_size_test!(
+    wfreply50_i_registry_add_reply_has_name_hashes_validation_only,
+    wfreply50_i_inner
+);
+async fn wfreply50_i_inner() {
+    let Some(f) = Fixture::new("wfreply50-i") else {
+        return;
+    };
+    let source = padded_source();
+    let hash = crate::workflow_code::sha256_hex(source.as_bytes());
+    let added = f
+        .call(
+            crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_ADD_TOOL,
+            serde_json::json!({
+                "name": "reg-flow",
+                "source": { "kind": "single_file", "source": source }
+            }),
+        )
+        .await
+        .expect("registry add");
+    assert!(added.ok, "{}", added.payload);
+    assert_small(&added.payload, "registry add");
+    let entry = &added.payload["WorkflowRegistryEntryAdded"]["entry"];
+    assert_keys(
+        entry,
+        &["name", "source_sha256", "definition_sha256", "validation"],
+        "registry add entry",
+    );
+    assert_eq!(entry["name"], "reg-flow");
+    assert_eq!(entry["source_sha256"], hash);
+    assert_eq!(entry["validation"]["ok"], true);
+    // The full entry (summary, parameters schema) stays readable through registry get.
+    let got = f
+        .call(
+            crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_GET_TOOL,
+            serde_json::json!({ "name": "reg-flow" }),
+        )
+        .await
+        .expect("registry get");
+    assert!(got.ok, "{}", got.payload);
+    assert!(got.payload["WorkflowRegistryEntry"]["entry"]["summary"].is_object());
+}
+
+reply_size_test!(
+    wfreply50_j_registry_load_reply_has_ids_hash_result_only,
+    wfreply50_j_inner
+);
+async fn wfreply50_j_inner() {
+    let Some(f) = Fixture::new("wfreply50-j") else {
+        return;
+    };
+    let source = padded_source();
+    let hash = crate::workflow_code::sha256_hex(source.as_bytes());
+    f.call(
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_ADD_TOOL,
+        serde_json::json!({
+            "name": "reg-flow",
+            "source": { "kind": "single_file", "source": source }
+        }),
+    )
+    .await
+    .expect("registry add");
+    let loaded = f
+        .call(
+            crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_LOAD_TOOL,
+            serde_json::json!({ "name": "reg-flow", "provider_rebindings": rebinding() }),
+        )
+        .await
+        .expect("registry load");
+    assert!(loaded.ok, "{}", loaded.payload);
+    assert_small(&loaded.payload, "registry load");
+    let body = &loaded.payload["WorkflowRegistryEntryLoaded"];
+    assert_keys(body, &["entry", "result"], "registry load");
+    assert_keys(&body["entry"], &["name"], "registry load entry");
+    assert_keys(
+        &body["result"],
+        &["apply", "source_sha256", "validation"],
+        "registry load result",
+    );
+    assert_eq!(body["result"]["source_sha256"], hash);
+    assert!(body["result"]["apply"]["workflow_id"].is_string());
+}
