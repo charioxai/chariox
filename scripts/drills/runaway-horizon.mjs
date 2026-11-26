@@ -142,7 +142,9 @@ try{
   assert(!exitedOk(r.outcome),r.cell+': the runaway ran to a normal exit');
   assert(/stopped|paused/.test(r.told)&&/chariox: your process/.test(r.told),r.cell+': the agent was not told in plain words: '+r.told);
   assert(!/panic|errno|EAGAIN|SIGKILL|signal 9/i.test(r.told),r.cell+': the reason carries raw error text: '+r.told);
+  assert(kinds.some(m=>/paused/.test(m))&&kinds.some(m=>/stopped/.test(m)),r.cell+': the ladder did not pause and then stop the runaway: '+JSON.stringify(kinds));
   assert.equal(r.unit_oom_kills,0,r.cell+': the OS OOM killer acted before the net');
+  assert(r.unit_peak_gib<22,r.cell+': the unit reached its wall ('+r.unit_peak_gib+' GiB of 24) before the runaway was ended');
   assert(r.neighbour_ok&&r.neighbour_state_while_hog_ended==='running',r.cell+': another command was touched');
   assert(r.light_ms<5000,r.cell+': a light command waited');
  };
