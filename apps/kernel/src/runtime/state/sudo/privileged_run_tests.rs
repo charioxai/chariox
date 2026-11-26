@@ -113,9 +113,31 @@ async fn the_owners_agent_runs_a_command_with_sudo_and_never_sees_the_password()
     assert!(!used.to_string().contains(SECRET));
     // Sudo got the password on stdin only: not in its words, not in its environment.
     let argv = std::fs::read_to_string(dir.join("argv")).unwrap();
-    assert!(argv.starts_with(
-        "-S\n-k\n-p\n\n--\nsh\n-c\nexec \"$@\" </dev/null\nsh\ntimeout\n-k\n3\n120\n/bin/sh\n"
-    ));
+    // The program that ends the command is an absolute path, found before sudo asks for anything.
+    let words: Vec<_> = argv.lines().collect();
+    assert_eq!(
+        &words[..9],
+        [
+            "-S",
+            "-k",
+            "-p",
+            "",
+            "--",
+            "sh",
+            "-c",
+            "exec \"$@\" </dev/null",
+            "sh"
+        ]
+    );
+    assert!(
+        words[9].starts_with('/')
+            && words[9]
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name == "timeout" || name == "gtimeout"),
+        "{argv}"
+    );
+    assert_eq!(&words[10..14], ["-k", "3", "120", "/bin/sh"]);
     let env = std::fs::read_to_string(dir.join("env")).unwrap();
     for text in [&argv, &env] {
         assert!(!text.contains(SECRET), "{text}");

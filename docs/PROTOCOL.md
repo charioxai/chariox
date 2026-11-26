@@ -8893,5 +8893,5 @@ outside the agent sandbox, typing the sudo password from the Vault entry `id` on
 (exited, timed_out, lost), exit_code?, stdout, stderr, machine, ran_as, truncated}` with the password read
 `[vault:<id>]`. Only the owner's own client may send it; an agent uses the runtime tool `chariox.privileged.run`
 with the same fields. Refusals name the next step (`wrong_password`, `not_in_sudoers`, `command_not_allowed`,
-`needs_terminal`, `kernel_cannot_elevate`, `sudo_missing`, `machine_unknown`, `entry_wrong_machine`).
+`needs_terminal`, `kernel_cannot_elevate`, `sudo_missing`, `timeout_missing`, `machine_unknown`, `entry_wrong_machine`).
 `fixtures/owner-vault-protocol.json` and its SHA-256 test pin the shapes.

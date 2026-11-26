@@ -48,6 +48,10 @@ struct Run {
     timeout: Duration,
     machine: Machine,
     sudo: std::path::PathBuf,
+    /// Ends the command at its deadline from inside sudo (`timeout`, or
+    /// `gtimeout` of Homebrew coreutils), as an absolute path: sudo's own
+    /// search path may not hold it.
+    timeout_program: std::path::PathBuf,
 }
 
 impl Run {
@@ -57,11 +61,14 @@ impl Run {
         machine: Option<&str>,
         timeout_seconds: Option<u64>,
     ) -> Result<Self, DaemonError> {
+        let machine = state.privileged_machine(machine)?;
         Ok(Self {
             argv: super::super::agent_process_watch::command_argv(argv, true)?,
             timeout: command_timeout(timeout_seconds)?,
-            machine: state.privileged_machine(machine)?,
+            // Both programs are found before the password is read.
             sudo: sudo_program()?,
+            timeout_program: timeout_program(&machine.name)?,
+            machine,
         })
     }
 
@@ -164,7 +171,7 @@ impl KernelRuntimeState {
                 launch: super::super::agent_process_watch::KernelLaunch::Privileged {
                     sudo: run.sudo,
                 },
-                argv: inside_sudo(run.argv, run.timeout),
+                argv: inside_sudo(&run.timeout_program, run.argv, run.timeout),
                 cwd: std::path::PathBuf::from("/"),
                 env: Vec::new(),
                 stdin: Some(stdin),
@@ -258,13 +265,17 @@ impl Machine {
 /// no input. Sudo reads the password from the same pipe only when its rules ask
 /// for one (not with NOPASSWD, nor in a kernel that is root), and the program
 /// must never get the rest of that pipe either way.
-fn inside_sudo(argv: Vec<String>, timeout: Duration) -> Vec<String> {
+fn inside_sudo(
+    timeout_program: &std::path::Path,
+    argv: Vec<String>,
+    timeout: Duration,
+) -> Vec<String> {
     [
         "sh",
         "-c",
         "exec \"$@\" </dev/null",
         "sh",
-        "timeout",
+        &timeout_program.display().to_string(),
         "-k",
         "3",
         &timeout.as_secs().to_string(),
@@ -275,18 +286,49 @@ fn inside_sudo(argv: Vec<String>, timeout: Duration) -> Vec<String> {
     .collect()
 }
 
-/// `sudo` from the kernel's own PATH, then the standard system folders.
-fn sudo_program() -> Result<std::path::PathBuf, DaemonError> {
-    let system = ["/usr/bin", "/usr/sbin", "/bin", "/sbin"].map(std::path::PathBuf::from);
+/// The first of `names` that is a file in `folders`, folders in order and names
+/// in order within a folder.
+fn find_program(names: &[&str], folders: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    folders
+        .iter()
+        .flat_map(|folder| names.iter().map(move |name| folder.join(name)))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The kernel's own PATH, then the standard system folders and the places a
+/// Mac keeps Homebrew programs.
+fn search_folders() -> Vec<std::path::PathBuf> {
+    let system = [
+        "/usr/bin",
+        "/usr/sbin",
+        "/bin",
+        "/sbin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ]
+    .map(std::path::PathBuf::from);
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
         .chain(system)
-        .map(|folder| folder.join("sudo"))
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            error("sudo_missing: sudo is not installed on this machine. The owner installs it (apt install sudo, dnf install sudo) and you retry")
-        })
+        .collect()
+}
+
+/// `sudo` from the kernel's own PATH, then the standard system folders.
+fn sudo_program() -> Result<std::path::PathBuf, DaemonError> {
+    find_program(&["sudo"], &search_folders()).ok_or_else(|| {
+        error("sudo_missing: sudo is not installed on this machine. The owner installs it (apt install sudo, dnf install sudo) and you retry")
+    })
+}
+
+/// `timeout` (GNU coreutils) or `gtimeout` (Homebrew coreutils on a Mac).
+fn timeout_program(machine: &str) -> Result<std::path::PathBuf, DaemonError> {
+    find_program(&["timeout", "gtimeout"], &search_folders())
+        .ok_or_else(|| error(timeout_missing(machine)))
+}
+
+fn timeout_missing(machine: &str) -> String {
+    format!("timeout_missing: {machine} has no timeout program, which ends a privileged command at its deadline. The owner installs coreutils (apt install coreutils, dnf install coreutils; on a Mac brew install coreutils) and you retry")
 }
 
 /// Sudo's own refusal, read from its first words: it ran nothing, so the
@@ -317,5 +359,63 @@ pub(in crate::runtime::state) fn sudo_refusal(
         Some(format!("kernel_cannot_elevate: the kernel service on {name} may not gain privileges (NoNewPrivileges in its service unit). The host operator removes it and restarts the kernel"))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    fn program(dir: &std::path::Path, name: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn the_program_that_ends_a_command_is_found_by_either_name_before_sudo_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let (first, second) = (root.path().join("a"), root.path().join("b"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let folders = [first.clone(), second.clone()];
+        // Nothing installed: no program, so no authentication starts.
+        assert_eq!(find_program(&["timeout", "gtimeout"], &folders), None);
+        // A Mac with Homebrew coreutils has only gtimeout.
+        program(&second, "gtimeout");
+        assert_eq!(
+            find_program(&["timeout", "gtimeout"], &folders),
+            Some(second.join("gtimeout"))
+        );
+        // The first folder wins; within one folder timeout comes before gtimeout.
+        program(&first, "gtimeout");
+        assert_eq!(
+            find_program(&["timeout", "gtimeout"], &folders),
+            Some(first.join("gtimeout"))
+        );
+        program(&first, "timeout");
+        assert_eq!(
+            find_program(&["timeout", "gtimeout"], &folders),
+            Some(first.join("timeout"))
+        );
+        // A folder entry that is not a file is not a program.
+        std::fs::create_dir(second.join("timeout")).unwrap();
+        std::fs::remove_file(first.join("timeout")).unwrap();
+        std::fs::remove_file(first.join("gtimeout")).unwrap();
+        assert_eq!(
+            find_program(&["timeout", "gtimeout"], &folders),
+            Some(second.join("gtimeout"))
+        );
+    }
+
+    #[test]
+    fn a_missing_timeout_program_is_refused_with_the_next_step() {
+        let refusal = timeout_missing("kernel-1");
+        assert!(refusal.starts_with("timeout_missing:"), "{refusal}");
+        assert!(
+            refusal.contains("brew install coreutils") && refusal.contains("apt install coreutils")
+        );
+        assert!(refusal.contains("kernel-1"));
     }
 }
