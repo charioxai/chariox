@@ -1,5 +1,6 @@
 import {BrowserActionError} from './browser-controller-actions.mjs';
 import { BrowserSnapshotError, captureBrowserSnapshot } from "./browser-controller-snapshot.mjs";
+import { expectDetach } from "./kernel-browser-state-signal.mjs";
 
 // MP-08/MP-10/MP-11: an asynchronous inspection may populate a cold cache,
 // but it cannot replace a newer navigation/session event with an old result.
@@ -303,7 +304,10 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
     const depth = (entry) => { let count = 0; for (let up = entry.parent; up && count < entries.length; up = up.parent) count++; return count; };
     return await run(entries.sort((a, b) => depth(a) - depth(b)), info);
   } finally {
-    await Promise.all(attached.map((childSession) => connection.send("Target.detachFromTarget", { sessionId: childSession }).catch(() => {})));
+    await Promise.all(attached.map((childSession) => {
+      expectDetach(connection, childSession);
+      return connection.send("Target.detachFromTarget", { sessionId: childSession }).catch(() => { connection.expectedDetaches?.delete(childSession); });
+    }));
   }
 }
 
