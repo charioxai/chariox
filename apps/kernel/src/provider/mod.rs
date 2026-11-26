@@ -170,7 +170,7 @@ pub(crate) use managed_isolation::{
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
-    MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
+    chariox_cli_beside, MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
 };
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_environment,

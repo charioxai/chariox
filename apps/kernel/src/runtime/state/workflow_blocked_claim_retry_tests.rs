@@ -109,7 +109,9 @@ fn a_launch_never_holds_the_prompt_owner_while_it_waits_for_the_session_store() 
                 }));
             });
             let result = owned.start_provider_launch(request);
-            launch_done.send(result.map(|_| ()).map_err(|e| e.to_string())).unwrap();
+            launch_done
+                .send(result.map(|_| ()).map_err(|e| e.to_string()))
+                .unwrap();
         })
     };
     launch_planned
