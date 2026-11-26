@@ -41,6 +41,54 @@ fn activate_test_agent_meta_mode(
         .expect("test agent should enter meta mode")
 }
 
+/// The apply reply carries ids, hash and validation only. This reads the compiled
+/// definition (validate with the same arguments) and the stored session next to it, so
+/// tests that check what apply created keep checking it.
+async fn apply_with_definition_and_session(
+    router: &CommandRouter,
+    session_id: &str,
+    metaagent_id: &str,
+    arguments: serde_json::Value,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    let applied = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session_id,
+            metaagent_id,
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
+            arguments.clone(),
+        )
+        .await
+        .expect("metaagent should apply workflow-code");
+    let mut payload = applied.payload.clone();
+    if applied.ok {
+        let body = &applied.payload["WorkflowCodeApplied"];
+        assert!(body.get("session").is_none(), "apply must not echo the session");
+        assert!(body["result"].get("compile").is_none(), "apply must not echo the definition");
+        let validated = router
+            .runtime_state
+            .dispatch_meta_runtime_tool_call_for_agent(
+                session_id,
+                metaagent_id,
+                crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+                arguments,
+            )
+            .await
+            .expect("metaagent should validate the applied workflow-code");
+        let snapshot = router
+            .runtime_state
+            .session_snapshot(session_id)
+            .await
+            .expect("session should exist");
+        payload["WorkflowCodeApplied"]["result"]["compile"] = serde_json::json!({
+            "definition": validated.payload["WorkflowCodeValidated"]["result"]["definition"].clone(),
+        });
+        payload["WorkflowCodeApplied"]["session"] =
+            serde_json::to_value(snapshot).expect("session should serialize");
+    }
+    crate::transport::runtime_tools::RuntimeToolResult { ok: applied.ok, payload }
+}
+
 fn run_large_stack_async_test<Fut>(name: &str, test: fn() -> Fut)
 where
     Fut: std::future::Future<Output = ()> + 'static,

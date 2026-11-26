@@ -69,7 +69,6 @@ impl Fixture {
             )
             .await
     }
-
 }
 
 fn rebinding() -> serde_json::Value {
@@ -96,7 +95,9 @@ reply_size_test!(
     wfreply50_a_inner
 );
 async fn wfreply50_a_inner() {
-    let Some(f) = Fixture::new("wfreply50-a") else { return };
+    let Some(f) = Fixture::new("wfreply50-a") else {
+        return;
+    };
     let source = padded_source();
     let created = f
         .call(
@@ -142,7 +143,9 @@ reply_size_test!(
     wfreply50_b_inner
 );
 async fn wfreply50_b_inner() {
-    let Some(f) = Fixture::new("wfreply50-b") else { return };
+    let Some(f) = Fixture::new("wfreply50-b") else {
+        return;
+    };
     let source = padded_source();
     // A dispatch error: the endpoint handle does not exist in the 12 KB source.
     let refused = f
@@ -162,7 +165,11 @@ async fn wfreply50_b_inner() {
         text.contains("no_such_endpoint"),
         "the error names the endpoint: {text}"
     );
-    assert!(text.len() < 4_096, "error reply is {} bytes: {text}", text.len());
+    assert!(
+        text.len() < 4_096,
+        "error reply is {} bytes: {text}",
+        text.len()
+    );
     assert!(
         !text.contains(&"x".repeat(200)),
         "the error must not echo the 12 KB source"
@@ -172,10 +179,14 @@ async fn wfreply50_b_inner() {
         Ok(result) => result.payload,
         Err(_) => serde_json::json!({ "error": text.clone() }),
     };
-    let (content, structured) = crate::transport::mcp_server::runtime_tool_content_for_test(payload);
+    let (content, structured) =
+        crate::transport::mcp_server::runtime_tool_content_for_test(payload);
     assert!(structured.get("chariox_truncated").is_none());
     assert!(content[0]["text"].as_str().unwrap().len() < MCP_TEXT_LIMIT);
-    assert!(content[0]["text"].as_str().unwrap().contains("no_such_endpoint"));
+    assert!(content[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("no_such_endpoint"));
 }
 
 reply_size_test!(
@@ -183,7 +194,9 @@ reply_size_test!(
     wfreply50_c_inner
 );
 async fn wfreply50_c_inner() {
-    let Some(f) = Fixture::new("wfreply50-c") else { return };
+    let Some(f) = Fixture::new("wfreply50-c") else {
+        return;
+    };
     let source = padded_source();
     let hash = crate::workflow_code::sha256_hex(source.as_bytes());
     f.call(
@@ -207,7 +220,10 @@ async fn wfreply50_c_inner() {
         assert_small(&applied.payload, "apply");
         let body = &applied.payload["WorkflowCodeApplied"];
         assert!(body.get("session").is_none(), "no session echo: {body}");
-        assert!(body["result"].get("compile").is_none(), "no compiled definition");
+        assert!(
+            body["result"].get("compile").is_none(),
+            "no compiled definition"
+        );
         assert_eq!(body["result"]["source_sha256"], hash);
         assert!(body["result"]["apply"]["workflow_id"].is_string());
         assert!(body["result"]["apply"]["agent_ids"]["planner"].is_string());
@@ -221,7 +237,9 @@ reply_size_test!(
     wfreply50_d_inner
 );
 async fn wfreply50_d_inner() {
-    let Some(f) = Fixture::new("wfreply50-d") else { return };
+    let Some(f) = Fixture::new("wfreply50-d") else {
+        return;
+    };
     let source = padded_source();
     let hash = crate::workflow_code::sha256_hex(source.as_bytes());
     let added = f
@@ -252,7 +270,10 @@ async fn wfreply50_d_inner() {
     assert_eq!(body["result"]["source_sha256"], hash);
     assert!(body["result"]["workflow_id"].is_string());
     assert_eq!(body["result"]["invocation"]["kind"], "started");
-    assert!(body["result"].get("apply").is_none(), "no compiled definition");
+    assert!(
+        body["result"].get("apply").is_none(),
+        "no compiled definition"
+    );
     assert!(!run.payload.to_string().contains(&"x".repeat(200)));
 }
 
@@ -261,7 +282,9 @@ reply_size_test!(
     wfreply50_e_inner
 );
 async fn wfreply50_e_inner() {
-    let Some(f) = Fixture::new("wfreply50-e") else { return };
+    let Some(f) = Fixture::new("wfreply50-e") else {
+        return;
+    };
     let source = padded_source();
     f.call(
         crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL,
@@ -284,7 +307,10 @@ async fn wfreply50_e_inner() {
         .expect("read");
     let artifact = &read.payload["WorkflowCodeArtifact"]["artifact"];
     assert_eq!(artifact["source"], source);
-    assert_eq!(artifact["definition"]["workflow"]["alias"], "reply_size_flow");
+    assert_eq!(
+        artifact["definition"]["workflow"]["alias"],
+        "reply_size_flow"
+    );
     let exported = f
         .call(
             crate::transport::runtime_tools::META_WORKFLOW_CODE_EXPORT_TOOL,
@@ -307,6 +333,6 @@ async fn wfreply50_f_inner() {
         .iter()
         .map(|spec| spec.name.len() + spec.description.len() + spec.input_schema.to_string().len())
         .sum();
-    const BASELINE: usize = 0; // filled in from main by the first run
+    const BASELINE: usize = 26_203; // bytes on main 9d692c33f4e
     assert!(bytes <= BASELINE, "meta tool spec bytes: {bytes}");
 }

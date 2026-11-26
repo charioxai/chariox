@@ -547,6 +547,15 @@ impl KernelRuntimeState {
                     "run": meta_workflow_code_run_audit_payload(result),
                 }),
             );
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "WorkflowRegistryEntryRun": {
+                        "entry": { "name": entry.name },
+                        "result": workflow_code_run_result(result),
+                    }
+                }),
+            });
         }
         runtime_tool_result_from_local_response(response)
     }
@@ -685,6 +694,10 @@ impl KernelRuntimeState {
                 agent,
                 serde_json::json!({ "apply": &result.apply }),
             );
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: workflow_code_apply_reply(result),
+            });
         }
         runtime_tool_result_from_local_response(response)
     }
@@ -945,7 +958,27 @@ fn meta_workflow_code_artifact(
         })
 }
 
+/// Ids, hash and validation only. The source and the compiled definition stay
+/// readable through `workflow_code.read` and the export tools.
+fn workflow_code_apply_reply(
+    result: &crate::workflow_code::WorkflowCodeCompileAndApplyResult,
+) -> serde_json::Value {
+    serde_json::json!({
+        "WorkflowCodeApplied": { "result": {
+            "source_sha256": result.compile.source_sha256,
+            "validation": { "ok": result.compile.validation.ok },
+            "apply": result.apply,
+        } }
+    })
+}
+
 fn workflow_code_run_reply(
+    result: &crate::workflow_code::WorkflowCodeRunResult,
+) -> serde_json::Value {
+    serde_json::json!({ "WorkflowCodeRun": { "result": workflow_code_run_result(result) } })
+}
+
+fn workflow_code_run_result(
     result: &crate::workflow_code::WorkflowCodeRunResult,
 ) -> serde_json::Value {
     use crate::workflow_code::WorkflowCodeRunInvocation;
@@ -976,11 +1009,9 @@ fn workflow_code_run_reply(
         }),
     };
     serde_json::json!({
-        "WorkflowCodeRun": { "result": {
-            "source_sha256": result.apply.compile.source_sha256,
-            "workflow_id": result.apply.apply.workflow_id,
-            "invocation": invocation,
-        } }
+        "source_sha256": result.apply.compile.source_sha256,
+        "workflow_id": result.apply.apply.workflow_id,
+        "invocation": invocation,
     })
 }
 

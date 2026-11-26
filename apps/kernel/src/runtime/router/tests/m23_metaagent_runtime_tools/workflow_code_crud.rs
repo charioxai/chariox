@@ -320,21 +320,18 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         Some("final")
     );
 
-    let applied = router
-        .runtime_state
-        .dispatch_meta_runtime_tool_call_for_agent(
-            session.id(),
-            metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-            serde_json::json!({
-                "name": "meta-flow",
-                "provider_rebindings": [
-                    { "node": "planner", "provider": "dev-stub", "model": "default" }
-                ]
-            }),
-        )
-        .await
-        .expect("metaagent should apply saved workflow-code artifact");
+    let applied = apply_with_definition_and_session(
+        &router,
+        session.id(),
+        metaagent.id(),
+        serde_json::json!({
+            "name": "meta-flow",
+            "provider_rebindings": [
+                { "node": "planner", "provider": "dev-stub", "model": "default" }
+            ]
+        }),
+    )
+    .await;
     assert!(applied.ok, "{:?}", applied.payload);
     assert_eq!(
         applied
