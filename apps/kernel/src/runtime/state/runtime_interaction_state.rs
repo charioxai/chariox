@@ -612,14 +612,20 @@ impl KernelRuntimeState {
         if session_id.is_empty() {
             return Ok(None);
         }
+        // Only a card of a Room carries a secret request. A kernel-wide card (the owner's Vault request
+        // for an outside agent, a Vault capture) names a scope that is no Room: its own store takes the answer.
         let Some(card) = self
             .owned
             .session_store
-            .get_session(session_id)?
-            .active_interactions()
-            .iter()
-            .find(|card| card.id() == interaction_id)
-            .cloned()
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                session
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id() == interaction_id)
+                    .cloned()
+            })
         else {
             return Ok(None);
         };
