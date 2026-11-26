@@ -421,6 +421,25 @@ impl KernelRuntimeState {
     /// reported lost and never relaunched. Descendants it left running are
     /// identified by their wake marker and stopped.
     pub(super) fn recover_lost_agent_processes(&self, now: u64) -> Result<(), DaemonError> {
+        self.recover_lost_agent_processes_with(
+            now,
+            super::agent_process_group::reap_orphans,
+            crate::provider::managed_provider_isolation_required(),
+        )
+    }
+
+    /// `reap` stops the orphans of the given wakes (wake id -> created at) and
+    /// returns how many each had; it is a parameter so a failed cleanup can be tested.
+    /// `isolated`: the managed PID namespace makes the scan complete; without it
+    /// only processes carrying the wake marker are found.
+    pub(super) fn recover_lost_agent_processes_with(
+        &self,
+        now: u64,
+        reap: impl FnOnce(
+            &std::collections::BTreeMap<String, u64>,
+        ) -> std::io::Result<std::collections::BTreeMap<String, usize>>,
+        isolated: bool,
+    ) -> Result<(), DaemonError> {
         let monitor = &self.owned.agent_wakes;
         let lost: Vec<_> = self
             .owned
@@ -442,7 +461,7 @@ impl KernelRuntimeState {
         if lost.is_empty() {
             return Ok(());
         }
-        let stopped = super::agent_process_group::reap_orphans(
+        let stopped = reap(
             &lost
                 .iter()
                 .map(|wake| (wake.id.clone(), wake.created_at_ms))
@@ -455,16 +474,25 @@ impl KernelRuntimeState {
             };
             // Without the managed PID namespace, survivors are found only by
             // their inherited wake marker.
-            if !crate::provider::managed_provider_isolation_required() {
+            if !isolated {
                 orphans.push_str("; descendants that cleared their environment or have a live parent outside the watched session cannot be attributed and may still be running");
             }
+            // Only the managed PID namespace makes an Ok scan complete.
+            let outcome = match (&stopped, isolated) {
+                (Ok(stopped), true) if stopped.contains_key(&wake.id) => LostWatch::Stopped,
+                (Ok(_), true) => LostWatch::NotFound,
+                (Ok(stopped), false) if stopped.contains_key(&wake.id) => LostWatch::StoppedSome,
+                (Ok(_), false) => LostWatch::NoneAttributed,
+                (Err(_), _) => LostWatch::Unconfirmed,
+            };
+            let report = lost_watch_report(&wake, now, outcome);
             self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
                 id: wake.id.clone(),
                 exit_code: None,
-                tail: format!("process_lost: the kernel restarted; it is not supervised and is not relaunched{orphans}; {LOST_NEXT_STEP}"),
+                tail: format!("process_lost: {report}{orphans}"),
                 now,
             })?;
-            self.wake_notice(&wake, format!("Wake alert: watched process '{}' was lost when the kernel restarted; it is not relaunched{orphans}; {LOST_NEXT_STEP}", wake.label));
+            self.wake_notice(&wake, format!("Wake alert: {report}{orphans}"));
             self.schedule_wake_delivery(&wake);
         }
         Ok(())
@@ -615,4 +643,64 @@ impl KernelRuntimeState {
                 .notify_terminal_projection_change(room);
         }
     }
+}
+
+/// What a watch lost across a cold restart tells its owner: when the process
+/// was last seen, whether recovery stopped it or it ended while the kernel
+/// was down, and (as #1757's `LOST_NEXT_STEP`) what to do.
+fn lost_watch_report(wake: &AgentWake, now: u64, outcome: LostWatch) -> String {
+    let seen = wake.verified_at_ms.unwrap_or(wake.created_at_ms);
+    let (secs, clock) = (
+        now.saturating_sub(seen) / 1000,
+        (seen / 1000) % 86_400,
+    );
+    let ago = match secs {
+        0..=89 => format!("{secs} s"),
+        90..=5_399 => format!("{} min", secs / 60),
+        _ => format!("{} h", (secs + 1800) / 3600),
+    };
+    let (state, next) = match outcome {
+        LostWatch::Stopped => ("the kernel restarted and stopped it and its exit is unknown", LOST_NEXT_STEP),
+        LostWatch::NotFound => (
+            "no process of it was found after the restart, so it ended while the kernel was down and its exit is unknown",
+            LOST_NEXT_STEP,
+        ),
+        // Survivors cannot be ruled out: never say the work is gone.
+        LostWatch::StoppedSome => (
+            "the kernel restarted and stopped the processes it could attribute to it, but cannot rule out others it started, so it may still be running and its exit is unknown",
+            CHECK_FIRST,
+        ),
+        LostWatch::NoneAttributed => (
+            "no process of it was found after the restart, so it most likely ended while the kernel was down, but the kernel cannot rule out others it started, so it may still be running and its exit is unknown",
+            CHECK_FIRST,
+        ),
+        LostWatch::Unconfirmed => (
+            "the kernel restarted and could not confirm that it, or anything it started, has stopped, so it may still be running and its exit is unknown",
+            "check for it and stop what remains before starting it again",
+        ),
+    };
+    const CHECK_FIRST: &str = "check for what remains first; only then start it again and watch the new one";
+    format!(
+        "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {state}; {next}",
+        wake.label,
+        clock / 3600,
+        clock % 3600 / 60,
+        clock % 60
+    )
+}
+
+/// What the restart's cleanup established about a lost watched process.
+#[derive(Clone, Copy)]
+enum LostWatch {
+    /// Processes of the watch were found and stopped, exits confirmed.
+    Stopped,
+    /// The scan completed and found none of the watch's processes.
+    NotFound,
+    /// Without the managed PID namespace: some were stopped, but a descendant that
+    /// cleared its marker or has a live outside parent cannot be attributed.
+    StoppedSome,
+    /// Without the managed PID namespace: none was attributed, none can be ruled out.
+    NoneAttributed,
+    /// The cleanup failed or timed out: survivors cannot be ruled out.
+    Unconfirmed,
 }
