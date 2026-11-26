@@ -146,52 +146,70 @@ const frameOrigin = frame => {
   if (typeof frame?.securityOrigin === 'string' && frame.securityOrigin && frame.securityOrigin !== 'null') return frame.securityOrigin;
   try { const origin = new URL(frame?.url).origin; return origin === 'null' ? null : origin; } catch { return null; }
 };
-async function widgetRects(connection, sessionId, tab, ref, child, anchorObjectId, contextId, width, height) {
+async function widgetRects(connection, sessionId, tab, ref, child, anchorObjectId, contextId, width, height, anchorRect) {
   return withBrowserFrames(connection, sessionId, tab.target_id, tab.document_id, async frames => {
-    const root = frames[0], origins = new Set(), owners = new Map();
-    const owner = async entry => {
-      if (!owners.has(entry)) owners.set(entry, (await connection.send('DOM.getFrameOwner', { frameId: entry.frame.id }, root.sessionId)).backendNodeId);
-      return owners.get(entry);
+    const root = frames[0], origins = new Set(), owners = new Map(), rects = new Map();
+    // The page's own frame tree names every direct child frame, whether it renders in the page's process or its own;
+    // a renderer of its own adds the child's full frame record.
+    const direct = (root.tree?.childFrames ?? []).map(({ frame }) => frames.find(entry => entry.frame.id === frame.id)?.frame ?? frame);
+    const owner = async frame => {
+      if (!owners.has(frame.id)) owners.set(frame.id, (await connection.send('DOM.getFrameOwner', { frameId: frame.id }, root.sessionId)).backendNodeId);
+      return owners.get(frame.id);
     };
-    const direct = frames.filter(entry => entry !== root && entry.parent === root);
+    const ownerRect = async frame => {
+      if (rects.has(frame.id)) return rects.get(frame.id);
+      let rect = null;
+      const backendNodeId = await owner(frame);
+      const { object } = await connection.send('DOM.resolveNode', { backendNodeId, executionContextId: contextId }, root.sessionId);
+      if (object?.objectId) {
+        let shown = false;
+        try {
+          const { result } = await connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function() { return typeof this.checkVisibility !== 'function' || this.checkVisibility(${visibilityOptions}); }`, arguments: [{ value: null }], returnByValue: true }, root.sessionId);
+          shown = result?.value !== false;
+        } finally { await connection.send('Runtime.releaseObject', { objectId: object.objectId }, root.sessionId).catch(() => {}); }
+        let model = null;
+        if (shown) try { ({ model } = await connection.send('DOM.getBoxModel', { backendNodeId }, root.sessionId)); } catch { model = null; }
+        const quad = model?.border;
+        if (Array.isArray(quad) && quad.length === 8 && quad.every(Number.isFinite)) {
+          const xs = [quad[0], quad[2], quad[4], quad[6]], ys = [quad[1], quad[3], quad[5], quad[7]];
+          const left = Math.max(0, Math.min(...xs)), right = Math.min(width, Math.max(...xs)), top = Math.max(0, Math.min(...ys)), bottom = Math.min(height, Math.max(...ys));
+          if (right > left && bottom > top) rect = { left, top, right, bottom };
+        }
+      }
+      rects.set(frame.id, rect);
+      return rect;
+    };
     if (child) {
-      const entry = frames.find(f => f.prefix && ref.startsWith(f.prefix));
-      let top = entry;
-      while (top && top.parent && top.parent !== root) top = top.parent;
-      if (top && top !== root) origins.add(frameOrigin(top.frame));
+      let entry = frames.find(f => f.prefix && ref.startsWith(f.prefix));
+      while (entry && entry.parent && entry.parent !== root) entry = entry.parent;
+      if (entry && entry !== root) origins.add(frameOrigin(entry.frame));
+      else if (anchorRect) {
+        // An element of a frame rendered in the page's own process: the direct frame whose box holds it.
+        const cx = anchorRect.x + anchorRect.width / 2, cy = anchorRect.y + anchorRect.height / 2;
+        for (const frame of direct) {
+          const r = await ownerRect(frame);
+          if (r && cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) origins.add(frameOrigin(frame));
+        }
+      }
     } else if (anchorObjectId) {
-      for (const entry of direct) {
-        const { object } = await connection.send('DOM.resolveNode', { backendNodeId: await owner(entry), executionContextId: contextId }, root.sessionId);
+      for (const frame of direct) {
+        const { object } = await connection.send('DOM.resolveNode', { backendNodeId: await owner(frame), executionContextId: contextId }, root.sessionId);
         if (!object?.objectId) continue;
         try {
           const { result } = await connection.send('Runtime.callFunctionOn', { objectId: anchorObjectId, functionDeclaration: 'function(node) { return this === node || this.contains(node); }', arguments: [{ objectId: object.objectId }], returnByValue: true }, root.sessionId);
-          if (result?.value === true) origins.add(frameOrigin(entry.frame));
+          if (result?.value === true) origins.add(frameOrigin(frame));
         } finally { await connection.send('Runtime.releaseObject', { objectId: object.objectId }, root.sessionId).catch(() => {}); }
       }
     }
     origins.delete(null); origins.delete(frameOrigin(root.frame));
-    const rects = [];
-    if (!origins.size) return rects;
-    for (const entry of direct) {
-      if (!origins.has(frameOrigin(entry.frame))) continue;
-      const backendNodeId = await owner(entry);
-      const { object } = await connection.send('DOM.resolveNode', { backendNodeId, executionContextId: contextId }, root.sessionId);
-      if (!object?.objectId) continue;
-      let shown = false;
-      try {
-        const { result } = await connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function() { return typeof this.checkVisibility !== 'function' || this.checkVisibility(${visibilityOptions}); }`, arguments: [{ value: null }], returnByValue: true }, root.sessionId);
-        shown = result?.value !== false;
-      } finally { await connection.send('Runtime.releaseObject', { objectId: object.objectId }, root.sessionId).catch(() => {}); }
-      if (!shown) continue;
-      let model;
-      try { ({ model } = await connection.send('DOM.getBoxModel', { backendNodeId }, root.sessionId)); } catch { continue; }
-      const quad = model?.border;
-      if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) continue;
-      const xs = [quad[0], quad[2], quad[4], quad[6]], ys = [quad[1], quad[3], quad[5], quad[7]];
-      const left = Math.max(0, Math.min(...xs)), right = Math.min(width, Math.max(...xs)), top = Math.max(0, Math.min(...ys)), bottom = Math.min(height, Math.max(...ys));
-      if (right > left && bottom > top) rects.push({ left, top, right, bottom });
+    const found = [];
+    if (!origins.size) return found;
+    for (const frame of direct) {
+      if (!origins.has(frameOrigin(frame))) continue;
+      const r = await ownerRect(frame);
+      if (r) found.push(r);
     }
-    return rects;
+    return found;
   });
 }
 
@@ -370,16 +388,19 @@ export async function resolveCardRegion(host, command, scope, signal) {
       if (reply.exceptionDetails) throw new Error('Browser card geometry could not be read');
       return reply.result?.value;
     };
-    box = await readBox(command.after);
+    // Row 666: a card that grew to its widget waits on its anchor's own geometry; comparing the union with the anchor
+    // alone would end every long read at once.
+    box = await readBox(command.after !== undefined && anchor?.anchorBox ? anchor.anchorBox : command.after);
     // Row 655: at registration an element without visible area (a challenge frame not opened yet) gets the
     // existing geometry window to appear; after it the card is the empty crop and the kernel tells the agent so.
     for (const deadline = Date.now() + registrationWaitMs; command.after === undefined && box && box.done !== true && !hasArea(box) && Date.now() < deadline;) box = await readBox(box);
     // Row 666: a visible anchor in a challenge widget shows the whole widget (its challenge frame grows the card when it opens).
+    if (anchor && box && box.done !== true && box.rect) anchor.anchorBox = { rect: box.rect, viewport_width: box.viewport_width, viewport_height: box.viewport_height };
     if (box && box.done !== true && hasArea(box) && !(command.app_confirmation === true)) {
       const child = remembered.children.has(command.ref);
       // A page element holding no frame belongs to no widget: no frame walk on ordinary pages.
       const holdsFrame = child || (objectId && (await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: "function() { return this.localName === 'iframe' || typeof this.querySelector === 'function' && !!this.querySelector('iframe'); }", arguments: [{ value: null }], returnByValue: true }, sessionId)).result?.value === true);
-      const extra = !holdsFrame ? [] : await widgetRects(connection, sessionId, tab, command.ref, child, child ? null : objectId, world.contextId, box.viewport_width, box.viewport_height);
+      const extra = !holdsFrame ? [] : await widgetRects(connection, sessionId, tab, command.ref, child, child ? null : objectId, world.contextId, box.viewport_width, box.viewport_height, box.rect);
       if (extra.length) {
         const { x, y, width: w, height: h } = box.rect, vw = box.viewport_width, vh = box.viewport_height;
         const left = Math.max(0, Math.floor(Math.min(x, ...extra.map(r => r.left - 16))));

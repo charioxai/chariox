@@ -560,6 +560,57 @@ test('666 a reCAPTCHA-style widget: a page element holding the anchor frame grow
     open = true;
     const grown = (await region(after(last))).region;
     assert.ok(grown.rect.x + grown.rect.width >= 760 && grown.rect.y <= 20 && grown.rect.y + grown.rect.height >= 600, `round ${round}: the picture frame is in: ${JSON.stringify(grown.rect)}`);
+    if (round === 0) {
+      // Review P2: a card that grew waits on its anchor's own geometry: a stationary open challenge is a long read, not a spin.
+      const started = Date.now();
+      const still = (await region(after(grown))).region;
+      assert.ok(Date.now() - started >= 900, `a stationary open challenge waits the geometry window (${Date.now() - started} ms)`);
+      assert.deepEqual(still.rect, grown.rect);
+    }
+    open = false;
+    last = (await region(after(grown))).region;
+    assert.ok(last.rect.x + last.rect.width < 400, `round ${round}: closed again, only the anchor: ${JSON.stringify(last.rect)}`);
+  }
+}));
+
+test('666 review: a widget whose frames render in the page\'s own process (no iframe targets) also grows', () => withHost(async ({ host, snapshot, region, state, node }) => {
+  // The agent anchors on the page's own container of the anchor iframe; the bframe is a sibling frame of the same origin.
+  const google = 'https://www.google.com', frames = {
+    anchor: { frame: { id: 'anchor', parentId: 'frame', loaderId: 'a-doc', securityOrigin: google, url: google + '/recaptcha/api2/anchor' }, owner: 99, box: [40, 100, 344, 100, 344, 178, 40, 178] },
+    bframe: { frame: { id: 'bframe', parentId: 'frame', loaderId: 'b-doc', securityOrigin: google, url: google + '/recaptcha/api2/bframe' }, owner: 98, box: [360, 20, 760, 20, 760, 600, 360, 600] },
+  };
+  let open = false;
+  node.querySelector = selector => selector === 'iframe' ? {} : null;
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://shop.example', url: 'https://shop.example/' }, childFrames: Object.values(frames).map(f => ({ frame: f.frame })) } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: [] };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && (params.backendNodeId === 98 || params.backendNodeId === 99)) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('this.contains(node)')) return { result: { value: params.arguments[0].objectId === 'owner-99' } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) return { result: { value: params.objectId === 'owner-99' || open } };
+    if (method === 'DOM.getBoxModel') { const f = Object.values(frames).find(v => v.owner === params.backendNodeId); if (f) return { model: { content: f.box, border: f.box } }; }
+    return original(method, params, session);
+  };
+  state.box = { left: 30, top: 90, right: 354, bottom: 188 };
+  await snapshot();
+  let last = (await region({ card_id: 'r' })).region;
+  const after = r => ({ generation: 1, document_id: 'doc', card_id: 'r', after: { rect: r.rect, viewport_width: r.viewport_width, viewport_height: r.viewport_height } });
+  for (let round = 0; round < 1; round++) {
+    open = true;
+    const grown = (await region(after(last))).region;
+    assert.ok(grown.rect.x + grown.rect.width >= 760 && grown.rect.y <= 20 && grown.rect.y + grown.rect.height >= 600, `round ${round}: the picture frame is in: ${JSON.stringify(grown.rect)}`);
+    if (round === 0) {
+      // Review P2: a card that grew waits on its anchor's own geometry: a stationary open challenge is a long read, not a spin.
+      const started = Date.now();
+      const still = (await region(after(grown))).region;
+      assert.ok(Date.now() - started >= 900, `a stationary open challenge waits the geometry window (${Date.now() - started} ms)`);
+      assert.deepEqual(still.rect, grown.rect);
+    }
     open = false;
     last = (await region(after(grown))).region;
     assert.ok(last.rect.x + last.rect.width < 400, `round ${round}: closed again, only the anchor: ${JSON.stringify(last.rect)}`);
