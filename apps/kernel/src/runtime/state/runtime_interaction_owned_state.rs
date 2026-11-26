@@ -1372,9 +1372,10 @@ impl KernelRuntimeOwnedState {
             .storing_secrets
             .lock()
             .expect("secret store set poisoned");
-        if !storing.insert(interaction_id.to_owned()) {
+        if storing.contains_key(interaction_id) {
             return Err(interaction_error("This secret is already being stored"));
         }
+        storing.insert(interaction_id.to_owned(), crate::session::unix_epoch_ms());
         Ok(SecretStoreReservation {
             store: self.pending_interactions.clone(),
             interaction_id: interaction_id.to_owned(),

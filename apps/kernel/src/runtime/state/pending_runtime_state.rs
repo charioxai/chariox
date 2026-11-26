@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock, Weak};
 
 use tokio::sync::oneshot;
@@ -241,7 +241,7 @@ pub(super) struct PendingInteractionStore {
     pub(super) orphan_sweeps: Arc<StdMutex<Vec<(std::sync::Weak<()>, u64)>>>,
     /// Row 539: secret cards whose answer is being stored in the Vault. A timeout or a withdrawal
     /// leaves such a card alone until the store ends, so a stored answer is never also rejected.
-    pub(super) storing_secrets: Arc<StdMutex<BTreeSet<String>>>,
+    pub(super) storing_secrets: Arc<StdMutex<BTreeMap<String, u64>>>,
 }
 
 impl PendingInteractionStore {
@@ -249,7 +249,16 @@ impl PendingInteractionStore {
         self.storing_secrets
             .lock()
             .expect("secret store set poisoned")
-            .contains(interaction_id)
+            .contains_key(interaction_id)
+    }
+
+    /// When the answer being stored was accepted (inside its deadline); the commit is stamped with it.
+    pub(super) fn secret_store_accepted_at(&self, interaction_id: &str) -> Option<u64> {
+        self.storing_secrets
+            .lock()
+            .expect("secret store set poisoned")
+            .get(interaction_id)
+            .copied()
     }
 
     pub(super) fn shared() -> Self {

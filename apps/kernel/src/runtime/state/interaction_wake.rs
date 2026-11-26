@@ -402,7 +402,10 @@ impl KernelRuntimeOwnedState {
                     "connection_class": answerer.and_then(|a| a.connection_class),
                 }),
                 end: Some(WakeEnd::Succeeded),
-                now: crate::session::unix_epoch_ms(),
+                now: self
+                    .pending_interactions
+                    .secret_store_accepted_at(interaction.id())
+                    .unwrap_or_else(crate::session::unix_epoch_ms),
             })?;
         self.settle_vault_payment(interaction, resolution);
         Ok(())
