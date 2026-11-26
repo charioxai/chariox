@@ -422,23 +422,10 @@ async fn delegate_reply_pre_upgrade_accepted_orphan_is_recovered_by_sweep() {
     assert_eq!(before, f.replies());
 }
 
+/// Row 554: the agent works, so the message waits for its next turn; that turn is told of it.
 #[tokio::test]
 async fn a_turn_started_by_the_person_is_told_of_the_messages_queued_for_it() {
     let f = Fixture::new();
-    let queued = f.message("queued-1", false, true);
-    f.runtime
-        .deliver_agent_inbox(&f.room, &f.child)
-        .await
-        .unwrap();
-    assert!(
-        f.runtime
-            .owned
-            .durable_state_store
-            .agent_tasks(Some(&f.room), Some(&f.child))
-            .unwrap()
-            .is_empty(),
-        "a message that is not urgent starts no turn of its recipient"
-    );
     f.runtime
         .owned
         .durable_state_store
@@ -451,6 +438,24 @@ async fn a_turn_started_by_the_person_is_told_of_the_messages_queued_for_it() {
             now: crate::session::unix_epoch_ms(),
         })
         .unwrap();
+    let queued = f.message("queued-1", false, true);
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(&f.room, &f.child, 0)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.sequence == queued.sequence)
+            .unwrap()
+            .prompt_id,
+        None,
+        "a message that is not urgent waits for the turn of an agent that works"
+    );
     let context = f
         .runtime
         .owned
@@ -464,4 +469,65 @@ async fn a_turn_started_by_the_person_is_told_of_the_messages_queued_for_it() {
         )),
         "{context}"
     );
+}
+
+/// Row 554 cell 4: an idle agent with nothing armed has no next turn coming, so its queued
+/// message is released to start one. (Starting it is `unwatched_work::cell_4`; this fixture's
+/// provider is not signed in, and a refused start must not leak into other tests.)
+#[tokio::test]
+async fn a_message_queued_for_an_idle_agent_with_nothing_armed_is_released_to_start_its_turn() {
+    let f = Fixture::new();
+    let queued = f.message("queued-idle", false, true);
+    assert!(f
+        .runtime
+        .owned
+        .release_queued_for_stranded(&f.room, &f.child)
+        .unwrap());
+    let (released, _read) = f
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox_event(queued.sequence)
+        .unwrap()
+        .expect("the message is stored");
+    assert!(released.urgent, "{released:?}");
+    assert!(
+        !f.runtime
+            .owned
+            .release_queued_for_stranded(&f.room, &f.child)
+            .unwrap(),
+        "nothing is left to release"
+    );
+}
+
+/// The agent works: the message stays queued for its next turn.
+#[tokio::test]
+async fn a_message_queued_for_a_working_agent_stays_queued() {
+    let f = Fixture::new();
+    f.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: f.owner.clone(),
+            room: f.room.clone(),
+            agent: f.child.clone(),
+            prompt: "working-turn".into(),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let queued = f.message("queued-working", false, true);
+    assert!(!f
+        .runtime
+        .owned
+        .release_queued_for_stranded(&f.room, &f.child)
+        .unwrap());
+    let (kept, _read) = f
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox_event(queued.sequence)
+        .unwrap()
+        .unwrap();
+    assert!(!kept.urgent, "{kept:?}");
 }
