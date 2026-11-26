@@ -233,7 +233,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         const stdin = await readExecInput(ownStdin(), { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
         try {
           process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
-            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process, kernel: kernel ?? undefined }, send, process.stdout))
         } finally {
           late.stop()
           if (late.arrived) process.stderr.write(`${LATE_STDIN_NOTICE}\n`)

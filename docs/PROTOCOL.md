@@ -6201,6 +6201,7 @@ command is what marks it) removes itself: once the command exited and a
 `read_output` reached its last byte it leaves the list and the store, and when no client read it, 60 s after it
 exited. A `close` that arrives after that answers that the kernel has no such terminal; `chariox exec` treats that as
 closed. That removal only drops the terminal's record: a process that left the command's session (`setsid nohup job &`) keeps running, as it does after the command ends, and stops with its Room, its agent or the kernel; an explicit `close` still ends it. See "Ended terminals" under Room terminals for every other one.
+A dropped link does not end the command: `chariox exec` keeps its terminal and tries the same `wait` or `read_output` again every 2 s (and says so once) until its own `--timeout` runs out, then stops with `exec_link_lost` without closing the terminal, naming it and the `terminal wait|read|close` verbs that find the command's fate; an unread finished command is still dropped 60 s after it exits.
 `chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
 no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
 

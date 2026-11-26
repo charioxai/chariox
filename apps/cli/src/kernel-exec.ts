@@ -14,7 +14,22 @@ const WAIT_CHUNK_MS = 240_000
 // One request carries at most this much input; the kernel enforces the same limit.
 export const MAX_INLINE_STDIN_BYTES = 64 * 1024
 
-export type KernelExecOptions = { command: readonly string[]; directory?: string | undefined; timeoutSeconds: number; stdin?: ProgramInput | undefined; signals?: NodeJS.Process }
+export type KernelExecOptions = {
+  command: readonly string[]; directory?: string | undefined; timeoutSeconds: number; stdin?: ProgramInput | undefined; signals?: NodeJS.Process
+  /** The kernel the command runs on, named in what is said about a dropped link. */
+  kernel?: string | undefined
+  /** The wait between two tries while the link is down. */
+  retryStepMs?: number
+  /** Where the one plain line about a dropped link goes (stderr by default). */
+  notice?: (line: string) => void
+}
+
+// A dropped link between this computer and the kernel does not end the command: the kernel keeps its terminal until it is
+// closed. While the link is down the same request is tried again every this long, until the exec's own --timeout runs out.
+export const EXEC_LINK_RETRY_MS = 2_000
+// The gateway's own answers for a request that did not get through; the command is not known to have stopped.
+const LINK_DROP_CODES = new Set(["kernel_connection_lost", "kernel_request_timeout", "kernel_offline", "kernel_unreachable"])
+const linkDropped = (error: unknown): boolean => LINK_DROP_CODES.has((error as { code?: unknown } | null)?.code as string)
 
 // How long an idle stdin (a pipe nobody writes to, as in an agent's tool shell) is given to show data or its end.
 // A producer that has sent nothing by then is not waited for: pass --stdin to wait for it.
@@ -152,15 +167,39 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
   const onInt = interrupt(2), onTerm = interrupt(15), onHup = interrupt(1)
   options.signals?.on("SIGINT", onInt); options.signals?.on("SIGTERM", onTerm); options.signals?.on("SIGHUP", onHup)
   const sendUntilInterrupted: SendRequest = body => Promise.race([send(body), interrupted])
+  const retryStepMs = options.retryStepMs ?? EXEC_LINK_RETRY_MS
+  const tell = options.notice ?? ((line: string) => { process.stderr.write(`${line}\n`) })
+  let deadline = Number.POSITIVE_INFINITY
+  // The link stayed down past --timeout: the command is not this call's to stop, so the terminal is not closed.
+  let leaveRunning = false
+  // Every request after the terminal is open: a link that drops is waited for, never answered by closing the terminal
+  // (that would end the command whose result is wanted). wait and read_output are by terminal and offset, so a retry is safe.
+  const sendThroughDrops: SendRequest = async body => {
+    let told = false
+    for (;;) {
+      try {
+        return await sendUntilInterrupted(body)
+      } catch (error) {
+        if (!linkDropped(error)) throw error
+        if (signalExit !== undefined) return undefined
+        if (Date.now() >= deadline) { leaveRunning = true; throw linkLost(options, terminalId!, options.timeoutSeconds) }
+        if (!told) { told = true; tell(`link to kernel ${options.kernel ?? "the kernel"} lost, waiting for it; the command keeps running as terminal ${terminalId}`) }
+        let timer: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, retryStepMs) }), interrupted])
+        clearTimeout(timer)
+        if (signalExit !== undefined) return undefined
+      }
+    }
+  }
   try {
     const { terminal } = expectRoomTerminalResult(await send(openRoomTerminalRequest(opening, { cols: COLS, rows: ROWS }, { command: options.command, ...(options.stdin ? { stdin: options.stdin } : {}) })), "opened")
     terminalId = terminal.terminal_id
     if (signalExit !== undefined) return signalExit
-    const deadline = Date.now() + options.timeoutSeconds * 1000
+    deadline = Date.now() + options.timeoutSeconds * 1000
     let ended: unknown
     for (;;) {
       const timeoutMs = Math.max(0, Math.min(WAIT_CHUNK_MS, deadline - Date.now()))
-      const reply = await sendUntilInterrupted(roomTerminalRequest(target, {
+      const reply = await sendThroughDrops(roomTerminalRequest(target, {
         operation: "wait", terminal_id: terminalId, watches: [{ kind: "finished" }] as never, timeout_ms: timeoutMs,
       }))
       if (signalExit !== undefined) return signalExit
@@ -182,7 +221,7 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
       if (body) stdout.write(body.replace(/\r\n/g, "\n"))
     }
     for (;;) {
-      const reply = await sendUntilInterrupted(readRoomTerminalOutputRequest(target, terminalId, offset))
+      const reply = await sendThroughDrops(readRoomTerminalOutputRequest(target, terminalId, offset))
       if (signalExit !== undefined) return signalExit
       const { output } = expectRoomTerminalResult(reply, "output")
       if (output.gap) throw new CommandFailure("kernel_output_lost", "the command wrote more than the terminal keeps; run it in a terminal and read as it goes")
@@ -203,7 +242,7 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
     throw new CommandFailure("exec_failed", `the command did not exit normally (${(status.outcome as { reason?: string } | undefined)?.reason ?? status.state})`)
   } finally {
     try {
-      if (terminalId !== undefined) {
+      if (terminalId !== undefined && !leaveRunning) {
         const openTerminal = terminalId
         // The kernel removes a one-command terminal itself once its output was read to the end, so a close that finds
         // nothing is the expected answer: it counts as closed when the kernel's list no longer holds the terminal. A
@@ -218,6 +257,17 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
       options.signals?.off("SIGINT", onInt); options.signals?.off("SIGTERM", onTerm); options.signals?.off("SIGHUP", onHup)
     }
   }
+}
+
+/** The link stayed down until the exec's own --timeout ran out: say so, and where the command is, without touching it. */
+function linkLost(options: KernelExecOptions, terminalId: string, timeoutSeconds: number): CommandFailure {
+  const kernel = options.kernel ? ` --kernel ${options.kernel}` : ""
+  const named = options.kernel ? `kernel ${options.kernel}` : "the kernel"
+  return new CommandFailure("exec_link_lost",
+    `the link to ${named} was down until the --timeout of ${timeoutSeconds} s ran out. The command was not stopped: it is still running, or has finished, on ${named} as terminal ${terminalId}. ` +
+    `Collect it with chariox terminal wait${kernel} --terminal ${terminalId} and chariox terminal read${kernel} --terminal ${terminalId}, or stop it with chariox terminal close${kernel} --terminal ${terminalId}. ` +
+    `A finished command whose output nobody read is dropped by the kernel 60 s after it ends.`,
+    { terminal_id: terminalId, kernel: options.kernel ?? null, next_step: `chariox terminal wait${kernel} --terminal ${terminalId}` })
 }
 
 async function isGone(send: SendRequest, target: KernelTerminalTarget, terminalId: string): Promise<boolean> {

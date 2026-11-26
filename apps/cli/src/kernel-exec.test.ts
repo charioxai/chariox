@@ -333,17 +333,18 @@ for (const code of ["kernel_connection_lost", "kernel_request_timeout", "kernel_
 }
 
 test("a read_output that fails during a blip is retried from the same offset", async () => {
-  const { sent, send } = kernel("abc\r\n", 0)
+  const { send } = kernel("abc\r\n", 0)
+  const reads: any[] = []
   let dropped = false
   const flaky = async (body: any) => {
+    if (operationOf(body) === "read_output") reads.push(body)
     if (operationOf(body) === "read_output" && !dropped) { dropped = true; throw blip("kernel_connection_lost") }
     return send(body)
   }
   const out = sink()
   assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, flaky, out.stream), 0)
   assert.equal(out.text(), "abc\n")
-  const reads = sent.filter(body => operationOf(body) === "read_output")
-  assert.deepEqual(reads.map(body => body.KernelTerminal.operation.offset ?? body.KernelTerminal.operation.since ?? 0), reads.map(() => reads[0].KernelTerminal.operation.offset ?? reads[0].KernelTerminal.operation.since ?? 0))
+  assert.deepEqual(reads.map(body => body.KernelTerminal.operation.after_offset), [0, 0], "the failed read and its retry ask for the same offset")
 })
 
 test("a link that is down past --timeout is named, the command is not stopped, and its terminal is findable", async () => {
