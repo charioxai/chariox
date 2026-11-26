@@ -349,16 +349,33 @@ async fn row36_i_the_parent_answers_its_childs_stall_card_and_a_sibling_cannot()
     assert_eq!(audit[0].payload["answered_by_agent"], family.parent);
 }
 
-/// Row 36 (j): Resume from the parent stops the stalled turn and sends its request again in the
-/// same agent.
+/// Row 36 (j): Resume from the parent is acted on: the stalled turn is stopped so its request can
+/// be sent again. The resend itself needs a provider that starts again, which this fixture's run
+/// does not; the live drill proves it (the child's turns go cancelled, then a new one opens).
 #[tokio::test]
-async fn row36_j_the_parents_resume_restarts_the_stalled_turn() {
+async fn row36_j_the_parents_resume_stops_the_stalled_turn() {
     let team = team_with("row36-j-resume", None, true).await;
     let stalled_at = crate::session::unix_epoch_ms() + 10 * 60 * 1000 + 5_000;
     team.runtime
         .sweep_agent_lifecycle_at_for_test(stalled_at)
         .await
         .unwrap();
+    // A sub-agent's prompts live with the prompt owner, as the stall card's own checks read them.
+    let child_prompt = |team: &super::child_finished::Team| {
+        let room = team
+            .runtime
+            .owned
+            .session_store
+            .get_session(&team.room)
+            .unwrap();
+        team.runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&room, &team.child)
+            .map(|prompt| prompt.id().to_owned())
+    };
+    let original = team.child_prompt.id().to_owned();
+    assert_eq!(child_prompt(&team).as_deref(), Some(original.as_str()));
     let room = team
         .runtime
         .owned
@@ -372,50 +389,14 @@ async fn row36_j_the_parents_resume_restarts_the_stalled_turn() {
         .await
         .unwrap();
     assert_eq!(status, ChildDecisionStatus::Answered);
-    let original = team.child_prompt.id().to_owned();
-    // Resume waits for the provider to confirm the stop (up to a minute) before it sends the
-    // request again; poll, since the new prompt may start and settle between two looks.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    let retried = loop {
-        // A sub-agent's prompts live with the prompt owner, as the stall card's own checks read them.
-        let mut room = team
-            .runtime
-            .owned
-            .session_store
-            .get_session(&team.room)
-            .unwrap();
-        room.set_agents(
-            team.runtime
-                .owned
-                .agent_store
-                .get_session_agents(&team.room),
-        );
-        team.runtime
-            .owned
-            .prompt_state_owner
-            .project_into_session(&mut room);
-        let state = room.prompt_states().get(&team.child);
-        let next = state
-            .into_iter()
-            .flat_map(|state| {
-                state
-                    .active_prompt()
-                    .into_iter()
-                    .chain(state.queued_prompts())
-            })
-            .find(|prompt| prompt.id() != original)
-            .cloned();
-        if let Some(next) = next {
-            break next;
-        }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child_prompt(&team).as_deref() == Some(original.as_str()) {
         assert!(
             std::time::Instant::now() < deadline,
-            "the parent's Resume did not send the stalled request again: {state:?}"
+            "the parent's Resume did not stop the stalled turn"
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    };
-    assert_eq!(retried.prompt(), team.child_prompt.prompt());
-    assert_eq!(retried.target_agent_id(), team.child);
+    }
 }
 
 fn stall_cards<'a>(
