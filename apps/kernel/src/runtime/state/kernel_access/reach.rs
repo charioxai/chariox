@@ -75,6 +75,8 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     if matches!(
         request,
         LocalDaemonRequest::GetAgentReleaseNotes { .. }
+            // Row 551: an owner's agent restarts a kernel of the owner like the owner does; the restart gate names who may.
+            | LocalDaemonRequest::RestartKernel(_)
             | LocalDaemonRequest::ListGatewayKernels(_)
             | LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
@@ -279,5 +281,17 @@ mod kernel_terminal_tests {
             operation: crate::local::RoomTerminalOperation::List,
         });
         assert_ne!(reach_need(&request), ReachNeed::Room);
+    }
+}
+
+#[cfg(test)]
+mod kernel_restart_tests {
+    use super::*;
+
+    // Row 551: parity with the owner. A restart needs neither a /sudo window nor a card for an agent that may reach the kernel.
+    #[test]
+    fn a_restart_of_a_kernel_needs_no_sudo_window() {
+        let request = LocalDaemonRequest::RestartKernel(crate::local::RestartKernelRequest {});
+        assert_eq!(reach_need(&request), ReachNeed::Room);
     }
 }

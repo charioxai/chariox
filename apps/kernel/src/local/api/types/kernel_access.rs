@@ -276,6 +276,11 @@ pub struct CoveredProcess {
 #[serde(deny_unknown_fields)]
 pub struct ListKernelAccessGrantsRequest {}
 
+/// Row 551: no field; the kernel that receives it restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestartKernelRequest {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevokeKernelAccessGrantRequest {

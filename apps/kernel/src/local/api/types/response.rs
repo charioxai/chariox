@@ -81,6 +81,8 @@ pub enum LocalDaemonResponse {
     HandoffResolved { outcome: HandoffOutcome },
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
+    /// Row 551: the hot reload was prepared; the kernel stops and its program starts again with the same PID.
+    KernelRestarting { hot_reload: bool },
     Notes { result: NoteResult, },
     Dictation { result: DictationResult, },
     VisibleRegionCaptured { capture: VisibleRegionCapture },

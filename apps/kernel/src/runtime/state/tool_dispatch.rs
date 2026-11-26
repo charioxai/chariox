@@ -257,6 +257,7 @@ impl KernelRuntimeState {
             }) {
                 specs.extend(super::kernel_enrollment::kernel_enrollment_tool_specs());
             }
+            specs.push(super::kernel_restart_spec());
         }
         if matches!(provider_runs.as_slice(), [run] if self.agent_result_available(run)) {
             specs.push(super::agent_result::spec());
@@ -427,6 +428,9 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if tool_name == super::kernel_restart_tool::TOOL {
+            return self.kernel_restart_tool(auth_token, arguments).await;
+        }
         if matches!(
             tool_name,
             "chariox.machines.options"
