@@ -322,13 +322,9 @@ fn notify_owner_detached(
 }
 
 fn record_owner_notice(router: &CommandRouter, title: &str, body: String) {
-    let config = router.relay_config_snapshot();
-    let owner = config
-        .cloud_relay
-        .as_ref()
-        .map(|profile| profile.user_id.clone())
-        .filter(|user| !user.is_empty())
-        .unwrap_or_else(|| crate::session::DEFAULT_LOCAL_USER_ID.to_owned());
+    // The kernel's owner holds its accounts under the local identity: the Inbox shows a kernel
+    // notice to whoever acts for that identity, and to no guest.
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID.to_owned();
     let runtime_state = router.runtime_state();
     let created_at_ms = crate::session::unix_epoch_ms();
     let stored = runtime_state.durable_state_store().record_person_notice(
