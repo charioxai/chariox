@@ -76,13 +76,24 @@ impl KernelRuntimeState {
         };
         let pattern = args["match_text"].as_str().map(metadata);
         let cwd = args["cwd"].as_str();
-        Ok(self
-            .owned
-            .durable_state_store
+        let store = &self.owned.durable_state_store;
+        // Only a watch this task can wait on: its own, or one whose task has ended. An earlier
+        // task that still waits keeps its watch (a later wait takes it over at its yield), so
+        // the requester gets a watch of its own as before.
+        let holders = store.agent_tasks(Some(&task.room_id), Some(&task.agent_id))?;
+        let usable = |holder: &str| {
+            holder == task.task_id
+                || holders.iter().any(|t| {
+                    t.task_id == holder
+                        && t.state == crate::durable_state::agent_lifecycle::ExecutionState::Done
+                })
+        };
+        Ok(store
             .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?
             .into_iter()
             .find(|w| {
-                w.kind == "process"
+                usable(&w.task_id)
+                    && w.kind == "process"
                     && matches!(w.state.as_str(), "scheduled" | "starting" | "running")
                     && w.command == argv
                     && w.label == label

@@ -190,3 +190,35 @@ fn c6_an_earlier_wait_whose_source_was_handled_starts_no_turn_at_its_deadline() 
         .collect();
     assert!(timed_out.is_empty(), "{timed_out:?}");
 }
+
+/// A source being cancelled stays with its holder: a later wait neither takes it over nor is
+/// refused because of it, and the sweep does not stop on it.
+#[test]
+fn a_cancelling_process_stays_with_its_holder() {
+    let f = Fixture::new();
+    f.create("proc", "process", None, None);
+    f.apply(Operation::ProcessStarted {
+        id: "proc".into(),
+        pid: 42,
+        now: 20,
+    });
+    f.wait_on(&["proc"]);
+    begin(&f, "q");
+    f.apply(Operation::CancelWake {
+        id: "proc".into(),
+        task: "q".into(),
+        prompt: Some("q".into()),
+        pending: true,
+    });
+    assert_eq!(f.wake("proc").state, "cancelling");
+    f.create_in("q", "new", "timer", Some(30_000_000), None);
+    yield_in(&f, "q", &["new"], 40_000_000);
+    settle_in(&f, "q");
+    assert!(waiting(&f).contains(&"q".to_owned()));
+    // The earlier wait times out beside the newer one: the sweep goes through.
+    sweep(&f, 10_000_001);
+    assert_eq!(
+        task(&f, "q").wait.unwrap().registration_ids,
+        ["completion-new"]
+    );
+}

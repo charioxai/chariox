@@ -21,7 +21,8 @@ fn is_wake_source(tx: &Transaction<'_>, reg: &Registration) -> Result<bool, Daem
     let wake: AgentWake = decode(&payload)?;
     Ok(reg.id == format!("completion-{}", wake.id)
         && matches!(wake.kind.as_str(), "timer" | "process")
-        && wakes::ARMED.contains(&wake.state.as_str()))
+        // A source being cancelled stays with its holder: adoption refuses it until it ends.
+        && matches!(wake.state.as_str(), "scheduled" | "starting" | "running"))
 }
 
 /// The live registrations of `holder`'s wait when it waits on timers and watched processes only

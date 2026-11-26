@@ -92,11 +92,20 @@ async fn c4_a_second_watcher_of_the_same_command_is_the_first() {
             wake,
         })
         .unwrap();
+    // While the earlier task still waits on it, the requester gets a watch of its own: the
+    // earlier registration is not one it can wait on, and its yield takes the earlier wait over.
+    f.wait_on(&first, "completion-unit-watch");
     let second = f.begin(&f.prompt_id);
     let same = serde_json::json!({"label":"farm run","argv":["tail","-f","farm.log"]});
-    let found = f
+    assert!(f
         .runtime
         .process_already_watched(&second, &same)
+        .unwrap()
+        .is_none());
+    // The task that holds the watch reuses it.
+    let found = f
+        .runtime
+        .process_already_watched(&first, &same)
         .unwrap()
         .expect("the same command is already watched");
     assert_eq!(found.id, "unit-watch");
@@ -107,7 +116,7 @@ async fn c4_a_second_watcher_of_the_same_command_is_the_first() {
     ] {
         assert!(
             f.runtime
-                .process_already_watched(&second, &other)
+                .process_already_watched(&first, &other)
                 .unwrap()
                 .is_none(),
             "{other}"
