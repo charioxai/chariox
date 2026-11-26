@@ -149,9 +149,14 @@ const frameOrigin = frame => {
 async function widgetRects(connection, sessionId, tab, ref, child, anchorObjectId, contextId, width, height, anchorRect) {
   return withBrowserFrames(connection, sessionId, tab.target_id, tab.document_id, async frames => {
     const root = frames[0], origins = new Set(), owners = new Map(), rects = new Map();
-    // The page's own frame tree names every direct child frame, whether it renders in the page's process or its own;
-    // a renderer of its own adds the child's full frame record.
-    const direct = (root.tree?.childFrames ?? []).map(({ frame }) => frames.find(entry => entry.frame.id === frame.id)?.frame ?? frame);
+    // A direct child frame is in the page's own frame tree when it renders in the page's process; a cross-process one
+    // (hCaptcha, Turnstile, reCAPTCHA) may be missing there or only a placeholder, and is a renderer of its own whose
+    // parent is the page. Both count, once, with the renderer's full frame record when there is one.
+    const direct = [];
+    for (const frame of [...(root.tree?.childFrames ?? []).map(({ frame }) => frame), ...frames.filter(entry => entry !== root && entry.parent === root).map(entry => entry.frame)]) {
+      if (direct.some(known => known.id === frame.id)) continue;
+      direct.push(frames.find(entry => entry.frame.id === frame.id)?.frame ?? frame);
+    }
     const owner = async frame => {
       if (!owners.has(frame.id)) owners.set(frame.id, (await connection.send('DOM.getFrameOwner', { frameId: frame.id }, root.sessionId)).backendNodeId);
       return owners.get(frame.id);
