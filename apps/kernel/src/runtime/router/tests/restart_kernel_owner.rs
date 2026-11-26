@@ -98,3 +98,40 @@ async fn the_restart_tool_serves_only_a_kernels_own_agents_and_names_a_bad_argum
         "chariox.kernels.restart"
     );
 }
+
+#[tokio::test]
+async fn an_agent_of_another_person_is_refused_at_the_restart_gate() {
+    let router = router();
+    // The agent classes a caller is admitted on say "an agent", not whose: the gate also checks the agent's person.
+    for (class, metaagent) in [
+        (crate::local::KernelConnectionClass::KernelAgent, None),
+        (crate::local::KernelConnectionClass::ExternalAgent, None),
+        (
+            crate::local::KernelConnectionClass::KernelAgent,
+            Some("agent-of-someone-else"),
+        ),
+    ] {
+        let request = restart_request();
+        let mut command =
+            KernelCommand::from_local_request("restart-foreign-agent", None, None, &request);
+        command.caller = command.caller.with_connection_class(class);
+        command.caller.user_id = Some("someone-else".into());
+        command.caller.metaagent_id = metaagent.map(str::to_owned);
+        let refused = router
+            .dispatch(command, request)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !refused.contains("hot reload"),
+            "an agent of another person ({class:?}) never gets as far as the hot reload: {refused}"
+        );
+        // An external agent with no grant here is already stopped by kernel access; a kernel's own agent reaches this gate.
+        if class == crate::local::KernelConnectionClass::KernelAgent {
+            assert!(
+                refused.contains(OWNER_ONLY),
+                "an agent of another person is refused as a stranger: {refused}"
+            );
+        }
+    }
+}

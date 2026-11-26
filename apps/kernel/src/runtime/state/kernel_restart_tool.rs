@@ -72,20 +72,22 @@ impl KernelRuntimeState {
                 "Only the owner of this kernel or its agents can restart it.",
             ));
         };
+        // This kernel or another one: the caller is a running agent of this kernel's owner, by the same reach check the
+        // gateway grant is made from. An agent of another person running here, or a leased agent, has none.
+        let reach = self
+            .reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))
+            .ok_or_else(|| {
+                refuse(
+                    "kernel_restart_owner_only",
+                    "Only a running agent of this kernel's owner can restart a kernel of the owner. Ask the owner to restart it (chariox kernels restart).",
+                )
+            })?;
         if let Some(kernel) = arguments.kernel {
             let command_id = format!("restart-kernel-{:032x}", rand::random::<u128>());
             #[cfg(test)]
             if let Some(grant) = super::job_compute::stand_in_kernel(&kernel) {
                 return restart_through(&*grant, &kernel, command_id).await;
             }
-            let reach = self
-                .reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))
-                .ok_or_else(|| {
-                    refuse(
-                        "kernel_restart_owner_only",
-                        "Only a running agent of the kernel owner can restart another kernel of the owner.",
-                    )
-                })?;
             let router = self.job_router.as_ref().ok_or_else(|| {
                 refuse(
                     "kernel_gateway_unavailable",
