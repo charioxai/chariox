@@ -548,8 +548,15 @@ fn destroying_the_agent_during_the_save_leaves_the_vault_unchanged() {
                 .owned
                 .withdraw_agent_interactions(&f.room, Some(&f.agent))
                 .unwrap();
+            eprintln!(
+                "DIAG after destroy: cards {:?}, task {:?}, wake {:?}",
+                secret_cards(&f),
+                f.task(&task.task_id).state,
+                f.store().agent_wake(&id).unwrap().map(|w| w.state)
+            );
         };
         let ((), answered, ()) = tokio::join!(hold, answer, destroy);
+        eprintln!("DIAG answered: {:?}", answered.as_ref().map(|_| "ok").map_err(|e| e.to_string()));
         assert!(answered.is_err(), "an answer for a withdrawn card is refused");
         assert!(crate::credential::CharioxCredentialRegistry::user()
             .unwrap()
