@@ -242,10 +242,14 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
         reply = await sendThroughDrops(() => readRoomTerminalOutputRequest(target, terminalId!, offset))
       } catch (error) {
         // The kernel removes a finished command's terminal as it answers the read of its last byte. A drop that lost that
-        // answer leaves the retry with "no such terminal": the exit code is known from the wait, the lost page is said plainly.
+        // answer leaves the retry with "no such terminal". The output is incomplete, so this is a failure, never a success
+        // a caller could consume (`exec ... > out && use out`); the command's own exit code is named in it.
         if (!droppedOnRequest || (error instanceof CommandFailure && error.code === "exec_link_lost") || !(await isGone(send, target, terminalId))) throw error
-        tell(`the link dropped while the last page of the output was on its way and the kernel had already cleared the terminal: ${offset} of ${outputEnd} bytes of the output were delivered, the rest was lost; the exit code is the command's own`)
-        break
+        const outcome = (ended as { outcome?: { exit_code?: number | null; signal?: string | null } } | undefined)?.outcome
+        const exitText = typeof outcome?.exit_code === "number" ? `exit code ${outcome.exit_code}` : `signal ${outcome?.signal ?? "unknown"}`
+        throw new CommandFailure("exec_output_lost",
+          `the link dropped while the last page of the command's output was on its way, and the kernel had already cleared the terminal: ${offset} of ${outputEnd} bytes of the output were delivered and the rest was lost. The command itself ended with ${exitText}. Run it again, or write its output to a file on the kernel and fetch that.`,
+          { exit_code: typeof outcome?.exit_code === "number" ? outcome.exit_code : null, signal: outcome?.signal ?? null, delivered_bytes: offset, total_bytes: outputEnd })
       }
       if (signalExit !== undefined) return signalExit
       const { output } = expectRoomTerminalResult(reply, "output")

@@ -454,7 +454,7 @@ test("the pause between tries never runs past --timeout", async () => {
 })
 
 // The kernel removes a finished one-command terminal as it answers the read of its last byte; a drop that loses
-// that answer leaves a retry with "no such terminal". The exit code is known from the wait; the lost page is said plainly.
+// that answer leaves a retry with "no such terminal". The output is incomplete: a failure that names the exit code and the bytes delivered.
 function lostLastPage(text: string, code: number, firstPage: number) {
   const { send } = kernel(text, code)
   const bytes = Buffer.from(text)
@@ -476,19 +476,19 @@ function lostLastPage(text: string, code: number, firstPage: number) {
   }
 }
 
-test("B-1: the last output page lost with the link: the command's exit code comes back and one plain line says so", async () => {
-  const said = lines(), out = sink()
-  const code = await runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: said.notice }, lostLastPage("abc\r\n", 7, 99), out.stream)
-  assert.equal(code, 7)
-  assert.equal(said.seen.filter(line => /last page of the output/.test(line)).length, 1, JSON.stringify(said.seen))
-})
+for (const code of [0, 7]) {
+  test(`B-1: the last output page lost with the link is a failure naming the command's exit code ${code}, never a success`, async () => {
+    const out = sink()
+    await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, lostLastPage("abc\r\n", code, 99), out.stream), (error: unknown) =>
+      error instanceof CommandFailure && error.code === "exec_output_lost" && error.details?.exit_code === code && /last page of the command's output/.test(error.message))
+  })
+}
 
-test("B-2: the plain line says how much of the output was delivered", async () => {
-  const said = lines(), out = sink()
-  const code = await runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: said.notice }, lostLastPage("abcde123", 7, 5), out.stream)
-  assert.equal(code, 7)
+test("B-2: the failure says how much of the output was delivered, and that part was written", async () => {
+  const out = sink()
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, lostLastPage("abcde123", 0, 5), out.stream), (error: unknown) =>
+    error instanceof CommandFailure && error.code === "exec_output_lost" && /5 of 8 bytes/.test(error.message) && error.details?.delivered_bytes === 5 && error.details?.total_bytes === 8)
   assert.equal(out.text(), "abcde")
-  assert.match(said.seen.find(line => /last page of the output/.test(line)) ?? "", /5 of 8 bytes/)
 })
 
 test("a retried read that fails for another reason is still an error, not a lost page", async () => {
