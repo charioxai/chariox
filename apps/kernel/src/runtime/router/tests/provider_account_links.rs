@@ -119,6 +119,7 @@ async fn transferred_directory_link_is_a_target_credential_root() {
         provider_accounts: ManagedContextPackageProviderAccounts::Selected {
             materializations: vec![materialization],
             vault_logins: vec![],
+            vault_seed: None,
         },
         git_credentials: ManagedContextPackageGitCredentials::None,
         event_connections: Default::default(),

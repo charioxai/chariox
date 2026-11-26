@@ -354,6 +354,10 @@ struct KernelRuntimeOwnedState {
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     /// The purpose an agent gave with its machine request, by the service request id, while the owner's card is open.
     acquire_purposes: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+    /// Row 582: machines this kernel acquired that it already asked about while they await their context.
+    agent_install_attempts: Arc<crate::runtime::agent_machine_install::InstallAttempts>,
+    /// Row 582: how this kernel starts the transfer of its owner's logins to such a machine; set once at spawn.
+    agent_install_starter: Arc<std::sync::OnceLock<crate::runtime::agent_machine_install::InstallStarter>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
     sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
     /// What agents are told in their inbox about their commands that wait for room.
@@ -777,9 +781,10 @@ mod slice_runtime_state;
 mod vault_owner_gate;
 mod vault_secret_request;
 pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
+mod agent_install;
 mod vault_carry_hold;
 mod vault_creation;
-mod vault_unlock_request;
+pub(crate) mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;
@@ -1312,6 +1317,8 @@ impl KernelRuntimeState {
                 agent_auth_registrations: Default::default(),
                 sudo_timers: Default::default(),
                 acquire_purposes: Default::default(),
+                agent_install_attempts: Default::default(),
+                agent_install_starter: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
                 sudo_end_wakes: Default::default(),

@@ -25,6 +25,34 @@ type PreLaneRequestFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<LocalDaemonResponse>, DaemonError>> + Send + 'a>>;
 
 impl CommandRouter {
+    /// Row 582: starts, as the owner's own kernel, the transfer a service ticket names: the owner's
+    /// logins go to a machine this kernel acquired.
+    pub(crate) fn start_agent_machine_install(
+        &self,
+        ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket,
+    ) -> Result<(), DaemonError> {
+        execute_managed_context_outbound_request(
+            self.config_projection.snapshot(),
+            Arc::clone(&self.relay_state),
+            self.managed_context_outbound.clone(),
+            self.provider_account_profiles.clone(),
+            self.runtime_state.clone(),
+            OutboundRequester {
+                user_id: crate::session::DEFAULT_LOCAL_USER_ID,
+                session_id: None,
+            },
+            LocalDaemonRequest::StartManagedContextTransfer(Box::new(
+                crate::local::StartManagedContextTransferRequest {
+                    ticket: Some(ticket),
+                    owner_managed: None,
+                    interactive: false,
+                    launch_id: None,
+                },
+            )),
+        )
+        .map(|_| ())
+    }
+
     // Keep unrelated request handlers out of the active router poll frame.
     #[inline(never)]
     pub(super) fn select_pre_lane_request<'a>(

@@ -25,6 +25,8 @@ pub enum ProviderAccountTransferSelection {
     Selected {
         accounts: Vec<ProviderAccountTransferProfile>,
     },
+    /// Row 582: every login of the owner on this kernel.
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -76,6 +76,10 @@ pub enum ManagedContextPackageProviderAccounts {
         materializations: Vec<ProviderAccountMaterialization>,
         /// Profiles whose login is a Vault credential, sealed for the target.
         vault_logins: Vec<VaultLoginMaterialization>,
+        /// Row 582: the source Vault's key, sealed for the target kernel, when the target has no
+        /// Vault of its own yet to write those logins into. The importer creates the Vault from it
+        /// only if none exists, exactly as a client-created Vault would be.
+        vault_seed: Option<Box<crate::secret::VaultKeySeed>>,
     },
 }
 
@@ -85,6 +89,8 @@ pub enum ManagedContextPackageProviderAccounts {
 struct ProviderAccountComponent {
     materializations: Vec<ProviderAccountMaterialization>,
     vault_logins: Vec<VaultLoginMaterialization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vault_seed: Option<Box<crate::secret::VaultKeySeed>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,7 +195,13 @@ pub enum ManagedContextProviderAccountSelection {
     Selected {
         accounts: Vec<ManagedContextProviderAccount>,
     },
+    /// Row 582: every login of the owner on the source kernel. The source resolves it when it
+    /// exports, so the package payload (not the plan) names the accounts that were installed.
+    All,
 }
+
+/// The most logins one `All` install may carry; the component byte bound applies as well.
+pub const MAX_ALL_PROVIDER_ACCOUNTS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -655,6 +667,7 @@ pub fn export_managed_context_package(
                 if !matches!(
                     binding.plan.provider_accounts,
                     ManagedContextProviderAccountSelection::None
+                        | ManagedContextProviderAccountSelection::All
                 ) {
                     return Err(package_error(
                         "managed context package omits the selected provider accounts",
@@ -665,17 +678,24 @@ pub fn export_managed_context_package(
             ManagedContextPackageProviderAccounts::Selected {
                 materializations,
                 vault_logins,
+                vault_seed,
             } => {
                 validate_provider_account_materializations(
                     &binding.plan,
                     &materializations,
                     &vault_logins,
                 )?;
+                if vault_seed.is_some() && vault_logins.is_empty() {
+                    return Err(package_error(
+                        "managed context Vault key seed needs a Vault login to carry",
+                    ));
+                }
                 let account_count = materializations.len() + vault_logins.len();
                 let bytes = serialize_bounded_json(
                     &ProviderAccountComponent {
                         materializations,
                         vault_logins,
+                        vault_seed,
                     },
                     MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES as usize,
                 )?;
@@ -924,8 +944,11 @@ fn require_open_vault_for_carried_logins(
     request: &ManagedContextPackageApplicationRequest,
     extracted: &ExtractedManagedContextPackage,
 ) -> Result<(), DaemonError> {
-    let ManagedContextPackageProviderAccounts::Selected { vault_logins, .. } =
-        &extracted.provider_accounts
+    let ManagedContextPackageProviderAccounts::Selected {
+        vault_logins,
+        vault_seed,
+        ..
+    } = &extracted.provider_accounts
     else {
         return Ok(());
     };
@@ -934,6 +957,14 @@ fn require_open_vault_for_carried_logins(
         ManagedContextPackageKernel::FromKernel(snapshot) if snapshot.payload.vault.is_some()
     );
     match request.provider_account_target.as_ref() {
+        // A Vault seed stands in for an open Vault only while the receiving kernel has none at all.
+        Some(target) if !vault_logins.is_empty() && !installs_vault && vault_seed.is_some() => {
+            if super::target_vault::target_vault_exists(&target.config)? {
+                super::target_vault::require_open_target_vault(&target.config)
+            } else {
+                Ok(())
+            }
+        }
         Some(target) if !vault_logins.is_empty() && !installs_vault => {
             super::target_vault::require_open_target_vault(&target.config)
         }
@@ -1190,18 +1221,29 @@ fn import_provider_accounts(
     ) {
         (
             ManagedContextPackageProviderAccounts::None,
-            ManagedContextProviderAccountSelection::None,
+            ManagedContextProviderAccountSelection::None
+            | ManagedContextProviderAccountSelection::All,
         ) => Ok(ManagedContextImportedProviderAccounts::None),
         (
             ManagedContextPackageProviderAccounts::Selected {
                 materializations,
                 vault_logins,
+                vault_seed,
             },
-            ManagedContextProviderAccountSelection::Selected { .. },
+            ManagedContextProviderAccountSelection::Selected { .. }
+            | ManagedContextProviderAccountSelection::All,
         ) => {
             let target = request.provider_account_target.as_ref().ok_or_else(|| {
                 package_error("managed context provider-account target is unavailable")
             })?;
+            if let Some(seed) = vault_seed {
+                super::target_vault::create_target_vault_from_seed(
+                    &target.config,
+                    seed,
+                    &request.expected_binding.target_kernel_id,
+                    &request.target_private_key,
+                )?;
+            }
             let mut accounts = Vec::with_capacity(materializations.len() + vault_logins.len());
             for materialization in materializations {
                 match target
@@ -1901,6 +1943,7 @@ pub(crate) fn extract_managed_context_package(
             let ProviderAccountComponent {
                 materializations,
                 vault_logins,
+                vault_seed,
             } = serde_json::from_reader::<_, ProviderAccountComponent>(file).map_err(|_| {
                 package_error("managed context provider-account component is invalid")
             })?;
@@ -1914,9 +1957,15 @@ pub(crate) fn extract_managed_context_package(
                 &materializations,
                 &vault_logins,
             )?;
+            if vault_seed.is_some() && vault_logins.is_empty() {
+                return Err(package_error(
+                    "managed context Vault key seed needs a Vault login to carry",
+                ));
+            }
             ManagedContextPackageProviderAccounts::Selected {
                 materializations,
                 vault_logins,
+                vault_seed,
             }
         }
     };
@@ -2132,8 +2181,29 @@ fn validate_manifest(
         &manifest.provider_accounts,
         &manifest.plan.provider_accounts,
     ) {
-        (ProviderAccountComponentManifest::None, ManagedContextProviderAccountSelection::None) => {
-            Ok(())
+        (
+            ProviderAccountComponentManifest::None,
+            ManagedContextProviderAccountSelection::None
+            | ManagedContextProviderAccountSelection::All,
+        ) => Ok(()),
+        (
+            ProviderAccountComponentManifest::Selected {
+                size_bytes,
+                sha256,
+                account_count,
+            },
+            ManagedContextProviderAccountSelection::All,
+        ) => {
+            if *size_bytes == 0
+                || *size_bytes > MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES
+                || *account_count == 0
+                || *account_count > MAX_ALL_PROVIDER_ACCOUNTS
+            {
+                return Err(package_error(
+                    "managed context provider-account component size or count is invalid",
+                ));
+            }
+            validate_sha256(sha256, "provider-account component digest")
         }
         (
             ProviderAccountComponentManifest::Selected {
@@ -2272,7 +2342,8 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
         super::owner_managed::validate_credential_free_plan(plan)?;
     }
     match &plan.provider_accounts {
-        ManagedContextProviderAccountSelection::None => {}
+        ManagedContextProviderAccountSelection::None
+        | ManagedContextProviderAccountSelection::All => {}
         ManagedContextProviderAccountSelection::Selected { accounts } => {
             if accounts.is_empty() || accounts.len() > 16 {
                 return Err(package_error(
@@ -2401,6 +2472,7 @@ fn provider_account_receipts(
     let ManagedContextPackageProviderAccounts::Selected {
         materializations,
         vault_logins,
+        ..
     } = provider_accounts
     else {
         return Ok(Vec::new());
@@ -2431,16 +2503,48 @@ fn provider_account_receipts(
     Ok(receipts)
 }
 
+/// An `All` plan names no accounts, so the payload is the list: one to `MAX_ALL_PROVIDER_ACCOUNTS`
+/// logins, none twice.
+fn validate_all_provider_account_payloads(
+    materializations: &[ProviderAccountMaterialization],
+    vault_logins: &[VaultLoginMaterialization],
+) -> Result<(), DaemonError> {
+    let count = materializations.len() + vault_logins.len();
+    if count == 0 || count > MAX_ALL_PROVIDER_ACCOUNTS {
+        return Err(package_error(
+            "managed context provider-account payload does not match the selection count",
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let profiles = materializations
+        .iter()
+        .map(|materialization| &materialization.profile)
+        .chain(vault_logins.iter().map(|login| &login.profile));
+    for profile in profiles {
+        if !seen.insert((profile.provider.as_str(), profile.profile_id.as_str())) {
+            return Err(package_error(
+                "managed context provider-account payload repeats an account",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_provider_account_materializations(
     plan: &ManagedContextPlanBinding,
     materializations: &[ProviderAccountMaterialization],
     vault_logins: &[VaultLoginMaterialization],
 ) -> Result<(), DaemonError> {
-    let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts
-    else {
-        return Err(package_error(
-            "managed context package includes unselected provider accounts",
-        ));
+    let accounts = match &plan.provider_accounts {
+        ManagedContextProviderAccountSelection::All => {
+            return validate_all_provider_account_payloads(materializations, vault_logins);
+        }
+        ManagedContextProviderAccountSelection::Selected { accounts } => accounts,
+        ManagedContextProviderAccountSelection::None => {
+            return Err(package_error(
+                "managed context package includes unselected provider accounts",
+            ));
+        }
     };
     if materializations.len() + vault_logins.len() != accounts.len() {
         return Err(package_error(

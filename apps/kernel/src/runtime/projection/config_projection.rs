@@ -78,10 +78,18 @@ impl DaemonConfigProjectionStore {
     }
 
     pub(crate) fn update(&self, config: DaemonConfig) {
-        *self
-            .config
-            .lock()
-            .expect("daemon config projection lock should not be poisoned") = config.clone();
+        let enrollment_changed = {
+            let mut current = self
+                .config
+                .lock()
+                .expect("daemon config projection lock should not be poisoned");
+            let changed = current.cloud_relay != config.cloud_relay;
+            *current = config.clone();
+            changed
+        };
+        if enrollment_changed {
+            crate::runtime::cloud_machine_notices::enrollment_changed();
+        }
         let observers = self
             .observers
             .lock()
