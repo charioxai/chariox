@@ -1,6 +1,6 @@
 {
-  "local": 1015,
-  "peer": 452,
+  "local": 1016,
+  "peer": 453,
   "properties": {
     "chariox.events.subscriptions": ["include_history", "origin_prompt_id", "other_tasks_cursor", "registrations_cursor", "task_id"],
     "chariox.list_session_agents": ["agents_cursor", "include_history", "obligations_cursor", "task_id", "tasks_cursor"]

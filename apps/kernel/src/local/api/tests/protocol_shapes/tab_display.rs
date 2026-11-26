@@ -57,7 +57,7 @@ fn row487_display_resize_rebind_1015_shape_is_pinned() {
     let bytes = include_bytes!("browser-display-resize-rebind-1015.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "daf86abf26a27b768a02779b96aa2de17da52557db00ab46d50884407d12001e"
+        "f3e82970293cca21f22130eebfae28942579c149028e495b56253d894d1cd251"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

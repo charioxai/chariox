@@ -2062,7 +2062,7 @@ fn mp08_local_browser_expires_in_1014_snapshot_and_hash() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "0ee74b1d63a400c4cf59bfd3c0f8510354a169a6fd41efe896fdce4902fe18bd"
+        "fd9388475635b050b58e67bc7ee557f3d5c8b93788a25f0a3b3701dac2b6d3cd"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(
