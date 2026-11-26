@@ -169,6 +169,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
                         | "profiles"
                         | "settings"
                         | "resume"
+                        | "parent"
                 )
             ) =>
         {

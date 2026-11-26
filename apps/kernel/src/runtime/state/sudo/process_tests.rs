@@ -1121,6 +1121,7 @@ async fn a_sub_agent_requests_one_owner_access_card_with_its_own_identity() {
         f.state
             .set_agent_parent(
                 "local",
+                None,
                 crate::local::SetAgentParentRequest {
                     session_id: room_id.clone(),
                     agent_id: child_id.to_owned(),

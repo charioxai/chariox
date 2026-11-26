@@ -69,6 +69,7 @@ impl Tree {
         self.runtime
             .set_agent_parent(
                 USER,
+                None,
                 crate::local::SetAgentParentRequest {
                     session_id: self.room.clone(),
                     agent_id: agent.into(),
@@ -490,6 +491,7 @@ async fn a_move_can_extend_a_long_chain_but_cannot_close_a_cycle() {
     let place = |agent: &str, parent: &str| {
         t.runtime.set_agent_parent(
             USER,
+            None,
             crate::local::SetAgentParentRequest {
                 session_id: t.room.clone(),
                 agent_id: agent.into(),

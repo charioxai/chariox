@@ -5,6 +5,7 @@ use crate::transport::runtime_tools::RuntimeToolResult;
 
 mod destructive_children;
 mod owner_delete;
+mod owner_parent;
 mod reply_size;
 mod waiting_children;
 
@@ -262,7 +263,8 @@ async fn set_parent() {
         agent_id: world.ids["d"].clone(),
         parent_agent_id: Some(world.ids["peer"].clone()),
     });
-    for who in ["a", "b", "peer", "q"] {
+    // An agent of the Room has the owner's reach; an agent of another Room has none.
+    for who in ["a", "b", "peer"] {
         assert!(
             world
                 .router
@@ -279,6 +281,21 @@ async fn set_parent() {
             "{who} was refused a move of the owner's agent"
         );
     }
+    let outsider = world
+        .router
+        .runtime_state
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.session_id() == world.other_room)
+        .unwrap();
+    assert!(
+        world
+            .router
+            .runtime_state
+            .authorize_room_agent_request(outsider.id(), &request)
+            .is_err(),
+        "an agent of another Room does not"
+    );
     let mut command = KernelCommand::from_local_request("user-set-parent", None, None, &request);
     command.caller = command
         .caller
