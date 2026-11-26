@@ -222,8 +222,8 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
                 name: sudo::SUDO_TOOL.into(),
-                description: "Act as the owner on this kernel or, with kernel, on another of the owner's kernels: no /sudo, card or passkey needed. Submit a LocalDaemonRequest using its case-sensitive externally tagged JSON: for example {\"request\":{\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}} or {\"request\":{\"ListProjects\":{\"include_archived\":false}},\"kernel\":\"KERNEL\"}. Do not use method/params or type fields. Payments and secrets stay with the owner: opening the Vault, raw credentials, provider logins, pairing links and relay tokens are refused.".into(),
-                input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"},"kernel":{"type":"string","description":"Another kernel of the owner, by name or id (ListGatewayKernels lists them). Leave out for this kernel."}},"additionalProperties":false}),
+                description: "Act as the owner on this kernel or, with kernel, another of the owner's kernels; no /sudo, card or passkey. Submit a LocalDaemonRequest as case-sensitive externally tagged JSON, e.g. {\"request\":{\"ListSessions\":null}}; never method/params or type fields. Refused: payments, opening the Vault, raw credentials, provider logins, pairing links, relay tokens.".into(),
+                input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"},"kernel":{"type":"string","description":"Another owner kernel, by name or id (ListGatewayKernels); omit for this one."}},"additionalProperties":false}),
             });
             specs.push(super::vault_generate::vault_generate_spec());
             specs.extend(super::visual::visual_tool_specs());
