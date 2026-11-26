@@ -75,14 +75,54 @@ fn systemd_restart_supervisor() -> Option<String> {
     if user {
         command.arg("--user");
     }
-    let output = command
+    command
         .args(["show", "--property=Restart", "--value", &unit])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .output()
-        .ok()?;
+        .env_clear();
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    for (key, value) in systemctl_environment(user, uid, |key| std::env::var_os(key)) {
+        command.env(key, value);
+    }
+    let output = match command.output() {
+        Ok(output) if output.status.success() => output,
+        failed => {
+            crate::logging::warn_with_fields(
+                "kernel.wedge_watchdog",
+                "the systemd unit's restart policy could not be read; the kernel treats itself as unsupervised",
+                serde_json::json!({
+                    "unit": unit,
+                    "user_unit": user,
+                    "error": match &failed {
+                        Ok(output) => String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                        Err(error) => error.to_string(),
+                    },
+                }),
+            );
+            return None;
+        }
+    };
     let policy = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     restarts_after_failed_exit(&policy).then(|| format!("systemd unit {unit} (Restart={policy})"))
+}
+
+/// What `systemctl` needs to reach its manager: a user unit's manager is found through the user
+/// bus (`XDG_RUNTIME_DIR`, or `/run/user/<uid>` when it is unset, and `DBUS_SESSION_BUS_ADDRESS`).
+pub(crate) fn systemctl_environment(
+    user: bool,
+    uid: u32,
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    let mut environment = vec![("PATH", std::ffi::OsString::from("/usr/bin:/bin"))];
+    if user {
+        environment.push((
+            "XDG_RUNTIME_DIR",
+            get("XDG_RUNTIME_DIR").unwrap_or_else(|| format!("/run/user/{uid}").into()),
+        ));
+        if let Some(bus) = get("DBUS_SESSION_BUS_ADDRESS") {
+            environment.push(("DBUS_SESSION_BUS_ADDRESS", bus));
+        }
+    }
+    environment
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -415,6 +455,45 @@ mod tests {
         assert!(restarts_after_failed_exit("always"));
         assert!(!restarts_after_failed_exit("no"));
         assert!(!restarts_after_failed_exit("on-abnormal"));
+    }
+
+    /// Review P1 (b325d8c): `systemctl --user` reaches the user manager only through the user bus.
+    #[test]
+    fn a_user_unit_lookup_keeps_the_user_bus() {
+        let from = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| std::ffi::OsString::from(value))
+            }
+        };
+        let kept = systemctl_environment(
+            true,
+            1000,
+            from(&[
+                ("XDG_RUNTIME_DIR", "/run/user/1000"),
+                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+                ("CHARIOX_HOME", "/home/u/.chariox"),
+            ]),
+        );
+        assert_eq!(
+            kept,
+            vec![
+                ("PATH", "/usr/bin:/bin".into()),
+                ("XDG_RUNTIME_DIR", "/run/user/1000".into()),
+                (
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "unix:path=/run/user/1000/bus".into()
+                ),
+            ]
+        );
+        let derived = systemctl_environment(true, 1000, from(&[]));
+        assert_eq!(derived[1], ("XDG_RUNTIME_DIR", "/run/user/1000".into()));
+        assert_eq!(
+            systemctl_environment(false, 0, from(&[("XDG_RUNTIME_DIR", "/run/user/0")])),
+            vec![("PATH", "/usr/bin:/bin".into())]
+        );
     }
 
     #[test]
