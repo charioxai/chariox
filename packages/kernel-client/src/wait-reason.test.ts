@@ -108,5 +108,5 @@ test("W7 nothing armed reads idle, never waiting", () => {
 test("row 36 (g): a long tool call reads running <tool> since its start, never waiting or stalled", () => {
   const liveness: AgentLiveness = { waiting_on: { kind: "tool", detail: "Bash", since_ms: Date.parse("2026-11-24T04:40:00Z") } }
   assert.equal(text(liveness), "running Bash since 04:40 (20 min)")
-  assert.equal(agentStatusLine({ state: "working", liveness }, NOW, { timeZone: "UTC" }), "running Bash since 04:40 (20 min)")
+  assert.equal(agentStatusLine({ state: "running", liveness }, NOW, { timeZone: "UTC" }), "running Bash since 04:40 (20 min)")
 })
