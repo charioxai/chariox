@@ -7,7 +7,7 @@ fn folded_answer_receipt_snapshot_and_hash() {
     let bytes = include_bytes!("folded-answer-1013.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "0f4f1acc5b7aa8cc21e44c5f1115219f7aba8943a31ade7dde7aca806814c759"
+        "f2b855730351c4eafe9a2c99fde59af3bf85d1b73e4022554a184889e5c78951"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["protocol_version"], LOCAL_DAEMON_PROTOCOL_VERSION);

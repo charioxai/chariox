@@ -1,5 +1,5 @@
 {
-  "protocol_version": 1015,
+  "protocol_version": 1017,
   "relay_peer_protocol_version": 452,
   "inline": {
     "KernelTerminal": {

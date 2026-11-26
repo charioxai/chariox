@@ -221,3 +221,27 @@ fn machine_approval_receipts_in_the_session_shape_and_hash() {
         "94e6a5f1c1c3e7d97ff0d57122df03ce00d2c42ca8b96c376e50fb3604b9d12b"
     );
 }
+
+/// Local 1017: a machine row may carry the class, region, creation time and hard stop the service lists,
+/// and a status request without an allocation_ref lists the owner's machines.
+#[test]
+fn machine_list_1017_shapes_and_hash() {
+    let snapshot = serde_json::json!({"requests":[{"ControlPlane":{"action":"list"}},{"MachineAcquisition":{"action":"status"}}],"responses":[{"ControlPlane":{"result":{"kind":"machines","machines":[
+        {"allocation_ref":"resource","name":"Computer","state":"ready","revision":1,"since":"2026-11-22T00:00:00Z","kernel_id":null,"machine_id":null,"available_actions":["release"],"class_id":"small","region":"north","created_at":"2026-11-21T12:00:00Z","hard_stop_at":"2026-11-22T01:00:00Z"},
+        {"allocation_ref":"older","name":"Computer 2","state":"ready","revision":1,"since":"2026-11-22T00:00:00Z","kernel_id":null,"machine_id":null,"available_actions":["release"]}],"saved_states":[]}}}]});
+    for shape in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(shape.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *shape);
+    }
+    for shape in snapshot["responses"].as_array().unwrap() {
+        let response: LocalDaemonResponse = serde_json::from_value(shape.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), *shape);
+    }
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "cbcaa821b538dcd51d626060628c3d8330e9c92598004a343e4c03613d3fa579"
+    );
+}

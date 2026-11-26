@@ -708,7 +708,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
         ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without it the first option in stock is acquired. A named option out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire without asking: within the owner's limits (allowed classes, machines at once, daily spending; service limits always apply) it goes ahead with no card (the Room records class, rate and cost); outside them the owner's card says why and the call waits up to 5 minutes for it. Returns allocation_ref, machine type and terms; poll status until access is available, then reach the kernel with Room commands. timeout_s is the machine's hard stop: the service stops the machine then; release earlier when done. Reuse request_id when retrying after a lost response, a timeout or a refusal: it keeps the first try's option and returns the allocation the service accepted. Use a new one only when a refusal says the service closed the old one. Say in purpose, in one line, what the machine is for; the card shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"}}),serde_json::json!([]))),
-        ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
+        ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. Without allocation_ref it lists every live allocation of the owner: ref, class, region, state, created, hard stop. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
 }
@@ -768,7 +768,7 @@ impl KernelRuntimeState {
                 purpose: args.purpose.clone(),
             },
             "chariox.machines.status" => MachineAcquisitionRequest::Status {
-                allocation_ref: allocation_ref()?,
+                allocation_ref: args.allocation_ref.clone(),
             },
             "chariox.machines.release" => MachineAcquisitionRequest::Release {
                 allocation_ref: allocation_ref()?,
@@ -913,7 +913,27 @@ impl KernelRuntimeState {
                     estimate: MachineAcquisitionEstimate::unknown(),
                 })
             }
-            MachineAcquisitionRequest::Status { allocation_ref } => {
+            MachineAcquisitionRequest::Status {
+                allocation_ref: None,
+            } => {
+                let crate::local::ControlPlaneResponse::Machines { machines, .. } =
+                    plane(ControlPlaneRequest::List {}, "machines:list".into()).await?
+                else {
+                    return Err(acquisition_error(
+                        "invalid_response",
+                        "The service returned no allocation list",
+                    ));
+                };
+                Ok(MachineAcquisitionResult::Machine(
+                    crate::local::ControlPlaneResponse::Machines {
+                        machines: machines.into_iter().filter(|m| m.state != "deleted").collect(),
+                        saved_states: Vec::new(),
+                    },
+                ))
+            }
+            MachineAcquisitionRequest::Status {
+                allocation_ref: Some(allocation_ref),
+            } => {
                 Ok(MachineAcquisitionResult::Machine(
                     plane(
                         ControlPlaneRequest::Get {

@@ -5,7 +5,7 @@ fn account_kernel_directory_protocol_shapes_and_hash() {
     let bytes = include_bytes!("account-kernels-1015.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "78078683c4803aebdc5b2bfa5bb0363684029c282ca75008c7f884d3cb37da1b"
+        "235a6386130e2feb5a4131865c49ff04828c930b1dce0093aca23c8fb7f5c0af"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

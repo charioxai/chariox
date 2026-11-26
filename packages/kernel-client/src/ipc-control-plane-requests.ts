@@ -38,6 +38,7 @@ export function controlPlaneRequest(request: ControlPlaneRequest) { return { Con
 export type ControlPlaneMachineRow = {
   allocation_ref: string; name: string; state: string; revision: number; since: string;
   kernel_id: string | null; machine_id: string | null; available_actions: string[]
+  class_id?: string; region?: string; created_at?: string; hard_stop_at?: string
 }
 export type ControlPlaneSavedStateRow = {
   saved_state_ref: string; allocation_ref: string; name: string; state: string;
