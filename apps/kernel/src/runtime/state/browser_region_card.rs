@@ -26,7 +26,7 @@ enum PageChangeFlow {
 }
 
 /// Row 546 (Miguel's D3 decision, row 78): the person's step goes on across navigations of the card's own Tab.
-/// A restart (plain cards only) or a navigation keeps the card pending; it ends by the person's choice, the agent's
+/// A restart or a navigation keeps the card pending; it ends by the person's choice, the agent's
 /// cancel, its page-text condition, or its Tab closing. A verification's proof belongs to one document: on the new
 /// page the card stays pending without it (it re-arms only if the agent raises or updates the card for that page).
 fn keeps_card_pending(
@@ -41,9 +41,9 @@ fn keeps_card_pending(
     // A card that waits for page text or a proof is observed as unavailable, a plain card as condition met.
     let waiting = previous.done_text.is_some() || previous.verification.is_some();
     match reason {
-        // After a restart the card's proof is lost, so a card waiting for text or a proof is unavailable (unchanged).
-        "Browser restarted" => !waiting && !waiting_for_text,
-        "Browser document changed" => waiting == waiting_for_text,
+        // A restart (a hot reload is a planned one) and a navigation keep the card the same way: the person must not notice
+        // either. A card waiting for text goes on waiting on the page that came back; a proof is lost with the old document.
+        "Browser restarted" | "Browser document changed" => waiting == waiting_for_text,
         _ => false,
     }
 }
@@ -739,14 +739,15 @@ mod tests {
             false,
             true
         ));
-        // A restart keeps only a plain card (its text proof is lost with the old document).
+        // Row 548 (D3-7): a hot reload or restart is a planned upgrade the person must not notice, so it keeps every person
+        // card pending: a card waiting for text goes on waiting on the page that came back.
         assert!(keeps_card_pending(
             "Browser restarted",
             &plain,
             false,
             false
         ));
-        assert!(!keeps_card_pending(
+        assert!(keeps_card_pending(
             "Browser restarted",
             &waiting,
             false,
@@ -760,11 +761,13 @@ mod tests {
             false,
             true
         ));
+        // Its proof is lost with the old document across a restart too; the card stays pending without it.
+        assert!(keeps_card_pending("Browser restarted", &proof, false, true));
         assert!(!keeps_card_pending(
             "Browser restarted",
-            &proof,
-            false,
-            true
+            &plain,
+            true,
+            false
         ));
         assert!(!keeps_card_pending(
             "Browser document changed",
