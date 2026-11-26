@@ -242,7 +242,10 @@ async fn c1_a_child_started_before_the_grant_works_once_approved() {
     let after = timeout(Duration::from_secs(5), call(&kernel, "early", None))
         .await
         .expect("no answer within 5 s");
-    assert!(after["error"].is_null(), "early child still refused: {after}");
+    assert!(
+        after["error"].is_null(),
+        "early child still refused: {after}"
+    );
     assert!(inspect(early).is_ok());
 }
 
@@ -258,9 +261,15 @@ async fn c1b_a_child_orphaned_before_the_grant_is_outside_the_tree_and_stays_ref
     orphaned(early, holder.child.id()).await;
     let _grant = grant(&mut kernel, &mut holder).await;
     let after = call(&kernel, "early", None).await;
-    assert_eq!(after["error"]["code"], "kernel_access_not_covered", "{after}");
+    assert_eq!(
+        after["error"]["code"], "kernel_access_not_covered",
+        "{after}"
+    );
     let named = holder.cover(early);
-    assert_eq!(named["error"]["code"], "kernel_access_cover_outside", "{named}");
+    assert_eq!(
+        named["error"]["code"], "kernel_access_cover_outside",
+        "{named}"
+    );
 }
 
 #[tokio::test]
@@ -286,7 +295,10 @@ async fn c2_a_process_outside_the_holders_tree_stays_refused_with_the_same_messa
     let _early = holder.background("early");
     let _grant = grant(&mut kernel, &mut holder).await;
     let refused = stranger.request(serde_json::json!({"GetSessionState": {"session_id": SESSION}}));
-    assert_eq!(refused["error"]["code"], "kernel_access_not_covered", "{refused}");
+    assert_eq!(
+        refused["error"]["code"], "kernel_access_not_covered",
+        "{refused}"
+    );
     let message = refused["error"]["message"].as_str().unwrap();
     assert!(message.contains("chariox access cover --pid"), "{message}");
     assert!(message.contains("chariox access request"), "{message}");
@@ -303,7 +315,10 @@ async fn c3_a_child_started_after_the_grant_works_as_before() {
     orphaned(late, holder.child.id()).await;
     // Not named by `cover`, so once its parent is gone it is refused as before.
     let after = call(&kernel, "late", None).await;
-    assert_eq!(after["error"]["code"], "kernel_access_not_covered", "{after}");
+    assert_eq!(
+        after["error"]["code"], "kernel_access_not_covered",
+        "{after}"
+    );
 }
 
 #[tokio::test]

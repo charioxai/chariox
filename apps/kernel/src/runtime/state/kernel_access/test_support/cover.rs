@@ -566,7 +566,10 @@ fn holder_with_early_and_late_children(dir: &std::path::Path) -> ProcessIdentity
     assert!(status.success());
     let started = Instant::now();
     while !dir.join("ready").exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "holder not ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "holder not ready"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     let pid = std::fs::read_to_string(dir.join("holder")).unwrap();
@@ -599,7 +602,13 @@ fn adopted_processes_use_no_named_cover_and_their_exit_frees_none() {
     let state = router.runtime_state();
     let mut access = state.owned.kernel_access.lock().unwrap();
     state
-        .admit_grant(&mut access, "cover".into(), summary(&holder), holder.clone(), None)
+        .admit_grant(
+            &mut access,
+            "cover".into(),
+            summary(&holder),
+            holder.clone(),
+            None,
+        )
         .unwrap();
     let adopted = access.grants["cover"].adopted.clone();
     assert!(adopted.len() >= 2, "{adopted:?}");
@@ -612,11 +621,25 @@ fn adopted_processes_use_no_named_cover_and_their_exit_frees_none() {
     let late = late_pids(root.path());
     for pid in &late[..16] {
         state
-            .cover_kernel_access_process(&holder, None, &CoverKernelAccessProcessRequest { pid: *pid, start: None })
+            .cover_kernel_access_process(
+                &holder,
+                None,
+                &CoverKernelAccessProcessRequest {
+                    pid: *pid,
+                    start: None,
+                },
+            )
             .unwrap();
     }
     let refused = state
-        .cover_kernel_access_process(&holder, None, &CoverKernelAccessProcessRequest { pid: late[16], start: None })
+        .cover_kernel_access_process(
+            &holder,
+            None,
+            &CoverKernelAccessProcessRequest {
+                pid: late[16],
+                start: None,
+            },
+        )
         .unwrap_err();
     assert!(
         crate::runtime::kernel_access::Refusal::exact(&refused)
@@ -639,14 +662,27 @@ fn a_restart_keeps_adopted_and_named_covers_apart() {
         let state = router.runtime_state();
         let mut access = state.owned.kernel_access.lock().unwrap();
         state
-            .admit_grant(&mut access, "cover".into(), summary(&holder), holder.clone(), None)
+            .admit_grant(
+                &mut access,
+                "cover".into(),
+                summary(&holder),
+                holder.clone(),
+                None,
+            )
             .unwrap();
         let adopted = access.grants["cover"].adopted.clone();
         drop(access);
         std::fs::write(root.path().join("go"), "").unwrap();
         let late = late_pids(root.path());
         state
-            .cover_kernel_access_process(&holder, None, &CoverKernelAccessProcessRequest { pid: late[0], start: None })
+            .cover_kernel_access_process(
+                &holder,
+                None,
+                &CoverKernelAccessProcessRequest {
+                    pid: late[0],
+                    start: None,
+                },
+            )
             .unwrap();
         state.end_kernel_access_for_shutdown().unwrap();
         adopted

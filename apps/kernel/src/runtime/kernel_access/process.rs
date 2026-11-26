@@ -530,7 +530,9 @@ mod tests {
         assert!(descendants(&grandchild).is_empty());
         let _ = child.kill();
         let _ = child.wait();
-        let _ = std::process::Command::new("kill").arg(grandchild.pid.to_string()).status();
+        let _ = std::process::Command::new("kill")
+            .arg(grandchild.pid.to_string())
+            .status();
     }
 
     #[test]

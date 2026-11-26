@@ -122,7 +122,9 @@ impl KernelRuntimeState {
             // Recorded before it is live, as for a named cover.
             if target.uid == holder.uid
                 && reached
-                && self.audit_cover(grant, &target, "covered", Some(ADOPTED)).is_ok()
+                && self
+                    .audit_cover(grant, &target, "covered", Some(ADOPTED))
+                    .is_ok()
             {
                 covered.push(target);
             }
