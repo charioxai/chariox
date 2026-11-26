@@ -25,10 +25,11 @@ enum PageChangeFlow {
     Done,
 }
 
-/// Row 546 (Miguel's D3 decision, row 78): the person's step goes on across navigations of the card's own Tab.
-/// A restart or a navigation keeps the card pending; it ends by the person's choice, the agent's
-/// cancel, its page-text condition, or its Tab closing. A verification's proof belongs to one document: on the new
-/// page the card stays pending without it (it re-arms only if the agent raises or updates the card for that page).
+/// Rows 546 and 548 (Miguel's D3 decision, row 78): a person card survives a navigation of its own Tab and any kernel
+/// restart, hot or cold, whenever its Tab is restored. It ends by the person's choice, the agent's cancel, its page-text
+/// condition, or its Tab closing; and, with a plain reason, only when its Tab cannot be restored (the page cannot be shown
+/// again within the observation budget). A verification's proof belongs to one document: on the new page the card stays
+/// pending without it (it re-arms only if the agent raises or updates the card for that page).
 fn keeps_card_pending(
     reason: &str,
     previous: &RuntimeInteractionBrowserRegion,
@@ -720,9 +721,11 @@ mod tests {
         }
     }
 
-    /// Row 546: a navigation of the card's own Tab is the page moving on inside the person's step, not the step ending.
+    /// Rows 546 and 548: a navigation of the card's own Tab or a kernel restart is not the person's step ending: every person
+    /// card is kept, whatever it waits for.
     #[test]
-    fn a_navigation_of_the_cards_own_tab_keeps_a_person_card_pending() {
+    fn a_navigation_or_a_restart_keeps_every_person_card_pending_until_its_tab_cannot_be_restored()
+    {
         let plain = region(None, false);
         let waiting = region(Some("Welcome home"), false);
         let proof = region(None, true);

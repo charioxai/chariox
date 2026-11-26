@@ -88,7 +88,7 @@ test('an App confirmation region is found by the host in the Tab document, never
   assert.equal(calls.includes('DOM.getDocument'), false, 'the base fake never saw the confirmation query');
 }));
 
-test('a plain card is bound again to the whole page after the browser restarted, and one that waits for a proof is not', () => withHost(async ({ host, snapshot, region, state }) => {
+test('after a browser restart a person card is bound again to the whole page (a plain card by the restart notice, a card that waits for text or a proof by unavailable "Browser restarted"); a rebind never carries a proof', () => withHost(async ({ host, snapshot, region, state }) => {
   await snapshot();
   const first = await region({ card_id: 'person-card' });
   assert.equal(first.state, 'present');
@@ -192,7 +192,7 @@ test('546 a second navigation while the card is being rebound leaves it rebindab
   assert.equal(again.state, 'present');
   assert.equal(again.region.document_id, 'doc-3');
 }));
-test('a verification card whose proof was lost with the restart settles unavailable, never as a completed card', () => withHost(async ({ host, snapshot, region }) => {
+test('a verification card whose proof was lost with the restart reports unavailable "Browser restarted" (the kernel keeps the card and rebinds it without the proof), never a completed card', () => withHost(async ({ host, snapshot, region }) => {
   const verification = { challenge_id: 'challenge-one', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
   await snapshot();
   const first = await region({ card_id: 'verification', verification });
@@ -203,7 +203,7 @@ test('a verification card whose proof was lost with the restart settles unavaila
   host.cardReferences.clear(); host.cardAnchors.clear();
   // The recovered card polls with the old generation and its verification condition.
   const lost = await region({ card_id: 'verification', verification, generation: 1, document_id: 'doc' });
-  assert.equal(lost.state, 'unavailable', 'a lost proof is reported to the waiting agent, not settled as success');
+  assert.equal(lost.state, 'unavailable', 'a lost proof is reported as unavailable, never as success; the kernel keeps the card pending and rebinds it');
   assert.equal(lost.reason, 'Browser restarted');
   // The same poll for a plain card is still the restart notice the kernel rebinds from.
   const plain = await region({ card_id: 'plain', generation: 1, document_id: 'doc' });

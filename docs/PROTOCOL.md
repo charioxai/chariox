@@ -7268,7 +7268,8 @@ only when geometry changes or its one-second idle timeout expires. Child-frame b
 use the shared frame ownership walk and frame-owner affine transforms; their geometry
 refresh is bounded to 100 ms. Only changed metadata publishes a new card projection.
 The existing wake scheduler reattaches card watchers after recovery. A removed element,
-replaced document or retired browser reference resolves the ordinary question once with
+replaced document or retired browser reference (a navigation of the card's own Tab or a kernel restart excepted,
+see below) resolves the ordinary question once with
 `choice_id: "condition_met"` and a kernel-written reason. The same condition reaches the
 durable inbox for `wait:false` and the blocked tool for `wait:true`.
 Revoked browser access instead resolves `status: "unavailable"`, no choice id, and
@@ -7286,8 +7287,19 @@ Local 1011 / relay peer 448 add the optional `done_text` (1 to 200 characters) t
 `browser_region` and to the projected region. The card resolves `condition_met` when that text
 shows in the watched element. The host follows a same-document replacement of the element by its
 unique id, as it does for a verification card. If the element is lost before the text shows
-(removed, replaced without that id, document changed), the card resolves `status: "unavailable"`,
-never `condition_met`. `browser-done-text-1011.json` pins the shape.
+(removed, replaced without that id), the card resolves `status: "unavailable"`, never `condition_met`;
+a navigation of the card's own Tab or a kernel restart is not that loss (see the next paragraph).
+`browser-done-text-1011.json` pins the shape.
+
+Rows 546 and 548 (no shape change): a person card on a browser region survives a navigation of its own
+Tab and any kernel restart, hot or cold, whenever its Tab is restored. The kernel binds the same card (same
+id, same request, same audience) to the page that came back; a card with `done_text` goes on waiting for its
+text on that page (it completes if the text is already there), and a verification card stays pending without
+its proof, which belonged to one document and is re-armed only if the agent raises or updates the card. The
+card ends, with a plain reason, only when its Tab cannot be restored: the Tab closes, or the page cannot be
+shown again within the 15 second observation budget ("Browser restarted and the page could not be shown
+again; take a fresh snapshot and ask again"). The agent is then told `status: "unavailable"` with no choice
+id, never `condition_met`. App confirmations are not person steps on a page and keep their own rules.
 
 Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
