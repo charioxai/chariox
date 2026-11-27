@@ -1028,9 +1028,15 @@ async fn restart_with_pending_steer(
     let (active, _) = prompt_owner.state_parts(&session, agent.id());
 
     // A restart keeps only what was persisted: rebuild the session from its
-    // durable records, with no reservation or claim of this process.
+    // durable records, with no reservation or claim of this process. The
+    // process's firing task ends with it; aborting the wrapper alone would leave
+    // that task to settle the occurrence a second time after the restart.
     dispatching.abort();
     let _ = dispatching.await;
+    router
+        .runtime_state
+        .end_trigger_firings_as_a_stop_would()
+        .await;
     let private: crate::session::DurablePromptPrivateState = serde_json::from_value(
         serde_json::to_value(
             crate::session::DurablePromptPrivateState::from_prompt(session.id(), &in_flight)

@@ -21,6 +21,9 @@ pub(super) struct TriggerFirings {
     running: Arc<AtomicUsize>,
     idle: Arc<Notify>,
     queues: Arc<std::sync::Mutex<AgentQueues>>,
+    /// The runner tasks, so a test can end them as the end of the process would.
+    #[cfg(test)]
+    tasks: Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>>,
 }
 
 impl Default for TriggerFirings {
@@ -30,6 +33,8 @@ impl Default for TriggerFirings {
             running: Arc::default(),
             idle: Arc::default(),
             queues: Arc::default(),
+            #[cfg(test)]
+            tasks: Arc::default(),
         }
     }
 }
@@ -143,11 +148,19 @@ impl KernelRuntimeState {
                 continue;
             };
             let state = self.clone();
-            tokio::spawn(async move {
+            let runner_task = tokio::spawn(async move {
                 while let Some((dispatch, now_ms)) = state.trigger_firings.next(&mut runner) {
                     state.fire_and_settle_agent_trigger(&dispatch, now_ms).await;
                 }
             });
+            #[cfg(test)]
+            self.trigger_firings
+                .tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(runner_task.abort_handle());
+            #[cfg(not(test))]
+            drop(runner_task);
         }
     }
 
@@ -177,6 +190,23 @@ impl KernelRuntimeState {
     #[cfg(test)]
     pub(crate) async fn trigger_firings_settled(&self) {
         self.trigger_firings.settled().await;
+    }
+
+    /// Ends every firing task where it stands, as the end of the process does: nothing it
+    /// was waiting for settles afterwards. Returns once the tasks are gone.
+    #[cfg(test)]
+    pub(crate) async fn end_trigger_firings_as_a_stop_would(&self) {
+        let tasks = std::mem::take(
+            &mut *self
+                .trigger_firings
+                .tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for task in tasks {
+            task.abort();
+        }
+        self.trigger_firings_settled().await;
     }
 
     /// Fires every due trigger and waits for the firings to end.
