@@ -1261,11 +1261,92 @@ fn card_fill(field: &str, payment: Option<&Value>) -> Value {
     args
 }
 
+/// Fields the product fills with machine-made numbers: ids, sequence numbers, clocks and
+/// timeouts. A four-digit code can sit inside any of them by chance, so a scan for the code skips
+/// exactly these values and nothing else.
+fn is_volatile_key(key: &str) -> bool {
+    key == "id"
+        || key == "sequence"
+        || key == "timestamp"
+        || key == "ts"
+        || key.ends_with("_id")
+        || key.ends_with("_ids")
+        || key.ends_with("_at")
+        || key.ends_with("_at_ms")
+        || key.ends_with("_ms")
+        || key.ends_with("_sec")
+}
+
+/// `value` without the values of volatile keys. The skipped values are checked on their own:
+/// they must not be the card code and must not contain the card number.
+fn without_volatile(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, value)| {
+                    if is_volatile_key(key) {
+                        let text = value.to_string();
+                        assert!(
+                            !text.contains(CARD_NUMBER) && text.trim_matches('"') != CARD_CODE,
+                            "card data in a machine-made field {key}"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .map(|(key, value)| (key.clone(), without_volatile(value)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_volatile).collect()),
+        other => other.clone(),
+    }
+}
+
+/// No card data in an output: neither the card number nor the security code appears anywhere in
+/// it as plain text, next to any other character or digit (the check before the L14 union), except
+/// inside the values of machine-made keys (see `is_volatile_key`), which the product fills with
+/// timestamps and ids that can contain the four digits by chance.
 fn no_card_data(text: &str) {
+    let scanned = match serde_json::from_str::<Value>(text) {
+        Ok(value) => without_volatile(&value).to_string(),
+        Err(_) => text.to_owned(),
+    };
     assert!(
-        !text.contains(CARD_NUMBER) && !text.contains(CARD_CODE),
+        !scanned.contains(CARD_NUMBER) && !scanned.contains(CARD_CODE),
         "card data in an output"
     );
+}
+
+#[test]
+fn card_data_is_found_anywhere_but_in_machine_made_fields() {
+    // Machine-made numbers may carry the four digits by chance.
+    no_card_data(
+        r#"{"id":"prompt-7316ab","created_at_ms":1795731674123,"timeout_sec":17316,"x":"ok"}"#,
+    );
+    no_card_data(r#"{"events":[{"sequence":17316,"detail":"filled"}]}"#);
+    // Every other place is scanned as plain text, as before: alone, glued to digits or letters.
+    for leak in [
+        r#"{"detail":"7316"}"#,
+        r#"{"detail":"73161234"}"#,
+        r#"{"detail":"x17316"}"#,
+        r#"{"detail":"code7316"}"#,
+        r#"{"detail":4242424242424242}"#,
+        r#"{"nested":[{"note":"a 7316 b"}]}"#,
+        "not json 17316",
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| no_card_data(leak)).is_err(),
+            "{leak}"
+        );
+    }
+    // A machine-made field is no place for the code or the number either.
+    for leak in [r#"{"id":"7316"}"#, r#"{"created_at":4242424242424242}"#] {
+        assert!(
+            std::panic::catch_unwind(|| no_card_data(leak)).is_err(),
+            "{leak}"
+        );
+    }
 }
 
 /// Runs a card use; when it asks the owner, answers with `choice` and, after an Allow, runs it again.

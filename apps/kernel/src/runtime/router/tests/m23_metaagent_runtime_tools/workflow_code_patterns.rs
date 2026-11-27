@@ -768,9 +768,12 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
         .await
         .expect_err("a workflow must refuse an entry agent after its deadline");
     assert!(crate::error::is_agent_deadline_refusal(&refused));
-    assert!(refused
-        .to_string()
-        .contains("Start a new agent for new work"));
+    let refusal_text = refused.to_string();
+    assert!(
+        refusal_text.contains("`agent deadline <agent> <duration|none>`")
+            && refusal_text.contains("start a new agent for new work"),
+        "the refusal names both ways on: {refusal_text}"
+    );
     {
         let app = router.app.lock().await;
         let current = app.sessions().get_session(session.id()).unwrap();
