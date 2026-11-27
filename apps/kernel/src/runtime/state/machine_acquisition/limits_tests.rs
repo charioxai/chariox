@@ -165,11 +165,17 @@ async fn service(machines: u32, spend: u64) -> Service {
                         }
                     }
                     "acquire" => {
-                        acquires.lock().unwrap().push(request.clone());
+                        // Like the service: a request_id it accepted answers with its own allocation.
+                        let mut seen = acquires.lock().unwrap();
+                        let known = seen.iter().position(|r| r["request_id"] == request["request_id"]);
+                        let n = known.unwrap_or_else(|| {
+                            seen.push(request.clone());
+                            seen.len() - 1
+                        }) + 1;
                         (
                             200,
                             serde_json::json!({"kind":"machine","revision":1,"available_actions":[],
-                                "allocation_ref":format!("alloc-{}", acquires.lock().unwrap().len()),
+                                "allocation_ref":format!("alloc-{n}"),
                                 "state":"creating","kernel_target":null,
                                 "access_state":"pending","access_reason":null})
                             .to_string(),

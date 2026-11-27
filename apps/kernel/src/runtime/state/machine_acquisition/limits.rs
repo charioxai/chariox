@@ -290,11 +290,13 @@ impl KernelRuntimeState {
         description: String,
     ) -> Result<String, DaemonError> {
         let (room, owner, agent) = (&caller.room, &caller.owner, caller.agent.as_deref());
+        // Every ask is its own card: one that was answered or withdrawn is never reopened by the same words.
         let id = format!(
-            "{LIMITS_CARD_PREFIX}{:x}",
+            "{LIMITS_CARD_PREFIX}{:x}-{:016x}",
             sha2::Sha256::digest(
                 format!("{room}\0{}\0{seed}", agent.unwrap_or_default()).as_bytes()
-            )
+            ),
+            rand::random::<u64>()
         );
         let name = agent
             .and_then(|agent| self.owned.agent_store.get_agent(agent).ok())
