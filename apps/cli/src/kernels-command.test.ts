@@ -440,3 +440,48 @@ test("a process the kernel cannot confirm, inside an agent's shell, is told what
     names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index] })
   }
 })
+
+// `chariox exec` end to end against a fake kernel over the real websocket and the real per-request timer (sendWithin): the
+// kernel answers a wait the way the real one does, shortly AFTER the wait's own timeout_ms.
+const execThroughFakeKernel = async (timeoutSeconds: number, onWait: (socket: WebSocket, frame: FakeKernelFrame, waitMs: number) => void) => {
+  const terminal = (status: unknown) => ({ terminal_id: "t1", scope: "kernel", output_offset: 0, status })
+  const operations: string[] = []
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, { response: { GatewayKernelsListed: {} } })
+    const body = frame.request.KernelTerminal as { operation: { operation: string; timeout_ms?: number } }
+    const operation = body.operation.operation
+    operations.push(operation)
+    const answer = (result: unknown) => replyWith(socket, frame, { response: { RoomTerminal: { result } } })
+    if (operation === "open") return answer({ result: "opened", terminal: terminal({ state: "running" }) })
+    if (operation === "wait") return onWait(socket, frame, body.operation.timeout_ms ?? 0)
+    if (operation === "list") return answer({ result: "listed", terminals: [] })
+    answer({ result: "closed" })
+  })
+  const written: string[] = []
+  const write = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true }) as typeof process.stderr.write
+  const code = process.exitCode
+  const started = Date.now()
+  try {
+    await runKernelsCommand(["exec", "--kernel", "b3", "--timeout", String(timeoutSeconds), "--stdin-file", "/dev/null", "--socket", kernel.path, "--", "sleep", "40"])
+  } finally { process.stderr.write = write; process.exitCode = code; await kernel.close() }
+  return { operations, stderr: written.join(""), seconds: (Date.now() - started) / 1000 }
+}
+
+test("exec: a command still running at --timeout is stopped and reported as such, not as a lost link", async () => {
+  const notFired = (socket: WebSocket, frame: FakeKernelFrame, waitMs: number) => setTimeout(() => replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "waited", waited: {
+    fired: null, terminal: { terminal_id: "t1", scope: "kernel", output_offset: 0, status: { state: "running" } }, screen_text: "", output_offset: 0 } } } } }), waitMs + 150)
+  const run = await execThroughFakeKernel(1, notFired)
+  assert.match(run.stderr, /still running after 1 s and was stopped/)
+  assert.doesNotMatch(run.stderr, /exec_link_lost|was not stopped/)
+  assert.deepEqual(run.operations, ["open", "wait", "close"], "the terminal is closed, which ends the command")
+})
+
+test("exec: a link that is really down until --timeout still reports a lost link and leaves the command running", async () => {
+  const dropped = (socket: WebSocket) => socket.terminate()
+  const run = await execThroughFakeKernel(1, dropped)
+  assert.match(run.stderr, /"code":"exec_link_lost"/)
+  assert.match(run.stderr, /The command was not stopped/)
+  assert.ok(!run.operations.includes("close"), "no close: the command is left running")
+})
