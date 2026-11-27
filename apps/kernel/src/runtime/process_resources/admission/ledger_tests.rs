@@ -3474,3 +3474,137 @@ fn a_command_that_peaked_heavy_waits_while_a_job_of_unknown_peak_holds_the_pool(
     ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
     assert_eq!(wait(&shell, 8), None);
 }
+
+/// Row 541 round 2: a run the OS's out-of-memory killer may have cut off leaves
+/// no peak to start the next run from; a run that ended with no OS kill does.
+#[test]
+fn a_peak_reached_while_the_os_was_killing_processes_is_not_kept() {
+    let capture = crate::logging::capture::start();
+    let run = |kills_at_end: u64, key: u64| {
+        TEST_OS_OOM_KILLS.with(|kills| kills.set(Some(kills_at_end)));
+        let mut ledger = Ledger::new(None);
+        let current = owner(
+            "agent",
+            true,
+            Vec::new(),
+            vec![(
+                key as u32,
+                Entry {
+                    peak: heavy(73 * GIB),
+                    os_oom_kills: Some(5),
+                    ..entry(key, heavy(0))
+                },
+            )],
+        );
+        ledger.register(&current, 512 * MIB);
+        ledger
+            .peaks
+            .get(&format!("key-{key}"))
+            .map(|peak| peak.memory)
+    };
+    assert_eq!(run(5, 9), Some(73 * GIB), "an ordinary end keeps its peak");
+    assert_eq!(run(6, 10), None, "a peak cut off by the OS kill was kept");
+    assert!(
+        capture
+            .records()
+            .iter()
+            .any(|line| line.contains("admission forgot")
+                && line.contains("killing processes for lack of memory")),
+        "the decision is not logged"
+    );
+    TEST_OS_OOM_KILLS.with(|kills| kills.set(None));
+}
+
+/// Row 541 round 2: a run the OS's out-of-memory killer may have cut off, ending
+/// at a persistent shell's prompt, leaves no peak for the next run.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shells_command_cut_off_by_the_os_leaves_no_peak() {
+    let capture = crate::logging::capture::start();
+    TEST_OS_OOM_KILLS.with(|kills| kills.set(Some(7)));
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    let shell = 4_100_500u32;
+    let at = |effective: u32, resident: u64| {
+        let mut command = command(shell, resident, 0);
+        command.effective = effective;
+        command
+    };
+    let show = |commands: Vec<pool::CommandUse>| terminal.lock().unwrap().commands = commands;
+    // The sampler registers every tick: a command line unreadable for a
+    // moment (a process mid-exec) is read on the next one.
+    let register = |ledger: &mut Ledger| {
+        for _ in 0..200 {
+            ledger.register(&terminal, 512 * MIB);
+            if terminal
+                .lock()
+                .unwrap()
+                .admission
+                .get(&shell)
+                .is_some_and(|entry| {
+                    entry
+                        .seen
+                        .as_ref()
+                        .is_some_and(|seen| seen.line.starts_with("sleep"))
+                })
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the command line was never read");
+    };
+    // The child has exec'd the program once its command line names it.
+    let started = |child: &std::process::Child| {
+        for _ in 0..500 {
+            let line = std::fs::read(format!("/proc/{}/cmdline", child.id())).unwrap_or_default();
+            if line.starts_with(b"sleep") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("sleep did not start");
+    };
+    let mut first = std::process::Command::new("sleep")
+        .arg("5410")
+        .spawn()
+        .unwrap();
+    started(&first);
+    show(vec![at(first.id(), 3 * GIB)]);
+    register(&mut ledger);
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    ledger.pass(
+        &[other.clone(), terminal.clone()],
+        &terminal,
+        &healthy(40 * GIB, &*volume),
+    );
+    assert_eq!(wait(&terminal, shell), None, "the first run fits");
+    // The OS kills a process while the run goes on, then the run ends.
+    TEST_OS_OOM_KILLS.with(|kills| kills.set(Some(8)));
+    first.kill().unwrap();
+    first.wait().unwrap();
+    // The shell is back at its prompt.
+    show(vec![at(shell, 10 * MIB)]);
+    ledger.register(&terminal, 512 * MIB);
+    let key = seen_argv(
+        0,
+        &["sleep".to_string(), "5410".to_string()],
+        std::env::current_dir().ok(),
+    )
+    .key;
+    assert_eq!(
+        ledger.peaks.get(&key).map(|peak| peak.memory),
+        None,
+        "a peak the OS may have cut off was kept"
+    );
+    assert!(
+        capture
+            .records()
+            .iter()
+            .any(|line| line.contains("admission forgot")
+                && line.contains("killing processes for lack of memory")),
+        "the decision is not logged"
+    );
+    TEST_OS_OOM_KILLS.with(|kills| kills.set(None));
+}

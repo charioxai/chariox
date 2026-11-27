@@ -33,7 +33,7 @@ const FILLER_SETTLE: Duration = Duration::from_secs(2);
 /// Miguel 11-24: 5 s to full. A volume that its free space says is within this many seconds
 /// of full at the rate it is losing room is short of room now, whatever its floor: a
 /// runaway copy fills gigabytes in seconds (docs/PROCESS_RESOURCES.md).
-const FILL_HORIZON_SECONDS: u64 = 5;
+pub(super) const FILL_HORIZON_SECONDS: u64 = 5;
 /// Miguel 11-24: 128 MiB/s. An agent command writing this fast is a runaway (the memory
 /// runaway rate): within the fill horizon the fastest of them is stopped, and no slower
 /// writer is.
@@ -138,6 +138,11 @@ pub(super) struct Entry {
     /// the wait, and these lines are what the command, its agent and its pane
     /// are told in place of the generic wait lines.
     pub exhaustion: Option<ExhaustionNote>,
+    /// The system's count of OS out-of-memory kills when it arrived. When the
+    /// count has grown by the time it ends, the OS may have killed it: the
+    /// peak it reached is where it was cut off, not a size to start it from.
+    /// `None` when unknown (arrived before a hot reload, or not Linux).
+    os_oom_kills: Option<u64>,
 }
 
 /// What an exhaustion pause tells, now and when it ends.
@@ -159,6 +164,14 @@ pub(super) struct Filling {
     pub full_in: Option<u64>,
 }
 impl Entry {
+    /// The OS's out-of-memory killer killed something since this run began, so
+    /// the peak it reached may be where it was cut off, not what it needs.
+    fn os_may_have_cut_it_off(&self) -> bool {
+        self.os_oom_kills
+            .zip(os_oom_kills())
+            .is_some_and(|(arrived, now)| now > arrived)
+    }
+
     /// It waits from now on, for the reason `wait` names.
     fn wait_for(&mut self, wait: Wait) {
         if self.wait.is_none() {
@@ -708,6 +721,22 @@ impl Ledger {
                 }
                 continue;
             };
+            // Row 541 (2026-11-26): the OS killed a 72.9 GB run, and the next run
+            // was started because that peak "fitted". A peak the OS cut off is
+            // a lower bound; the next run starts unknown, and only a pause or
+            // the runaway horizon can stop its growth.
+            if entry.os_may_have_cut_it_off() {
+                if heavy {
+                    entry.decision(
+                        pid,
+                        "forgot",
+                        WaitReason::Memory,
+                        "it ended while the system was killing processes for lack of memory, so the peak it reached is not a size to start it from",
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                continue;
+            }
             let kept = self.peaks.record(
                 &seen.key,
                 Peak {
@@ -779,6 +808,7 @@ impl Ledger {
                         vacant.insert(Entry {
                             arrived: self.arrivals,
                             holdable,
+                            os_oom_kills: os_oom_kills(),
                             ..Entry::default()
                         })
                     }
@@ -798,16 +828,18 @@ impl Ledger {
                         && inspect(seen.pid).is_err()
                 })
             {
-                let kept = entry.seen.as_ref().is_some_and(|seen| {
-                    self.peaks.record(
-                        &seen.key,
-                        Peak {
-                            exact: seen.exact,
-                            ..entry.peak.clone()
-                        },
-                        light,
-                    )
-                });
+                let cut_off = entry.os_may_have_cut_it_off();
+                let kept = !cut_off
+                    && entry.seen.as_ref().is_some_and(|seen| {
+                        self.peaks.record(
+                            &seen.key,
+                            Peak {
+                                exact: seen.exact,
+                                ..entry.peak.clone()
+                            },
+                            light,
+                        )
+                    });
                 if entry.peak.memory >= light {
                     entry.decision(
                         command.pid,
@@ -815,6 +847,8 @@ impl Ledger {
                         WaitReason::Memory,
                         if kept {
                             "its run ended at the shell's prompt; its peak is kept, so the next run waits when the pool cannot fit it"
+                        } else if cut_off {
+                            "its run ended at the shell's prompt while the system was killing processes for lack of memory, so the peak it reached is not a size to start it from"
                         } else {
                             "its run ended at the shell's prompt; its peak was not kept"
                         },
@@ -825,6 +859,7 @@ impl Ledger {
                 *entry = Entry {
                     arrived: self.arrivals,
                     holdable: entry.holdable,
+                    os_oom_kills: os_oom_kills(),
                     ..Entry::default()
                 };
             }
@@ -1828,6 +1863,34 @@ fn number(
             };
         }
     }
+}
+
+/// How many processes the OS's out-of-memory killer has killed so far
+/// (`oom_kill` of `/proc/vmstat`).
+#[cfg(all(target_os = "linux", not(test)))]
+fn os_oom_kills() -> Option<u64> {
+    std::fs::read_to_string("/proc/vmstat")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("oom_kill "))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[cfg(all(not(target_os = "linux"), not(test)))]
+fn os_oom_kills() -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_OS_OOM_KILLS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn os_oom_kills() -> Option<u64> {
+    TEST_OS_OOM_KILLS.with(std::cell::Cell::get)
 }
 
 pub(super) fn light(ceiling: u64) -> u64 {
