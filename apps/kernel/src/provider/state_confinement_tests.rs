@@ -824,10 +824,40 @@ fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
     if unsafe { libc::geteuid() } == 0 && !crate::test_support::test_binary_allows_other_execute() {
         return;
     }
+    // The child is an ordinary user. Under scripts/check-test-temp.sh the parent's TMPDIR is a
+    // root-owned 0700 directory the child cannot enter, so a root parent gives the child its own
+    // temporary root (world-traversable, removed when this guard drops). A non-root parent's
+    // TMPDIR already belongs to the same user as its child.
+    struct ChildTemp(Option<std::path::PathBuf>);
+    impl Drop for ChildTemp {
+        fn drop(&mut self) {
+            if let Some(path) = self.0.take() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+    let child_temp = ChildTemp(if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::fs::PermissionsExt as _;
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::path::PathBuf::from(format!(
+            "/tmp/chariox-route3-guard-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("the child's temporary root");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+            .expect("the child's temporary root must be writable by an ordinary user");
+        Some(dir)
+    } else {
+        None
+    });
     let mut probe = std::process::Command::new("/proc/self/exe");
     probe
         .args([NAME, "--nocapture", "--test-threads=1"])
         .env(CHILD, "1");
+    if let Some(dir) = &child_temp.0 {
+        probe.env("TMPDIR", dir);
+    }
     // SAFETY: only async-signal-safe libc calls between fork and exec.
     unsafe {
         probe.pre_exec(|| {
