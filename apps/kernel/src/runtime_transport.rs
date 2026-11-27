@@ -697,6 +697,9 @@ where
             "reserved_interactive_requests": RESERVED_INTERACTIVE_REQUESTS,
         }),
     );
+    // Row 678: a self-restart is told to the owner; then the kernel watches for the next wedge.
+    crate::runtime::kernel_wedge_watchdog::report_self_restart(&router);
+    crate::runtime::kernel_wedge_watchdog::start(Arc::clone(&router));
 
     tokio::pin!(shutdown);
 

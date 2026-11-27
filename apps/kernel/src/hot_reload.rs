@@ -1396,6 +1396,34 @@ pub async fn request_restart() -> Result<(), String> {
     }
 }
 
+/// `request_restart` for a thread outside the runtime (the kernel's own watchdog): the same
+/// request and wait. It cannot use the runtime's timer, which may be what stopped advancing.
+pub(crate) fn request_restart_from_thread() -> Result<(), String> {
+    let Some(requests) = RESTART_REQUESTS.get() else {
+        return Err("hot reload is unavailable on this kernel".into());
+    };
+    let mut reply = enqueue_restart(requests)?;
+    let deadline = Instant::now() + request_wait();
+    loop {
+        match reply.try_recv() {
+            Ok(result) => return result,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                return Err("the kernel is already stopping".into())
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+        }
+        if Instant::now() >= deadline {
+            return Err("the hot reload did not prepare in time".into());
+        }
+        std::thread::sleep(RESTART_REPLY_GRACE);
+    }
+}
+
+/// How long the kernel's own watchdog waits for a prepared reload to replace the program.
+pub(crate) fn reload_patience() -> Duration {
+    request_wait()
+}
+
 /// Queues a restart request with its deadline, fixed now.
 fn enqueue_restart(
     requests: &tokio::sync::mpsc::UnboundedSender<RestartRequest>,
@@ -1426,6 +1454,19 @@ async fn prepare(
     handover_path: &std::path::Path,
     requested_deadline: Option<Instant>,
 ) -> Result<Vec<(TerminalHandover, OwnedFd)>, String> {
+    crate::logging::info_with_fields(
+        "hot_reload",
+        "hot reload requested; preparing",
+        serde_json::json!({ "deadline_ms": requested_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()).as_millis()) }),
+    );
+    // Row 678: a preparation that stops advancing is named from the stall watchdog's own thread,
+    // so a reload that cannot proceed is never silent, even when this task is no longer polled.
+    let progress = crate::runtime::stall_watchdog::progress_watch(
+        "hot_reload",
+        "hot_reload_prepare",
+        VERIFY_TIMEOUT,
+    );
+    progress.stage("check the new kernel program", VERIFY_TIMEOUT);
     let start = START.get().ok_or("the kernel program path is unknown")?;
     let file_deadline = take_reload_deadline(handover_path);
     let deadline = match (file_deadline, requested_deadline) {
@@ -1434,6 +1475,10 @@ async fn prepare(
     };
     verify(start).await?;
     loop {
+        progress.stage(
+            "wait for running turns to reach a safe point",
+            requested_reload_patience(),
+        );
         if let Some(busy) = BUSY_TURNS.get() {
             wait_for_safe_point(
                 busy.as_ref(),
@@ -1444,6 +1489,7 @@ async fn prepare(
             )
             .await?;
         }
+        progress.stage("hand over running terminals", VERIFY_TIMEOUT);
         let handing = terminals.clone();
         let handed = match tokio::task::spawn_blocking(move || handing.hand_over()).await {
             Ok(Ok(handed)) => handed,

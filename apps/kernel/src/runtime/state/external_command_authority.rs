@@ -45,8 +45,11 @@ impl KernelRuntimeState {
         operation: impl FnOnce(&mut crate::DaemonApp) -> Result<R, DaemonError>,
     ) -> Result<R, DaemonError> {
         self.authorize_current_external_command()?;
+        let holder = crate::runtime::app_lock::operation_name(&operation);
         self.with_app_side_effect(|app| {
             self.authorize_current_external_command()?;
+            // The watchdog names the caller's operation, not this wrapper.
+            let _held = crate::runtime::app_lock::mark_holder(holder);
             operation(app)
         })
         .await

@@ -208,6 +208,8 @@ impl OwnedInbox {
                     room_owner == Some(&owner)
                         || (owner == account_owner && provider_account::action(notice).is_some())
                         || (notice.is_workflow_relink() && (show_relink || room_owner.is_some()))
+                        // The kernel's own notices go to the person it acts for, never to a guest.
+                        || (owner == account_owner && notice.is_kernel_notice())
                 }));
             state.snoozes.extend(owned.snoozes);
             state.mutes.extend(
@@ -274,17 +276,18 @@ impl OwnedInbox {
                 .sessions
                 .iter()
                 .find(|session| session.id() == notice.session_id);
-            let (session_id, agent_name) = if notice.is_workflow_relink() {
-                (
-                    room.map_or(WORKFLOW_RELINK_ORIGIN, RuntimeSession::id),
-                    Some("The kernel".to_owned()),
-                )
-            } else {
-                (
-                    notice.session_id.as_str(),
-                    room.and_then(|session| session.agent_display_name(&notice.agent_id)),
-                )
-            };
+            let (session_id, agent_name) =
+                if notice.is_workflow_relink() || notice.is_kernel_notice() {
+                    (
+                        room.map_or(WORKFLOW_RELINK_ORIGIN, RuntimeSession::id),
+                        Some("The kernel".to_owned()),
+                    )
+                } else {
+                    (
+                        notice.session_id.as_str(),
+                        room.and_then(|session| session.agent_display_name(&notice.agent_id)),
+                    )
+                };
             let (title, body, folded) = if notice.is_workflow_start_refusal() {
                 let body = notice
                     .body
