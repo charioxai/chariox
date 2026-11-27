@@ -488,3 +488,36 @@ async fn the_owner_runs_the_same_request_and_gets_the_same_result() {
     }
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_privileged_run_cut_inside_the_password_returns_no_start_of_it() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    with_fake_sudo(&f, SECRET);
+    let handle = sudo_entry(&f, "cut", SECRET, &origin(&f)).await;
+    // The fake sudo writes "typed <password>\n" first; stderr is collected up to
+    // 1 MiB and 12 bytes of the password the command prints fall before that limit.
+    let typed = "typed \n".len() + SECRET.len();
+    let before = (1 << 20) - 12 - typed;
+    let (start, end) = SECRET.split_at(10);
+    let script = format!(
+        "head -c {before} /dev/zero | tr '\\0' x >&2; printf '%s%s' '{start}' '{end}' >&2; echo more >&2; exit 5"
+    );
+    let used = call(
+        &f,
+        RUN,
+        json!({"credential_id": handle, "argv": ["/bin/sh", "-c", script]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(used["exit_code"], 5);
+    assert_eq!(used["truncated"], true);
+    let stderr = used["stderr"].as_str().unwrap();
+    assert!(stderr.ends_with("xxx"), "{}", &stderr[stderr.len() - 40..]);
+    assert!(!used.to_string().contains(&SECRET[..6]));
+    let turn = f.run.session_id().to_string();
+    let session = serde_json::to_string(&f.state.owned.session_snapshot(&turn).unwrap()).unwrap();
+    assert!(!session.contains(&SECRET[..6]));
+    f.state.shutdown_cleanup().await.unwrap();
+}

@@ -194,8 +194,8 @@ impl KernelRuntimeState {
         if let Some(refusal) = sudo_refusal(&output, &run.machine.name) {
             return Err(error(refusal));
         }
-        let (stdout, stdout_cut) = masked(&output.stdout, &masks);
-        let (stderr, stderr_cut) = masked(&output.stderr, &masks);
+        let (stdout, stdout_cut) = masked(&output.stdout, &masks, output.truncated);
+        let (stderr, stderr_cut) = masked(&output.stderr, &masks, output.truncated);
         Ok(crate::local::PrivilegedRunOutcome {
             status: status.into(),
             exit_code,
