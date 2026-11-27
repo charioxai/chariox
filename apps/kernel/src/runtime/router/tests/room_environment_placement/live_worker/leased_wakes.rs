@@ -1416,13 +1416,21 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
             },
         )
     };
-    let sibling_reach = format!(
-        "reach:{}",
-        crate::provider::projected_leased_provider_run_id(
-            &sibling_context.leased_agent_id,
-            &sibling_context.worker_provider_run_id,
-        )
+    let sibling_run_id = crate::provider::projected_leased_provider_run_id(
+        &sibling_context.leased_agent_id,
+        &sibling_context.worker_provider_run_id,
     );
+    let sibling_reach = format!("reach:{sibling_run_id}");
+    let gateway_request =
+        crate::local::LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
+            include_archived: false,
+        });
+    // The gateway API folds reach refusals into a generic error. Pair its
+    // denial with the same identity admitted at home so a stale run cannot pass.
+    let sibling_home_gateway = fixture
+        .home
+        .runtime_state
+        .authorize_gateway_request(&sibling_reach, &gateway_request);
     // This fixture has no Cloud owner relationship. Preserve that transport
     // authority at the gateway entry, just as the real relay call below does.
     let gateway = fixture.home.runtime_state.with_relay_peer_authority(
@@ -1433,12 +1441,8 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
             owners_kernel: false,
         },
     );
-    let sibling_gateway = gateway.authorize_gateway_request(
-        &sibling_reach,
-        &crate::local::LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
-            include_archived: false,
-        }),
-    );
+    let sibling_worker_reach = gateway.reach_caller_for_run(&sibling_run_id);
+    let sibling_gateway = gateway.authorize_gateway_request(&sibling_reach, &gateway_request);
     let sibling_secret = gateway.authorize_gateway_request(
         &sibling_reach,
         &crate::local::LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Reveal {
@@ -1529,9 +1533,17 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         "the home refuses an unelevated leased turn the worker forwards: {sibling_call:?}"
     );
     assert!(
-        sibling_gateway
+        sibling_home_gateway.is_ok(),
+        "control: the sibling's live identity reaches the ordinary gateway at home: {sibling_home_gateway:?}"
+    );
+    assert!(
+        sibling_worker_reach
             .as_ref()
             .is_err_and(|error| error.to_string().contains("owner's own workers")),
+        "the same live identity is refused because the worker is not the owner's: {sibling_worker_reach:?}"
+    );
+    assert!(
+        sibling_gateway.is_err(),
         "a worker without the owner's relationship cannot use the gateway: {sibling_gateway:?}"
     );
     assert!(
