@@ -30,7 +30,7 @@ const ARTIFACTS = [
   "chariox-managed-bootstrap",
   "chariox-relay",
 ]
-const REQUIRED_OPTIONS = ["source-repository", "source-commit", "builder-signing-key", "output", "builder"]
+const REQUIRED_OPTIONS = ["source-repository", "source-commit", "output", "builder"]
 const BUILDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 const NODE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/
 const DEFAULT_PREFLIGHT_TIMEOUT_SECONDS = 15
@@ -49,7 +49,7 @@ const BUILD_CANCELLATION_GRACE_MS = 15_000
 const BUILD_HISTORY_READ_TIMEOUT_MS = 15_000
 
 function usage() {
-  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --builder <name> --output <new-directory> [--preflight-timeout-seconds <1-60>] [--build-timeout-seconds <1-14400>] [--cargo-jobs <1|2>]"
+  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> (--builder-signing-key <ed25519-key> | --signing-mode external) --builder <name> --output <new-directory> [--preflight-timeout-seconds <1-60>] [--build-timeout-seconds <1-14400>] [--cargo-jobs <1|2>]"
 }
 
 function parseBoundedSeconds(value, name, maximum) {
@@ -68,13 +68,16 @@ function parseOptions(argv) {
     const value = argv[index + 1]
     if (!option?.startsWith("--") || !value || value.startsWith("--")) throw new Error(usage())
     const name = option.slice(2)
-    if (![...REQUIRED_OPTIONS, "preflight-timeout-seconds", "build-timeout-seconds", "cargo-jobs"].includes(name) || options.has(name)) {
+    if (![...REQUIRED_OPTIONS, "builder-signing-key", "signing-mode", "preflight-timeout-seconds", "build-timeout-seconds", "cargo-jobs"].includes(name) || options.has(name)) {
       throw new Error(usage())
     }
     if (name === "builder" && !BUILDER_NAME_PATTERN.test(value)) {
       throw new Error("builder name must be 1 to 63 ASCII letters, digits, dots, underscores, or hyphens")
     }
-    if (name === "cargo-jobs") {
+    if (name === "signing-mode") {
+      if (value !== "external") throw new Error("signing-mode must be external")
+      options.set(name, value)
+    } else if (name === "cargo-jobs") {
       if (!/^[12]$/.test(value)) throw new Error("cargo-jobs must be 1 or 2")
       options.set(name, Number(value))
     } else if (name === "preflight-timeout-seconds") {
@@ -86,6 +89,7 @@ function parseOptions(argv) {
     }
   }
   if (!REQUIRED_OPTIONS.every((name) => options.has(name))) throw new Error(usage())
+  if (options.has("builder-signing-key") === options.has("signing-mode")) throw new Error("provide exactly one of builder-signing-key or signing-mode external")
   const parsed = Object.fromEntries(options)
   parsed["preflight-timeout-seconds"] ??= DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
   parsed["build-timeout-seconds"] ??= DEFAULT_BUILD_TIMEOUT_SECONDS
@@ -621,7 +625,11 @@ export async function runManagedKernelReleaseBuild(options, {
   const commit = git(repository, ["rev-parse", "--verify", `${options["source-commit"]}^{commit}`], "utf8", environment).trim()
   if (commit !== options["source-commit"]) throw new Error("source commit did not resolve exactly")
   const tree = git(repository, ["rev-parse", `${commit}^{tree}`], "utf8", environment).trim()
-  const signingKey = await requirePrivateKey(options["builder-signing-key"])
+  const externalSigning = options["signing-mode"] === "external"
+  if (options["signing-mode"] !== undefined && !externalSigning || externalSigning && options["builder-signing-key"]) {
+    throw new Error("provide exactly one of builder-signing-key or signing-mode external")
+  }
+  const signingKey = externalSigning ? null : await requirePrivateKey(options["builder-signing-key"])
 
   const dockerEnvironment = Object.fromEntries(
     ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => environment[name] ? [[name, environment[name]]] : []),
@@ -802,15 +810,17 @@ export async function runManagedKernelReleaseBuild(options, {
       ARTIFACTS.map(async name => [name, await sha256File(join(pending, name))]),
     )))
     await writeFile(join(pending, "build-attestation.json"), attestation, { flag: "wx", mode: 0o644 })
-    await writeFile(
-      join(pending, "build-attestation.sig"),
-      sign(null, attestation, signingKey).toString("base64"),
-      { flag: "wx", mode: 0o644 },
-    )
-    await writeFile(join(pending, "builder-public-key"), rawPublicKey(signingKey).toString("base64"), {
-      flag: "wx",
-      mode: 0o644,
-    })
+    if (!externalSigning) {
+      await writeFile(
+        join(pending, "build-attestation.sig"),
+        sign(null, attestation, signingKey).toString("base64"),
+        { flag: "wx", mode: 0o644 },
+      )
+      await writeFile(join(pending, "builder-public-key"), rawPublicKey(signingKey).toString("base64"), {
+        flag: "wx",
+        mode: 0o644,
+      })
+    }
     await rename(pending, options.output)
   } finally {
     try {

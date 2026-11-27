@@ -896,3 +896,29 @@ test("managed release build withholds signing if its inspected builder changes d
     assert.deepEqual(await readdir(fixture.temp), [])
   }
 })
+
+test("row25a external signing builds artifacts without opening or copying a private key", async context => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-external-signing-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  await fixture.configure()
+  const ambiguous = fixture.run(["--signing-mode", "external"])
+  assert.equal(ambiguous.status, 1)
+  assert.match(ambiguous.stderr, /exactly one of builder-signing-key or signing-mode external/)
+  assert.equal(await readFile(fixture.trace, "utf8"), "")
+  await rm(fixture.options()["builder-signing-key"])
+  const result = spawnSync(process.execPath, [builderScript,
+    "--source-repository", fixture.source, "--source-commit", sourceCommit,
+    "--builder", builderName, "--output", fixture.output, "--signing-mode", "external",
+  ], { encoding: "utf8", env: fixture.environment() })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual((await readdir(fixture.output)).sort(), [
+    "build-attestation.json", "chariox", "chariox-app-package", "chariox-app-wasm-worker",
+    "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
+  ])
+  const attestation = JSON.parse(await readFile(join(fixture.output, "build-attestation.json")))
+  assert.equal(attestation.sourceCommit, sourceCommit)
+  assert.deepEqual(attestation.artifacts.map(artifact => artifact.name), [
+    "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay", "chariox-app-package", "chariox-app-wasm-worker", "chariox",
+  ])
+})

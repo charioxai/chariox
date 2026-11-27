@@ -90,3 +90,11 @@ explicit repository root and rejects attached-volume serial/size fields. A
 confirmed restart reuses its persisted identity and receipt. Schema 3 remains
 for the existing attached-volume path. This private bootstrap envelope change
 does not change the kernel client or relay wire shapes.
+
+For a builder separate from the signer, pass `--signing-mode external` to
+`scripts/build-managed-kernel-release.mjs`. It performs the same admitted exact
+source build and exports its six binaries and unsigned builder attestation;
+it neither opens a private key nor emits a signature/public-key claim. Stage
+those artifacts with the Cloud packager's `--signing-request` path, sign on the
+established Mac and assemble/verify before publishing. Unsigned builder output
+cannot satisfy release publication or fresh-rental deployment acceptance.
