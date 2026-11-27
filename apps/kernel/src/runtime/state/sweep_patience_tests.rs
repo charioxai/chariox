@@ -55,7 +55,9 @@ fn crowd(hung: usize, ordinary: usize) -> Crowd {
                 agent: agent.clone(),
                 prompt: format!("turn-{agent}"),
                 run: None,
-                now: crate::session::unix_epoch_ms(),
+                // Long past the delivery timeout: a sweep that reaches the task ends its turn as
+                // interrupted, so a task the pass reached is told from one it did not.
+                now: 1,
             })
             .unwrap();
     }
@@ -136,6 +138,11 @@ async fn a_pass_that_runs_out_of_patience_warns_only_for_the_tasks_that_waited()
         room.did_not_settle(&room.ordinary),
         0,
         "tasks the pass did not reach are not tasks that did not settle"
+    );
+    assert_eq!(
+        room.still_working(&room.ordinary),
+        room.ordinary.len(),
+        "tasks the pass did not reach were not started either"
     );
     let summary = room
         .logs
