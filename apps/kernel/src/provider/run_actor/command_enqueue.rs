@@ -1,11 +1,24 @@
 use super::*;
 
-#[cfg(not(test))]
 const PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(test)]
-const PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT: Duration = Duration::from_millis(50);
+const PROVIDER_RUN_TERMINATE_COMPLETION_TEST_TIMEOUT: Duration = Duration::from_millis(50);
 
 impl ProviderRunActorMailbox {
+    #[cfg(not(test))]
+    fn terminate_completion_timeout(&self) -> Duration {
+        PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT
+    }
+
+    #[cfg(test)]
+    fn terminate_completion_timeout(&self) -> Duration {
+        if self.production_terminate_wait.load(Ordering::Relaxed) {
+            PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT
+        } else {
+            PROVIDER_RUN_TERMINATE_COMPLETION_TEST_TIMEOUT
+        }
+    }
+
     pub(crate) fn publish_claude_plan(
         &self,
         run: RuntimeProviderRun,
@@ -206,8 +219,7 @@ impl ProviderRunActorMailbox {
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
-                if let Err(error) =
-                    completion_rx.recv_timeout(PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT)
+                if let Err(error) = completion_rx.recv_timeout(self.terminate_completion_timeout())
                 {
                     crate::logging::error_with_fields(
                         "daemon.provider_run_actor",

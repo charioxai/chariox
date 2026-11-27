@@ -896,7 +896,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                     );
                     // The advised recovery's last step: the remote launch that was
                     // refused retries with the home account's native refresh-token
-                    // login still on disk, and runs on the copied login. The copy
+                    // login still on disk, and runs on the copied login. The launch
+                    // carries the setup token, never the native refresh credential
+                    // beside it (row 274). The copy
                     // sits under the worker's account owner `local`; the lease is
                     // owned by `local` or by the configured Cloud user, and a
                     // foreign Cloud user's lease never reaches it.
@@ -908,7 +910,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                         let mut materialization = source_profiles
                             .export_materialization("local", "claude", &profile.profile_id)
                             .unwrap();
-                        assert!(materialization
+                        assert!(!materialization
                             .files
                             .iter()
                             .any(|file| file.relative_path == ".credentials.json"));
