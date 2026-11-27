@@ -14,14 +14,22 @@ One `SetAgentDeadline` request returns the resulting durable receipt;
 run, not the agent: once its cleanup has finished (`stopped_at_ms` is set), the owner, or a parent that
 may edit it, sets a new time or `none`, and the agent takes prompts again with its context. A deadline
 bounds only the agent that carries it: its sub-agents are neither stopped nor limited by it, so they
-keep working. A refused edit names who can make it. Edits during pending cleanup are refused
+keep working. When a limit ends, whether the child is idle, running a turn or waiting,
+the PARENT agent receives one urgent `child_time_limit_ended` event that
+names the extend command: the parent extends the limit and prompts the agent again, or lets it
+stay stopped. No card reaches the person; a time limit is the parent agent's setting, never the
+person's to answer. A top-level agent has no parent to ask: the Room's stop notice is the whole
+story, and the owner's external agent may extend or clear the limit itself the same way. A
+refused edit names who can make it. Edits during pending cleanup are refused
 with `agent_deadline_cleanup_pending`; retry shortly.
 
 The owner can use `chariox agent deadline <agent> <90s|30m|2h|1d|none>`
 (optionally `--session ROOM`, `--kernel KERNEL`, `--socket PATH`). Durations start
 at the time of the request. Agents use the Room command
 `agent deadline <agent-ref> <duration|none> [--room <room>]` or read with
-`agent deadline get <agent-ref> [--room <room>]`. A parent can edit descendants; an owner's
+`agent deadline get <agent-ref> [--room <room>]`; an agent may read its own
+limit with `agent deadline get` on itself, so it can plan and warn its parent.
+A parent can edit descendants; an owner's
 coordinator can edit a peer of the same owner when its authority covers the
 peer, including an ordinary agent in another room. An agent cannot edit its own
 deadline, an ancestor's, a hidden sub-agent in another room, or another owner's
@@ -81,3 +89,5 @@ receipt and refuses later work; DEADLINE-04 checks the edited deadline and a
 cleared deadline after restart and admits work past the old time. Both require the real CLI, kernels, relay and a
 product-linked real provider. Storage, protocol and runtime fixture tests are
 supplementary regression checks.
+
+A `child_time_limit_ended` notice stays in the parent's inbox until the parent handles it and acknowledges it with `chariox.events.ack`. Delivery into a running turn alone does not settle it; an unhandled notice remains available after reload or restart.
