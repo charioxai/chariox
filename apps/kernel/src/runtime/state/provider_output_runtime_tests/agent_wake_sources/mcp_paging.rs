@@ -101,8 +101,20 @@ async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
                 .unwrap()
                 .keys()
                 .map(String::as_str)
+                .filter(|field| *field != "liveness")
                 .collect();
             fields.sort_unstable();
+            // The row's `liveness` is only the two readings of a quiet agent, never the wait.
+            for field in row["liveness"]
+                .as_object()
+                .into_iter()
+                .flat_map(|l| l.keys())
+            {
+                assert!(
+                    ["last_activity_at_ms", "stalled"].contains(&field.as_str()),
+                    "{field} in the row liveness"
+                );
+            }
             assert_eq!(
                 fields,
                 [
