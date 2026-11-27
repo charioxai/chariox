@@ -237,3 +237,55 @@ fn a_foreign_workers_forwarded_kernel_request_needs_the_window() {
     });
 }
 
+// Review P2 (L15 squash 1088804874): an agent's SpawnAgent through chariox_kernel_request
+// makes the agent's own child (child_finished comes back to it), not a root agent.
+#[test]
+fn an_agents_spawn_through_kernel_request_is_its_own_child() {
+    crate::test_support::isolated_env_test!();
+    on_big_stack(|| async {
+        let f = super::tests::fixture_with_options(None, true);
+        let parent = f.run.agent_instance_id().unwrap().to_string();
+        let spawn = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
+            max_context_tokens: None,
+            no_subscribe: false,
+            session_id: f.request.session_id.clone(),
+            alias: Some("reach405-child".into()),
+            provider: Some("dev-stub".into()),
+            account_profile: None,
+            model: None,
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        });
+        let result = Box::pin(f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            REQUEST,
+            json!({ "request": serde_json::to_value(&spawn).unwrap() }),
+        ))
+        .await;
+        assert!(
+            result.as_ref().is_ok_and(|result| result.ok),
+            "the owner's agent could not spawn: {result:?}"
+        );
+        let child = f
+            .state
+            .owned
+            .agent_store
+            .list_agents()
+            .into_iter()
+            .find(|agent| agent.alias() == Some("reach405-child"))
+            .expect("the spawned agent");
+        assert_eq!(
+            child.parent_agent_id(),
+            Some(parent.as_str()),
+            "an agent's spawn through chariox_kernel_request became a root agent"
+        );
+    });
+}

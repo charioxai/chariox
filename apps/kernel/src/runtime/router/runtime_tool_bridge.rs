@@ -296,6 +296,13 @@ impl CommandRouter {
         command.provider_run_id = Some(reach.run_id.clone());
         command.caller.caller_id = reach.id.clone();
         command.caller.user_id = Some(reach.owner_user_id.clone());
+        // MP-08/MP-10/MP-11: an agent's spawns and workflows stay its own (spawn parent,
+        // child_finished, the workflow's controlling agent).
+        if command.command_type.starts_with("agent.")
+            || crate::runtime::workflow_actor::is_workflow_command(&request)
+        {
+            command.caller.metaagent_id = Some(reach.agent_id.clone());
+        }
         let response = Box::pin(self.dispatch(command, request)).await?;
         serde_json::to_value(response).map_err(|_| {
             crate::runtime::kernel_access::error("kernel response serialization failed")
