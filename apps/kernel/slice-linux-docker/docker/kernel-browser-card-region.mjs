@@ -393,7 +393,12 @@ export async function resolveCardRegion(host, command, scope, signal) {
     let frameOwnerRef = anchor?.frameOwnerRef ?? (remembered.frameRoots?.has(command.ref) ? remembered.frameOwners.get(command.ref) : null);
     const readBox = async after => {
       if (remembered.children.has(command.ref) && !frameOwnerRef) {
-        const child = await childFrameBox(browser, connection, sessionId, tab, { ...command, after });
+        let child;
+        try { child = await childFrameBox(browser, connection, sessionId, tab, { ...command, after }); }
+        catch (error) {
+          if (!/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) throw error;
+          child = null;
+        }
         if (child !== null) return child?.visible === false ? emptyCrop(child.viewport_width, child.viewport_height) : child;
         frameOwnerRef = remembered.frameOwners?.get(command.ref);
         if (!frameOwnerRef) return null;

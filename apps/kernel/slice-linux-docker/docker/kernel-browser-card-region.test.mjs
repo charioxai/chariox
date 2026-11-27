@@ -640,3 +640,22 @@ test('655 a card on a child document keeps its frame owner across a child reload
   assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
   assert.equal((await region({ ref, card_id: 'new-frame-card' })).state, 'present', 'a recently observed frame root still attaches after its document reload');
 }));
+
+test('655 a missing child backend node follows its observed iframe owner', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', node_type: 1 },
+    { node_ref: ref, document_index: 1, node_name: 'BUTTON', node_type: 1 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await childFrameConnection(host, state, { owner: [100, 120, 300, 120, 300, 220, 100, 220] });
+  await snapshot();
+  assert.equal((await region({ ref, card_id: 'child-card' })).state, 'present');
+  const connection = await host.browser.ensureConnection(), original = connection.send;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.resolveNode' && params.backendNodeId === 43) throw new Error('No node with given id');
+    return original(method, params, session);
+  };
+  const followed = await region({ ref, card_id: 'child-card', generation: 1, document_id: 'doc' });
+  assert.equal(followed.state, 'present', 'a removed child node does not retire its live iframe card');
+  assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+}));
