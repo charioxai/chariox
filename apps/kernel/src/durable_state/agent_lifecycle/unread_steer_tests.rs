@@ -288,3 +288,26 @@ fn a_child_deadline_notice_waits_for_the_parents_action_after_delivery_and_reope
     });
     assert_eq!(row(&reopened, event.sequence).state, "handled");
 }
+
+#[test]
+fn shown_successful_source_outcomes_still_settle_on_receipt() {
+    for kind in ["source_completed", "child_finished", "peer_event"] {
+        let f = Fixture::new();
+        f.begin("p");
+        let mut event = occurrence(
+            ROOM,
+            AGENT,
+            "child",
+            "finished",
+            kind,
+            serde_json::json!({"success": true}),
+        );
+        event.urgent = true;
+        let Outcome::Event(event) = f.apply(Operation::Occur(event)) else {
+            panic!("event")
+        };
+        read(&f.store, event.sequence);
+        steer(&f.store, &event, "p");
+        assert_eq!(row(&f.store, event.sequence).state, "handled", "{kind}");
+    }
+}
