@@ -269,6 +269,19 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        // Usage recovery owns the next turn. Preserve notes until it claims the stop or an
+        // accepted prompt clears it, rather than trying the exhausted account for every note.
+        if active.is_none()
+            && event.kind == "message"
+            && self
+                .owned
+                .agent_store
+                .get_agent(agent)?
+                .usage_limit_wait()
+                .is_some()
+        {
+            return Ok(());
+        }
         // An explicitly stopped agent stays stopped: messages, urgent ones too,
         // stay pending and visible until the owner prompts it again.
         if active.is_none()

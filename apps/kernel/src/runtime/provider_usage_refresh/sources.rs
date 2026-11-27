@@ -74,6 +74,7 @@ impl ProviderUsageRefresher {
         runs: crate::runtime::projection::ProviderRunProjectionStore,
         sessions: crate::runtime::projection::SessionStateProjectionStore,
         config: DaemonConfigProjectionStore,
+        waiting_accounts: Box<dyn Fn() -> AccountSet + Send + Sync>,
     ) -> Arc<Self> {
         let reader = KernelUsageSources {
             registry: registry.clone(),
@@ -97,7 +98,8 @@ impl ProviderUsageRefresher {
         // A focused run stays Running between prompts, so only prompt work the
         // kernel owns shows that its agent is doing something.
         let prompting = move || {
-            let mut accounts = AccountSet::new();
+            // A usage stop holds unfinished prompt work, even with no attached provider run.
+            let mut accounts = waiting_accounts();
             for run in runs.list() {
                 let busy = matches!(
                     run.state(),

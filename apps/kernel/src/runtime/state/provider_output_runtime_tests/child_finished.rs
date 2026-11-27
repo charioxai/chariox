@@ -1289,3 +1289,134 @@ async fn a_finish_waits_for_its_siblings_only_for_a_moment() {
         "the window ended and woke the parent: {prompts:?}"
     );
 }
+
+#[tokio::test]
+async fn usage_limit_stop_is_readable_and_messages_wait_for_recovery() {
+    for urgent in [false, true] {
+        let team = team_with("usage-stop-inbox", None, true).await;
+        let runtime = &team.runtime;
+        runtime
+            .fail_owned_provider_prompt(
+                &team.room,
+                &team.child_run,
+                "Claude StopFailure [rate_limit]: You've hit your weekly limit · resets 4pm (UTC)",
+                true,
+            )
+            .await
+            .unwrap();
+        let child = runtime.owned.agent_store.get_agent(&team.child).unwrap();
+        let stop = child
+            .usage_limit_stop()
+            .expect("the failed turn records its usage stop");
+        let parent_run = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&team.room, &team.parent)
+            .unwrap();
+        let token = parent_run.runtime_mcp_auth_token().unwrap();
+        let detail = runtime
+            .dispatch_authenticated_runtime_tool_call(
+                token,
+                crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+                serde_json::json!({"agent":"@child"}),
+            )
+            .await
+            .unwrap();
+        assert!(detail.ok, "{:?}", detail.payload);
+        assert_eq!(
+            detail.payload["agent"]["usage_limit_stop"],
+            serde_json::to_value(stop).unwrap()
+        );
+        let room = runtime.owned.session_store.get_session(&team.room).unwrap();
+        let parent_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&room, &team.parent)
+            .unwrap();
+        let sent = runtime
+            .dispatch_authenticated_runtime_tool_call(
+                token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({"agent":"@child","origin_prompt_id":parent_prompt.id(),
+                "message":"Continue after usage returns", "urgent":urgent}),
+            )
+            .await
+            .unwrap();
+        assert!(sent.ok, "{:?}", sent.payload);
+        assert_eq!(sent.payload["status"], "queued");
+        assert_eq!(sent.payload["held"], true);
+        let sequence = sent.payload["sequence"].as_u64().unwrap();
+        for state in [
+            stop.state.clone(),
+            crate::agent::UsageLimitStopState::Asking,
+            crate::agent::UsageLimitStopState::Declined,
+        ] {
+            let mut waiting = stop.clone();
+            waiting.state = state;
+            runtime
+                .owned
+                .agent_store
+                .change_usage_limit_stop(&team.child, |_| Some(Some(waiting.clone())))
+                .unwrap();
+            let result = runtime
+                .send_queued_agent_message(&team.room, &team.child, sequence)
+                .await;
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => {
+                    panic!("Send now must not report Dispatching while usage holds the message")
+                }
+            };
+            assert!(error
+                .to_string()
+                .contains("Resume the agent or choose another account"));
+            let (event, _) = runtime
+                .owned
+                .durable_state_store
+                .agent_inbox_event(sequence)
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.state, "pending");
+            assert_eq!(
+                runtime
+                    .owned
+                    .agent_store
+                    .get_agent(&team.child)
+                    .unwrap()
+                    .usage_limit_stop(),
+                Some(&waiting)
+            );
+        }
+        runtime
+            .owned
+            .agent_store
+            .change_usage_limit_stop(&team.child, |_| Some(Some(stop.clone())))
+            .unwrap();
+        runtime
+            .deliver_agent_inbox(&team.room, &team.child)
+            .await
+            .unwrap();
+        let (event, _) = runtime
+            .owned
+            .durable_state_store
+            .agent_inbox_event(sequence)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.state, "pending");
+        let room = runtime.owned.session_store.get_session(&team.room).unwrap();
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&room, &team.child)
+            .is_none());
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&team.child)
+                .unwrap()
+                .usage_limit_stop(),
+            Some(stop)
+        );
+    }
+}

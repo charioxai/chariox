@@ -1302,6 +1302,14 @@ impl KernelRuntimeState {
                         provider_run_projection.clone(),
                         session_projection.clone(),
                         config_projection.clone(),
+                        Box::new({
+                            let agents = agent_store.clone();
+                            move || agents.list_agents().into_iter().filter(|agent| !agent.archived())
+                                .filter_map(|agent| agent.usage_limit_stop().filter(|stop| matches!(stop.state,
+                                    crate::agent::UsageLimitStopState::Armed { .. } | crate::agent::UsageLimitStopState::Asking))
+                                    .map(|stop| (stop.provider.clone(), stop.account_profile.clone())))
+                                .collect()
+                        }),
                     ),
                 app_control,
                 dev_app_bindings: Default::default(),
