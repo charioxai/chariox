@@ -27,6 +27,10 @@ export type KernelExecOptions = {
 // A dropped link between this computer and the kernel does not end the command: the kernel keeps its terminal until it is
 // closed. While the link is down the same request is tried again every this long, until the exec's own --timeout runs out.
 export const EXEC_LINK_RETRY_MS = 2_000
+// The kernel answers the wait that runs out the --timeout a little AFTER that timeout, with "not fired"; the request's own
+// timer must not run out first, or that answer is taken for a link that went quiet and a command that ran past --timeout is
+// reported as "link lost" and left running instead of stopped. Each request is therefore given --timeout plus this margin.
+export const EXEC_REQUEST_MARGIN_SECONDS = 30
 // The gateway's own answers for a request that did not get through; the command is not known to have stopped.
 const LINK_DROP_CODES = new Set(["kernel_connection_lost", "kernel_request_timeout", "kernel_offline", "kernel_unreachable"])
 /** A retry that was still unanswered when --timeout (and one more step) had passed. */
