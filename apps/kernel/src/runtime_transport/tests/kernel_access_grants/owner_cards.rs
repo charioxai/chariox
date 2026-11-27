@@ -123,3 +123,56 @@ async fn a_grant_holder_answers_the_persons_cards_but_not_secrets_passkeys_or_pa
             .into()
     );
 }
+
+// Row 754 (D189/D190b): a time limit is the parent agent's setting, so an ended limit raises no
+// card for the person. The owner's external agent extends or clears the reached limit itself,
+// where no parent can: the kernel_access_human_only refusal must not apply to it.
+#[tokio::test]
+async fn an_ended_time_limit_raises_no_person_card_and_the_holder_extends_or_clears_it() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    kernel.control("deadline-reached").await;
+
+    // No time-limit card reaches the person's interaction list; the bootstrap prompt is all.
+    let listed = holder.request(serde_json::json!({"ListOwnerInteractions":{}}));
+    let cards = listed["response"]["OwnerInteractionsListed"]["interactions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{listed}"))
+        .clone();
+    let ids = cards
+        .iter()
+        .map(|card| card["interaction_id"].as_str().unwrap_or(""))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["critical-test"], "{listed}");
+    assert!(
+        cards
+            .iter()
+            .all(|card| !card["title"].as_str().unwrap_or("").contains("time limit")),
+        "a time limit is never the person's card: {listed}"
+    );
+
+    // The holder extends the reached limit for the owner: no kernel_access_human_only.
+    let extended = holder.request(serde_json::json!({"SetAgentDeadline":{
+        "session_id":SESSION,
+        "agent_id":"access-vault-agent",
+        "deadline_ms": crate::session::unix_epoch_ms() + 3_600_000
+    }}));
+    assert!(extended["error"].is_null(), "{extended}");
+    assert_eq!(
+        extended["response"]["AgentDeadline"]["deadline"]["state"], "armed",
+        "{extended}"
+    );
+
+    // Letting the agent stay stopped is the same edit with no new limit.
+    let cleared = holder.request(serde_json::json!({"SetAgentDeadline":{
+        "session_id":SESSION,
+        "agent_id":"access-vault-agent",
+        "deadline_ms": null
+    }}));
+    assert!(cleared["error"].is_null(), "{cleared}");
+    assert!(
+        cleared["response"]["AgentDeadline"]["deadline"].is_null(),
+        "{cleared}"
+    );
+}

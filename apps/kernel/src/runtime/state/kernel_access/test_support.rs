@@ -300,6 +300,46 @@ impl KernelRuntimeState {
             self.raise_owner_cards_for_test(results).await;
             return;
         }
+        if action == "deadline-reached" {
+            // Row 754: an ended time limit with a queued message, on a top-level agent of the
+            // access test Room (`SESSION` in runtime_transport/tests/kernel_access_grants.rs),
+            // so a grant holder meets it the way a real external agent does.
+            let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+            let room = "access-session";
+            let agent = "access-vault-agent";
+            let message = crate::durable_state::agent_lifecycle::occurrence(
+                room,
+                agent,
+                "deadline-control",
+                "m1",
+                "message",
+                serde_json::json!({"message":"queued before the limit ended"}),
+            );
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Occur(
+                    message,
+                ))
+                .unwrap();
+            self.set_agent_deadline(
+                owner,
+                crate::local::SetAgentDeadlineRequest {
+                    session_id: room.into(),
+                    agent_id: agent.into(),
+                    deadline_ms: Some(crate::session::unix_epoch_ms() - 1),
+                },
+            )
+            .await
+            .unwrap();
+            self.tick_agent_deadlines(crate::session::unix_epoch_ms())
+                .await
+                .unwrap();
+            // A second tick finishes the physical cleanup, so the reached limit takes edits.
+            self.tick_agent_deadlines(crate::session::unix_epoch_ms())
+                .await
+                .unwrap();
+            return;
+        }
         if action == "guest" {
             assert!(self.passkey_prompts_for("guest").is_empty());
             let prompt = self
