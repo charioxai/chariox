@@ -1602,10 +1602,7 @@ impl DurableKernelStateStore {
     }
 
     #[track_caller]
-    fn lock_connection(
-        &self,
-        operation: &'static str,
-    ) -> Result<ConnectionGuard<'_>, DaemonError> {
+    fn lock_connection(&self, operation: &'static str) -> Result<ConnectionGuard<'_>, DaemonError> {
         let location = std::panic::Location::caller();
         let guard = self
             .connection

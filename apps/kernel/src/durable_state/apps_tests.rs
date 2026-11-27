@@ -699,7 +699,9 @@ fn a_store_with_no_dev_installation_is_known_empty_until_an_app_registry_write()
     assert!(store.dev_app_installations_known_empty());
     assert_eq!(store.dev_installation_reads_for_test(), 1);
 
-    store.mutate_app_installation("owner", create("todo")).unwrap();
+    store
+        .mutate_app_installation("owner", create("todo"))
+        .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while store.dev_app_installations_known_empty() {
         assert!(

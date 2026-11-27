@@ -63,7 +63,10 @@ fn crowd(hung: usize, ordinary: usize) -> Crowd {
     }
     let fault = std::env::temp_dir().join(format!("sweep-patience-fault-{}", room.id()));
     std::fs::write(&fault, hung_agents.join("\n")).unwrap();
-    runtime.owned.agent_wakes.set_task_stall_fault(fault.clone());
+    runtime
+        .owned
+        .agent_wakes
+        .set_task_stall_fault(fault.clone());
     Crowd {
         runtime,
         room: room.id().into(),
@@ -153,7 +156,10 @@ async fn a_pass_that_runs_out_of_patience_warns_only_for_the_tasks_that_waited()
                 && record.contains(&format!("\"of\":{total}"))
         })
         .expect("the pass says how far it got");
-    assert!(summary.contains(&format!("\"swept\":{}", waited_for())), "{summary}");
+    assert!(
+        summary.contains(&format!("\"swept\":{}", waited_for())),
+        "{summary}"
+    );
 
     // The hung settlements end; the next passes reach every task the first one did not.
     room.release_the_hung();

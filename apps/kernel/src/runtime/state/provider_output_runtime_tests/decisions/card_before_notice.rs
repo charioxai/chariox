@@ -53,9 +53,8 @@ async fn tree_with_idle_holder(label: &str) -> Tree {
 #[tokio::test]
 async fn a_card_is_created_when_its_holder_cannot_be_told_yet() {
     let mut t = tree_with_idle_holder("card-before-notice").await;
-    t.runtime.owned.publication_activation = Arc::new(
-        crate::runtime::state::publication_activation::PublicationActivation::new(true),
-    );
+    t.runtime.owned.publication_activation =
+        Arc::new(crate::runtime::state::publication_activation::PublicationActivation::new(true));
     assert!(
         t.runtime.owned.require_publication_activation().is_err(),
         "the barrier is up: no holder turn starts"
@@ -98,9 +97,8 @@ async fn a_card_is_created_when_its_holder_cannot_be_told_yet() {
     // delivery path, takes the stored event.
     let before = t.decision_events(&t.p);
     assert_eq!(before.len(), 1, "{before:?}");
-    t.runtime.owned.publication_activation = Arc::new(
-        crate::runtime::state::publication_activation::PublicationActivation::new(false),
-    );
+    t.runtime.owned.publication_activation =
+        Arc::new(crate::runtime::state::publication_activation::PublicationActivation::new(false));
     assert!(t.runtime.owned.require_publication_activation().is_ok());
     // The refused start left a retry record 30 s ahead; make it due (the existing test-ledger helper,
     // as `agent_start_retry_tests` does) instead of sleeping.

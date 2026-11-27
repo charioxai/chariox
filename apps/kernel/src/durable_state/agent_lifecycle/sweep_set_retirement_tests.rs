@@ -67,7 +67,13 @@ fn settled_obligations_leave_the_sweep_set_and_open_ones_stay() {
             1 => obligation(&format!("d{n}"), "delegate", "cancelled", "accepted"),
             _ => obligation(&format!("f{n}"), "delegate", "failed", "rejected"),
         };
-        insert(&db, &base, &format!("settled-{n}"), ExecutionState::Done, vec![settled]);
+        insert(
+            &db,
+            &base,
+            &format!("settled-{n}"),
+            ExecutionState::Done,
+            vec![settled],
+        );
     }
     insert(
         &db,
@@ -142,7 +148,8 @@ fn a_task_that_takes_a_new_open_obligation_is_swept_again() {
         .into_iter()
         .find(|t| t.task_id == "history")
         .unwrap();
-    task.obligations.push(obligation("again", "delegate", "open", "accepted"));
+    task.obligations
+        .push(obligation("again", "delegate", "open", "accepted"));
     db.execute(
         "UPDATE agent_tasks SET payload=?1 WHERE task_id='history'",
         params![encode(&task).unwrap()],
@@ -187,11 +194,19 @@ fn a_malformed_obligation_entry_is_still_quarantined_not_retired() {
         .unwrap();
     }
     let selected = f.store.agent_tasks_to_sweep().unwrap();
-    for id in ["string-entry", "number-entry", "null-entry", "no-dispatch-state", "status-not-text"] {
+    for id in [
+        "string-entry",
+        "number-entry",
+        "null-entry",
+        "no-dispatch-state",
+        "status-not-text",
+    ] {
         let task = selected
             .iter()
             .find(|task| task.task_id == id)
-            .unwrap_or_else(|| panic!("{id}: a malformed obligation entry was retired from the sweep"));
+            .unwrap_or_else(|| {
+                panic!("{id}: a malformed obligation entry was retired from the sweep")
+            });
         assert_eq!(task.state, ExecutionState::Blocked, "{id}: quarantined");
         assert!(task.reason.contains("quarantined"), "{id}: {}", task.reason);
     }

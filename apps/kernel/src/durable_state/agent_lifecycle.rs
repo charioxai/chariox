@@ -70,10 +70,10 @@ mod reply_terminal_tests;
 mod settled_waits;
 #[cfg(test)]
 mod steered_turn_tests;
-#[cfg(test)]
-mod sweep_set_retirement_tests;
 mod subscriptions;
 mod supervision;
+#[cfg(test)]
+mod sweep_set_retirement_tests;
 #[cfg(test)]
 mod tests;
 mod transition_log;
@@ -1435,7 +1435,8 @@ fn write_task(
 /// `json_each` as unquoted text that is not JSON: only an object is parsed, by its `type`.) The
 /// unreadable entries stay in the set as before: reading the task fails to decode it and the ledger quarantines the row for the owner
 /// (obligation coverage unknown), which the retire rule must not skip.
-const OWES_RESOLUTION: &str = "EXISTS (SELECT 1 FROM json_each(agent_tasks.payload,'$.obligations') AS o \
+const OWES_RESOLUTION: &str =
+    "EXISTS (SELECT 1 FROM json_each(agent_tasks.payload,'$.obligations') AS o \
      WHERE CASE WHEN o.type='object' THEN ( \
             json_type(o.value,'$.id') IS NOT 'text' \
          OR json_type(o.value,'$.kind') IS NOT 'text' \
@@ -1565,7 +1566,11 @@ fn source_tasks(
 ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
     let started = std::time::Instant::now();
     let tasks = tasks_where(tx, SOURCE_TASKS, params![room, source])?;
-    read_gauge::record("agent.lifecycle.source_tasks", started.elapsed(), tasks.len());
+    read_gauge::record(
+        "agent.lifecycle.source_tasks",
+        started.elapsed(),
+        tasks.len(),
+    );
     Ok(tasks)
 }
 
