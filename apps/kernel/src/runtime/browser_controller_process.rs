@@ -375,33 +375,10 @@ impl BrowserControllerProcessStdioBackend {
             crate::config::default_state_dir().join("browser/display-codecs"),
         );
         // L3: native workers this controller spawns hand whole frames straight to the pump.
-        let mut frame_channel_unavailable = false;
-        let direct_frames = match &display_packets {
-            // Linux only (admission reads the peer's credentials). Without a channel Node
-            // publishes every frame, slower; the log and the controller health say why.
-            Some(packets) if cfg!(target_os = "linux") => {
-                match display_frames::DirectFrames::listen(packets.clone()) {
-                    Ok(frames) => {
-                        crate::logging::info_with_fields(
-                            "daemon.browser_controller",
-                            "native frame channel ready",
-                            serde_json::json!({ "path_bytes": frames.path().as_os_str().len() }),
-                        );
-                        Some(frames)
-                    }
-                    Err(error) => {
-                        frame_channel_unavailable = true;
-                        crate::logging::warn_with_fields(
-                            "daemon.browser_controller",
-                            "native frame channel unavailable; Node publishes every frame, so video is slower",
-                            serde_json::json!({ "error": error }),
-                        );
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
+        let (direct_frames, frame_channel_unavailable) = open_frame_channel(
+            display_packets.as_ref(),
+            display_frames::DirectFrames::listen,
+        );
         if let Some(frames) = &direct_frames {
             command.env("CHARIOX_BROWSER_DISPLAY_FRAMES", frames.path());
         }
@@ -803,7 +780,7 @@ impl BrowserControllerProcessStdioBackend {
             health.into_health("health")?,
             self.process
                 .as_ref()
-                .is_some_and(|process| process.frame_channel_unavailable),
+                .is_some_and(|process| process.frame_channel_unavailable.is_some()),
         );
         if health.process_id != Some(process_id) {
             return Err(format!(
@@ -1326,11 +1303,72 @@ struct BrowserControllerChild {
     host_policy: Option<serde_json::Value>,
     direct_frames: Option<Arc<display_frames::DirectFrames>>,
     /// The kernel tried to open the native frame channel and could not (reason is in the log).
-    frame_channel_unavailable: bool,
+    frame_channel_unavailable: Option<FrameChannelUnavailable>,
 }
 
 /// Health diagnostic while the controller runs without the native frame channel.
 pub(crate) const FRAME_CHANNEL_UNAVAILABLE: &str = "native_frame_channel_unavailable";
+
+/// L3: native workers hand whole frames straight to the pump through this channel. Without it
+/// (no Linux peer credentials, no usable socket directory, bind error) Node publishes every
+/// frame, slower: the second value tells the controller health, the log says why.
+fn open_frame_channel(
+    packets: Option<&Arc<display_packets::DisplayPackets>>,
+    listen: impl FnOnce(
+        Arc<display_packets::DisplayPackets>,
+    ) -> Result<Arc<display_frames::DirectFrames>, String>,
+) -> (
+    Option<Arc<display_frames::DirectFrames>>,
+    Option<FrameChannelUnavailable>,
+) {
+    let Some(packets) = packets else {
+        return (None, None);
+    };
+    match listen(packets.clone()) {
+        Ok(frames) => {
+            crate::logging::info_with_fields(
+                "daemon.browser_controller",
+                "native frame channel ready",
+                serde_json::json!({ "path_bytes": frames.path().as_os_str().len() }),
+            );
+            (Some(frames), None)
+        }
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.browser_controller",
+                "native frame channel unavailable; Node publishes every frame, so video is slower",
+                serde_json::json!({ "error": error }),
+            );
+            (None, Some(FrameChannelUnavailable::new()))
+        }
+    }
+}
+
+use std::sync::atomic::Ordering;
+
+/// Controllers running right now without the native frame channel (daemon health carries it).
+static FRAME_CHANNELS_UNAVAILABLE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub(crate) fn frame_channels_unavailable() -> usize {
+    FRAME_CHANNELS_UNAVAILABLE.load(Ordering::SeqCst)
+}
+
+/// Held by a controller's child process for as long as it runs without the channel.
+struct FrameChannelUnavailable;
+
+impl FrameChannelUnavailable {
+    fn new() -> Self {
+        FRAME_CHANNELS_UNAVAILABLE.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for FrameChannelUnavailable {
+    fn drop(&mut self) {
+        FRAME_CHANNELS_UNAVAILABLE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// A ready controller that runs without the native frame channel reports why it is slower;
 /// a diagnostic the controller itself raised is never replaced.
@@ -2442,7 +2480,31 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 
 #[cfg(test)]
 mod tests {
-    use super::with_frame_channel_diagnostic;
+    use super::{
+        display_packets, frame_channels_unavailable, open_frame_channel,
+        with_frame_channel_diagnostic,
+    };
+    use std::sync::Arc;
+
+    // The startup decision for any host: a refused channel is reported (non-Linux hosts get the
+    // same path through `DirectFrames::listen`'s own refusal), a missing packet root is not.
+    #[test]
+    fn a_refused_frame_channel_is_reported_and_none_is_expected_without_packets() {
+        let packets = Arc::new(display_packets::DisplayPackets::create().unwrap());
+        let (frames, unavailable) = open_frame_channel(Some(&packets), |_| {
+            Err("MP-11: native frame channel needs Linux peer credentials".into())
+        });
+        assert!(frames.is_none() && unavailable.is_some());
+        assert_eq!(frame_channels_unavailable(), 1);
+        drop(unavailable);
+        assert_eq!(
+            frame_channels_unavailable(),
+            0,
+            "the count ends with the controller"
+        );
+        let (frames, unavailable) = open_frame_channel(None, |_| unreachable!());
+        assert!(frames.is_none() && unavailable.is_none());
+    }
 
     #[test]
     fn a_controller_without_the_frame_channel_reports_it_in_health() {
