@@ -247,7 +247,8 @@ without a shell. The command prints the masked outcome as JSON and returns the
 command's exit code. A shell of a live provider run keeps that agent's Vault
 checks and Activity attribution; an owner's local client keeps owner attribution.
 It never accepts a password argument. Other Vault menu operations remain
-owner-only. `--command-id ID` identifies a retry of this same run.
+owner-only. An uncertain result is never retried automatically; check the
+command's effects before deciding whether to run it again.
 
 Two file tools complete the set:
 

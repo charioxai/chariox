@@ -3,9 +3,9 @@ import { test } from "node:test"
 import { parsePrivilegedRun, runPrivilegedCommand } from "./privileged-command.js"
 
 test("privileged CLI preserves argv after -- without interpreting command flags", () => {
-  assert.deepEqual(parsePrivilegedRun(["--entry", "machine password", "--timeout", "5", "--machine", "this", "--command-id", "once", "--", "echo", "--entry", "literal", "a b", "$(true)"]), {
+  assert.deepEqual(parsePrivilegedRun(["--entry", "machine password", "--timeout", "5", "--machine", "this", "--", "echo", "--entry", "literal", "a b", "$(true)"]), {
     request: { OwnerVault: { action: "run_privileged", id: "machine password", timeout_seconds: 5, machine: "this", argv: ["echo", "--entry", "literal", "a b", "$(true)"] } },
-    options: { socket: undefined, commandId: "once" },
+    options: { socket: undefined },
   })
 })
 
