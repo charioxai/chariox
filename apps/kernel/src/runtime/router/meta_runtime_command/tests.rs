@@ -300,3 +300,23 @@ fn account_copy_commands_keep_pinned_identity_and_operation() {
         LocalDaemonRequest::ListProviderAccountCopyOffers(_)
     ));
 }
+
+#[test]
+fn account_copy_commands_are_discovered_and_admitted() {
+    use crate::runtime::metaagent_command_registry::{
+        execution_policy, tokenize_command, MetaCommandExecutionPolicy,
+    };
+    for command in [
+        "provider accounts copy-offers",
+        "provider accounts copy-targets",
+        "provider accounts copy-from opencode work source key operation",
+        "provider accounts copy-to codex work target key operation --replace",
+    ] {
+        let tokens = tokenize_command(command).unwrap();
+        assert_eq!(
+            execution_policy(&tokens),
+            MetaCommandExecutionPolicy::Routed
+        );
+        assert!(crate::runtime::room_tool_admission::command(&tokens).is_ok());
+    }
+}
