@@ -191,6 +191,17 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 agent_id.clone(),
                 prompt_id.to_string(),
                 prompt_id,
+                self.app
+                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "resolve runtime turn origin",
+                        message: "the active turn settled before provider dispatch".into(),
+                    })?
+                    .runtime_origin_prompt_id(
+                        self.app
+                            .provider_run_projection_store()
+                            .is_leased_provider_run(provider_run_id),
+                    )?,
                 &provider_run,
                 prompt,
                 hidden_system_context,

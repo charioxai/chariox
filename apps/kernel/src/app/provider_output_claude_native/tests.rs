@@ -4,8 +4,8 @@ mod context_failure;
 mod large_file_write;
 mod native_permission_race;
 mod prepared_context;
-mod typed_leased_skill;
 mod turn_origin;
+mod typed_leased_skill;
 
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;

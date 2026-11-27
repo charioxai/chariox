@@ -148,6 +148,15 @@ impl KernelRuntimeState {
                 .target_active_prompt_id
                 .as_deref()
                 .unwrap_or(&dispatch.prompt_id),
+            &owned.runtime_origin_prompt_id(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                dispatch
+                    .target_active_prompt_id
+                    .as_deref()
+                    .unwrap_or(&dispatch.prompt_id),
+                &dispatch.provider_run_id,
+            )?,
             provider_run,
             &prompt,
             &hidden_system_context,

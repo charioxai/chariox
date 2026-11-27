@@ -1088,6 +1088,7 @@ fn a_long_utility_does_not_lock_other_provider_runs() {
                 "a".into(),
                 "p".into(),
                 "p",
+                "p",
                 &other,
                 "next",
                 "",

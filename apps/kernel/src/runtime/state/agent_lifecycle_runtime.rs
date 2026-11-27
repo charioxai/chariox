@@ -163,6 +163,24 @@ impl KernelRuntimeOwnedState {
         })?;
         Ok(())
     }
+    pub(super) fn runtime_origin_prompt_id(
+        &self,
+        room: &str,
+        agent: &str,
+        backing_origin: &str,
+        run: &str,
+    ) -> Result<String, DaemonError> {
+        let session = self.session_store.get_session(room)?;
+        let prompt = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .filter(|prompt| prompt.id() == backing_origin)
+            .ok_or_else(|| ledger::error("runtime origin requires the current active turn"))?;
+        prompt
+            .runtime_origin_prompt_id(self.provider_run_projection.is_leased_provider_run(run))
+            .map(str::to_owned)
+    }
+
     /// The provider-visible task identity and retained task context, shared by
     /// local and leased dispatch (A10 placement parity).
     pub(super) fn agent_task_context_hint(

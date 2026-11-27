@@ -675,6 +675,10 @@ impl KernelRuntimeOwnedState {
                 agent_id.to_string(),
                 started_next.id().to_string(),
                 started_next.id(),
+                started_next.runtime_origin_prompt_id(
+                    self.provider_run_projection
+                        .is_leased_provider_run(&provider_run_id),
+                )?,
                 &provider_run,
                 &prompt_with_handoff,
                 &hidden_system_context,

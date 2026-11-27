@@ -139,6 +139,7 @@ async fn refused_structured_submit(failure: FailedSubmit, room_agent_tools: bool
                     agent.id().into(),
                     prompt_id.clone(),
                     &prompt_id,
+                    &prompt_id,
                     &run,
                     "active submit",
                     "",

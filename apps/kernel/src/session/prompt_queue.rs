@@ -539,6 +539,21 @@ impl PromptQueueItem {
             .map(|metadata| metadata.leased_native_skills.clone())
             .unwrap_or_default()
     }
+    /// Runtime tools act for the home turn; backing prompt IDs only route worker delivery.
+    pub(crate) fn runtime_origin_prompt_id(
+        &self,
+        leased: bool,
+    ) -> Result<&str, crate::error::DaemonError> {
+        match self.leased_skill_context() {
+            None if !leased => Ok(self.id()),
+            context => context.and_then(|context| context.home_prompt_id.as_deref()).filter(|id| !id.is_empty())
+                .ok_or_else(|| crate::error::DaemonError::LocalTransport {
+                    operation: "resolve runtime turn origin",
+                    message: "leased prompt has no authoritative home origin; resubmit it from the home kernel".into(),
+                }),
+        }
+    }
+
     pub(crate) fn leased_skill_context(
         &self,
     ) -> Option<&crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext> {

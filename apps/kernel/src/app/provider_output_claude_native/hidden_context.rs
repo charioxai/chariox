@@ -81,8 +81,36 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         let visible = redact_native_hidden_instructions(&text).trim().to_string();
         let native_hidden = extract_native_hidden_instructions(&text);
         let attachment_context = format_claude_attachment_context(&attachments, context_file);
-        let origin_context =
-            crate::prompt_assembly::agent_message_origin_context(prompt.origin_prompt_id);
+        let active = provider_run
+            .agent_instance_id()
+            .map(|agent| {
+                self.app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent)
+            })
+            .transpose()?
+            .flatten();
+        let runtime_origin = match active
+            .as_ref()
+            .filter(|active| active.id() == prompt.origin_prompt_id)
+        {
+            Some(active) => active.runtime_origin_prompt_id(
+                self.app
+                    .provider_run_projection_store()
+                    .is_leased_provider_run(provider_run.id()),
+            )?,
+            None if self
+                .app
+                .provider_run_projection_store()
+                .is_leased_provider_run(provider_run.id()) =>
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "resolve runtime turn origin",
+                    message: "leased runtime origin requires its current backing turn; resubmit from the home kernel".into(),
+                });
+            }
+            None => prompt.origin_prompt_id,
+        };
+        let origin_context = crate::prompt_assembly::agent_message_origin_context(runtime_origin);
         let hidden_context = if provider_run.provider() == "claude-headless" {
             let envelope = crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_provider_turn(

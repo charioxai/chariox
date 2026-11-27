@@ -166,12 +166,12 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let Some(arguments) =
-            self.arguments_with_home_origin(provider_run, &remote_context, &arguments)?
+            self.arguments_for_home_turn(provider_run, &remote_context, &arguments)?
         else {
             return Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
-                    "error": "origin_prompt_id is not this running turn's; use the exact id from this turn's hidden context"
+                    "error": format!("origin_prompt_id is not this running turn's; use the current home origin_prompt_id `{}` supplied for this turn", remote_context.home_prompt_id.as_deref().unwrap_or("unavailable"))
                 }),
             }));
         };
@@ -185,35 +185,44 @@ impl KernelRuntimeState {
         .map(Some)
     }
 
-    /// The call's arguments with the leased turn's home prompt as origin; `None` when the origin
-    /// is not the worker's running turn. The worker and home allocate different prompt IDs, so
-    /// the worker's turn is validated before it is translated to the leased home turn.
-    fn arguments_with_home_origin(
+    /// Every runtime tool uses the home origin supplied in its turn envelope.
+    /// Validate the current worker binding without accepting worker IDs as aliases.
+    fn arguments_for_home_turn(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
         remote_context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
         arguments: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
-        let worker_origin = arguments
-            .get("origin_prompt_id")
-            .and_then(serde_json::Value::as_str);
-        let origin_is_current = match provider_run.agent_instance_id().zip(worker_origin) {
-            Some((agent_id, prompt_id)) => self.agent_message_sender_prompt_is_running(
-                provider_run.session_id(),
-                agent_id,
-                prompt_id,
-            )?,
-            None => false,
-        };
-        let Some(home_prompt_id) = remote_context.home_prompt_id.as_deref() else {
+        let Some(home_origin) = remote_context.home_prompt_id.as_deref() else {
             return Ok(None);
         };
-        if !origin_is_current {
+        if arguments
+            .get("origin_prompt_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(home_origin)
+        {
             return Ok(None);
         }
-        let mut translated = arguments.clone();
-        translated["origin_prompt_id"] = serde_json::json!(home_prompt_id);
-        Ok(Some(translated))
+        let Some(agent) = provider_run.agent_instance_id() else {
+            return Ok(None);
+        };
+        let session = self
+            .owned
+            .session_store
+            .get_session(provider_run.session_id())?;
+        let current = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent);
+        if !current.as_ref().is_some_and(|prompt| {
+            prompt.status() == crate::session::PromptStatus::Running
+                && prompt
+                    .runtime_origin_prompt_id(true)
+                    .is_ok_and(|id| id == home_origin)
+        }) {
+            return Ok(None);
+        }
+        Ok(Some(arguments.clone()))
     }
 
     /// The home-bound context of a leased worker run, or `None` when local.
@@ -387,12 +396,15 @@ impl KernelRuntimeState {
             || crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
                 == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
         {
-            let Some(translated) =
-                self.arguments_with_home_origin(provider_run, &remote_context, &arguments)?
+            let Some(validated) =
+                self.arguments_for_home_turn(provider_run, &remote_context, &arguments)?
             else {
-                return Ok(Some(origin_rejected(skill_tool)));
+                return Ok(Some(origin_rejected(
+                    skill_tool,
+                    remote_context.home_prompt_id.as_deref(),
+                )));
             };
-            forwarded_arguments = translated;
+            forwarded_arguments = validated;
         }
         let config = self.config_snapshot().await;
         let mut original_response = None;
@@ -684,15 +696,18 @@ impl KernelRuntimeState {
     }
 }
 
-fn origin_rejected(skill_tool: bool) -> crate::transport::runtime_tools::RuntimeToolResult {
+fn origin_rejected(
+    skill_tool: bool,
+    current_origin: Option<&str>,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
     crate::transport::runtime_tools::RuntimeToolResult {
         ok: false,
         payload: serde_json::json!({
-            "error": if skill_tool {
-                "skill tool belongs to a different or finished turn; use the current prompt_id"
+            "error": format!("{}; use current origin_prompt_id `{}` supplied for this turn", if skill_tool {
+                "skill tool belongs to a different or finished turn"
             } else {
                 "agent message belongs to a different sender turn; message was not sent"
-            }
+            }, current_origin.unwrap_or("unavailable"))
         }),
     }
 }
@@ -705,15 +720,19 @@ mod origin_rejection_tests {
     // reported as a rejected agent message, or the agent cannot recover.
     #[test]
     fn leased_skill_tool_origin_rejection_names_the_current_prompt() {
-        let skill = origin_rejected(true).payload["error"]
+        let skill = origin_rejected(true, Some("current-home-turn")).payload["error"]
             .as_str()
             .unwrap()
             .to_string();
-        assert!(skill.contains("skill tool") && skill.contains("current prompt_id"));
-        let message = origin_rejected(false).payload["error"]
+        assert!(skill.contains("skill tool") && skill.contains("current-home-turn"));
+        let message = origin_rejected(false, Some("current-home-turn")).payload["error"]
             .as_str()
             .unwrap()
             .to_string();
         assert!(message.contains("agent message"));
     }
 }
+
+#[cfg(test)]
+#[path = "remote_turn_origin_tests.rs"]
+mod home_turn_origin_tests;

@@ -824,6 +824,7 @@ impl ProviderProcessServiceStore {
         agent_id: String,
         prompt_id: String,
         origin_prompt_id: &str,
+        runtime_origin_prompt_id: &str,
         run: &RuntimeProviderRun,
         prompt: &str,
         hidden_system_context: &str,
@@ -844,7 +845,7 @@ impl ProviderProcessServiceStore {
             mode,
             private_assessment_evidence,
             steering,
-            origin_prompt_id,
+            runtime_origin_prompt_id,
         )?;
         let envelope = if let Some(render_handoff) = render_handoff {
             let (mut envelope, handoff) = self.prepare_switch_skill_prompt(
