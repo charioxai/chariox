@@ -326,38 +326,78 @@ fn a_promotion_after_the_person_cancelled_says_so() {
     });
 }
 
+/// The Room's state as `GetSessionState` answers it: its size in bytes and its JSON.
+async fn session_state(rooms: &Rooms, command: &str) -> (usize, serde_json::Value) {
+    let request = LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+        session_id: rooms.peer_room.clone(),
+    });
+    let command = KernelCommand::from_local_request(command, None, None, &request);
+    let response = rooms
+        .router
+        .dispatch(command, request)
+        .await
+        .expect("the room state");
+    let bytes = serde_json::to_vec(&response).unwrap().len();
+    (bytes, serde_json::to_value(&response).unwrap())
+}
+
+/// What a client opening the Room pays: the state plus the latest turns.
+async fn attach_view_size(rooms: &Rooms, client: &str) -> usize {
+    let request = LocalDaemonRequest::AttachSessionView(crate::local::AttachSessionViewRequest {
+        session_id: rooms.peer_room.clone(),
+        client_id: client.into(),
+        capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+        preferred_agent_id: None,
+        latest_prompt_count: None,
+    });
+    let command = KernelCommand::from_local_request(client, None, None, &request);
+    let response = rooms
+        .router
+        .dispatch(command, request)
+        .await
+        .expect("the attach view");
+    assert!(matches!(
+        response,
+        crate::local::LocalDaemonResponse::SessionViewAttached { .. }
+    ));
+    serde_json::to_vec(&response).unwrap().len()
+}
+
+/// Sends `count` long messages to each of the two agents, numbered from `first`.
+async fn send_long_messages(rooms: &Rooms, first: usize, count: usize) {
+    for (index, agent) in std::iter::repeat_n(["idle", "peer"], count)
+        .flatten()
+        .enumerate()
+    {
+        let message = format!("{:02} {}", first * 2 + index, "x".repeat(3997));
+        send_to(rooms, agent, serde_json::json!({ "message": message })).await;
+    }
+}
+
 /// A Room whose agents queue many long messages still answers its state in a small read: the session
 /// shows a preview of the first few per agent, and the recipient reads the whole text from its inbox.
+/// What the queue adds is what the budgets bound: the Room's state without any queued message is
+/// the fixed cost of its agents (a turn, a parked task and its wake), which does not grow with the
+/// messages. So each budget is read on the growth the messages cause, and that growth must not grow
+/// with their number: twice the messages cost the same.
 #[test]
 fn many_long_queued_messages_keep_the_session_state_small() {
     run_peer_test("queued-bounded", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         let idle = spawn_waiting(&rooms).await;
-        for (index, agent) in std::iter::repeat_n(["idle", "peer"], 35)
-            .flatten()
-            .enumerate()
-        {
-            let message = format!("{index:02} {}", "x".repeat(3997));
-            send_to(&rooms, agent, serde_json::json!({ "message": message })).await;
-        }
-        let request = LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
-            session_id: rooms.peer_room.clone(),
-        });
-        let command = KernelCommand::from_local_request("cmd-queued-bounded", None, None, &request);
-        let response = rooms
-            .router
-            .dispatch(command, request)
-            .await
-            .expect("the room state");
-        let bytes = serde_json::to_vec(&response).unwrap().len();
-        let response = serde_json::to_value(&response).unwrap();
+        let (state_empty, _) = session_state(&rooms, "cmd-queued-empty").await;
+        let attach_empty = attach_view_size(&rooms, "perf-budget-empty").await;
+
+        send_long_messages(&rooms, 0, 35).await;
+        let (state_full, response) = session_state(&rooms, "cmd-queued-bounded").await;
         let queued = response["SessionState"]["session"]["queued_agent_messages"]
             .as_array()
             .expect("the queued messages");
         let budget = crate::transport::perf_budget::budget("session_state_bytes");
+        let growth = state_full - state_empty;
         assert!(
-            bytes <= budget,
-            "the session state is {bytes} bytes, over kernel.session_state_bytes {budget}"
+            growth <= budget,
+            "35 queued messages per agent add {growth} bytes ({state_empty} without them, {state_full} with), over kernel.session_state_bytes {budget}"
         );
         for agent in [idle.id(), rooms.peer.id()] {
             let shown: Vec<_> = queued
@@ -372,32 +412,28 @@ fn many_long_queued_messages_keep_the_session_state_small() {
         assert_eq!(rooms.inbox(&rooms.peer_room, idle.id()).await.len(), 35);
 
         // A client opening the Room pays one attach view: the state above plus the latest turns.
-        let request =
-            LocalDaemonRequest::AttachSessionView(crate::local::AttachSessionViewRequest {
-                session_id: rooms.peer_room.clone(),
-                client_id: "perf-budget".into(),
-                capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
-                preferred_agent_id: None,
-                latest_prompt_count: None,
-            });
-        let command = KernelCommand::from_local_request("cmd-attach-view", None, None, &request);
-        let response = rooms
-            .router
-            .dispatch(command, request)
-            .await
-            .expect("the attach view");
-        assert!(matches!(
-            response,
-            crate::local::LocalDaemonResponse::SessionViewAttached { .. }
-        ));
-        let bytes = serde_json::to_vec(&response).unwrap().len();
+        let attach_full = attach_view_size(&rooms, "perf-budget").await;
+        let attach_growth = attach_full - attach_empty;
         let budget = crate::transport::perf_budget::budget("attach_view_bytes");
         assert!(
-            bytes <= budget,
-            "the attach view is {bytes} bytes, over kernel.attach_view_bytes {budget}"
+            attach_growth <= budget,
+            "35 queued messages per agent add {attach_growth} bytes to the attach view ({attach_empty} without them, {attach_full} with), over kernel.attach_view_bytes {budget}"
         );
+
+        // Twice the messages cost the same: the state shows a preview of the first ten per agent.
+        send_long_messages(&rooms, 35, 35).await;
+        let (state_double, _) = session_state(&rooms, "cmd-queued-double").await;
+        let double_growth = state_double - state_empty;
+        assert!(
+            double_growth <= growth + GROWTH_TOLERANCE,
+            "70 queued messages per agent add {double_growth} bytes, 35 add {growth}: the state grows with the number of messages"
+        );
+        assert_eq!(rooms.inbox(&rooms.peer_room, idle.id()).await.len(), 70);
     });
 }
+
+/// The measurement of a Room's state varies by a few bytes (ids and times differ in length).
+const GROWTH_TOLERANCE: usize = 64;
 
 #[test]
 fn an_unwatched_room_view_attachment_lapses() {
