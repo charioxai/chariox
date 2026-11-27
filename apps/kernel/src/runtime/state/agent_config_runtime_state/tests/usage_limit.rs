@@ -2356,7 +2356,7 @@ async fn usage_limit_early_recovery_claims_the_armed_stop_after_a_new_meter_read
     let reading = |state, observed_at_ms| ProviderAccountUsageSnapshot {
         profile_id: profile.profile_id.clone(),
         provider: "claude".into(),
-        availability: ProviderAccountUsageAvailability::Available,
+        availability: ProviderAccountUsageAvailability::Partial,
         meters: vec![ProviderAccountUsageMeter {
             meter_id: "weekly".into(),
             label: "Weekly".into(),
