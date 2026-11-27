@@ -19,7 +19,7 @@ export type ControlPlaneRequest =
 export type ControlPlaneResponse =
   | { kind: "job_cancelled"; job_ref: string }
   | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; offers?: MachineOption[]; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
-  | { kind: "limits"; machines_at_once: number; spend_per_day_micros: number; currency: string; version: number }
+  | { kind: "limits"; machines_at_once: number; spend_per_day_micros: number; currency: string; version: number; machines_in_use?: number; spend_today_micros?: number }
   | { kind: "machines"; machines: ControlPlaneMachineRow[]; saved_states: ControlPlaneSavedStateRow[] }
   | { kind: "machine"; revision: number; available_actions: string[]; allocation_ref: string; state: string; access_state: string; access_reason: string | null; purpose?: string; machine_label?: string; address?: string | null; kernel_diagnostics?: MachineKernelDiagnostics; kernel_target: null | {
       kernel_id: string; machine_id: string; relay_realm_id: string; key_thumbprint: string
@@ -31,7 +31,7 @@ export type ControlPlaneResponse =
  * asking with what applies once the account's bound them.
  */
 export type MachineLimitsReading = {
-  account: { machines_at_once: number; spend_per_day_micros: number; currency: string; version: number } | null
+  account: { machines_at_once: number; machines_in_use?: number; spend_per_day_micros: number; spend_today_micros?: number; currency: string; version: number } | null
   no_ask: {
     enabled: boolean
     machines_at_once: number
