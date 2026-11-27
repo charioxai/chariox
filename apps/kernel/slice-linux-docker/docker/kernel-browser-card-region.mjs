@@ -71,7 +71,9 @@ export async function rememberCardReferences(host, scope, tab, snapshot) {
   if ((snapshot.dom_nodes ?? []).some(node => node.document_index === 0 && node.node_name === 'IFRAME')) {
     const connection = await host.browser.ensureConnection();
     const session = await host.browser.ensureTargetSession(connection, tab.target_id);
-    const world = await host.browser.ensureFocusWorld(connection, session, tab.target_id);
+    const frame = (await connection.send('Page.getFrameTree', {}, session)).frameTree?.frame;
+    if (!frame || frame.loaderId !== tab.document_id) throw new UserDomainRefusal('stale_reference');
+    const world = await host.browser.ensureFocusWorld(connection, session, tab.target_id, frame);
     const { result, exceptionDetails } = await connection.send('Runtime.evaluate', {
       contextId: world.contextId, expression: 'document.baseURI', returnByValue: true,
     }, session);

@@ -665,6 +665,7 @@ test('655 a missing child backend node follows its observed iframe owner', () =>
 }));
 
 test('655 a restarted frame card restores its observed iframe crop from the Tab registry', () => withHost(async ({ host, snapshot, region, state }) => {
+  host.browser.ensureFocusWorld = async (connection, session, target, frame) => { assert.equal(frame?.loaderId, state.document_id, 'the world is bound to the observed live frame'); return {contextId:7}; };
   state.baseURI = 'https://challenge.example/base/';
   const ref = 'frame:child:loader:backend:1';
   host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
