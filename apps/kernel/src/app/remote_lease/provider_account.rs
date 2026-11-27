@@ -290,6 +290,13 @@ exit 2
         std::fs::create_dir_all(&root).unwrap();
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
+        // `owner-a` is this kernel's Cloud user: the lease of the owner itself, the only lease a
+        // copied Claude account reaches. Another Cloud user's lease is refused
+        // (`a_lease_of_another_cloud_user_is_refused_a_claude_account...`).
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "owner-a".to_string(),
+            ..Default::default()
+        });
         config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let mut app = crate::DaemonApp::bootstrap(config).unwrap();
         let lease = RemoteLeaseRuntime::new(&mut app)
@@ -359,9 +366,95 @@ exit 2
 
         let mut wrong_owner = materialization;
         wrong_owner.profile.owner_user_id = "owner-b".to_string();
-        assert!(RemoteLeaseRuntime::new(&mut app)
+        let mismatch = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(context, wrong_owner)
-            .is_err());
+            .expect_err("a materialization of another owner must be refused");
+        assert!(
+            mismatch
+                .to_string()
+                .contains("owner does not match the execution lease"),
+            "{mismatch}"
+        );
+        assert!(app
+            .provider_account_profile_registry()
+            .list("owner-b", Some("claude"))
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // A Claude account reaches a worker only as the copy the account authority installed, so a
+    // lease of any Cloud user other than this kernel's own is refused it, with or without a native
+    // login in the materialization, and no replica of it is made.
+    #[test]
+    fn a_lease_of_another_cloud_user_is_refused_a_claude_account_with_or_without_a_native_login() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-account-foreign-lease-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "owner-a".to_string(),
+            ..Default::default()
+        });
+        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "owner-b",
+            )
+            .unwrap();
+        let context = RemoteProviderAccountSyncContext {
+            home_kernel_id: "home-kernel".to_string(),
+            home_session_id: "home-session".to_string(),
+            home_agent_id: "home-agent".to_string(),
+            execution_lease_id: lease.id,
+        };
+        for files in [
+            Vec::new(),
+            vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: ".credentials.json".to_string(),
+                contents_base64: "bmV2ZXItbG9nLXRoaXM=".to_string(),
+            }],
+        ] {
+            let with_native_login = !files.is_empty();
+            let materialization = ProviderAccountMaterialization {
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
+                    owner_user_id: "owner-b".to_string(),
+                    provider: "claude".to_string(),
+                    profile_id: "work".to_string(),
+                    label: "Work".to_string(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                    is_default: false,
+                },
+                files,
+                generated_at_ms: 1,
+            };
+            let error = RemoteLeaseRuntime::new(&mut app)
+                .ensure_remote_provider_account(context.clone(), materialization)
+                .expect_err("another Cloud user's lease must not get a Claude account");
+            let refusal = error.to_string();
+            assert!(
+                refusal.contains("cannot be materialized on a remote worker"),
+                "native login={with_native_login}: {refusal}"
+            );
+            assert!(refusal.contains("/provider setup-token claude"));
+            assert!(refusal.contains("your own computer"));
+            assert!(!refusal.contains("bmV2ZXItbG9nLXRoaXM"));
+            assert!(app
+                .provider_account_profile_registry()
+                .list("owner-b", Some("claude"))
+                .unwrap()
+                .is_empty());
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
