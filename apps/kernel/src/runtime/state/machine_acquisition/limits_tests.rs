@@ -772,6 +772,13 @@ async fn a_full_account_refuses_an_acquire_before_the_person_is_asked_and_a_retr
     assert!(again.is_ok(), "{again:?}");
 }
 
+/// A change of a setting reloads the kernel's config from its app, which this fixture gave no Cloud sign-in: put it back.
+fn keep_the_account(state: &KernelRuntimeState, account: &Option<crate::config::PersistedCloudRelayProfile>) {
+    let mut config = state.owned.config_projection.snapshot();
+    config.cloud_relay = account.clone();
+    state.owned.config_projection.update(config);
+}
+
 fn classes_of(state: &KernelRuntimeState) -> Option<Vec<String>> {
     state
         .owned
@@ -791,6 +798,7 @@ async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_
     };
     let (state, token, room, _worktree) =
         super::without_asking_tests::agent_kernel(service.api_url.clone(), settings).await;
+    let account = state.owned.config_projection.snapshot().cloud_relay;
     // Taking a class away applies at once.
     let lowered = tool(
         &state,
@@ -802,6 +810,7 @@ async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_
     .unwrap();
     assert_eq!(lowered["limits"]["no_ask"]["classes"], serde_json::json!(["small"]));
     assert_eq!(classes_of(&state), Some(vec!["small".into()]));
+    keep_the_account(&state, &account);
     no_card(&state, &room);
     // Adding one goes to the person's card naming the old and new classes; nothing changes before they answer.
     let mut call = {
@@ -847,6 +856,7 @@ async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_
         .await
         .unwrap();
     call.await.unwrap().unwrap();
+    keep_the_account(&state, &account);
     assert_eq!(classes_of(&state), Some(vec!["small".into(), "big".into()]));
     // Back to the smallest only is the unset state and needs nobody.
     let reset = tool(
