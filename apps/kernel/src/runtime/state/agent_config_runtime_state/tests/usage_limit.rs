@@ -746,6 +746,16 @@ async fn the_provider_refusing_at_the_reset_is_retried_a_few_times_and_then_asks
         UsageLimitStopState::Asking,
         "after the last retry the person is asked again"
     );
+    assert_eq!(team.stop(0).unwrap().refused, 4);
+    team.decide(0, crate::local::UsageLimitStopAction::ResumeWhenBack)
+        .await
+        .expect("an explicit Resume starts a new retry cycle without a meter");
+    let rearmed = team.stop(0).unwrap();
+    assert!(matches!(rearmed.state, UsageLimitStopState::Armed { .. }));
+    assert_eq!(
+        rearmed.refused, 0,
+        "the explicit decision resets the exhausted retry budget"
+    );
 }
 
 #[tokio::test]
