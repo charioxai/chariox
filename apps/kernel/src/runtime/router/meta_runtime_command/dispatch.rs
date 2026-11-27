@@ -1012,7 +1012,13 @@ impl CommandRouter {
             return Err(meta_command_error("empty Meta-mode command"));
         };
         match command {
-            "provider" => super::provider_accounts::account_copy_request(tokens),
+            "provider" => {
+                if self.runtime_state.drives_as_room_guest(session, metaagent)
+                    || !self.runtime_state.acts_for_kernel_owner(metaagent.owner_user_id()) {
+                    return Err(crate::runtime::room_tool_admission::denied("Use an agent with the owner's kernel access to copy accounts"));
+                }
+                super::provider_accounts::account_copy_request(tokens)
+            },
             "agent" => {
                 let agents = self.runtime_state.session_agents(session.id());
                 meta_agent_request(
