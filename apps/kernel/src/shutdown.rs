@@ -1,6 +1,8 @@
 //! The process boundary is the last shutdown deadline: cancelling an async
 //! future cannot stop a blocking syscall or a subsystem's synchronous Drop.
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -8,6 +10,50 @@ use std::time::{Duration, Instant};
 /// A stop (or restart) abandons what has not finished after this long.
 pub(crate) const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
 static WATCHDOG: OnceLock<Arc<Shared>> = OnceLock::new();
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static STOP_CANCELS: Cell<bool> = const { Cell::new(false) };
+    #[cfg(test)]
+    static STOPPING_HERE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Held by a blocking job that must end when the kernel stops, not outlive it.
+pub(crate) struct StopCancels(());
+
+/// Work on this thread that polls [`cancelled`] ends once shutdown begins.
+/// Background discovery opts in; a state-changing job such as a Git push does not.
+pub(crate) fn stop_cancels_this_thread() -> StopCancels {
+    STOP_CANCELS.with(|flag| flag.set(true));
+    StopCancels(())
+}
+
+impl Drop for StopCancels {
+    fn drop(&mut self) {
+        STOP_CANCELS.with(|flag| flag.set(false));
+    }
+}
+
+/// True for a job holding [`StopCancels`] once the kernel has begun to stop.
+pub(crate) fn cancelled() -> bool {
+    STOP_CANCELS.with(Cell::get) && (STOPPING.load(Ordering::Acquire) || stopping_here())
+}
+
+#[cfg(test)]
+fn stopping_here() -> bool {
+    STOPPING_HERE.with(Cell::get)
+}
+
+#[cfg(not(test))]
+fn stopping_here() -> bool {
+    false
+}
+
+/// Shutdown begins on this thread only, so tests of other jobs are unaffected.
+#[cfg(test)]
+pub(crate) fn stop_begins_on_this_thread() {
+    STOPPING_HERE.with(|flag| flag.set(true));
+}
 
 struct State {
     started: Option<Instant>,
@@ -82,6 +128,7 @@ impl ShutdownWatchdog {
 
 pub fn begin() {
     if let Some(shared) = WATCHDOG.get() {
+        STOPPING.store(true, Ordering::Release);
         let mut state = shared.state.lock().expect("shutdown state");
         state.started.get_or_insert_with(Instant::now);
         shared.changed.notify_one();
@@ -94,6 +141,7 @@ pub fn begin() {
 /// caller owns its deadline. A stage that outlasts the stop budget is logged.
 pub fn begin_hot_reload() {
     if let Some(shared) = WATCHDOG.get() {
+        STOPPING.store(true, Ordering::Release);
         let mut state = shared.state.lock().expect("shutdown state");
         state.reload = true;
         state.started.get_or_insert_with(Instant::now);

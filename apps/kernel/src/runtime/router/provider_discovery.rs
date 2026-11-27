@@ -67,6 +67,8 @@ impl CommandRouter {
         let config = self.config_projection.snapshot();
         let outcome =
             crate::shutdown::spawn_blocking("machine provider account discovery", move || {
+                // The kernel stopping ends the pass: an unfinished pass runs again at the next start.
+                let _stops = crate::shutdown::stop_cancels_this_thread();
                 crate::provider_discovery::discover_machine_providers(
                     &registry, &owner, &home, &config,
                 )
