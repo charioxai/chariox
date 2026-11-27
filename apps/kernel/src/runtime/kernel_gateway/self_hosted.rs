@@ -16,8 +16,7 @@ use super::names;
 use super::paired::PairedKernel;
 use super::{map_failure, KernelGateway, REQUEST_COUNTER};
 use crate::local::{
-    GatewayKernel, GatewayKernelStatus, GatewayKernelUpdate, GatewayKernelVia, LocalDaemonRequest,
-    RelayStatusRequest,
+    GatewayKernel, GatewayKernelStatus, GatewayKernelVia, LocalDaemonRequest, RelayStatusRequest,
 };
 
 const PROBE_DEADLINE: Duration = Duration::from_secs(5);
@@ -34,6 +33,7 @@ impl TargetStatus {
     /// Takes the name the kernel gives itself: the pairing link only carried its ids.
     pub(super) fn apply_to(self, presence: &mut RelayKernelPresence) {
         presence.capabilities = self.capabilities;
+        presence.local_protocol = self.protocol;
         presence.machine_alias = self.machine_alias.or(presence.machine_alias.take());
     }
 }
@@ -183,8 +183,8 @@ fn listed(probed: &Probed) -> GatewayKernel {
         last_seen_ms: probed.last_seen_ms,
         gateway_ready: is_gateway_ready(&probed.presence),
         via: GatewayKernelVia::SelfHosted,
-        protocol: None,
-        update: GatewayKernelUpdate::Current,
+        protocol: probed.presence.local_protocol,
+        update: super::update_needed::update_state(probed.presence.local_protocol),
     }
 }
 
@@ -206,6 +206,7 @@ fn status_after(answer: &Result<TargetStatus, GatewayError>) -> GatewayKernelSta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::GatewayKernelUpdate;
 
     fn paired(kernel_id: &str, alias: Option<&str>, machine_alias: Option<&str>) -> PairedKernel {
         PairedKernel {

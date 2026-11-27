@@ -9,7 +9,7 @@ use std::sync::Arc;
 use chariox_relay::protocol::RelayKernelPresence;
 
 use crate::error::DaemonError;
-use crate::local::GatewayKernelVia;
+use crate::local::{GatewayKernelUpdate, GatewayKernelVia};
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
@@ -57,6 +57,35 @@ impl InventorySource for RelayInventory {
 
     fn kernels(&self) -> Vec<RelayKernelPresence> {
         self.projection.snapshot().1
+    }
+
+    fn update_needed_kernels(&self) -> Vec<UpdateNeededKernel> {
+        let (machines, live) = self.projection.snapshot();
+        let live: std::collections::BTreeSet<&str> = live
+            .iter()
+            .map(|kernel| kernel.kernel_id.as_str())
+            .collect();
+        // The machine list names a refused kernel next to the live ones (remote_inventory.rs);
+        // what it names that is not live and is too old is exactly that.
+        machines
+            .iter()
+            .flat_map(|machine| {
+                machine
+                    .kernels
+                    .iter()
+                    .map(move |kernel| UpdateNeededKernel {
+                        kernel_id: kernel.kernel_id.clone(),
+                        machine_id: machine.machine_id.clone(),
+                        machine_alias: machine.machine_alias.clone(),
+                        protocol: kernel.local_protocol,
+                    })
+            })
+            .filter(|kernel| !live.contains(kernel.kernel_id.as_str()))
+            .filter(|kernel| {
+                super::update_needed::update_state(kernel.protocol)
+                    == GatewayKernelUpdate::UpdateNeeded
+            })
+            .collect()
     }
 
     fn is_fresh(&self) -> bool {

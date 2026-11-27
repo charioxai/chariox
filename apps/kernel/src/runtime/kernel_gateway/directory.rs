@@ -9,7 +9,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 use super::error::GatewayError;
 use super::inventory::{InventorySource, UpdateNeededKernel};
 use super::names;
-use crate::local::{GatewayKernel, GatewayKernelStatus, GatewayKernelUpdate};
+use crate::local::{GatewayKernel, GatewayKernelStatus};
 
 /// The capability a kernel advertises when it enforces `on_behalf_of`.
 const GATEWAY_CAPABILITY: &str = "kernel_gateway_v1";
@@ -26,6 +26,9 @@ struct Seen {
 pub(super) struct Directory {
     source: Arc<dyn InventorySource>,
     seen: Mutex<BTreeMap<String, Seen>>,
+    /// Kernels the relay refused for their age: listed, never routed to. Only their machine, id
+    /// and protocol are known.
+    refused: Mutex<BTreeMap<String, Seen>>,
     /// A refresh behind a request is running; one at a time.
     refreshing: Arc<AtomicBool>,
 }
@@ -35,6 +38,7 @@ impl Directory {
         Self {
             source,
             seen: Mutex::new(BTreeMap::new()),
+            refused: Mutex::new(BTreeMap::new()),
             refreshing: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -47,9 +51,11 @@ impl Directory {
         self.merge();
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
+        let refused = self.refused.lock().expect("directory poisoned");
         let now_ms = crate::session::unix_epoch_ms();
         Ok(names::grouped(
             seen.values()
+                .chain(refused.values())
                 .filter(|seen| {
                     seen.online
                         || crate::runtime::machine_presence::still_reconnecting(
@@ -71,8 +77,8 @@ impl Directory {
                     last_seen_ms: seen.last_seen_ms,
                     gateway_ready: is_gateway_ready(&seen.kernel),
                     via,
-                    protocol: None,
-                    update: GatewayKernelUpdate::Current,
+                    protocol: seen.kernel.local_protocol,
+                    update: super::update_needed::update_state(seen.kernel.local_protocol),
                 })
                 .collect(),
         ))
@@ -164,6 +170,43 @@ impl Directory {
                 },
             );
         }
+        let mut refused = self.refused.lock().expect("directory poisoned");
+        // A kernel that updated and registered is live, not refused.
+        refused.retain(|id, _| !seen.get(id).is_some_and(|seen| seen.online));
+        for kernel in self.source.update_needed_kernels() {
+            if seen.get(&kernel.kernel_id).is_some_and(|seen| seen.online) {
+                continue;
+            }
+            // One entry per kernel: the refusal is the newer word than an earlier live sighting.
+            seen.remove(&kernel.kernel_id);
+            refused.insert(
+                kernel.kernel_id.clone(),
+                Seen {
+                    kernel: stub(&kernel),
+                    last_seen_ms: now,
+                    online: false,
+                },
+            );
+        }
+    }
+}
+
+/// What the list knows of a kernel the relay refused: where it is and the protocol it reported.
+fn stub(kernel: &UpdateNeededKernel) -> RelayKernelPresence {
+    RelayKernelPresence {
+        kernel_id: kernel.kernel_id.clone(),
+        machine_id: kernel.machine_id.clone(),
+        machine_alias: kernel.machine_alias.clone(),
+        relay_alias: None,
+        kernel_alias: None,
+        available_providers: Vec::new(),
+        provider_accounts: Vec::new(),
+        capabilities: Vec::new(),
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        public_key: String::new(),
+        local_protocol: kernel.protocol,
     }
 }
 
@@ -225,7 +268,7 @@ pub(super) fn incompatibility(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::GatewayKernelVia;
+    use crate::local::{GatewayKernelUpdate, GatewayKernelVia};
     use std::future::Future;
     use std::pin::Pin;
 
