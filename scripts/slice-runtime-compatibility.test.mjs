@@ -36,11 +36,12 @@ test('slice image checks the binaries inside the final runtime', async () => {
   assert.ok(dockerfile.indexOf('RUN /opt/chariox-slice/check-runtime.sh') > copy);
 });
 
-for (const rejected of ['codex', 'claude', 'opencode', 'git', 'gh']) {
-  test(`D257 image admission refuses an unusable ${rejected} executable`, async t => {
+for (const rejected of ['codex', 'claude', 'opencode', 'git', 'gh']) for (const missing of [false, true]) {
+  test(`D257 image admission refuses a ${missing ? 'missing' : 'unusable'} ${rejected} executable`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'chariox-image-tools-'));
     t.after(() => rm(root, { recursive: true, force: true }));
     for (const name of ['chariox-kernel', 'chariox-relay', 'codex', 'claude', 'opencode', 'git', 'gh']) {
+      if (missing && name === rejected) continue;
       const path = join(root, name);
       await writeFile(path, `#!/bin/sh\nexit ${name === rejected ? 127 : 0}\n`);
       await chmod(path, 0o755);
