@@ -73,8 +73,6 @@ mod steered_turn_tests;
 mod subscriptions;
 mod supervision;
 #[cfg(test)]
-mod sweep_set_retirement_tests;
-#[cfg(test)]
 mod tests;
 mod transition_log;
 mod transitions;
@@ -412,24 +410,19 @@ impl DurableKernelStateStore {
         )
     }
     /// The tasks a lifecycle sweep can act on: unfinished or unreadable ones, cancelled ones whose
-    /// terminal outcome is not recorded yet, and finished ones that carry an obligation still
-    /// requiring resolution or still owe their terminal outcome. Recorded plain history, and
-    /// tasks whose obligations all ended, stay out of the sweep (row 690): a settled obligation
-    /// is never acted on again, so reading, decoding and visiting its task on every pass is cost
-    /// that grows for ever.
+    /// terminal outcome is not recorded yet, and finished ones that carry obligations or still
+    /// owe their terminal outcome. Recorded plain history stays out of the sweep.
     pub(crate) fn agent_tasks_to_sweep(&self) -> Result<Vec<AgentTaskExecution>, DaemonError> {
         self.read_tasks(
             "agent.lifecycle.sweep_tasks",
-            &format!(
-                "rowid IN (\
+            "rowid IN (\
              SELECT rowid FROM agent_tasks WHERE state IN ('working','waiting','blocked') \
              UNION SELECT rowid FROM agent_tasks WHERE state IS NULL \
-             UNION SELECT rowid FROM agent_tasks WHERE obligated=1 AND {OWES_RESOLUTION} \
+             UNION SELECT rowid FROM agent_tasks WHERE obligated=1 \
              UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_cancelled_pending \
               WHERE state='cancelled' AND terminal_outcome_recorded=0 \
              UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_done_pending \
-              WHERE state='done' AND terminal_outcome_recorded=0)"
-            ),
+              WHERE state='done' AND terminal_outcome_recorded=0)",
             [],
         )
     }
@@ -490,42 +483,35 @@ impl DurableKernelStateStore {
         filter: &str,
         values: impl rusqlite::Params,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
-        // The rows are copied out under the shared read connection; their payloads are decoded after
-        // it is released, so decoding a long ledger never holds up the other readers (row 690).
-        let rows = {
-            let db = self.lock_connection(operation)?;
-            let held_from = std::time::Instant::now();
-            let mut q = db
-                .prepare_cached(&format!(
-                    "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
+        let db = self.lock_connection(operation)?;
+        let mut q = db
+            .prepare_cached(&format!(
+                "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
+            ))
+            .map_err(sql)?;
+        #[cfg(test)]
+        q.reset_status(rusqlite::StatementStatus::VmStep);
+        let rows = q
+            .query_map(values, |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
                 ))
-                .map_err(sql)?;
-            #[cfg(test)]
-            q.reset_status(rusqlite::StatementStatus::VmStep);
-            let rows = q
-                .query_map(values, |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, String>(4)?,
-                    ))
-                })
-                .map_err(sql)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sql)?;
-            #[cfg(test)]
-            TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
-            read_gauge::record(operation, held_from.elapsed(), rows.len());
-            rows
-        };
-        rows.into_iter()
-            .map(|(id, room, agent, prompt, payload)| {
+            })
+            .map_err(sql)?;
+        let tasks = rows
+            .map(|row| {
+                let (id, room, agent, prompt, payload) = row.map_err(sql)?;
                 Ok(decode_task(&id, &room, &agent, &prompt, &payload)
                     .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
             })
-            .collect()
+            .collect();
+        #[cfg(test)]
+        TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+        tasks
     }
     /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
     /// order. Older finished tasks are not read, so a long room costs a read no more.
@@ -1429,23 +1415,6 @@ fn write_task(
     }
     Ok(())
 }
-/// A task holds an obligation that still requires resolution (the SQL of
-/// `AgentObligation::requires_resolution`: open or settling, or failed after an accepted dispatch),
-/// or an obligation entry that is not a readable obligation. (A string element comes back from
-/// `json_each` as unquoted text that is not JSON: only an object is parsed, by its `type`.) The
-/// unreadable entries stay in the set as before: reading the task fails to decode it and the ledger quarantines the row for the owner
-/// (obligation coverage unknown), which the retire rule must not skip.
-const OWES_RESOLUTION: &str =
-    "EXISTS (SELECT 1 FROM json_each(agent_tasks.payload,'$.obligations') AS o \
-     WHERE CASE WHEN o.type='object' THEN ( \
-            json_type(o.value,'$.id') IS NOT 'text' \
-         OR json_type(o.value,'$.kind') IS NOT 'text' \
-         OR json_type(o.value,'$.status') IS NOT 'text' \
-         OR json_type(o.value,'$.dispatch_state') IS NOT 'text' \
-         OR json_extract(o.value,'$.status') IN ('open','settling') \
-         OR (json_extract(o.value,'$.status')='failed' \
-             AND json_extract(o.value,'$.dispatch_state') IS NOT 'rejected')) \
-        ELSE 1 END)";
 /// Tasks are kept after they finish, so the lookups that run on every turn and every sweep
 /// read an index instead of decoding the whole ledger. An unreadable payload indexes as NULL.
 fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
@@ -1564,48 +1533,7 @@ fn source_tasks(
     room: &str,
     source: &str,
 ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
-    let started = std::time::Instant::now();
-    let tasks = tasks_where(tx, SOURCE_TASKS, params![room, source])?;
-    read_gauge::record(
-        "agent.lifecycle.source_tasks",
-        started.elapsed(),
-        tasks.len(),
-    );
-    Ok(tasks)
-}
-
-/// What each read of task rows cost since the last pass looked: how often, how long the longest held
-/// the connection it ran on, and the most rows (row 690, D151a). A read that holds the shared
-/// connection for more than 100 ms is the follow-up row; the sweep logs this once per pass.
-pub(crate) mod read_gauge {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-    use std::time::Duration;
-
-    #[derive(Default, serde::Serialize)]
-    struct Reads {
-        reads: u64,
-        held_ms_total: u128,
-        held_ms_max: u128,
-        rows_max: usize,
-    }
-
-    static READS: Mutex<BTreeMap<&'static str, Reads>> = Mutex::new(BTreeMap::new());
-
-    pub(crate) fn record(read: &'static str, held: Duration, rows: usize) {
-        let mut reads = READS.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = reads.entry(read).or_default();
-        entry.reads += 1;
-        entry.held_ms_total += held.as_millis();
-        entry.held_ms_max = entry.held_ms_max.max(held.as_millis());
-        entry.rows_max = entry.rows_max.max(rows);
-    }
-
-    /// The reads since the last call, by name; starts a new count.
-    pub(crate) fn take() -> serde_json::Value {
-        let reads = std::mem::take(&mut *READS.lock().unwrap_or_else(|e| e.into_inner()));
-        serde_json::json!(reads)
-    }
+    tasks_where(tx, SOURCE_TASKS, params![room, source])
 }
 /// A room's tasks (one agent's when given), in ledger order.
 fn room_tasks(

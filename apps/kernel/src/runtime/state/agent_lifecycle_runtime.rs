@@ -1609,23 +1609,7 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         let mut patience = super::task_work_flight::SWEEP_PATIENCE;
-        let read_started = std::time::Instant::now();
-        let to_sweep = self.owned.durable_state_store.agent_tasks_to_sweep()?;
-        let read_ms = read_started.elapsed().as_millis();
-        let total = to_sweep.len();
-        self.log_sweep_set(&to_sweep, read_ms);
-        // A pass that stopped for patience continues after the last task it reached.
-        let to_sweep = self.task_work.after_cursor(to_sweep);
-        let mut reached = 0;
-        let mut last_reached = None;
-        for task in to_sweep {
-            // The pass's patience is spent: the tasks it did not get to were not asked, so they are
-            // neither started nor reported as unsettled. The next pass continues after this one.
-            if patience.is_zero() {
-                break;
-            }
-            reached += 1;
-            last_reached = Some(task.task_id.clone());
+        for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let key = format!("sweep-task:{}", task.task_id);
             let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
@@ -1647,16 +1631,6 @@ impl KernelRuntimeState {
                     );
                 }
             }
-        }
-        if reached < total {
-            self.task_work.set_cursor(last_reached);
-            crate::logging::info_with_fields(
-                "runtime.agent_lifecycle",
-                "supervision sweep ran out of patience before every task; the next sweep continues after the last one it reached",
-                serde_json::json!({"swept": reached, "of": total, "unreached": total - reached}),
-            );
-        } else {
-            self.task_work.set_cursor(None);
         }
         // Include taskless recipients: their active user/provider turn must
         // not consume the idle-refusal budget or suppress later urgent steering.
@@ -1761,29 +1735,6 @@ impl KernelRuntimeState {
         Ok(())
     }
     /// One task of the sweep: settles its turn, its obligations and its queue. Returns the task it ended as interrupted.
-    /// One line per pass about the set the sweep reads: its size, what the read cost, and the
-    /// obligations that still require resolution by kind, those of agents that no longer exist
-    /// apart: the work nothing resolves.
-    fn log_sweep_set(&self, tasks: &[AgentTaskExecution], read_ms: u128) {
-        let mut open = std::collections::BTreeMap::<&str, usize>::new();
-        let mut ended = std::collections::BTreeMap::<&str, usize>::new();
-        for task in tasks {
-            let gone = self.owned.agent_store.get_agent(&task.agent_id).is_err();
-            for obligation in task.obligations.iter().filter(|o| o.requires_resolution()) {
-                *open.entry(obligation.kind.as_str()).or_default() += 1;
-                if gone {
-                    *ended.entry(obligation.kind.as_str()).or_default() += 1;
-                }
-            }
-        }
-        crate::logging::info_with_fields(
-            "runtime.agent_lifecycle",
-            "supervision sweep set",
-            serde_json::json!({"tasks": tasks.len(), "read_ms": read_ms,
-                "open_obligations": open, "open_obligations_of_ended_agents": ended,
-                "reads": crate::durable_state::agent_lifecycle::read_gauge::take()}),
-        );
-    }
     async fn sweep_task(
         &self,
         task: AgentTaskExecution,

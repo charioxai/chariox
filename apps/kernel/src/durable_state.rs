@@ -117,9 +117,6 @@ pub struct DurableKernelStateStore {
     skill_catalog_owner: bool,
     agent_release_delivery: Option<Arc<crate::agent_release_notes::Delivery>>,
     workflow_instruction_root: Option<Arc<Path>>,
-    /// Reads of the dev installations through the shared connection (row 690, cell 4).
-    #[cfg(test)]
-    dev_installation_reads: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -187,9 +184,6 @@ struct DurableWriterHealth {
     max_batch_records: AtomicU64,
     enqueued: AtomicU64,
     received: AtomicU64,
-    /// The last look found no dev App installation and no App registry write has been applied
-    /// since: the maintenance pump has nothing to read (row 690).
-    dev_installations_known_empty: AtomicBool,
 }
 
 /// The durable writer's queue depth and its commit counters since the kernel started.
@@ -678,8 +672,6 @@ impl DurableKernelStateStore {
             skill_catalog_owner: false,
             agent_release_delivery: None,
             workflow_instruction_root: None,
-            #[cfg(test)]
-            dev_installation_reads: Arc::default(),
         })
     }
 
@@ -1601,88 +1593,16 @@ impl DurableKernelStateStore {
         self.writer.health.received.load(Ordering::Acquire)
     }
 
-    #[track_caller]
-    fn lock_connection(&self, operation: &'static str) -> Result<ConnectionGuard<'_>, DaemonError> {
-        let location = std::panic::Location::caller();
-        let guard = self
-            .connection
+    fn lock_connection(
+        &self,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, Connection>, DaemonError> {
+        self.connection
             .lock()
             .map_err(|error| DaemonError::LocalTransport {
                 operation,
                 message: error.to_string(),
-            })?;
-        Ok(ConnectionGuard::new(guard, operation, location))
-    }
-
-    /// The shared read connection when nobody holds it; `None` when it is busy.
-    #[track_caller]
-    fn try_lock_connection(
-        &self,
-        operation: &'static str,
-    ) -> Result<Option<ConnectionGuard<'_>>, DaemonError> {
-        let location = std::panic::Location::caller();
-        match self.connection.try_lock() {
-            Ok(guard) => Ok(Some(ConnectionGuard::new(guard, operation, location))),
-            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
-            Err(std::sync::TryLockError::Poisoned(error)) => Err(DaemonError::LocalTransport {
-                operation,
-                message: error.to_string(),
-            }),
-        }
-    }
-
-    /// No dev App installation was found by the last look and no App registry write came after it.
-    pub(crate) fn dev_app_installations_known_empty(&self) -> bool {
-        self.writer
-            .health
-            .dev_installations_known_empty
-            .load(Ordering::Acquire)
-    }
-}
-
-/// The shared read connection while it is held. The stall watchdog names the holder in the
-/// `held_locks` of every operation that stalls meanwhile, so a stall behind this lock says whose.
-pub(crate) struct ConnectionGuard<'a> {
-    // Dropped first: the hold ends with the lock.
-    _watch: crate::runtime::stall_watchdog::Watch,
-    guard: std::sync::MutexGuard<'a, Connection>,
-}
-
-impl<'a> ConnectionGuard<'a> {
-    fn new(
-        guard: std::sync::MutexGuard<'a, Connection>,
-        operation: &'static str,
-        location: &'static std::panic::Location<'static>,
-    ) -> Self {
-        Self {
-            _watch: crate::runtime::stall_watchdog::watch_at(operation, "lock_hold", location),
-            guard,
-        }
-    }
-}
-
-impl std::ops::Deref for ConnectionGuard<'_> {
-    type Target = Connection;
-    fn deref(&self) -> &Connection {
-        &self.guard
-    }
-}
-
-impl std::ops::DerefMut for ConnectionGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Connection {
-        &mut self.guard
-    }
-}
-
-impl DurableWriterRequest {
-    /// Whether applying this request can add, activate or restore an App installation.
-    fn may_change_app_installations(&self) -> bool {
-        match self {
-            Self::App(_) | Self::VerifiedApp(_) | Self::AppActivation(_) => true,
-            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-            Self::AppRestore(_) | Self::AppInstallationOperation(_) => true,
-            _ => false,
-        }
+            })
     }
 }
 
@@ -1899,16 +1819,8 @@ fn run_durable_writer_with(
     let _stopped = MarkStopped(health.clone());
     let mut storage = storage_full::StorageProbe::new(&connection);
     let mut pending = None;
-    let mut app_registry_touched = false;
     loop {
         storage.after_request(&health);
-        // The write this thread applied last may have added a dev App installation: the
-        // maintenance pump looks again (row 690). Set before this thread waits for the next request.
-        if std::mem::take(&mut app_registry_touched) {
-            health
-                .dev_installations_known_empty
-                .store(false, Ordering::Release);
-        }
         let Some(first) = pending.take().or_else(|| {
             let request = storage.next_request(&receiver, &mut connection, &health);
             health
@@ -1928,7 +1840,6 @@ fn run_durable_writer_with(
             } => (*request, Some(DurableRequestTiming::new(observation))),
             request => (request, None),
         };
-        app_registry_touched = first.may_change_app_installations();
         let first = match first {
             DurableWriterRequest::Observed { .. } => {
                 unreachable!("writer observation is attached once")

@@ -10,14 +10,6 @@ pub(super) struct DevAppBindings {
 
 impl KernelRuntimeState {
     pub(super) async fn sync_dev_app_bindings(&self) -> Result<(), DaemonError> {
-        // A kernel with no dev App has nothing to bind: no read, no wait (row 690).
-        if self
-            .owned
-            .durable_state_store
-            .dev_app_installations_known_empty()
-        {
-            return Ok(());
-        }
         let state = &self.owned.dev_app_bindings;
         // Keep the deadline locked for the full scan: a slow pass cannot
         // overlap the next maintenance tick and race its own grant attempts.
@@ -29,15 +21,14 @@ impl KernelRuntimeState {
             return Ok(());
         }
         *next_scan_ms = now.saturating_add(1000);
-        // The shared read connection is never waited for from the maintenance pump: when it is
-        // busy the scan is retried at the next pass.
-        let Some(installations) = self
-            .owned
-            .durable_state_store
-            .active_dev_app_installations_if_free()?
-        else {
-            return Ok(());
-        };
+        let store = self.owned.durable_state_store.clone();
+        let installations =
+            tokio::task::spawn_blocking(move || store.active_dev_app_installations())
+                .await
+                .map_err(|_| DaemonError::InternalInvariant {
+                    operation: "apps.dev_bindings",
+                    message: "Dev installation discovery did not complete".into(),
+                })??;
         let agents = self.list_agents();
         let mut failure = None;
         for (owner, room, installation) in installations {

@@ -1907,8 +1907,6 @@ mod room_dispatch_obligation;
 mod slice_auth_inspection;
 mod stranded_agent;
 mod supervision_step;
-#[cfg(test)]
-mod sweep_patience_tests;
 mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;
