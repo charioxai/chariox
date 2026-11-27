@@ -1,5 +1,7 @@
 # Owned kernels and optional control-plane machines
 
+> Owner D246 / D249 / D251 / D252 / D253 / D254 / D255 / D257 / D258 (2026-11-27) changes the visibility/lifetime and billing-display decisions below. See [Machine lifecycle](design/MACHINE_LIFECYCLE.md) for the three decided kinds, deadline teardown, kept-image retention, orphan rescue and the shared Fresh/Copy/private-agentVM birth table for tools and credentials, owned and rented alike. That amendment is design only. D253/D254 answer retention, activity and save-failure behaviour; implementation readiness follows a fresh exact-head design review.
+
 MP-08 / MP-09 / MP-10 / MP-11. Design amendment, 2026-11-02; no protocol allocation or product implementation in this change.
 
 A kernel can reach another kernel the user owns, transfer selected environment and accounts, and run ordinary Room commands there. A connected hosted control plane may additionally offer machine acquisition using the owner's kernel enrollment. Machine rental, its images, shutdown policies, provider selection and metering belong to Cloud. A self-hosted installation retains owned-kernel tools and exposes no rental or automatic-offload option.
