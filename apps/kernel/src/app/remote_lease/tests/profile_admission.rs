@@ -914,6 +914,79 @@ fn tracked_worker_copy_adoption_drops_the_previous_codex_profile_session() {
     assert_tracked_worker_copy_session(Some(false));
 }
 
+#[tokio::test]
+async fn leased_prompt_profile_change_does_not_reseed_the_old_home_thread() {
+    crate::test_support::isolated_env_test!();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    config.provider_runtime_init_delay_ms = 60_000;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let registry = app.provider_account_profile_registry();
+    let old = registry
+        .create_managed(owner, "codex", "old worker account")
+        .unwrap();
+    let copied = registry
+        .create_managed(owner, "codex", "receiving worker account")
+        .unwrap();
+    let lease = {
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let execution = runtime
+            .create_execution_lease("home-kernel", "home-session", "home-agent", false, owner)
+            .unwrap();
+        runtime
+            .create_leased_agent(
+                &execution.id,
+                "codex",
+                &old.profile_id,
+                Some("model".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    let saved = crate::provider::ProviderResumeState::from_codex_thread_id("old-home-thread");
+    app.agents_mut()
+        .set_agent_provider_resume_state(&lease.backing_agent_id, saved.clone())
+        .unwrap();
+    let mut profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    profile.account_profile = copied.profile_id;
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let (run, _) = router
+        .relay_submit_leased_prompt(
+            &lease.id,
+            profile,
+            Some(saved),
+            "continue after worker account adoption",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            crate::extension::RemoteExtensionManifest::default(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        app.lock()
+            .await
+            .providers()
+            .get_run(&run)
+            .unwrap()
+            .resume_state()
+            .is_empty(),
+        "the incoming home thread belongs to the previous physical profile"
+    );
+}
+
 #[test]
 fn tracked_worker_copy_adoption_preserves_its_existing_codex_profile_session() {
     assert_tracked_worker_copy_session(Some(true));
