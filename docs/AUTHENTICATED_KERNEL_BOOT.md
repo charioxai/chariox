@@ -98,3 +98,11 @@ it neither opens a private key nor emits a signature/public-key claim. Stage
 those artifacts with the Cloud packager's `--signing-request` path, sign on the
 established Mac and assemble/verify before publishing. Unsigned builder output
 cannot satisfy release publication or fresh-rental deployment acceptance.
+
+D257 image acceptance requires the existing supported Codex, Claude Code,
+OpenCode, Git and gh executables. The final source/managed slice runtime admission
+probe runs each `--version`; Cloud's shared Boat/Hetzner base recipe already
+installs and probes the same tools. Fresh-rental deployment acceptance records
+actual executable paths, versions and exit codes. Reusable images contain no
+provider or GitHub account credentials. Runtime birth/account transfer and
+own-machine tool installation are separate from release packaging.
