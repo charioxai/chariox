@@ -4,6 +4,7 @@ import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
+import { restoreCardFrames } from './kernel-browser-card-frame.mjs';
 import { rememberCardReferences, resolveCardRegion, forgetCardAnchor } from './kernel-browser-card-region.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import {REGION_KEYS,regionScreenshot} from './kernel-browser-screenshot-region.mjs';
@@ -186,6 +187,7 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.cardReferences = new Map();
     this.cardAnchors = new Map();
+    this.cardFrames = new Map(); this.cardFrameRevision = 0; this.savedCardFrameRevision = 0;
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
     this.downloadSignal = new StateSignal();
@@ -255,6 +257,7 @@ export class KernelBrowserHost {
     ])].slice(0, TAB_LIMIT);
     data.active_tab_id = this.pendingActive?.tab_id ?? active?.tab_id ?? null;
     data.active_app_origin = this.pendingActive?.app_origin ?? appRestoreOrigin(active?.url) ?? null;
+    data.card_frames = [...this.cardFrames];
     data.window_layout = this.resizeSettled ? { width: this.resizeSettled.width, height: this.resizeSettled.height } : null;
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
@@ -331,6 +334,8 @@ export class KernelBrowserHost {
     if (!Number.isSafeInteger(saved.generation) || saved.generation < 0 || !Array.isArray(saved.tabs)) {
       throw new Error("MD-2: invalid browser tab registry");
     }
+    this.cardFrames = restoreCardFrames(saved.card_frames);
+    this.cardFrameRevision = this.savedCardFrameRevision = 0;
     this.savedGroups = Array.isArray(saved.groups) ? saved.groups.slice(0, TAB_LIMIT).filter(group =>
       typeof group?.tab_id === 'string' && typeof group.label === 'string' && group.label.length <= 64) : [];
     assertNotCancelled(signal);

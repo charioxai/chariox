@@ -7337,7 +7337,10 @@ bound to its iframe owner in the original top document. Reloading or replacing t
 document preserves the card and its crop. A card on a child element follows the same owner
 if the child document or element disappears. The owner must come from the agent's observed
 snapshot; a foreign reference still refuses. Losing the owner or navigating the top document
-uses the ordinary person-card page rebind described above.
+uses the ordinary person-card page rebind described above. A host restart preserves the observed iframe
+identity in its Tab registry: only a unique iframe with the same origin, id, name and title on the same
+page origin supplies the crop again, including when it appears after the page loads. Renderer node IDs
+are never reused across the restart, and releasing the card removes this saved identity.
 
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
 that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that

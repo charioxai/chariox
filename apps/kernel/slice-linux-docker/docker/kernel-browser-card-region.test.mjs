@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -658,4 +658,39 @@ test('655 a missing child backend node follows its observed iframe owner', () =>
   const followed = await region({ ref, card_id: 'child-card', generation: 1, document_id: 'doc' });
   assert.equal(followed.state, 'present', 'a removed child node does not retire its live iframe card');
   assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+}));
+
+test('655 a restarted frame card restores its observed iframe crop from the Tab registry', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:loader:backend:1';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', attributes: { src: 'https://challenge.example/widget#random=before', title: 'Challenge' } },
+    { node_ref: ref, document_index: 1, node_type: 9 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await snapshot();
+  const first = await region({ ref, card_id: 'restore-frame' });
+  const saved = JSON.parse(await readFile(path.join(host.root, 'tabs.json'), 'utf8'));
+  assert.equal(saved.card_frames.length, 1, 'the observed iframe identity is saved before registering the card');
+  assert.equal(JSON.stringify(saved.card_frames).includes('random=before'), false, 'frame addresses are reduced to origins');
+  // A new host has no renderer refs or card anchors. Only its saved Tab registry survives.
+  host.cardReferences.clear(); host.cardAnchors.clear();
+  host.cardFrames = new Map(saved.card_frames); host.generation = 2; state.document_id = 'restored-doc';
+  const connection = await host.browser.ensureConnection(), base = connection.send, resolved = [];
+  let frameReady = false;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: params.objectId === 'restored-frame' ? 42 : 77 } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function findCardFrame')) return { result: frameReady ? { objectId: 'restored-frame' } : { subtype: 'null' } };
+    if (method === 'DOM.resolveNode') resolved.push(params.backendNodeId);
+    return base(method, params, session);
+  };
+  const rebound = await region({ card_id: 'restore-frame', ref: undefined, rebind: true });
+  assert.equal(rebound.state, 'present');
+  frameReady = true; resolved.length = 0;
+  const followed = await region({ card_id: 'restore-frame', ref: rebound.region.ref, generation: 2, document_id: 'restored-doc' });
+  assert.equal(followed.state, 'present');
+  assert.deepEqual(followed.region.rect, first.region.rect);
+  assert.deepEqual(resolved, [42], 'the restored iframe supplies geometry instead of the page body');
+  await region({ card_id: 'restore-frame', release: true });
+  assert.deepEqual(JSON.parse(await readFile(path.join(host.root, 'tabs.json'), 'utf8')).card_frames, []);
 }));
