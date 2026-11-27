@@ -405,10 +405,16 @@ async fn stale_active_run_hint_cold_launches_from_the_workers_own_account() {
 async fn stale_active_run_hint_without_worker_account_returns_recoverable_missing() {
     let fixture = native_lease_fixture();
     let error = fixture.launch("sonnet").await.unwrap_err();
-    assert!(matches!(error, DaemonError::LocalTransport {
-        operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
-        ..
-    }), "a cold native launch must request tracked-copy recovery: {error}");
+    assert!(
+        matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
+                ..
+            }
+        ),
+        "a cold native launch must request tracked-copy recovery: {error}"
+    );
 }
 
 #[tokio::test]
