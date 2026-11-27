@@ -919,27 +919,11 @@ async fn leased_prompt_profile_change_does_not_reseed_the_old_home_thread() {
     crate::test_support::isolated_env_test!();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
-    config.provider_runtime_init_delay_ms = 60_000;
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
     let registry = app.provider_account_profile_registry();
     let old = registry
         .create_managed(owner, "codex", "old worker account")
-        .unwrap();
-    let copied = registry
-        .create_managed(owner, "codex", "receiving worker account")
-        .unwrap();
-    registry
-        .update_observation(
-            owner,
-            "codex",
-            &copied.profile_id,
-            crate::account_profile::ProviderAccountAuthState::Authenticated,
-            None,
-            None,
-            None,
-            None,
-        )
         .unwrap();
     let lease = {
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
@@ -968,7 +952,10 @@ async fn leased_prompt_profile_change_does_not_reseed_the_old_home_thread() {
     let mut profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
         &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
     );
-    profile.account_profile = copied.profile_id;
+    // The managed adapter exercises relay admission without starting a native CLI.
+    // Codex's old thread must still be cleared before the new provider receives the turn.
+    profile.provider = "managed-dev-stub".into();
+    profile.account_profile = "receiving-worker-profile".into();
     let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
     let (run, _) = router
