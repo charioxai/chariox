@@ -42,7 +42,7 @@ An agent of the kernel's owner has the owner's authority on every kernel of the 
 - The shell: the `chariox` CLI run from the agent's own process tree acts as the agent, here or with `--kernel` on another kernel of the owner. No `chariox access request` is needed; it answers that access is already granted.
 - Identity: the agent's own live provider run (`reach:<run>`), never a token. The target kernel admits the request because it arrives from a gateway kernel paired to its owner over the relay, and it applies the same refusal list itself.
 - Agents of another account, and guests' agents, are refused: "only agents of this kernel's owner reach other rooms and kernels".
-- An agent leased to a worker kernel acts the same way: the worker forwards its `chariox_kernel_request` home, which judges it as that agent.
+- An agent leased to a worker kernel acts the same way when the worker and home belong to the same Cloud user and realm: the worker forwards its `chariox_kernel_request` home, which judges it as that agent. Other workers, including a home without Cloud owner data, need a live home-prompt sudo window and cannot target another kernel.
 ### Room agent access
 
 An agent of the kernel's owner needs none of this (see above). Any other Room agent, including a sub-agent, can ask the kernel owner for access. The kernel identifies the

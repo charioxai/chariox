@@ -1416,6 +1416,35 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
             },
         )
     };
+    let sibling_reach = format!(
+        "reach:{}",
+        crate::provider::projected_leased_provider_run_id(
+            &sibling_context.leased_agent_id,
+            &sibling_context.worker_provider_run_id,
+        )
+    );
+    // This fixture has no Cloud owner relationship. Preserve that transport
+    // authority at the gateway entry, just as the real relay call below does.
+    let gateway = fixture.home.runtime_state.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::RelayPeerAuthority {
+            kernel_id: worker.state.config.daemon_id.clone(),
+            public_key: worker.state.config.relay_public_key.clone(),
+            sender_bound: true,
+            owners_kernel: false,
+        },
+    );
+    let sibling_gateway = gateway.authorize_gateway_request(
+        &sibling_reach,
+        &crate::local::LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
+            include_archived: false,
+        }),
+    );
+    let sibling_secret = gateway.authorize_gateway_request(
+        &sibling_reach,
+        &crate::local::LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Reveal {
+            id: "entry".into(),
+        }),
+    );
     let sibling_at_home = forward(sibling_context, request.clone()).await;
     let elevated_context = worker
         .router
@@ -1498,6 +1527,16 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
             .as_ref()
             .is_err_and(|error| error.to_string().contains("sudo authority")),
         "the home refuses an unelevated leased turn the worker forwards: {sibling_call:?}"
+    );
+    assert!(
+        sibling_gateway
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("owner's own workers")),
+        "a worker without the owner's relationship cannot use the gateway: {sibling_gateway:?}"
+    );
+    assert!(
+        sibling_secret.is_err(),
+        "a private Vault entry cannot be read through the gateway"
     );
     assert!(
         sibling_at_home
