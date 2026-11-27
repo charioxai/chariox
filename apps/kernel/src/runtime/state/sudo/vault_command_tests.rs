@@ -1418,3 +1418,71 @@ async fn a_copy_retry_by_name_still_answers_when_the_copy_carries_the_same_label
     assert!(refused.contains("more than one"), "{refused}");
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_failed_capture_cut_inside_a_bound_value_returns_no_start_of_it() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let token = capture(&f, "token", printing(SECRET), json!({"kind": "stdout"}))
+        .await
+        .unwrap();
+    let token_id = token["credential_id"].as_str().unwrap().to_string();
+    let failing = |request: &str, script: String| {
+        json!({"request_id": request, "host": "api.example.com", "origin": "https://api.example.com",
+            "env": {"KEY": token_id}, "argv": ["/bin/sh", "-c", script],
+            "use_binding": {"target": {"kind": "command_environment", "name": "NEW", "origin": "https://api.example.com"}}})
+    };
+    // stderr is collected up to 1 MiB: 12 bytes of the value fall before that limit.
+    let before = (1 << 20) - 12;
+    let cut = call(
+        &f,
+        CAPTURE,
+        failing(
+            "cut",
+            format!(
+                "yes pad | head -c {before} >&2; printf '%s' \"$KEY\" >&2; echo more >&2; exit 3"
+            ),
+        ),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(cut.contains("exited with code 3"), "{cut}");
+    assert!(cut.contains("pad"), "the excerpt is still shown: {cut}");
+    assert!(!cut.contains(&SECRET[..6]), "{cut}");
+    // A failure far from the limit still shows its excerpt, with the value masked.
+    let plain = call(
+        &f,
+        CAPTURE,
+        failing("plain", "echo \"denied for $KEY\" >&2; exit 4".into()),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        plain.contains(&format!("denied for [vault:{token_id}]")),
+        "{plain}"
+    );
+    // A successful command that printed more than the limit still stores nothing.
+    let long = call(
+        &f,
+        CAPTURE,
+        failing("long", "yes pad | head -c 1048600".into()),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        long.contains("more than 1 MiB; nothing was stored"),
+        "{long}"
+    );
+    let session =
+        serde_json::to_string(&f.state.owned.session_snapshot(&turn.session_id).unwrap()).unwrap();
+    assert!(
+        !session.contains(&SECRET[..6]),
+        "nothing of the value in the session"
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}

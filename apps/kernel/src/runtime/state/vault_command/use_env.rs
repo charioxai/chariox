@@ -154,8 +154,8 @@ impl KernelRuntimeState {
             KernelCommandExit::TimedOut => ("timed_out", None),
             KernelCommandExit::Lost => ("lost", None),
         };
-        let (stdout, stdout_cut) = masked(&output.stdout, &masks);
-        let (stderr, stderr_cut) = masked(&output.stderr, &masks);
+        let (stdout, stdout_cut) = masked(&output.stdout, &masks, output.truncated);
+        let (stderr, stderr_cut) = masked(&output.stderr, &masks, output.truncated);
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({"status": status, "exit_code": exit_code,

@@ -310,7 +310,11 @@ impl KernelRuntimeState {
             KernelCommandExit::Exited(code) => {
                 return Err(error(format!(
                     "the command exited with code {code}; nothing was stored{}",
-                    stderr_excerpt(super::mask::masked(&output.stderr, &masks).0.as_bytes())
+                    stderr_excerpt(
+                        super::mask::masked(&output.stderr, &masks, output.truncated)
+                            .0
+                            .as_bytes()
+                    )
                 )))
             }
             KernelCommandExit::TimedOut => {
