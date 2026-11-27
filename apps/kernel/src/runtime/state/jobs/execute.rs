@@ -1193,12 +1193,32 @@ fn is_capacity_failure(error: &DaemonError) -> bool {
         _ => false,
     }
 }
+/// The service's own error code behind a failed job acquisition. A 429, 500 or 503 may have
+/// committed a machine, so the acquisition ledger reports it as `acquisition_uncertain` and
+/// keeps the service's text in its message; the job's cleanup fences the job reference before
+/// the job waits locally, so no machine is left behind.
+fn service_error_code(error: &DaemonError) -> Option<&str> {
+    if let Some(code) = crate::runtime::cloud_api_client::cloud_error_code(error) {
+        return Some(code);
+    }
+    let DaemonError::MachineRequest { code, message } = error else {
+        return None;
+    };
+    if code != "acquisition_uncertain" {
+        return None;
+    }
+    let behind = message.split_once("cloud_api_code=")?.1;
+    let end = behind
+        .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+        .unwrap_or(behind.len());
+    Some(&behind[..end])
+}
 /// The sentence a job prints when the machine service cannot give it a machine and it runs here instead.
 fn local_fallback_notice(error: &DaemonError) -> Option<&'static str> {
     if is_capacity_failure(error) {
         return Some("No remote machine free; waiting locally.\n");
     }
-    match crate::runtime::cloud_api_client::cloud_error_code(error)? {
+    match service_error_code(error)? {
         "rate_limited" => Some("Remote machines are rate limited right now; waiting locally.\n"),
         "dependency_unavailable" => {
             Some("The remote machine service is unavailable right now; waiting locally.\n")

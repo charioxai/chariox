@@ -13,8 +13,41 @@ pub(super) struct BrowserTabActivity {
     activity: Option<Value>,
     /// Tabs a person is asked to act in (an open hand-off card): their agent's native group says so.
     attention: BTreeSet<String>,
+    /// Row 548: where `openers` are kept, so a rebuilt model (hot reload, restart) still knows whose Tab is whose.
+    persist: Option<std::path::PathBuf>,
 }
 impl BrowserTabActivity {
+    /// Reads the openers a previous model saved at `path` and keeps saving there.
+    pub(super) fn persist_at(&mut self, path: std::path::PathBuf) {
+        if let Some(saved) = std::fs::read(&path).ok().and_then(|bytes| {
+            serde_json::from_slice::<BTreeMap<String, EnvironmentActor>>(&bytes).ok()
+        }) {
+            for (tab, actor) in saved {
+                self.openers.entry(tab).or_insert(actor);
+            }
+        }
+        self.persist = Some(path);
+    }
+    /// A failed save leaves the attribution in memory only, as before: the next change saves again.
+    fn save(&self) {
+        let Some(path) = &self.persist else { return };
+        let Ok(bytes) = serde_json::to_vec(&self.openers) else {
+            return;
+        };
+        let temporary = path.with_extension("tmp");
+        let written = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            options.open(&temporary)?.write_all(&bytes)?;
+            std::fs::rename(&temporary, path)
+        })();
+        if let Err(error) = written {
+            tracing::warn!(error = %error, "the browser Tab openers were not saved");
+        }
+    }
     // MP-08/MP-10: restored stable Tabs keep their opener attribution. Actions
     // and activity belong to the dead browser and cannot attribute new popups.
     pub(super) fn browser_restarted(&mut self) {
@@ -24,7 +57,14 @@ impl BrowserTabActivity {
     pub(super) fn retain(&mut self, tabs: &Value) {
         if let Some(tabs) = tabs.as_array() {
             let live = |id: &str| tabs.iter().any(|tab| tab["tab_id"] == id);
-            self.openers.retain(|id, _| live(id));
+            // A browser that is still starting reports no Tabs: that is not every Tab closing.
+            if !tabs.is_empty() {
+                let known = self.openers.len();
+                self.openers.retain(|id, _| live(id));
+                if self.openers.len() != known {
+                    self.save();
+                }
+            }
             // MP-08/MP-11: captured creations survive their source navigation.
             // finish() bounds these associations by the compacted action ledger;
             // cancellation, takeover and process restart still discard them.
@@ -63,7 +103,9 @@ impl BrowserTabActivity {
         self.actions.retain(|id, _| live(id));
     }
     pub(super) fn opened(&mut self, actor: EnvironmentActor, tab: &str) {
-        self.openers.insert(tab.into(), actor.clone());
+        if self.openers.insert(tab.into(), actor.clone()).as_ref() != Some(&actor) {
+            self.save();
+        }
         self.acted(&actor, tab);
     }
     pub(super) fn acted(&mut self, actor: &EnvironmentActor, tab: &str) {

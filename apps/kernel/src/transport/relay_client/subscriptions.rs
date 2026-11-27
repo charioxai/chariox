@@ -7,6 +7,7 @@ use futures_util::FutureExt;
 use super::request_errors::{map_relay_error, relay_error};
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
+use crate::runtime_transport::interval_due;
 use crate::transport::agent_turn_feed::AgentTurnFeed;
 use crate::transport::home_audit_feed::HomeAuditFeed;
 use crate::transport::kernel_protocol::{requested_heartbeat_interval, RoomListEventProjection};
@@ -1138,6 +1139,8 @@ async fn run_relay_room_list_subscription_loop(
     let mut previous_slices = resumed.then(|| router.transport_slices_snapshot());
     let mut inventory_dirty = !resumed;
     let mut tick: u64 = 0;
+    let mut last_room_list_refresh: Option<u64> = None;
+    let mut last_remote_machine_discovery: Option<u64> = None;
     let mut next_heartbeat_at = Instant::now();
     loop {
         if router
@@ -1184,7 +1187,13 @@ async fn run_relay_room_list_subscription_loop(
         }
         let room_list_change_sequence = router.room_list_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
-        if inventory_dirty || (!resumed && tick.is_multiple_of(RELAY_ROOM_LIST_INTERVAL_TICKS)) {
+        let room_list_refresh_due = !resumed
+            && interval_due(
+                tick,
+                &mut last_room_list_refresh,
+                RELAY_ROOM_LIST_INTERVAL_TICKS,
+            );
+        if inventory_dirty || room_list_refresh_due {
             match router
                 .room_list_snapshot(&subscriber.user_id, Some(&subscriber.caller))
                 .await
@@ -1261,7 +1270,11 @@ async fn run_relay_room_list_subscription_loop(
                 subscriber.heartbeat_interval,
             );
         }
-        if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
+        if interval_due(
+            tick,
+            &mut last_remote_machine_discovery,
+            RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS,
+        ) {
             let inventory = router.relay_remote_machines_snapshot(&subscriber.caller);
             if previous_remote_machines.as_ref() != Some(&inventory) {
                 previous_remote_machines = Some(inventory.clone());
@@ -1386,6 +1399,53 @@ mod tests {
 
     use tokio::sync::Mutex;
     use tokio::time::{sleep, Duration};
+
+    #[test]
+    fn interval_due_runs_within_one_interval_when_ticks_jump_over_every_multiple() {
+        // A step of 7 never lands on a multiple of 150 before tick 1050.
+        let (mut last, mut runs) = (None, Vec::new());
+        for tick in (0..=1000u64).step_by(7) {
+            if super::interval_due(tick, &mut last, 150) {
+                runs.push(tick);
+            }
+        }
+        assert_eq!(runs.first(), Some(&0));
+        assert!(runs.len() >= 6, "runs: {runs:?}");
+        for pair in runs.windows(2) {
+            assert!(pair[1] - pair[0] < 150 + 7, "gap in {runs:?}");
+        }
+    }
+
+    #[test]
+    fn interval_due_does_not_double_run_when_ticks_hit_multiples_exactly() {
+        for (step, interval) in [(50u64, 150u64), (1, 150), (50, 100)] {
+            let (mut last, mut runs) = (None, Vec::new());
+            for tick in (0..=600u64).step_by(step as usize) {
+                if super::interval_due(tick, &mut last, interval) {
+                    runs.push(tick);
+                }
+            }
+            let expected: Vec<u64> = (0..=600).step_by(interval as usize).collect();
+            assert_eq!(runs, expected, "step {step} interval {interval}");
+        }
+    }
+
+    #[test]
+    fn interval_due_keeps_running_when_the_tick_wraps() {
+        let mut tick = u64::MAX - 40;
+        let mut last = None;
+        let mut runs = 0;
+        for _ in 0..600 {
+            if super::interval_due(tick, &mut last, 150) {
+                runs += 1;
+            }
+            tick = tick.wrapping_add(1);
+        }
+        assert_eq!(
+            runs, 4,
+            "first check plus one per 150 ticks across the wrap"
+        );
+    }
 
     #[test]
     fn relay_subscription_inventory_uses_authenticated_caller_user() {

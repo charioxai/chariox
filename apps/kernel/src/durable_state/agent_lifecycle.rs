@@ -44,6 +44,7 @@ mod done_parent_binding_tests;
 #[cfg(test)]
 mod fault_tests;
 pub(crate) mod faults;
+mod folded_waits;
 mod goal_evidence;
 #[cfg(test)]
 mod goal_tests;

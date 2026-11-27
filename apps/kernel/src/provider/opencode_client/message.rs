@@ -186,6 +186,15 @@ pub struct OpenCodeToolState {
     pub error: String,
     #[serde(default)]
     pub raw: String,
+    #[serde(default)]
+    pub time: Option<OpenCodeToolTime>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OpenCodeToolTime {
+    /// When OpenCode started the tool, in milliseconds since the epoch.
+    #[serde(default)]
+    pub start: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

@@ -212,6 +212,7 @@ pub(super) fn render_snapshot_output_chunks(
                     }
                 }
                 "tool" => {
+                    state.note_tool_part(part);
                     let summary = render_tool_transcript_update(part, remote_extension_manifest);
                     let previous = state.emitted_tool_summaries.get(&part.id);
                     if previous.map(String::as_str) != Some(summary.as_str()) {

@@ -286,9 +286,12 @@ impl Drop for Fixture {
     }
 }
 
+// Row 577: a leased launch no longer carries the owner's token. With no token the home runs the
+// official sign-in in the existing provider-login card and holds the prompt; transport is not reached.
 #[tokio::test]
-async fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
+async fn remote_dispatch_callers_ask_for_the_official_sign_in_when_the_owner_has_no_token() {
     crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
     let _env = crate::env_lock::lock();
     for caller in [Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
@@ -296,14 +299,32 @@ async fn remote_dispatch_callers_require_vaulted_claude_token_before_transport()
         let (router, mut dispatch) = fixture.runtime_dispatch(caller);
 
         let runtime = router.runtime_state();
-        let error = runtime
-            .submit_remote_prompt_to_worker_for_test(&mut dispatch)
-            .await
-            .expect_err("owned dispatch needs the vaulted token before transport");
+        let mut submission =
+            Box::pin(runtime.submit_remote_prompt_to_worker_for_test(&mut dispatch));
+        let interaction = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(session) = runtime.session_snapshot(&fixture.session_id).await {
+                    if let Some(interaction) =
+                        session.active_interaction_for_agent(&fixture.agent_id)
+                    {
+                        break interaction.clone();
+                    }
+                }
+                tokio::select! {
+                    result = &mut submission => {
+                        panic!("{caller:?}: a missing token must hold transport: {result:?}")
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+                }
+            }
+        })
+        .await
+        .expect("a missing token should open the sign-in card before transport");
         assert!(
-            error.to_string().contains("remote Claude launch requires"),
-            "{caller:?}: {error}"
+            interaction.provider_login().is_some(),
+            "{caller:?}: the owner without a token gets the provider sign-in card"
         );
+        assert!(!format!("{interaction:?}").contains("dispatch-token-canary"));
     }
 }
 
@@ -340,7 +361,7 @@ async fn remote_dispatch_callers_surface_locked_vault_before_transport() {
 }
 
 #[tokio::test]
-async fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_token() {
+async fn remote_dispatch_callers_copy_the_account_to_the_worker_and_reuse_active_run_without_it() {
     crate::test_support::isolated_env_test!();
     let _claude = crate::test_support::TestClaudeExecutable::new();
     let _env = crate::env_lock::lock();
@@ -368,9 +389,19 @@ async fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_witho
             let error = runtime
                 .submit_remote_prompt_to_worker_for_test(&mut dispatch)
                 .await
-                .expect_err("owned dispatch should reach transport after credential admission");
-            assert!(error.to_string().contains("relay_url is not configured"),
-                "{caller:?}, active={active_run}: should reach transport after credential admission: {error}");
+                .expect_err("owned dispatch should stop at the account copy or at transport");
+            // A cold launch first needs the worker's own copy of the account (row 577); this
+            // fixture has no relay, so the copy stops at the worker not being reachable as the
+            // owner's kernel. A live run needs no copy and goes on to transport.
+            let expected = if active_run {
+                "relay_url is not configured"
+            } else {
+                "was not copied to it"
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "{caller:?}, active={active_run}: expected `{expected}`: {error}"
+            );
             assert!(!error.to_string().contains("dispatch-token-canary"));
         }
     }

@@ -240,6 +240,17 @@ impl Rooms {
     /// Parks the agent's task on a timer and ends its provider turn: the state a task is in after
     /// `events.yield`, with no active prompt.
     async fn park_task(&self, room: &str, agent: &str) {
+        self.park_on_timer(room, agent).await;
+        self.router
+            .runtime_state
+            .end_agent_turn_for_tests(room, agent, false)
+            .await
+            .expect("the parked turn ends");
+    }
+
+    /// Gives the agent's last task a timer to wait on, as `events.yield` does: the task is parked and
+    /// something will wake the agent. The provider turn, if any, is left as it is.
+    async fn park_on_timer(&self, room: &str, agent: &str) {
         let task = self.last_task(room, agent).await;
         let now = crate::session::unix_epoch_ms();
         let wake: crate::durable_state::agent_lifecycle::AgentWake =
@@ -278,11 +289,6 @@ impl Rooms {
                 })
                 .unwrap_or_else(|error| panic!("{error:?}: {:?}", task.obligations));
         }
-        self.router
-            .runtime_state
-            .end_agent_turn_for_tests(room, agent, false)
-            .await
-            .expect("the parked turn ends");
     }
 
     async fn last_task(

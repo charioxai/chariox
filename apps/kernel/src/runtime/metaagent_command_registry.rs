@@ -236,10 +236,10 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
         "agent" => match tokens.get(1).map(String::as_str) {
             Some(
                 "list" | "ls" | "spawn" | "focus" | "alias" | "name" | "delete" | "destroy"
-                | "remove" | "cancel" | "steer" | "message" | "promote" | "withdraw-reply" | "deadline" | "children" | "revoke" | "answer" | "pass" | "usage" | "profiles" | "settings" | "resume",
+                | "remove" | "cancel" | "steer" | "message" | "promote" | "withdraw-reply" | "deadline" | "children" | "revoke" | "answer" | "pass" | "usage" | "profiles" | "settings" | "resume" | "parent",
             ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `agent list|spawn|focus|alias|delete|cancel|steer|message|promote|withdraw-reply|deadline|children|revoke|answer|pass|usage|profiles|settings|resume` are routed for metaagent command execution yet".to_string(),
+                message: "only `agent list|spawn|focus|alias|delete|cancel|steer|message|promote|withdraw-reply|deadline|children|revoke|answer|pass|usage|profiles|settings|resume|parent` are routed for metaagent command execution yet".to_string(),
             }),
         },
         "workflow" => match tokens.get(1).map(String::as_str) {
@@ -333,9 +333,9 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         "room" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "agents" | "cards" | "create" | "delete") => Some(MetaCommandExecutionPolicy::Routed),
+            Some("list" | "agents" | "cards" | "card" | "create" | "delete") => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "routed room commands: `room list`, `room agents <room-id>`, `room cards [room-id]`, `room create` and `room delete <room-id>`".to_string(),
+                message: "routed room commands: `room list`, `room agents <room-id>`, `room cards [room-id]`, `room card <card-id> [room-id]`, `room create` and `room delete <room-id>`".to_string(),
             }),
         },
         "slice" => match tokens.get(1).map(String::as_str) {

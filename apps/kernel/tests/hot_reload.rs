@@ -1713,6 +1713,8 @@ prev=""
 for arg in "$@"; do [[ "$prev" == "--mcp-config" ]] && cp "$arg" "$record/mcp.json" 2>/dev/null; prev="$arg"; done
 session=11111111-2222-4333-8444-555555555555
 turn=0
+# A process that has not read its input yet: a prompt larger than the pipe holds keeps the kernel's write busy.
+if [[ -e "$record/stuck" ]]; then while [[ ! -e "$record/unstick" ]]; do sleep 0.1; done; fi
 while IFS= read -r line; do
     [[ "$line" == *'"type":"user"'* ]] || continue
     turn=$((turn + 1))
@@ -3074,4 +3076,205 @@ fn a_vault_unlocked_until_the_kernel_stops_survives_a_hot_reload_and_a_real_stop
             "a real stop left the Vault unlocked"
         );
     });
+}
+
+/// The caller's deadline for a reload: a file next to the handover, read once.
+fn leave_reload_deadline(scratch: &Path, within: Duration) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        + within;
+    std::fs::write(
+        scratch.join("home/.chariox/state/hot-reload-request.json"),
+        json!({ "deadline_unix_ms": at.as_millis() as u64 }).to_string(),
+    )
+    .unwrap();
+}
+
+/// A turn whose prompt the kernel is still writing is not at a safe point. The planned reload
+/// waits for the caller's deadline, then refuses: the kernel keeps running, its connections stay,
+/// nothing restarts, and a second attempt once the turn is free hands the turn over.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_reload_whose_deadline_passes_with_a_busy_turn_is_refused_and_a_second_attempt_works() {
+    let scratch = std::env::temp_dir().join(format!("hr-busy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let record = scratch.join("record");
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(record.join("stuck"), "").unwrap();
+    let claude = scratch.join("claude");
+    std::fs::write(&claude, FAKE_CLAUDE).unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(scratch.join("claude-config")).unwrap();
+    std::fs::write(
+        scratch.join("claude-config/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"fixture","refreshToken":"fixture"}}"#,
+    )
+    .unwrap();
+    let env = vec![
+        ("CHARIOX_CLAUDE_BIN", claude.clone()),
+        ("CHARIOX_FAKE_CLAUDE_RECORD", record.clone()),
+        ("CLAUDE_CONFIG_DIR", scratch.join("claude-config")),
+        ("XDG_CONFIG_HOME", scratch.join("config")),
+        ("XDG_STATE_HOME", scratch.join("state")),
+        ("XDG_CACHE_HOME", scratch.join("cache")),
+    ];
+    let kernel = start_kernel_with(&scratch, &env);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let spawned = request(
+            &mut socket,
+            json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
+                "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
+                "worktree_id": null, "no_subscribe": true}}),
+        )
+        .await;
+        let agent_id = spawned["AgentSpawned"]["agent"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{spawned}"))
+            .to_string();
+        let attached = request(
+            &mut socket,
+            json!({"AttachToSession": {"session_id": session_id,
+                "client_id": "hot-reload-test", "capability_level": "FullTerminal"}}),
+        )
+        .await;
+        let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{attached}"))
+            .to_string();
+        // Larger than a pipe holds: the write waits for a process that reads nothing yet.
+        let prompt = format!("write sixteen parts {}", "x".repeat(1 << 20));
+        let mut submitting = connect(&kernel, Duration::from_secs(60)).await;
+        let (session, attachment, agent) =
+            (session_id.clone(), attachment_id.clone(), agent_id.clone());
+        let submit = tokio::spawn(async move {
+            request_result(
+                &mut submitting,
+                json!({"SubmitPrompt": {"session_id": session, "attachment_id": attachment,
+                    "target_agent_id": agent, "prompt": prompt, "attachments": []}}),
+            )
+            .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("starts")).is_empty() {
+            assert!(Instant::now() < deadline, "Claude Code did not start");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // The caller's deadline is 3 s away; the turn stays busy.
+        let pid = kernel.child.id() as i32;
+        let asked = Instant::now();
+        leave_reload_deadline(&scratch, Duration::from_secs(3));
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        let refusal = loop {
+            let log: String = std::fs::read_dir(scratch.join("logs"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if let Some(line) = log
+                .lines()
+                .find(|line| line.contains("hot reload refused; the kernel keeps running"))
+            {
+                break line.to_string();
+            }
+            assert!(
+                asked.elapsed() < Duration::from_secs(30),
+                "no refusal: {log}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert!(
+            asked.elapsed() >= Duration::from_millis(2500),
+            "it refused before the caller's deadline: {:?}",
+            asked.elapsed()
+        );
+        assert!(
+            refusal.contains("running agent turns are busy"),
+            "{refusal}"
+        );
+        assert!(refusal.contains("every agent keeps running"), "{refusal}");
+        // Same kernel, same program, same connections, no restart.
+        assert!(kernel_still_running(&kernel));
+        let state = request(
+            &mut socket,
+            json!({"GetSessionState": {"session_id": session_id}}),
+        )
+        .await;
+        assert!(state.get("SessionState").is_some(), "{state}");
+        assert_eq!(
+            lines(&record.join("starts")).len(),
+            1,
+            "Claude Code was restarted"
+        );
+
+        // The turn is free again; the second attempt hands it over.
+        std::fs::write(record.join("unstick"), "").unwrap();
+        tokio::time::timeout(Duration::from_secs(60), submit)
+            .await
+            .expect("the submission was answered")
+            .unwrap()
+            .expect("the prompt was accepted");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).len() < 40 {
+            assert!(
+                Instant::now() < deadline,
+                "the turn did not start streaming"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        leave_reload_deadline(&scratch, Duration::from_secs(30));
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        std::fs::write(record.join("go"), "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).last().map(String::as_str) != Some("result 1") {
+            assert!(Instant::now() < deadline, "the turn did not complete");
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let state = request(
+            &mut socket,
+            json!({"GetSessionState": {"session_id": session_id}}),
+        )
+        .await;
+        assert!(state.get("SessionState").is_some(), "{state}");
+    });
+    assert_eq!(
+        lines(&record.join("starts")).len(),
+        1,
+        "Claude Code was restarted"
+    );
+    assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
+    assert_runs(kernel.child.id(), &scratch.join("bin/chariox-kernel"));
+}
+
+fn kernel_still_running(kernel: &Kernel) -> bool {
+    unsafe { libc::kill(kernel.child.id() as i32, 0) == 0 }
 }

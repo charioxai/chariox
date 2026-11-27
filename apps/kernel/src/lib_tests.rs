@@ -236,7 +236,6 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
         }),
         required_mcps: Vec::new(),
         remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
-        provider_launch_credential: None,
         native_skill_selections: Default::default(),
     };
     let snapshot = serde_json::json!([spawn, submit]);

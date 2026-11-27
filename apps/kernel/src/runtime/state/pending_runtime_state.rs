@@ -239,9 +239,28 @@ pub(super) struct PendingInteractionStore {
     /// Last orphaned-decision pass (unix ms) per session-store identity, so
     /// kernels sharing this process-wide store never throttle each other.
     pub(super) orphan_sweeps: Arc<StdMutex<Vec<(std::sync::Weak<()>, u64)>>>,
+    /// Row 539: secret cards whose answer is being stored in the Vault. A timeout or a withdrawal
+    /// leaves such a card alone until the store ends, so a stored answer is never also rejected.
+    pub(super) storing_secrets: Arc<StdMutex<BTreeMap<String, u64>>>,
 }
 
 impl PendingInteractionStore {
+    pub(super) fn secret_store_in_progress(&self, interaction_id: &str) -> bool {
+        self.storing_secrets
+            .lock()
+            .expect("secret store set poisoned")
+            .contains_key(interaction_id)
+    }
+
+    /// When the answer being stored was accepted (inside its deadline); the commit is stamped with it.
+    pub(super) fn secret_store_accepted_at(&self, interaction_id: &str) -> Option<u64> {
+        self.storing_secrets
+            .lock()
+            .expect("secret store set poisoned")
+            .get(interaction_id)
+            .copied()
+    }
+
     pub(super) fn shared() -> Self {
         static STORE: OnceLock<PendingInteractionStore> = OnceLock::new();
         STORE.get_or_init(PendingInteractionStore::default).clone()

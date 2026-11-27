@@ -1221,7 +1221,7 @@ async fn local_docker_slice_relay(
     if let (Some(relay_url), Some(relay_token)) =
         (config.relay_url.clone(), config.relay_token.clone())
     {
-        if configured_relay_is_container_reachable(&relay_url) {
+        if crate::runtime::cloud_relay_control::relay_url_is_container_reachable(&relay_url) {
             hosted_relay_token =
                 Some(hosted_cloud_slice_relay_token(&config, slice, relay_token).await?);
         }
@@ -1241,7 +1241,7 @@ fn local_docker_slice_relay_for_config(
     if let (Some(relay_url), Some(relay_token)) =
         (config.relay_url.clone(), config.relay_token.clone())
     {
-        if configured_relay_is_container_reachable(&relay_url) {
+        if crate::runtime::cloud_relay_control::relay_url_is_container_reachable(&relay_url) {
             let relay_token = hosted_relay_token.unwrap_or(relay_token);
             crate::logging::info_with_fields(
                 "daemon.slice",
@@ -1597,20 +1597,6 @@ fn managed_slice_relay_activation_nonce() -> String {
         rand::random::<u128>(),
         rand::random::<u128>()
     )
-}
-
-fn configured_relay_is_container_reachable(relay_url: &str) -> bool {
-    let Ok(url) = url::Url::parse(relay_url) else {
-        return false;
-    };
-    match url.scheme() {
-        "ws" | "wss" => {}
-        _ => return false,
-    }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    !matches!(host, "127.0.0.1" | "::1" | "localhost")
 }
 
 #[cfg(test)]

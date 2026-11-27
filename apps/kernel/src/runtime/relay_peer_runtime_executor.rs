@@ -195,9 +195,6 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     provider_session_id: Option<String>,
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-    provider_launch_credential: Option<
-        crate::transport::relay_peer::RemoteProviderLaunchCredential,
-    >,
 ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
     runtime_state
         .launch_relay_leased_native_provider_run(
@@ -211,7 +208,6 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
             provider_session_id,
             required_mcps,
             remote_extension_manifest,
-            provider_launch_credential,
         )
         .await
 }
@@ -258,9 +254,6 @@ pub(crate) async fn submit_relay_leased_prompt(
     git_context: Option<RemoteGitTurnContext>,
     required_mcps: Vec<RequiredRemoteMcp>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-    provider_launch_credential: Option<
-        crate::transport::relay_peer::RemoteProviderLaunchCredential,
-    >,
     native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills,
 ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
     runtime_state
@@ -275,7 +268,6 @@ pub(crate) async fn submit_relay_leased_prompt(
             git_context,
             required_mcps,
             remote_extension_manifest,
-            provider_launch_credential,
             native_skill_selections,
         )
         .await

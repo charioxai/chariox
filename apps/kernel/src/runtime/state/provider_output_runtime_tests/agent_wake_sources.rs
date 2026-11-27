@@ -15,7 +15,11 @@ mod accepted_yield;
 mod assessment_inbox;
 #[cfg(unix)]
 mod handed_over_run;
+mod lost_process;
 mod mcp_paging;
+mod stale_waits;
+#[cfg(unix)]
+mod unwatched_work;
 mod watch_open;
 
 const KIND: &str = "test-source";
@@ -2027,6 +2031,47 @@ async fn waitprior_mixed_yield_names_the_exact_retry() {
     assert_eq!(f.task(&earlier.task_id), original);
 }
 
+/// Row 554 cell (c): a watched process armed before a cold restart is not supervised after it. It is
+/// reported lost to its agent, and the report says what is gone and what to do next: never a silent nothing.
+#[tokio::test]
+async fn a_watched_process_lost_in_a_restart_is_reported_with_the_next_step() {
+    let f = fixture("lost-process-next-step", true).await;
+    let task = f.begin("lost-process-turn");
+    let mut wake = f.wake(&task, "lost-watch");
+    wake.kind = "process".into();
+    // Armed by the kernel that is gone.
+    wake.created_at_ms = 1;
+    f.store()
+        .agent_lifecycle(Operation::ArmWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: Box::new(wake),
+        })
+        .unwrap();
+    f.store()
+        .agent_lifecycle(Operation::ProcessStarted {
+            id: "lost-watch".into(),
+            pid: 42,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime
+        .recover_lost_agent_processes(crate::session::unix_epoch_ms())
+        .unwrap();
+    let reported = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.payload.to_string())
+        .find(|payload| payload.contains("process_lost"))
+        .expect("the agent is told the watch was lost");
+    assert!(
+        reported.contains("start it again") && reported.contains("watch the new one"),
+        "the report names what to do next: {reported}"
+    );
+}
+
 #[tokio::test]
 async fn waitprior_adopts_two_retained_watches_and_keeps_one_receipt_each() {
     let f = fixture("waitprior-adoption", true).await;
@@ -2647,6 +2692,8 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 
 #[path = "async_popup.rs"]
 mod async_popup;
+#[path = "credential_secret_card.rs"]
+mod credential_secret_card;
 
 #[path = "claude_login_card.rs"]
 mod claude_login_card;

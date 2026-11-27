@@ -134,6 +134,10 @@ pub(crate) fn tree_for_viewer(
     tree
 }
 
+/// A tool call the tree names: one running longer than this. Shorter ones read as plain "running",
+/// so an agent working through many quick tool calls does not change its tree on each.
+const TREE_TOOL_AFTER_MS: u64 = 60_000;
+
 /// What a node says of its wait: the reasons, and the last provider output only when the turn is
 /// stalled. A plain provider wait is "running" and carries nothing, so a streaming node does not
 /// change its tree every few seconds.
@@ -141,11 +145,12 @@ fn node_liveness(
     mut liveness: crate::runtime::projection::AgentLiveness,
 ) -> Option<crate::runtime::projection::AgentLiveness> {
     use crate::runtime::projection::AgentWaitKind;
-    if liveness
-        .waiting_on
-        .as_ref()
-        .is_some_and(|on| on.kind == AgentWaitKind::Provider)
-    {
+    let now_ms = crate::session::unix_epoch_ms();
+    if liveness.waiting_on.as_ref().is_some_and(|on| {
+        on.kind == AgentWaitKind::Provider
+            || (on.kind == AgentWaitKind::Tool
+                && now_ms.saturating_sub(on.since_ms) < TREE_TOOL_AFTER_MS)
+    }) {
         liveness.waiting_on = None;
     }
     if !liveness.stalled {
@@ -565,6 +570,30 @@ mod tests {
         assert!(stalled.waiting_on.is_none());
         assert_eq!(node("running").liveness, None);
         assert_eq!(node("idle").liveness, None);
+    }
+
+    // Row 36 (g): a long tool call is named in the tree with its start; a quick one reads as running.
+    #[test]
+    fn a_node_names_a_tool_running_over_a_minute_and_not_a_quick_one() {
+        use crate::runtime::projection::{AgentLiveness, AgentWaitKind, AgentWaitingOn};
+        let now = crate::session::unix_epoch_ms();
+        let tool = |since_ms: u64| AgentLiveness {
+            waiting_on: Some(AgentWaitingOn {
+                kind: AgentWaitKind::Tool,
+                detail: "Bash".into(),
+                resource: None,
+                since_ms,
+                due_at_ms: None,
+            }),
+            ..Default::default()
+        };
+        let long = node_liveness(tool(now - 20 * 60_000)).unwrap();
+        let on = long.waiting_on.unwrap();
+        assert_eq!(
+            (on.kind, on.detail.as_str(), on.since_ms),
+            (AgentWaitKind::Tool, "Bash", now - 20 * 60_000)
+        );
+        assert_eq!(node_liveness(tool(now - 5_000)), None);
     }
 
     // W4: a card names its title, never its fields; one an agent holds is named as that agent's.

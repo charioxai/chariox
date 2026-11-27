@@ -16,6 +16,8 @@ mod entry;
 mod exec_place_tests;
 mod external;
 mod goal;
+#[cfg(test)]
+mod kernel_restart_tests;
 pub(crate) mod leased;
 mod lifecycle;
 mod login_recovery;
@@ -25,9 +27,7 @@ mod process;
 mod receipts;
 mod scope;
 mod window;
-pub(crate) use policy::{
-    is_sudo_control, is_sudo_prompt, sudo_request_forbidden, teardown_request,
-};
+pub(crate) use policy::{is_sudo_control, is_sudo_prompt, sudo_request_forbidden};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
@@ -48,11 +48,15 @@ mod goal_tests;
 #[cfg(test)]
 mod inbox_batch_tests;
 #[cfg(test)]
+mod leased_owner_tests;
+#[cfg(test)]
 mod leased_route_tests;
 #[cfg(test)]
 mod operation_tests;
 #[cfg(test)]
 mod parked_task_tests;
+#[cfg(test)]
+mod privileged_run_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
 #[cfg(test)]
@@ -75,6 +79,8 @@ mod task_scope_tests;
 mod tests;
 #[cfg(test)]
 mod vault_command_tests;
+#[cfg(test)]
+mod vault_generate_binding_tests;
 #[cfg(test)]
 mod vault_owner_kind_tests;
 #[cfg(test)]

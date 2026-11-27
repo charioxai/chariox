@@ -18,6 +18,8 @@ const QUEUE: usize = 4;
 
 pub(crate) struct DirectFrames {
     path: PathBuf,
+    /// The socket's own short, owner-only directory (removed with the channel).
+    directory: PathBuf,
     packets: Arc<DisplayPackets>,
     controller: AtomicU32,
     links: Mutex<HashMap<String, Arc<Link>>>,
@@ -60,22 +62,32 @@ impl DirectFrames {
     /// channel and Node publishes every frame.
     pub(super) fn listen(packets: Arc<DisplayPackets>) -> Result<Arc<Self>, String> {
         if !cfg!(target_os = "linux") {
-            return Err("MP-11: native frame channel unavailable".into());
+            return Err("MP-11: native frame channel needs Linux peer credentials".into());
         }
-        let path = packets.root().join("frames.sock");
+        Self::listen_in(packets, &socket_base())
+    }
+
+    /// The socket lives in its own short directory (`<base>/chariox-fc-<pid>-<random>/s`), never
+    /// under TMPDIR or the packet root: the path length is fixed by construction, so a kernel
+    /// started inside deep state binds exactly like any other.
+    fn listen_in(
+        packets: Arc<DisplayPackets>,
+        base: &std::path::Path,
+    ) -> Result<Arc<Self>, String> {
+        sweep_stale(base);
+        let (directory, path) = create_socket_directory(base)?;
         let listener = UnixListener::bind(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::InvalidInput {
-                format!(
-                    "MP-11: native frame channel path {} is {} bytes, over the Unix socket limit: set TMPDIR to a shorter directory",
-                    path.display(),
-                    path.as_os_str().len()
-                )
-            } else {
-                format!("MP-11: native frame channel at {}: {error}", path.display())
-            }
+            let _ = std::fs::remove_dir(&directory);
+            format!(
+                "MP-11: native frame channel cannot bind {}: {error}",
+                path.display()
+            )
         })?;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         let frames = Arc::new(Self {
             path,
+            directory,
             packets,
             controller: AtomicU32::new(0),
             links: Mutex::new(HashMap::new()),
@@ -359,6 +371,7 @@ impl Drop for DirectFrames {
     fn drop(&mut self) {
         let _ = UnixStream::connect(&self.path);
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_dir(&self.directory);
         let accept = self
             .accept
             .get_mut()
@@ -367,6 +380,106 @@ impl Drop for DirectFrames {
         if let Some(accept) = accept.filter(|a| a.thread().id() != std::thread::current().id()) {
             let _ = accept.join();
         }
+    }
+}
+
+const SOCKET_DIRECTORY_PREFIX: &str = "chariox-fc-";
+/// A base longer than this falls back to /tmp; the socket path then stays well under 108 bytes.
+const SOCKET_BASE_LIMIT: usize = 60;
+
+/// An owner-only runtime directory when the session has one, else /tmp. Never TMPDIR.
+fn socket_base() -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let private = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute() && dir.as_os_str().len() <= SOCKET_BASE_LIMIT)
+        .filter(|dir| {
+            std::fs::symlink_metadata(dir).is_ok_and(|info| {
+                info.is_dir()
+                    && info.uid() == unsafe { libc::geteuid() }
+                    && info.mode() & 0o077 == 0
+            })
+        });
+    private.unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// A fresh 0700 directory of our own and the socket path inside it.
+fn create_socket_directory(base: &std::path::Path) -> Result<(PathBuf, PathBuf), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let directory = base.join(format!(
+        "{SOCKET_DIRECTORY_PREFIX}{}-{:08x}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    let path = directory.join("s");
+    if path.as_os_str().len() > 100 {
+        return Err(format!(
+            "MP-11: native frame channel base directory {} is too long",
+            base.display()
+        ));
+    }
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .map_err(|error| {
+            format!(
+                "MP-11: native frame channel cannot create {}: {error}",
+                directory.display()
+            )
+        })?;
+    let private = std::fs::symlink_metadata(&directory).is_ok_and(|info| {
+        info.is_dir() && info.uid() == unsafe { libc::geteuid() } && info.mode() & 0o077 == 0
+    });
+    if !private {
+        let _ = std::fs::remove_dir(&directory);
+        return Err(format!(
+            "MP-11: native frame channel directory {} is not owner-only",
+            directory.display()
+        ));
+    }
+    Ok((directory, path))
+}
+
+/// Remove directories a killed kernel of ours left behind: the owner pid is gone and nothing
+/// answers on the socket. A live kernel's directory (any pid namespace) is never touched.
+fn sweep_stale(base: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix(SOCKET_DIRECTORY_PREFIX) else {
+            continue;
+        };
+        let Some(pid) = rest.split('-').next().and_then(|p| p.parse::<i32>().ok()) else {
+            continue;
+        };
+        let directory = entry.path();
+        let Ok(info) = std::fs::symlink_metadata(&directory) else {
+            continue;
+        };
+        if !info.is_dir()
+            || info.uid() != unsafe { libc::geteuid() }
+            || pid == std::process::id() as i32
+            || pid <= 1
+            || (unsafe { libc::kill(pid, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH))
+        {
+            continue;
+        }
+        let socket = directory.join("s");
+        match UnixStream::connect(&socket) {
+            Ok(_) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) => {}
+            Err(_) => continue,
+        }
+        let _ = std::fs::remove_file(&socket);
+        let _ = std::fs::remove_dir(&directory);
     }
 }
 
@@ -422,23 +535,102 @@ mod unavailable_tests {
 mod tests {
     use super::*;
 
-    // A long TMPDIR (a kernel started inside deep state) puts frames.sock past the Unix socket
-    // path limit; the controller start logs this reason instead of silently going without.
+    // A long TMPDIR (a kernel started inside deep state) used to put frames.sock past the Unix
+    // socket path limit (108 bytes) so the kernel silently ran without the native channel.
     #[test]
-    fn a_frame_channel_past_the_socket_path_limit_names_the_cause_and_the_fix() {
+    fn a_long_tmpdir_still_gets_the_native_frame_channel() {
         let temp = crate::test_support::TestTempDir::new("frames-long");
-        let base = temp.path().join("d".repeat(100));
+        let base = temp.path().join("d".repeat(120));
         std::fs::create_dir_all(&base).unwrap();
         let packets = Arc::new(DisplayPackets::create_in(&base).unwrap());
-        let Err(error) = DirectFrames::listen(packets) else {
-            panic!("a socket path over the limit cannot be bound");
+        assert!(packets.root().join("frames.sock").as_os_str().len() > 108);
+        let frames = DirectFrames::listen(packets).expect("bound outside the long TMPDIR");
+        assert!(frames.path().as_os_str().len() < 80, "{:?}", frames.path());
+        assert!(UnixStream::connect(frames.path()).is_ok());
+    }
+
+    #[test]
+    fn the_socket_directory_is_owner_only_and_leaves_with_the_channel() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = crate::test_support::TestTempDir::new("frames-perms");
+        let base = ShortBase::new();
+        let packets = Arc::new(DisplayPackets::create_in(temp.path()).unwrap());
+        let frames = DirectFrames::listen_in(packets, &base.0).unwrap();
+        let directory = frames.path().parent().unwrap().to_owned();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&directory), 0o700);
+        assert_eq!(mode(frames.path()), 0o600);
+        drop(frames);
+        assert!(!directory.exists(), "the channel's directory is removed");
+    }
+
+    #[test]
+    fn two_channels_on_one_host_do_not_collide() {
+        let temp = crate::test_support::TestTempDir::new("frames-two");
+        let base = ShortBase::new();
+        let packets = Arc::new(DisplayPackets::create_in(temp.path()).unwrap());
+        let one = DirectFrames::listen_in(packets.clone(), &base.0).unwrap();
+        let two = DirectFrames::listen_in(packets, &base.0).unwrap();
+        assert_ne!(one.path(), two.path());
+        assert!(UnixStream::connect(one.path()).is_ok());
+        assert!(UnixStream::connect(two.path()).is_ok());
+        drop(one);
+        assert!(UnixStream::connect(two.path()).is_ok());
+    }
+
+    #[test]
+    fn a_dead_kernels_directory_is_swept_and_a_live_one_is_kept() {
+        let temp = crate::test_support::TestTempDir::new("frames-sweep");
+        let base = ShortBase::new();
+        let packets = Arc::new(DisplayPackets::create_in(temp.path()).unwrap());
+        // No process has this pid: a killed kernel's leftover, socket file and all.
+        let stale = base.0.join("chariox-fc-2000000000-deadbeef");
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::set_permissions(&stale, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        drop(UnixListener::bind(stale.join("s")).unwrap());
+        // Same dead pid, but something still answers on the socket (another pid namespace).
+        let live = base.0.join("chariox-fc-2000000001-cafecafe");
+        std::fs::create_dir(&live).unwrap();
+        let listener = UnixListener::bind(live.join("s")).unwrap();
+        let other = base.0.join("unrelated");
+        std::fs::create_dir(&other).unwrap();
+        let _frames = DirectFrames::listen_in(packets, &base.0).unwrap();
+        assert!(!stale.exists(), "stale directory swept");
+        assert!(live.exists(), "a directory with a live socket is kept");
+        assert!(other.exists(), "unrelated directories are never touched");
+        drop(listener);
+    }
+
+    // The reason is plain and names the path when the channel cannot bind.
+    #[test]
+    fn a_channel_that_cannot_bind_names_the_reason() {
+        let temp = crate::test_support::TestTempDir::new("frames-nobind");
+        let base = ShortBase::new();
+        let packets = Arc::new(DisplayPackets::create_in(temp.path()).unwrap());
+        let Err(error) = DirectFrames::listen_in(packets, &base.0.join("missing")) else {
+            panic!("no base directory, no channel");
         };
-        assert!(error.contains("over the Unix socket limit"), "{error}");
         assert!(
-            error.contains("set TMPDIR to a shorter directory"),
+            error.contains("native frame channel cannot create"),
             "{error}"
         );
-        assert!(error.contains("frames.sock"), "{error}");
+        assert!(error.contains("missing"), "{error}");
+    }
+
+    /// A short directory: the test TMPDIR is itself long.
+    struct ShortBase(PathBuf);
+    impl ShortBase {
+        fn new() -> Self {
+            let path = PathBuf::from(format!("/tmp/fct-{:08x}", rand::random::<u32>()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for ShortBase {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     fn channel() -> (Arc<DirectFrames>, Arc<DisplayPackets>) {

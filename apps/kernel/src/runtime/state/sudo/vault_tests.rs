@@ -269,13 +269,14 @@ async fn vopen_plain_agent_generates_for_one_origin_without_a_prompt() {
         .unwrap();
     assert!(snapshot.active_interactions().is_empty());
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    // Row 405: the owner's plain agent needs no window for an ordinary request.
     assert!(call(
         &f,
         "chariox_kernel_request",
         json!({"request":{"ListSessions":null}})
     )
     .await
-    .is_err());
+    .is_ok());
 }
 
 #[tokio::test]
@@ -544,7 +545,8 @@ async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
 #[tokio::test]
 async fn vflag_blocking_popup_card_ends_before_the_provider_cut() {
     crate::test_support::isolated_env_test!();
-    for action in [false, true] {
+    // Row 405: an action card of the owner's agent runs at once, so only plain cards block.
+    for action in [false] {
         for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
             let f = fixture();
             let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
@@ -1259,11 +1261,128 @@ fn card_fill(field: &str, payment: Option<&Value>) -> Value {
     args
 }
 
-fn no_card_data(text: &str) {
+/// Fields the product fills with machine-made numbers: ids, sequence numbers, clocks and
+/// timeouts. A four-digit code can sit inside any of them by chance, so a scan for the code skips
+/// exactly these values and nothing else.
+fn is_volatile_key(key: &str) -> bool {
+    key == "id"
+        || key == "sequence"
+        || key == "timestamp"
+        || key == "ts"
+        || key.ends_with("_id")
+        || key.ends_with("_ids")
+        || key.ends_with("_at")
+        || key.ends_with("_at_ms")
+        || key.ends_with("_ms")
+        || key.ends_with("_sec")
+}
+
+/// A machine-made scalar: the number or text of an id or a clock. It must not be the card code
+/// and must not contain the card number.
+fn check_machine_made_scalar(key: &str, value: &Value) {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
     assert!(
-        !text.contains(CARD_NUMBER) && !text.contains(CARD_CODE),
+        !text.contains(CARD_NUMBER) && text != CARD_CODE,
+        "card data in a machine-made field {key}"
+    );
+}
+
+/// `value` without the machine-made scalars of volatile keys: the scalar value of such a key, or
+/// the members of an array of scalars under it, each checked on its own by
+/// `check_machine_made_scalar`. Anything else under such a key (an object, an array holding
+/// one) is no id or clock: it is kept and scanned like every other field.
+fn without_volatile(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, value)| {
+                    if !is_volatile_key(key) {
+                        return true;
+                    }
+                    match value {
+                        Value::String(_) | Value::Number(_) => {
+                            check_machine_made_scalar(key, value);
+                            false
+                        }
+                        Value::Array(items)
+                            if items
+                                .iter()
+                                .all(|item| item.is_string() || item.is_number()) =>
+                        {
+                            items
+                                .iter()
+                                .for_each(|item| check_machine_made_scalar(key, item));
+                            false
+                        }
+                        _ => true,
+                    }
+                })
+                .map(|(key, value)| (key.clone(), without_volatile(value)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_volatile).collect()),
+        other => other.clone(),
+    }
+}
+
+/// No card data in an output: neither the card number nor the security code appears anywhere in
+/// it as plain text, next to any other character or digit (the check before the L14 union), except
+/// inside the values of machine-made keys (see `is_volatile_key`), which the product fills with
+/// timestamps and ids that can contain the four digits by chance.
+fn no_card_data(text: &str) {
+    let scanned = match serde_json::from_str::<Value>(text) {
+        Ok(value) => without_volatile(&value).to_string(),
+        Err(_) => text.to_owned(),
+    };
+    assert!(
+        !scanned.contains(CARD_NUMBER) && !scanned.contains(CARD_CODE),
         "card data in an output"
     );
+}
+
+#[test]
+fn card_data_is_found_anywhere_but_in_machine_made_fields() {
+    // Machine-made numbers may carry the four digits by chance.
+    no_card_data(
+        r#"{"id":"prompt-7316ab","created_at_ms":1795731674123,"timeout_sec":17316,"x":"ok"}"#,
+    );
+    no_card_data(r#"{"events":[{"sequence":17316,"detail":"filled"}]}"#);
+    no_card_data(r#"{"request_ids":["a7316b","17316"],"id":{"detail":"ok"}}"#);
+    // Every other place is scanned as plain text, as before: alone, glued to digits or letters.
+    for leak in [
+        r#"{"detail":"7316"}"#,
+        r#"{"detail":"73161234"}"#,
+        r#"{"detail":"x17316"}"#,
+        r#"{"detail":"code7316"}"#,
+        r#"{"detail":4242424242424242}"#,
+        r#"{"nested":[{"note":"a 7316 b"}]}"#,
+        "not json 17316",
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| no_card_data(leak)).is_err(),
+            "{leak}"
+        );
+    }
+    // A machine-made field is no place for the code or the number either.
+    for leak in [
+        r#"{"id":"7316"}"#,
+        r#"{"created_at":4242424242424242}"#,
+        r#"{"request_ids":["7316"]}"#,
+        r#"{"request_ids":["abc","7316"]}"#,
+        r#"{"turn_ids":[4242424242424242]}"#,
+        r#"{"id":{"detail":"7316"}}"#,
+        r#"{"id":{"detail":"x17316"}}"#,
+        r#"{"sequence":[{"note":"7316"}]}"#,
+        r#"{"created_at":[["7316"]]}"#,
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| no_card_data(leak)).is_err(),
+            "{leak}"
+        );
+    }
 }
 
 /// Runs a card use; when it asks the owner, answers with `choice` and, after an Allow, runs it again.
@@ -2620,15 +2739,32 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
         };
         let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
         assert_eq!(result["generation"], 1, "{} keeps generation", command_name);
-        assert!(
-            result["tabs"].is_array(),
-            "capturing Tabs must preserve browser inventory through every boundary"
-        );
-        assert!(result["tabs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tab| tab["tab_id"] == "host-tab-new"));
+        if command_name == "state" {
+            assert!(
+                result["tabs"].is_array(),
+                "capturing Tabs must preserve browser inventory through every boundary"
+            );
+            assert!(result["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tab| tab["tab_id"] == "host-tab-new"));
+        } else {
+            // Row 552: an action answers with the acted tab and the tab count; only a state read
+            // (or start, restart, stop) lists every tab. The fixed keys must survive the capture.
+            assert!(
+                result.get("tabs").is_none(),
+                "{command_name} no longer lists every tab"
+            );
+            assert!(
+                result["tab_count"].as_u64().is_some_and(|n| n >= 1),
+                "capturing Tabs must preserve the tab count key on {command_name}"
+            );
+            assert_eq!(
+                result["tab"]["tab_id"], "host-tab-new",
+                "the acted tab keeps its opaque identity on {command_name}"
+            );
+        }
     }
     let stopped = call(
         f,
@@ -2715,13 +2851,28 @@ async fn vflag_capture_inventory_schema_collisions_preserve_outer_runtime_result
         let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
         assert_eq!(result["state"], "ready", "{operation} keeps its state enum");
         assert_eq!(result["generation"], 1, "{operation} keeps generation");
-        let tabs = result["tabs"]
-            .as_array()
-            .expect("capturing Tabs preserves the fixed inventory key");
-        let tab = tabs
-            .iter()
-            .find(|tab| tab["tab_id"] == "host-tab-new")
-            .expect("the filled tab keeps its opaque identity");
+        // Row 552: a state read lists every tab; an action answers with the acted tab and the
+        // tab count. Either way the fixed keys survive and the page-derived title is scrubbed.
+        let tab = if operation == "state" {
+            let tabs = result["tabs"]
+                .as_array()
+                .expect("capturing Tabs preserves the fixed inventory key");
+            tabs.iter()
+                .find(|tab| tab["tab_id"] == "host-tab-new")
+                .expect("the filled tab keeps its opaque identity")
+                .clone()
+        } else {
+            assert!(
+                result.get("tabs").is_none(),
+                "{operation} no longer lists every tab"
+            );
+            assert!(
+                result["tab_count"].as_u64().is_some_and(|n| n >= 1),
+                "{operation} keeps the fixed tab count key"
+            );
+            result["tab"].clone()
+        };
+        assert_eq!(tab["tab_id"], "host-tab-new");
         assert_eq!(tab["document_id"], "doc-login");
         assert_eq!(
             tab["title"], "[redacted] [redacted] [redacted] [redacted]",

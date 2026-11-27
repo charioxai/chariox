@@ -21,7 +21,10 @@ export class CaptureRefusal extends Error {
 }
 // MP-08/MP-10/MP-11: a fixed, pre-dispatch coordinate refusal an agent can act on.
 export class PointerOutsideViewport extends Error {
-  constructor() { super('MD-2: pointer outside viewport; x/y are CSS pixels inside state viewport css_width x css_height (screenshot pixels / device_scale_factor)'); }
+  constructor(viewport) {
+    const size = viewport ? ` ${viewport.css_width}x${viewport.css_height}` : '';
+    super(`MD-2: pointer outside viewport; x/y are CSS pixels inside this tab's page${size} (screenshot pixels / device_scale_factor)`);
+  }
 }
 // MP-08/MP-10/MP-11: fixed texts for the agent-only reads (region screenshot, scroll to a node, save, wait). Each names
 // what the agent changes next and never carries a page value, URL or path.

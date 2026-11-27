@@ -44,12 +44,19 @@ impl RemoteProviderAccountProvisioning {
             }
         }
 
+        // The home account's native login never crosses with its setup token (row 274), so the
+        // files cannot tell a foreign lease from the owner's: a Claude account reaches a worker
+        // only as the copy the account authority installed, and the authority is the owner
+        // (`local`, or the configured Cloud user). A lease of any other Cloud user is refused
+        // here, with or without a native login in the materialization.
+        let foreign_lease = account_authority != crate::session::DEFAULT_LOCAL_USER_ID;
         if crate::provider::canonical_provider_family(&materialization.profile.provider)
             == Some("claude")
-            && materialization
-                .files
-                .iter()
-                .any(|file| file.relative_path == ".credentials.json")
+            && (foreign_lease
+                || materialization
+                    .files
+                    .iter()
+                    .any(|file| file.relative_path == ".credentials.json"))
         {
             return Err(DaemonError::LocalTransport {
                 operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,

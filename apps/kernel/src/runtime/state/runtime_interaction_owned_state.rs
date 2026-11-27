@@ -404,10 +404,11 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
-        // The parent that holds a blocked task's card or a machine acquisition decision answers it for the owner;
-        // the holder was checked above and its authority is checked again below.
+        // The parent that holds a blocked task's card, a stalled turn's card or a machine acquisition decision
+        // answers it for the owner; the holder was checked above and its authority is checked again below.
         let task_owner_answer = (as_holder.is_some()
             && (super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id)
+                || super::provider_stall::is_provider_stall_decision_id(interaction_id)
                 || super::machine_acquisition::is_machine_acquisition_decision(interaction_id)))
             || self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
         if pending
@@ -489,7 +490,19 @@ impl KernelRuntimeOwnedState {
                 return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
             }
         }
-        if interaction.asking_task_id().is_some()
+        // Row 539: an answer being stored in the Vault is the only one that may settle its card, and its
+        // reservation (made inside its deadline, under this mutation) carries it past the deadline; any
+        // other answer, such as a cancel, waits for the store and is checked here under the same lock.
+        let reserved_secret = self
+            .pending_interactions
+            .secret_store_in_progress(interaction_id);
+        if reserved_secret && choice_id != "secret" {
+            return Err(interaction_error(
+                "The secret is being stored; answer again in a moment",
+            ));
+        }
+        if !reserved_secret
+            && interaction.asking_task_id().is_some()
             && interaction.timeout_sec().is_some_and(|seconds| {
                 interaction
                     .requested_at_ms()
@@ -979,6 +992,13 @@ impl KernelRuntimeOwnedState {
         expected: Option<&super::PendingInteraction>,
         settlement: Settlement,
     ) -> Result<(), DaemonError> {
+        // An answer that is being stored in the Vault settles the card itself; a timeout waits for it.
+        if self
+            .pending_interactions
+            .secret_store_in_progress(interaction_id)
+        {
+            return Ok(());
+        }
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "timeout runtime interaction requested",
@@ -1225,7 +1245,7 @@ fn timeout_runtime_interaction_resolution(
     }
 }
 
-fn validate_runtime_interaction_custom_reply(
+pub(in crate::runtime::state) fn validate_runtime_interaction_custom_reply(
     custom_choice: &crate::session::RuntimeInteractionCustomChoice,
     reply: &str,
 ) -> Result<(), DaemonError> {
@@ -1248,6 +1268,78 @@ fn validate_runtime_interaction_custom_reply(
         }
     }
     Ok(())
+}
+
+/// Holds one secret card for the store of its answer; dropping it releases the card.
+pub(in crate::runtime::state) struct SecretStoreReservation {
+    store: super::PendingInteractionStore,
+    interaction_id: String,
+}
+
+impl Drop for SecretStoreReservation {
+    fn drop(&mut self) {
+        self.store
+            .storing_secrets
+            .lock()
+            .expect("secret store set poisoned")
+            .remove(&self.interaction_id);
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// Row 539: a secret answer is stored only for a card that is still open and inside its deadline,
+    /// and only once. Reserving it under the interaction mutation keeps a timeout or a withdrawal from
+    /// settling the card between the store and the answer: whichever reaches the card first wins, and a
+    /// rejected answer never reaches the Vault.
+    pub(in crate::runtime::state) fn reserve_secret_store(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Result<SecretStoreReservation, DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        let live = self
+            .pending_interactions
+            .write()
+            .get(interaction_id)
+            .is_some_and(|pending| {
+                pending.session_id == session_id && pending.belongs_to(&self.session_store)
+            });
+        let card = self
+            .session_store
+            .get_session(session_id)?
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == interaction_id)
+            .cloned();
+        let Some(card) = card.filter(|_| live) else {
+            return Err(interaction_error("This secret request is no longer open"));
+        };
+        if card.timeout_sec().is_some_and(|seconds| {
+            crate::session::unix_epoch_ms()
+                >= card
+                    .requested_at_ms()
+                    .saturating_add(seconds.saturating_mul(1000))
+        }) {
+            return Err(interaction_error("This secret request expired"));
+        }
+        let mut storing = self
+            .pending_interactions
+            .storing_secrets
+            .lock()
+            .expect("secret store set poisoned");
+        if storing.contains_key(interaction_id) {
+            return Err(interaction_error("This secret is already being stored"));
+        }
+        storing.insert(interaction_id.to_owned(), crate::session::unix_epoch_ms());
+        Ok(SecretStoreReservation {
+            store: self.pending_interactions.clone(),
+            interaction_id: interaction_id.to_owned(),
+        })
+    }
 }
 
 #[cfg(test)]

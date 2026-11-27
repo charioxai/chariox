@@ -654,6 +654,7 @@ Remote native TUI composition:
 - `ExecutionLeaseCreated` MUST include `relay_peer_protocol_version`; the home kernel must reject a worker that omits it or advertises a lower version before `SpawnLeasedAgent`, and persist the negotiated version on the binding. Restored bindings with a missing or mismatched version MUST be rejected before any leased prompt/native-provider dispatch and require a rebind, so stale remote kernels fail with an upgrade/restart action instead of breaking during provider tool calls
 - the worker kernel MUST talk to the provider through the same kernel-provider adapter/server path used by ordinary worker-owned provider runs
 - relay peer protocol v43 adds an optional profile-bound launch credential to leased prompt and remote native-provider launch requests. Home resolves this field only from the selected Claude profile's Chariox-vault setup token and sends it inside the end-to-end-encrypted peer packet. The worker rejects provider/profile mismatches, moves the value into the existing non-serializable zeroizing launch environment, injects only `CLAUDE_CODE_OAUTH_TOKEN` into the official CLI child, and never writes `.credentials.json` or durable kernel state. Missing fields remain compatible for providers and already-running worker runs; a new unattended Claude run without the field fails closed.
+- relay peer protocol 453 (local 1016, Landing 15, row 577) removes that field again: a leased prompt or native-launch request carries no provider credential, and a request that still carries it is refused as an unknown field. A leased Claude agent launches from the worker's own tracked copy of the account (docs/PROVIDER_ACCOUNTS.md, "Leased Claude agents"). A profile's `materializations` can name a `copy` target.
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - relay peer protocol v3 extends leased runtime projection with an optional worker `provider_run` snapshot. The home kernel MUST project that worker-owned run onto the home session/agent, including any resolved `provider_session_id` and resume state, because some providers such as Codex only expose the durable thread id after the first turn rather than at launch time.
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
@@ -1259,6 +1260,18 @@ delivery, so the event cannot create a replacement task during admission.
 Cancelling a wake that already ended (fired, exited, lost or cancelled) is
 idempotent: the answer is `settled:true` plus `final_state`; an unknown wake ID
 stays an error.
+
+Row 470: an agent with several prompts has a task per prompt, and an earlier task may still wait
+on a timer or watched process. A newer task's `yield` takes over the live timers and watched
+processes of earlier tasks that wait on nothing else (no goal, no unread outcome, no other work to
+settle) and ends those tasks quietly, so one source firing is one wake. An earlier task whose wait
+times out beside a newer task of the same agent starts no turn: a newer waiting task takes its
+sources over; a newer working task defers the timeout until it waits or ends. A wake the agent
+cancels from any of its own turns leaves a handled receipt, never a turn. A second
+`chariox.events.process` for the same argv, label, match text and directory returns the armed
+watch with `already_watching: true`. Read-only: `chariox.events.subscriptions` carries `waits`,
+every wait of the agent's other tasks, and `chariox.events.wakes` takes `wake_id` to read one wake
+and its task's wait. No serialized shape of a client protocol changes.
 
 A workflow node that yields remains supervised by its durable task after the
 native provider turn ends. The returned workflow run ID stays live and
@@ -6201,6 +6214,7 @@ command is what marks it) removes itself: once the command exited and a
 `read_output` reached its last byte it leaves the list and the store, and when no client read it, 60 s after it
 exited. A `close` that arrives after that answers that the kernel has no such terminal; `chariox exec` treats that as
 closed. That removal only drops the terminal's record: a process that left the command's session (`setsid nohup job &`) keeps running, as it does after the command ends, and stops with its Room, its agent or the kernel; an explicit `close` still ends it. See "Ended terminals" under Room terminals for every other one.
+A dropped link does not end the command: `chariox exec` keeps its terminal and tries the same `wait` or `read_output` again every 2 s (and says so once) until its own `--timeout` runs out, then stops with `exec_link_lost` without closing the terminal, naming it and the `terminal wait|read|close` verbs that find the command's fate; an unread finished command is still dropped 60 s after it exits. The read that reaches a finished command's last byte removes its terminal as it answers, so a drop that loses that one answer cannot be repeated: `chariox exec` then fails with `exec_output_lost`, never with the command's exit code as a success, naming that exit code and how many of the output's bytes were delivered.
 `chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
 no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
 
@@ -6923,6 +6937,11 @@ outside the request worker and normally refreshes once a second.
 sampling; child collections count the parents included in the sample. Nested
 arrays and long diagnostic text are sampled to keep the complete
 response below 64 KiB. Counts remain authoritative when a sample is shortened.
+`sample_counts.browser_native_frame_channel_unavailable` is present only while that
+many browser controllers run without the native display frame channel (the kernel could
+not open its short socket, so Node publishes every frame and video is slower); it is
+absent when every controller has the channel. The key is not a collection and the response
+shape is unchanged.
 
 `request_timings` contains the most recent 128 completed requests per kind, up to
 1,024 known kinds. Each entry has `kind`, `samples`, and p50/p95/max distributions
@@ -7268,7 +7287,8 @@ only when geometry changes or its one-second idle timeout expires. Child-frame b
 use the shared frame ownership walk and frame-owner affine transforms; their geometry
 refresh is bounded to 100 ms. Only changed metadata publishes a new card projection.
 The existing wake scheduler reattaches card watchers after recovery. A removed element,
-replaced document or retired browser reference resolves the ordinary question once with
+replaced document or retired browser reference (a navigation of the card's own Tab or a kernel restart excepted,
+see below) resolves the ordinary question once with
 `choice_id: "condition_met"` and a kernel-written reason. The same condition reaches the
 durable inbox for `wait:false` and the blocked tool for `wait:true`.
 Revoked browser access instead resolves `status: "unavailable"`, no choice id, and
@@ -7286,10 +7306,41 @@ Local 1011 / relay peer 448 add the optional `done_text` (1 to 200 characters) t
 `browser_region` and to the projected region. The card resolves `condition_met` when that text
 shows in the watched element. The host follows a same-document replacement of the element by its
 unique id, as it does for a verification card. If the element is lost before the text shows
-(removed, replaced without that id, document changed), the card resolves `status: "unavailable"`,
-never `condition_met`. `browser-done-text-1011.json` pins the shape.
+(removed, replaced without that id), the card resolves `status: "unavailable"`, never `condition_met`;
+a navigation of the card's own Tab or a kernel restart is not that loss (see the next paragraph).
+`browser-done-text-1011.json` pins the shape.
 
-Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
+Rows 546 and 548 (no shape change): a person card on a browser region survives a navigation of its own
+Tab and any kernel restart, hot or cold, whenever its Tab is restored. The kernel binds the same card (same
+id, same request, same audience) to the page that came back; a card with `done_text` goes on waiting for its
+text on that page (it completes if the text is already there), and a verification card stays pending without
+its proof, which belonged to one document and is re-armed only if the agent raises or updates the card. The
+card ends, with a plain reason, only when its Tab cannot be restored: the Tab closes, or the page cannot be
+shown again within the 15 second observation budget ("Browser restarted and the page could not be shown
+again; take a fresh snapshot and ask again"). The agent is then told `status: "unavailable"` with no choice
+id, never `condition_met`. App confirmations are not person steps on a page and keep their own rules.
+
+Row 655 (no shape change): an element the person cannot see has no visible area, and the card is the empty crop
+`rect: {x:0, y:0, width:0, height:0}`, never a box sized as if it were on screen. This covers an element that is not
+rendered, is hidden (visibility), sits in a frame its owner hides, or is clipped to nothing by the viewport
+(a challenge frame parked above the page until its checkbox is ticked). At registration the host gives such an element
+the existing geometry window (one second) to appear. If it is still not visible, the card is registered in the empty
+crop, and the `wait:false` result carries `page_note`: a plain sentence telling the agent that the element is not
+visible yet, that the card shows the whole page so the person can take the step that reveals it, and that the agent
+must not tell the person it is open. Clients show the whole page while the crop is empty (never an empty box), and
+move to the element when it gains area and back to the page when it loses it. A move or resize of a visible element
+still never moves the card under the pointer. The card carries one Cancel: an agent choice labelled Cancel under
+another id is the card's own Cancel (`choice_id: "cancel"`, status `cancelled`).
+
+Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
+that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that
+id or a choice labelled Done). The agent hears `status: "answered"`, `choice_id: "done"`: the person's word, which
+the agent checks on the page. A card with `done_text` or a verification closes by itself and has no Done. A plain
+card also outlives its element: when the element goes away in the same document (a sign-in replacing its email step
+with the password step), the kernel binds the same card to the Tab's page, as after a navigation, instead of
+resolving `condition_met`; it ends by Done, Cancel, the agent or its Tab closing.
+
+Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region row655`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
 
 ### Agent reach — local 974
@@ -7776,6 +7827,10 @@ list, so a change of stock or rate needs a fresh decision. Agents use the same l
 card names the chosen option, and its title names the requesting agent and the one-line purpose it gave
 (a kernel-local tool argument: no wire shape changes). The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
+### Vault capture with env — relay peer 453 (local 1016, Landing 15)
+
+- relay peer 453 (local 1016): `CaptureForHomeVault` `Prepare` carries `env_uses`, the existing Vault entries the worker's `chariox.vault.capture_command` runs with (`origin` and `env`). The home checks each against its origin before it asks for an unlock, so an unknown entry or a wrong origin is refused at once.
+
 ### Machines without asking — local 1015 (relay peer 452)
 
 One owner setting decides whether an agent's machine acquisition (`chariox.machines.acquire`, and the
@@ -7981,6 +8036,13 @@ Room or its parent label in the destination Room. The child continues to
 receive instructions from its parent and reports `child_finished` to the
 parent's Room. `agent cancel`, `agent deadline` and `agent delete` accept
 `--room <room>` to reach the child.
+
+Row 405 (PA12): the owner's agents reach any of the owner's agents in another
+Room of the same kernel by name with `--room`, sub-agents included
+(`agent message`, `agent steer`, `agent cancel`, `agent deadline`,
+`agent resume`, `agent delete`), within the peer permission comparison. A
+guest of a Room reaches only that Room and is told so; another owner's Rooms
+stay unavailable.
 
 The destination Room's folders must be within the parent's permitted folder
 scope. Permission and mode use the current authority of each ancestor in its
@@ -8405,6 +8467,20 @@ active prompt id and the latest task's id, prompt id and execution state. Sub-ag
 their tree. The second returns pending card ids, complete question text, button ids and labels,
 text input metadata, and `answerable` with a refusal reason under the caller's current authority.
 No Vault value is returned.
+
+`chariox.room.run_command` also admits `room card <card-id> [room-id]` (the room defaults to the
+caller's own): why a pending card does not take the person's input. A card without a browser view
+returns `browser: null`. A browser card returns `browser.bound` (the Tab, element ref, generation,
+document id and origin it was raised on), `browser.tab` (what the kernel's browser model knows of
+that Tab now: `tab_known`, its generation and document id, and `input_held_by`, the actors that hold
+the Tab's input with kind and label), `browser.input` (`last_taken` and `last_refused`, each with
+kind, time, age and the generation and document the input carried; a refusal adds its reason, a
+policy refusal as its stable `user_domain_*` code with its meaning) and `browser.findings`, each a
+`code` and a sentence (`tab_gone`, `generation_changed`, `document_changed`, `input_held`,
+`last_input_refused`, `no_input_seen`, `browser_unreadable`). The kernel keeps the last input taken
+and the last refused per Tab, by kind only: typed text and coordinates are never kept. It is read
+only, needs no sudo, follows the same room authority as `room cards`, and changes no serialized
+shape.
 
 `agent answer <interaction> <choice-id|text> --room <room-id>` answers a non-secret card in
 any room of the same owner on this kernel, including the caller's own room. It requires no
@@ -8846,3 +8922,32 @@ serves all three, so the option choice, request-id handling, refusals and owner 
 
 `machine-acquire-1014.json` and its SHA-256 test pin the shapes. The CLI verbs are `chariox machine options | acquire |
 status | release`.
+
+### One card per secret request — local 1016
+
+`chariox.request_credential_secret` returns at once inside a running turn: `{interaction_id, registration_id,
+credential_id, status: "pending"}`. The agent yields on the `registration_id`; the person's answer wakes it with
+`{status, choice_id, reply: null, credential_id, stored}`, never the secret. The kernel stores the typed value in the
+Vault entry the card names, before the card closes; a store the Vault refuses leaves the card open.
+
+- One card per room, agent and Vault entry: asking again while its card is open returns the same ids with
+  `deduplicated: true`. Only a settled ask (answered, cancelled, withdrawn) makes the next ask a new card.
+- The agent withdraws its open request with `chariox.events.cancel_wake` and `wake_id` = `interaction_id`; the card closes
+  on every client.
+- The card has no deadline unless `prompt.timeout_sec` is set; the entry spec is stored with the card, so a kernel reload
+  keeps it and a late answer still stores.
+- `RuntimeInteraction.secret_request { credential, overwrite }` (additive; old clients ignore it) names the entry the
+  card's secret input fills. A person answers it; an agent answering on their behalf is refused.
+- Outside a running turn the call keeps its earlier blocking form.
+
+`secret_card.rs` pins the card shape.
+### Privileged run — Landing 15 (the union sets the local number)
+`OwnerVault` takes `{action: "run_privileged", id, argv, machine?, timeout_seconds?}` and answers
+`{result: {action: "privileged_run", id, outcome}}`. The kernel runs `argv` as root with `sudo -S` as its own user,
+outside the agent sandbox, typing the sudo password from the Vault entry `id` on sudo's stdin; the entry must be a
+`command_stdin` entry for this machine (`https://<kernel id>.machine.chariox.invalid`). `outcome` is `{status
+(exited, timed_out, lost), exit_code?, stdout, stderr, machine, ran_as, truncated}` with the password read
+`[vault:<id>]`. Only the owner's own client may send it; an agent uses the runtime tool `chariox.privileged.run`
+with the same fields. Refusals name the next step (`wrong_password`, `not_in_sudoers`, `command_not_allowed`,
+`needs_terminal`, `kernel_cannot_elevate`, `sudo_missing`, `timeout_missing`, `machine_unknown`, `entry_wrong_machine`).
+`fixtures/owner-vault-protocol.json` and its SHA-256 test pin the shapes.

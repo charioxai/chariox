@@ -34,9 +34,18 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 - A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
 - Output is one JSON document on stdout. Errors are `{"error":{"code","message","kernel"}}` on stderr.
 
+### The owner's agents act as the owner (row 405)
+
+An agent of the kernel's owner has the owner's authority on every kernel of the owner, with no card, passkey or `/sudo`: exactly what the owner's own client can do. Only payments and secrets go through the person: billing, passkey critical approvals, opening or unlocking the Vault, setting secrets, raw credential and MCP registry reads, provider logins, pairing and invite links, relay and Cloud identity tokens, and the unredacted debug bundle. Settings read without their secret-bearing sections. Chariox-managed rentals, paid ones included, follow only `agents.offload_without_asking`: on means no card, off means exactly one card; only the owner sets that toggle.
+
+- The tool: `chariox_kernel_request` takes one `LocalDaemonRequest` and, with `kernel`, runs it on another kernel of the owner through this kernel's gateway (`ListGatewayKernels` lists them). An action card (`request_popup` with `action`) for a request the agent may make itself runs it at once, with no card.
+- The shell: the `chariox` CLI run from the agent's own process tree acts as the agent, here or with `--kernel` on another kernel of the owner. No `chariox access request` is needed; it answers that access is already granted.
+- Identity: the agent's own live provider run (`reach:<run>`), never a token. The target kernel admits the request because it arrives from a gateway kernel paired to its owner over the relay, and it applies the same refusal list itself.
+- Agents of another account, and guests' agents, are refused: "only agents of this kernel's owner reach other rooms and kernels".
+- An agent leased to a worker kernel acts the same way: the worker forwards its `chariox_kernel_request` home, which judges it as that agent.
 ### Room agent access
 
-A Room agent, including a sub-agent, can ask the kernel owner for access. The kernel identifies the
+An agent of the kernel's owner needs none of this (see above). Any other Room agent, including a sub-agent, can ask the kernel owner for access. The kernel identifies the
 agent from its running provider process. The provider shell gets the matching installed CLI as
 `CHARIOX_CLI` and the Unix socket address as `CHARIOX_DAEMON_SOCKET`. In a source installation,
 start the kernel with `CHARIOX_CLI_BIN` set to the absolute path of the CLI built from the same revision
@@ -74,7 +83,7 @@ Exit codes and the error codes behind them:
 | 0 | ok | |
 | 1 | request failed: the kernel answered with an error code of its own; read `code` and `message` | any code not listed below, for example `session_not_found`, `file_not_found`, `ledger_unavailable` |
 | 2 | usage | `usage`, `file_path_invalid` |
-| 3 | refused | `events_refused`, `acquisition_denied`, `approval_required`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_agent_unavailable`, `kernel_access_request_denied`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
+| 3 | refused | `events_refused`, `acquisition_denied`, `approval_required`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_agent_unavailable`, `kernel_access_local_only`, `kernel_access_request_denied`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed`, `kernel_not_available` |
 | 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_access_request_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed`, `steer_unconfirmed` |
 | 6 | approval pending (`access request --no-wait`, `secret request --no-wait`, `secret status` while pending) | |

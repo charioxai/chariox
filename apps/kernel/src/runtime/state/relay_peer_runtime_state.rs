@@ -6,7 +6,7 @@ use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayPromptAttachment, RemoteGitObservation, RemoteGitTurnContext,
     RemoteMcpAvailability, RemoteMcpCheckContext, RemoteSkillMaterialization,
-    RemoteSkillSyncContext, RequiredRemoteMcp, REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+    RemoteSkillSyncContext, RequiredRemoteMcp,
 };
 
 use super::*;
@@ -278,20 +278,12 @@ impl KernelRuntimeState {
         leased_agent_id: &str,
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        let backing_agent_id = self
-            .with_app_side_effect(move |app| {
-                let mut runtime = RemoteLeaseRuntime::new(app);
-                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-                let backing_agent_id = runtime.backing_agent_id(&leased_agent_id);
-                runtime.destroy_leased_agent(&leased_agent_id)?;
-                Ok(backing_agent_id)
-            })
-            .await?;
-        if let Some(backing_agent_id) = backing_agent_id {
-            self.owned
-                .leased_launch_credentials
-                .forget(&backing_agent_id);
-        }
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.destroy_leased_agent(&leased_agent_id)
+        })
+        .await?;
         Ok(())
     }
 
@@ -525,9 +517,6 @@ impl KernelRuntimeState {
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
         let leased_agent_id = leased_agent_id.to_string();
@@ -553,7 +542,7 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
-        self.launch_provider_for_remote_lease_detached(launch_request, provider_launch_credential)
+        self.launch_provider_for_remote_lease_detached(launch_request)
             .await
     }
 
@@ -698,9 +687,6 @@ impl KernelRuntimeState {
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
         native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
@@ -924,20 +910,6 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         };
-        if let crate::app::PreparedLeasedProviderRun::LaunchRequired(request) =
-            &prepared.provider_run
-        {
-            if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-                && provider_launch_credential.is_none()
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "launch remote provider without credential",
-                    message: format!(
-                        "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
-                    ),
-                });
-            }
-        }
         let account_lease = leased_agent_id.clone();
         if let Err(error) = self
             .with_app_side_effect(move |app| {
@@ -980,10 +952,7 @@ impl KernelRuntimeState {
             }
             crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
                 match self
-                    .launch_provider_for_remote_lease_detached(
-                        request.clone(),
-                        provider_launch_credential,
-                    )
+                    .launch_provider_for_remote_lease_detached(request.clone())
                     .await
                 {
                     Ok(run) => run.id().to_string(),

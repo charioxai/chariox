@@ -265,13 +265,15 @@ pub(crate) enum Refusal {
     HolderOutside,
     /// A kernel-launched process must belong to one dedicated, owner-owned agent.
     AgentUnavailable,
+    /// The request only works on the kernel that holds its authority, so forwarding it to another kernel is refused.
+    LocalOnly,
     /// The kernel cannot pick which program holds the grant: the caller has no running
     /// grandparent to hold it and no installed Codex, Claude Code or OpenCode above it.
     HolderUnavailable,
 }
 
 impl Refusal {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::HumanOnly,
         Self::NotCovered,
         Self::Ended,
@@ -290,6 +292,7 @@ impl Refusal {
         Self::HolderOutside,
         Self::HolderUnavailable,
         Self::AgentUnavailable,
+        Self::LocalOnly,
     ];
 
     pub(crate) fn code(self) -> &'static str {
@@ -313,12 +316,13 @@ impl Refusal {
             Self::HolderOutside => "kernel_access_not_covered",
             Self::HolderUnavailable => "kernel_access_holder_unavailable",
             Self::AgentUnavailable => "kernel_access_agent_unavailable",
+            Self::LocalOnly => "kernel_access_local_only",
         }
     }
 
     pub(crate) fn message(self) -> &'static str {
         match self {
-            Self::HumanOnly => "Only you can do this, in a Chariox terminal. An external agent can't.",
+            Self::HumanOnly => "Only the person can do this, in a Chariox terminal: payments and secrets stay with them. Ask them.",
             Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered. To cover a background process you started, run `chariox access cover --pid <its pid>` right after starting it; to get access for a new agent, run `chariox access request --until-exit`.",
             Self::Ended => "Access ended. Run `chariox access request --no-wait` if you still need access.",
             Self::EndedExpired => "Access expired. Run `chariox access request --no-wait` to continue.",
@@ -334,6 +338,7 @@ impl Refusal {
             Self::CoverOutside => "Only a process your access already reaches can be covered: the agent you approved, the programs it starts, and processes it covered before.",
             Self::CoverLimit => "Access already covers as many background processes as it may. Stop one first.",
             Self::HolderOutside => "That pid is not this process or one of its OS ancestors: `chariox access status` reports only your own access. Run it without --holder-pid.",
+            Self::LocalOnly => "This only works on the kernel that holds its authority: run it on the owner's enrolled kernel directly, not through another kernel.",
             Self::AgentUnavailable => "This process is outside a dedicated agent run of the kernel owner. Run `chariox access request --no-wait` from that agent’s shell.",
             Self::HolderUnavailable => "The kernel cannot tell which program should hold access: this program has no running parent to hold it, or it runs in a sandbox with no installed Codex, Claude Code or OpenCode. Start it from a shell or agent that keeps running, or pass --holder-pid with the host pid of the program that should hold access.",
         }

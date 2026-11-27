@@ -16,7 +16,7 @@ mod handover;
 mod run;
 use handover::Origin;
 pub(crate) use handover::{WatchedHandover, WatchedProcessTransfer};
-pub(super) use run::{KernelCommand, KernelCommandExit, KernelCommandOutput};
+pub(super) use run::{KernelCommand, KernelCommandExit, KernelCommandOutput, KernelLaunch};
 
 const ENV_ALLOW: &[&str] = &[
     "PATH",
@@ -284,6 +284,48 @@ fn command(
         command.current_dir(directory);
     }
     Ok(command)
+}
+
+/// The launch of a privileged run: `sudo` as the kernel's own user, outside the
+/// agent's sandbox (whose no-new-privileges flag stops setuid programs). The
+/// password arrives on stdin only: `-S` reads it there, `-p ''` keeps sudo's
+/// prompt out of the output, `-k` asks for it on every use, and `--` keeps the
+/// agent's words from ever being read as a sudo option. The environment is
+/// empty but for a fixed PATH and English messages, so nothing inherited from
+/// the kernel reaches the program.
+fn privileged_command(wake: &str, sudo: &Path, argv: &[String], cwd: &Path) -> Command {
+    let mut command = crate::process_spawn::command(sudo);
+    command
+        .args(["-S", "-k", "-p", "", "--"])
+        .args(argv)
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
+        .env(super::agent_process_group::WAKE_MARKER_ENV, wake)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setrlimit is async-signal-safe. A crash of sudo or of the
+        // program it starts must not leave a core file holding the password.
+        unsafe {
+            command.pre_exec(|| {
+                let none = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::setrlimit(libc::RLIMIT_CORE, &none) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    command
 }
 
 fn spawn(

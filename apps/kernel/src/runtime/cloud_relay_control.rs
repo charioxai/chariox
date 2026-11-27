@@ -50,6 +50,30 @@ pub(crate) fn cloud_relay_transport_selected(config: &DaemonConfig) -> bool {
             .is_none_or(|url| config.relay_url_uses_cloud_profile(url))
 }
 
+/// A local Docker slice launched by this kernel registers through the Cloud relay, so each worker
+/// needs the machine-scoped identity this kernel mints.
+pub(crate) fn hosted_slice_launch(config: &DaemonConfig) -> bool {
+    let (Some(relay_url), Some(_)) = (config.relay_url.as_deref(), config.relay_token.as_ref())
+    else {
+        return false;
+    };
+    relay_url_is_container_reachable(relay_url) && cloud_relay_transport_selected(config)
+}
+
+pub(crate) fn relay_url_is_container_reachable(relay_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(relay_url) else {
+        return false;
+    };
+    match url.scheme() {
+        "ws" | "wss" => {}
+        _ => return false,
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    !matches!(host, "127.0.0.1" | "::1" | "localhost")
+}
+
 /// The Cloud profile, only while its relay is the selected transport.
 pub(crate) fn active_cloud_profile(config: &DaemonConfig) -> Option<&PersistedCloudRelayProfile> {
     config

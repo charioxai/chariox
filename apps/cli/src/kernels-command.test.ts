@@ -382,7 +382,7 @@ test("an owner's settings command on the ordinary endpoint sends its command id,
   }
 })
 
-test("kernels restart --browser asks the named kernel to restart its browser, and --browser is required", async () => {
+test("kernels restart --browser asks the named kernel to restart its browser; without it the kernel restarts (row 551)", async () => {
   const kernel = await startFakeKernel((socket, frame) => {
     if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
     replyWith(socket, frame, { response: { KernelBrowser: { result: { state: "ready", tabs: [{ tab_id: "host-tab-1", opener_tab_id: "host-tab-0" }] } } } })
@@ -395,9 +395,48 @@ test("kernels restart --browser asks the named kernel to restart its browser, an
     await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--browser", "--socket", kernel.path])
     assert.equal(JSON.parse(printed.at(-1)!).tabs[0].opener_tab_id, "host-tab-0")
     await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--socket", kernel.path])
-    assert.match(errors.join(""), /usage/, "a restart without --browser is refused before anything is sent")
+    assert.deepEqual(errors, [], "a restart without --browser is the kernel's restart, not a usage error")
   } finally { console.log = log; process.stderr.write = written; process.exitCode = exitCode; await kernel.close() }
   const sent = kernel.frames.map(frame => frame.request).filter(request => "KernelBrowser" in request)
   assert.equal(sent.length, 1)
   assert.deepEqual(sent[0], { KernelBrowser: { command: { op: "restart" } } })
+  assert.equal(kernel.frames.map(frame => frame.request).filter(request => "RestartKernel" in request).length, 1, "and the bare restart asked the kernel to restart")
+})
+
+test("kernels without an agent credential, or with an explicit --socket, still uses the grant socket", async () => {
+  const grantSocket = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    replyWith(socket, frame, { response: { GatewayKernelsListed: { kernels: [] } } })
+  })
+  const printed: string[] = [], log = console.log
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    await runKernelsCommand(["kernels", "--socket", grantSocket.path])
+    assert.ok(requestNames(grantSocket.frames).includes("ListGatewayKernels"))
+  } finally { console.log = log; await grantSocket.close() }
+})
+
+test("a process the kernel cannot confirm, inside an agent's shell, is told what works and is not told to retry", () => {
+  const kernelText = "The kernel could not confirm this process just now; access has not changed. Retry in a few seconds."
+  const unconfirmed = () => failureOf(new LocalIpcError("handle kernel response", kernelText, "kernel_access_unconfirmed"))
+  const names = ["CHARIOX_KERNEL_URL", "CHARIOX_KERNEL_STATE_CONFINED", "CHARIOX_AGENT_CLI_TOKEN"] as const
+  const previous = names.map(name => process.env[name])
+  try {
+    for (const name of names) delete process.env[name]
+    // Not in an agent's shell: the kernel's own words stand.
+    assert.equal(unconfirmed().message, kernelText)
+    // An agent's shell (the kernel's endpoint is named, or the process is confined) with no agent credential.
+    for (const agentShell of [{ CHARIOX_KERNEL_URL: "ws://127.0.0.1:43118" }, { CHARIOX_KERNEL_STATE_CONFINED: "1" }]) {
+      for (const name of names) delete process.env[name]
+      Object.assign(process.env, agentShell)
+      const failure = unconfirmed()
+      assert.equal(failure.code, "kernel_access_unconfirmed")
+      assert.match(failure.message, /agent's own shell/)
+      assert.match(failure.message, /CHARIOX_AGENT_CLI_TOKEN/)
+      assert.match(failure.message, /chariox access request/)
+      assert.doesNotMatch(failure.message, /retry/i, "retrying cannot help here")
+    }
+  } finally {
+    names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index] })
+  }
 })

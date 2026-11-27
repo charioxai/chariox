@@ -31,7 +31,7 @@ pub(super) fn lease_agent_to_machine(f: &Fixture, worker_kernel_id: &str) {
         .unwrap();
 }
 
-fn forwarded_context(
+pub(super) fn forwarded_context(
     f: &Fixture,
     worker_kernel_id: &str,
 ) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {

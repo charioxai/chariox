@@ -50,6 +50,9 @@ impl AgentLiveness {
             .map_or(waiting.detail.as_str(), |event| event.label.as_str());
         let first_line = text.lines().next().unwrap_or_default();
         let mut line: String = first_line.chars().take(WAIT_LINE_LABEL_CHARS).collect();
+        if waiting.kind == AgentWaitKind::Tool {
+            line = format!("running {line}");
+        }
         if line.is_empty() {
             line = serde_json::to_value(waiting.kind)
                 .ok()
@@ -70,11 +73,14 @@ impl AgentLiveness {
         *self == Self::default()
     }
 
-    /// A working agent waits on its provider until something says otherwise.
+    /// A working agent waits on its provider until something says otherwise. One whose provider
+    /// is running a tool (`running_tool`: its name and start) is running that tool, however long
+    /// it takes: a long build is not a stalled provider.
     pub(crate) fn of_provider(
         status: &AgentRuntimeStatus,
         last_activity_at_ms: Option<u64>,
         turn_started_at_ms: Option<u64>,
+        running_tool: Option<(String, u64)>,
         now_ms: u64,
     ) -> Self {
         if *status != AgentRuntimeStatus::Working {
@@ -83,6 +89,20 @@ impl AgentLiveness {
         // Quiet since the later of its last output and the start of this turn.
         let quiet_since = last_activity_at_ms.max(turn_started_at_ms);
         let floored = quiet_since.map(|at| at - at % ACTIVITY_RESOLUTION_MS);
+        if let Some((tool, started_at_ms)) = running_tool {
+            return Self {
+                last_activity_at_ms: floored,
+                waiting_on: Some(AgentWaitingOn {
+                    kind: AgentWaitKind::Tool,
+                    detail: tool,
+                    resource: None,
+                    since_ms: started_at_ms,
+                    due_at_ms: None,
+                }),
+                waiting_events: Vec::new(),
+                stalled: false,
+            };
+        }
         Self {
             last_activity_at_ms: floored,
             waiting_on: Some(AgentWaitingOn {
@@ -197,6 +217,8 @@ pub enum AgentWaitKind {
     CommandHeld,
     /// A decision card the agent's turn is held on: the owner's, or one an agent holds.
     Card,
+    /// A tool its provider is running (`detail` names it, `since_ms` is its start).
+    Tool,
 }
 
 /// The state `agent children` and the session agent inspection name for an
@@ -690,6 +712,7 @@ mod tests {
             &AgentRuntimeStatus::Working,
             Some(now - 3 * MINUTE),
             None,
+            None,
             now,
         );
         let waiting = liveness.waiting_on.unwrap();
@@ -705,6 +728,7 @@ mod tests {
             &AgentRuntimeStatus::Working,
             Some(now - 11 * MINUTE),
             None,
+            None,
             now,
         );
         assert!(quiet.stalled);
@@ -713,13 +737,32 @@ mod tests {
             &AgentRuntimeStatus::Working,
             Some(now - 11 * MINUTE),
             Some(now - MINUTE),
+            None,
             now,
         );
         assert!(!fresh.stalled);
         assert!(
-            AgentLiveness::of_provider(&AgentRuntimeStatus::Idle, Some(0), None, now)
+            AgentLiveness::of_provider(&AgentRuntimeStatus::Idle, Some(0), None, None, now)
                 == AgentLiveness::default()
         );
+    }
+
+    #[test]
+    fn an_agent_in_a_long_tool_call_is_running_that_tool_since_its_start_and_not_stalled() {
+        let now = 100 * MINUTE;
+        let liveness = AgentLiveness::of_provider(
+            &AgentRuntimeStatus::Working,
+            Some(now - 20 * MINUTE),
+            None,
+            Some(("Bash".into(), now - 20 * MINUTE + 1_234)),
+            now,
+        );
+        assert!(!liveness.stalled, "a 20-minute tool call is not a stall");
+        let waiting = liveness.waiting_on.as_ref().unwrap();
+        assert_eq!(waiting.kind, AgentWaitKind::Tool);
+        assert_eq!(waiting.detail, "Bash");
+        assert_eq!(waiting.since_ms, now - 20 * MINUTE + 1_234);
+        assert_eq!(liveness.wait_line().as_deref(), Some("running Bash"));
     }
 
     #[test]

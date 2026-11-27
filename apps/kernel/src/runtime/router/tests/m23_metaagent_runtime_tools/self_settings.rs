@@ -1,4 +1,5 @@
-// An agent changes its own settings through the room command, inside the agent tree's policy.
+// An agent changes its own settings through the room command, inside the agent tree's policy;
+// row 405: the owner's agents change each other's settings within their own authority.
 // Tree from `world`: a -> {b -> {d}, s}.
 use super::subtree::{error_text, room_command, world, World};
 use super::*;
@@ -46,31 +47,52 @@ async fn an_agent_changes_its_own_model_with_the_room_command_body() {
 }
 
 #[test]
-fn an_agent_reaches_itself_and_the_agents_below_it_and_no_other() {
+fn an_agent_reaches_itself_below_and_the_owners_peers_within_its_own_authority() {
     run_large_stack_async_test(
         "self-settings-reach",
-        an_agent_reaches_itself_and_the_agents_below_it_and_no_other_body,
+        an_agent_reaches_itself_below_and_the_owners_peers_within_its_own_authority_body,
     );
 }
 
-async fn an_agent_reaches_itself_and_the_agents_below_it_and_no_other_body() {
+async fn an_agent_reaches_itself_below_and_the_owners_peers_within_its_own_authority_body() {
     let world = world("self-settings-reach").await;
     // The agent above chooses a child's settings.
     let above = room_command(&world, "a", "agent settings set b --model m-below").await;
     assert!(above.ok, "{above:?}");
     assert_eq!(model_of(&world, "b").await.as_deref(), Some("m-below"));
 
-    // A child cannot reach its sibling or the agent above it.
-    for target in ["s", "a"] {
-        let refused = room_command(
+    // Row 405 (PA11): another of the owner's agents at the same authority changes a peer's
+    // profile and config through the Room command.
+    let peer = room_command(&world, "b", "agent settings set s --model m-peer").await;
+    assert!(peer.ok, "{peer:?}");
+    assert_eq!(model_of(&world, "s").await.as_deref(), Some("m-peer"));
+    let peer_config = room_command(&world, "b", "agent settings set s --mode plan").await;
+    assert!(peer_config.ok, "{peer_config:?}");
+
+    // A child still cannot reach the agent above it.
+    let refused = room_command(&world, "b", "agent settings set a --model m-y").await;
+    assert!(!refused.ok, "b must not change a: {refused:?}");
+    assert!(!error_text(&refused).is_empty(), "{refused:?}");
+
+    // A peer sets another agent only within its own authority.
+    for target in ["b", "s"] {
+        let required = room_command(
             &world,
-            "b",
-            &format!("agent settings set {target} --model m-y"),
+            "a",
+            &format!("agent settings set {target} --permission required"),
         )
         .await;
-        assert!(!refused.ok, "b must not change {target}: {refused:?}");
-        assert!(!error_text(&refused).is_empty(), "{refused:?}");
+        assert!(required.ok, "{required:?}");
     }
+    let raised = room_command(&world, "b", "agent settings set s --permission yolo").await;
+    assert!(!raised.ok, "b raised s above itself: {raised:?}");
+    assert!(
+        error_text(&raised).contains("you cannot set s above that"),
+        "{raised:?}"
+    );
+    // b runs in build mode, so s back to build is within b's own authority.
+    let back = room_command(&world, "b", "agent settings set s --mode build").await;
+    assert!(back.ok, "{back:?}");
 }
 
 #[test]
@@ -132,7 +154,8 @@ fn agent_profile_turn_end_reports_pending_to_the_cli_and_requesting_agent() {
             Some("m-next")
         );
 
-        let refused = room_command(&world, "b", "agent settings s").await;
-        assert!(!refused.ok, "{refused:?}");
+        // Row 405 (agent parity): another of the owner's agents reads a peer's settings.
+        let peer = room_command(&world, "b", "agent settings s").await;
+        assert!(peer.ok, "{peer:?}");
     });
 }

@@ -575,6 +575,31 @@ pub enum OwnerVaultRequest {
     Delete {
         id: String,
     },
+    /// Runs one command as root with sudo on this machine, the password typed
+    /// by the kernel from the entry `id`: the owner's own use of what agents
+    /// do through `chariox.privileged.run`.
+    RunPrivileged {
+        id: String,
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_seconds: Option<u64>,
+    },
+}
+
+/// What a privileged run returns, to an agent and to the owner alike: the
+/// password in `stdout` and `stderr` is already `[vault:<id>]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivilegedRunOutcome {
+    /// `exited`, `timed_out` or `lost`.
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub machine: String,
+    pub ran_as: String,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -599,5 +624,9 @@ pub enum OwnerVaultResult {
     Activity {
         id: String,
         events: Vec<OwnerVaultActivity>,
+    },
+    PrivilegedRun {
+        id: String,
+        outcome: PrivilegedRunOutcome,
     },
 }

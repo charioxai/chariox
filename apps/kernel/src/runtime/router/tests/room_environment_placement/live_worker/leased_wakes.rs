@@ -1275,16 +1275,15 @@ async fn open_leased_sudo(
 const OWNER_PASSKEY: &str = "a10 fixture owner passkey";
 
 #[test]
-fn mp10_a10_leased_sudo_window_is_enforced_on_home_and_worker() {
-    run_test(leased_sudo_window_is_enforced_on_home_and_worker);
+fn mp10_a10_leased_agent_acts_as_owner_on_home_and_worker() {
+    run_test(leased_agent_acts_as_owner_on_home_and_worker);
 }
 
-/// The owner opens a sudo window for a leased agent with a fresh passkey.
-/// The worker lists the privileged tool only for that agent's elevated turn
-/// and forwards each call home, where the same window is checked again. A
-/// sibling leased agent on the same worker inherits nothing. When the window
-/// expires both kernels refuse. Base: the home refuses leased sudo outright.
-async fn leased_sudo_window_is_enforced_on_home_and_worker() {
+/// Row 405 (PA9): a leased agent of the owner acts as the owner through its home kernel with
+/// no window: the worker forwards every kernel request home, which judges it. A window the
+/// owner opens keeps its attribution; outdated references are still refused, and nothing is
+/// refused for lack of a window after it expires. Base: the worker and home required a window.
+async fn leased_agent_acts_as_owner_on_home_and_worker() {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
     let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
@@ -1413,6 +1412,27 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
             },
         )
     };
+    // PA9: the same identity reaches the owner's other kernels through the home's gateway;
+    // secrets stay with the person.
+    let sibling_reach = format!(
+        "reach:{}",
+        crate::provider::projected_leased_provider_run_id(
+            &sibling_context.leased_agent_id,
+            &sibling_context.worker_provider_run_id,
+        )
+    );
+    let sibling_gateway = fixture.home.runtime_state.authorize_gateway_request(
+        &sibling_reach,
+        &crate::local::LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
+            include_archived: false,
+        }),
+    );
+    let sibling_secret = fixture.home.runtime_state.authorize_gateway_request(
+        &sibling_reach,
+        &crate::local::LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Reveal {
+            id: "entry".into(),
+        }),
+    );
     let sibling_at_home = forward(sibling_context, request.clone()).await;
     let elevated_context = worker
         .router
@@ -1490,17 +1510,23 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         sibling_listed,
         "MP-08/MP-11: native catalog caching retains the interface without sudo authority"
     );
+    // Row 405 (PA9): a leased agent of the owner acts as the owner without a window.
     assert!(
-        sibling_call.as_ref().is_err_and(|error| error
-            .to_string()
-            .contains("no live sudo window on this worker")),
-        "the worker refuses an unelevated leased turn: {sibling_call:?}"
+        matches!(&sibling_call, Ok(result) if result.ok
+            && result.payload.to_string().contains("SessionsListed")),
+        "the worker forwards an unelevated leased turn home: {sibling_call:?}"
     );
     assert!(
-        sibling_at_home
-            .as_ref()
-            .is_err_and(|error| error.to_string().contains("no sudo authority")),
-        "the home refuses the sibling's turn: {sibling_at_home:?}"
+        sibling_gateway.is_ok(),
+        "the leased agent's gateway identity: {sibling_gateway:?}"
+    );
+    assert!(
+        sibling_secret.is_err(),
+        "a Vault reveal went through the gateway"
+    );
+    assert!(
+        matches!(&sibling_at_home, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
+        "the home acts for the owner's leased agent without a window: {sibling_at_home:?}"
     );
     assert!(
         matches!(&elevated_at_home, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
@@ -1527,10 +1553,13 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         matches!(&valid_after_denials, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
         "valid binding remains usable after the denials: {valid_after_denials:?}"
     );
-    // After expiry the home refuses at its forwarded-binding or window fence.
+    // After expiry nothing is refused for lack of a window (row 405).
+    let not_sudo = |text: String| !text.contains("sudo window") && !text.contains("sudo authority");
     assert!(
-        expired_at_home.is_err(),
-        "the home refuses after expiry too: {expired_at_home:?}"
+        expired_at_home
+            .as_ref()
+            .map_or_else(|error| not_sudo(error.to_string()), |_| true),
+        "the home asked for a window after expiry: {expired_at_home:?}"
     );
     assert!(
         home_live_after.is_empty(),
@@ -1538,10 +1567,10 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     );
     assert!(listed_after, "MP-08/MP-11: the cached interface remains discoverable after expiry; invocation still denies");
     assert!(
-        expired_call.as_ref().is_err_and(|error| error
-            .to_string()
-            .contains("no live sudo window on this worker")),
-        "the worker refuses after expiry: {expired_call:?}"
+        expired_call
+            .as_ref()
+            .map_or_else(|error| not_sudo(error.to_string()), |_| true),
+        "the worker asked for a window after expiry: {expired_call:?}"
     );
 }
 
@@ -1944,7 +1973,11 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
             listed,
             "MP-08/MP-11: the cached interface stays listed after restart; invocation denies"
         );
-        assert!(elevated.is_err(), "the restarted worker denies elevation");
+        // Row 405: the lost window takes nothing from the owner's leased agent.
+        assert!(
+            elevated.is_ok(),
+            "the restarted worker forwards the leased agent home: {elevated:?}"
+        );
         assert!(
             remaining_windows.is_empty(),
             "the home ends the lost window"

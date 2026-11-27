@@ -388,7 +388,7 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
         .sudo_work_held(&session(&f), &agent));
     assert!(outcomes(&f, &window.entry_id).contains(&"expired".to_owned()));
     // MP-08/MP-10/MP-11: main advertises the dormant interface before the
-    // first provider turn; expiry must revoke authority, not discovery.
+    // first provider turn; expiry ends the window; row 405: the owner's agent keeps the owner's authority.
     assert!(f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
@@ -402,7 +402,7 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
             serde_json::json!({"request":{"ListSessions":null}})
         )
         .await
-        .is_err());
+        .is_ok_and(|result| result.ok));
 }
 
 #[tokio::test]
@@ -1066,10 +1066,21 @@ async fn sudo_deferred_events_outlast_the_delivery_timeout_and_run_after_the_win
         .unwrap();
     f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
     let delivered = store.agent_inbox(&room, &agent, 0).unwrap();
+    // The turn is delivered at once and the fixture agent reads its inbox as fast as the host
+    // allows, so the event is read (`acknowledged`) by the time this looks; what must hold is
+    // that it left `pending` and was neither refused nor lost.
     assert!(
-        matches!(delivered[0].state.as_str(), "submitting" | "accepted"),
+        matches!(
+            delivered[0].state.as_str(),
+            "submitting" | "accepted" | "acknowledged" | "handled"
+        ),
         "{:?}",
         delivered[0].state
+    );
+    assert!(
+        delivered[0].prompt_id.is_some(),
+        "a delivered event is bound to the turn that carries it: {:?}",
+        delivered[0]
     );
 }
 

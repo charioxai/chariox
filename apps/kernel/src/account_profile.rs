@@ -314,6 +314,9 @@ pub enum ProviderAccountUsageMeterState {
 pub enum ProviderAccountMaterializationTargetKind {
     Worker,
     Slice,
+    /// Row 577: a tracked copy of the account's Vault token at an enrolled kernel, made by the
+    /// product account copy. The target kernel owns it from then on.
+    Copy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1398,6 +1401,22 @@ impl ProviderAccountProfileRegistry {
         Ok(
             find_stored_profile(&document, owner_user_id, provider, profile_id)
                 .map(|profile| project_usage_freshness(profile.public.clone())),
+        )
+    }
+
+    /// Whether `profile_id` is a replica another kernel registered here, not an account of this
+    /// kernel's own.
+    pub(crate) fn is_materialized_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(
+            find_stored_profile(&document, owner_user_id, provider, profile_id)
+                .is_some_and(|profile| profile.materialized_replica),
         )
     }
 

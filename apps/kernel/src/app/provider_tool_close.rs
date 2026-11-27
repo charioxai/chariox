@@ -151,6 +151,9 @@ fn ended_row(
 /// For every tool in `entries` (one run's tool rows, oldest first) whose latest
 /// status is still open, the same row with the same id and merge key, ended.
 /// A background command among them ended with it.
+/// The merge key prefix of the kernel's row of a job (`chariox.jobs.run`) in its agent's transcript.
+pub(crate) const JOB_ROW_KEY_PREFIX: &str = "job:";
+
 pub(crate) fn ended_open_provider_tool_rows(
     entries: Vec<SessionHistoryEntry>,
     ending: ProviderToolEnding,
@@ -158,6 +161,12 @@ pub(crate) fn ended_open_provider_tool_rows(
     let ended_at_ms = crate::session::unix_epoch_ms();
     latest_provider_tool_records(entries)
         .into_values()
+        // A job's row ends with its job, which outlives the turn that started it.
+        .filter(|(merge_key, _)| {
+            !merge_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with(JOB_ROW_KEY_PREFIX))
+        })
         .filter(|(_, record)| {
             provider_tool_record_status(record)
                 .as_deref()
@@ -325,6 +334,20 @@ mod tests {
             ])),
             BackgroundCalls::Running
         );
+    }
+
+    #[test]
+    fn a_cancelled_turn_leaves_the_row_of_a_job_that_still_runs() {
+        let rows = tool_rows(&[
+            serde_json::json!({"id":"job:job-1","tool":"chariox.jobs.run","status":"running","started_at_ms":1}),
+            serde_json::json!({"id":"call","tool":"Bash","status":"running"}),
+        ]);
+        let ended = ended(ended_open_provider_tool_rows(
+            rows,
+            ProviderToolEnding::Cancelled,
+        ));
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0]["id"], "call");
     }
 
     #[test]

@@ -12,7 +12,10 @@ mod retry_status_tests;
 mod snapshot;
 mod state;
 #[cfg(test)]
+mod stopped_command_tests;
+#[cfg(test)]
 mod streaming_latency_tests;
+mod stuck_tool;
 mod transcript;
 
 pub(in crate::provider) use drain::drain_opencode_events;
@@ -163,6 +166,7 @@ mod tests {
                     }),
                     error: String::new(),
                     raw: String::new(),
+                    time: None,
                 }),
                 time: None,
             },
@@ -216,6 +220,7 @@ mod tests {
                     metadata: json!({}),
                     error: String::new(),
                     raw: String::new(),
+                    time: None,
                 }),
                 time: None,
             },
@@ -1556,6 +1561,7 @@ mod tests {
                         metadata: json!({}),
                         error: String::new(),
                         raw: String::new(),
+                        time: None,
                     }),
                     time: None,
                 }),
@@ -1592,6 +1598,7 @@ mod tests {
                         metadata: json!({}),
                         error: String::new(),
                         raw: String::new(),
+                        time: None,
                     }),
                     time: None,
                 }),

@@ -672,6 +672,11 @@ fn only_the_owner_changes_the_setting_and_its_limits() {
                 crate::runtime::state::reach::ReachNeed::HumanOnly,
                 "{path}"
             );
+            // Not inside a /sudo window either: the limits spend the owner's money too.
+            assert!(
+                crate::runtime::state::sudo::sudo_request_forbidden(&request),
+                "{path} under /sudo"
+            );
         }
     }
 }

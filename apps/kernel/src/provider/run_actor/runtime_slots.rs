@@ -269,12 +269,45 @@ impl ProviderRunRuntimeRegistry {
         );
     }
 
+    /// Runs a command holds right now, so a hot reload cannot hand their turns
+    /// over yet: a command takes the runtime out of its slot while it works and
+    /// puts it back when done.
+    pub(super) fn busy_runs(&self) -> Vec<String> {
+        let mut runs = busy_slot_runs(&self.claude_runs);
+        runs.extend(busy_slot_runs(&self.codex_runs));
+        runs
+    }
+
     fn clear_tombstone(&self, run_id: &str) {
         self.cleared_runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
     }
+}
+
+/// A slot with no runtime in it, or locked by a command, is not at a safe
+/// point. A poisoned slot with its runtime is.
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit runs state or return type at the existing boundary"
+)]
+fn busy_slot_runs<T>(runs: &Mutex<BTreeMap<String, Arc<Mutex<Option<T>>>>>) -> Vec<String> {
+    let slots = runs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(run_id, slot)| (run_id.clone(), Arc::clone(slot)))
+        .collect::<Vec<_>>();
+    slots
+        .into_iter()
+        .filter(|(_, slot)| match slot.try_lock() {
+            Ok(state) => state.is_none(),
+            Err(std::sync::TryLockError::Poisoned(state)) => state.into_inner().is_none(),
+            Err(std::sync::TryLockError::WouldBlock) => true,
+        })
+        .map(|(run_id, _)| run_id)
+        .collect()
 }
 
 fn claude_slot(
@@ -555,6 +588,49 @@ mod tests {
         assert!(registry.take_assessment_output("run").is_none());
         registry.store_assessment_output("run", Default::default());
         assert!(registry.take_assessment_output("run").is_none());
+    }
+
+    #[test]
+    fn a_run_whose_runtime_a_command_has_taken_or_holds_is_busy_and_a_resting_one_is_not() {
+        let runs: Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>> = Mutex::default();
+        let resting = Arc::new(Mutex::new(Some(1)));
+        let taken = Arc::new(Mutex::new(Some(2)));
+        let locked = Arc::new(Mutex::new(Some(3)));
+        for (id, slot) in [
+            ("resting", &resting),
+            ("taken", &taken),
+            ("locked", &locked),
+        ] {
+            runs.lock()
+                .unwrap()
+                .insert(id.to_string(), Arc::clone(slot));
+        }
+        assert!(super::busy_slot_runs(&runs).is_empty());
+        // A command takes the runtime out of its slot while it works.
+        let state = taken.lock().unwrap().take();
+        assert_eq!(super::busy_slot_runs(&runs), vec!["taken".to_string()]);
+        let command = locked.lock().unwrap();
+        let mut busy = super::busy_slot_runs(&runs);
+        busy.sort();
+        assert_eq!(busy, vec!["locked".to_string(), "taken".to_string()]);
+        drop(command);
+        *taken.lock().unwrap() = state;
+        assert!(super::busy_slot_runs(&runs).is_empty());
+    }
+
+    #[test]
+    fn a_poisoned_slot_with_its_runtime_is_not_busy() {
+        let runs: Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>> = Mutex::default();
+        let slot = Arc::new(Mutex::new(Some(1)));
+        runs.lock()
+            .unwrap()
+            .insert("run".to_string(), Arc::clone(&slot));
+        let poisoning = Arc::clone(&slot);
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poisoning.lock().unwrap();
+            panic!("poison");
+        });
+        assert!(super::busy_slot_runs(&runs).is_empty());
     }
 
     #[test]

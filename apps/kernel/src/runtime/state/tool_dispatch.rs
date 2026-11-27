@@ -30,6 +30,9 @@ mod popup;
 pub(in crate::runtime::state) use popup::{
     blocking_popup_timeout_seconds, popup_status, CANCEL_CHOICE_ID,
 };
+// Rows 574/655: the card rules the popup tests check directly; production code reaches them inside `popup`.
+#[cfg(test)]
+pub(in crate::runtime::state) use popup::{add_person_done, hidden_region_note};
 pub(super) fn authorize_remote_home_context_for_peer(
     state: &KernelRuntimeState,
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
@@ -214,17 +217,16 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
         }
-        // Official provider harnesses cache MCP discovery before sudo begins.
-        // Advertising an interface conveys no authority: dispatch still checks
-        // the live exact sudo prompt on every privileged invocation.
+        // Row 405: every live run of the owner's agents may call chariox_kernel_request.
+        // Advertising an interface conveys no authority: dispatch checks the caller.
         // Vault generation is an ordinary tool bound to its entry's destination.
         if matches!(provider_runs.as_slice(), [run]
             if run.state() != crate::provider::ProviderRunState::Ended)
         {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
                 name: sudo::SUDO_TOOL.into(),
-                description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest using its case-sensitive externally tagged JSON: for example {\"request\":{\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}} or {\"request\":{\"ListSessions\":null}}. Do not use method/params or type fields. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
-                input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
+                description: "Act as the owner on this kernel or, with kernel, another of the owner's kernels; no /sudo, card or passkey. Submit a LocalDaemonRequest as case-sensitive externally tagged JSON, e.g. {\"request\":{\"ListSessions\":null}}; never method/params or type fields. Refused: payments, opening the Vault, raw credentials, provider logins, pairing links, relay tokens.".into(),
+                input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"},"kernel":{"type":"string","description":"Another owner kernel, by name or id (ListGatewayKernels); omit for this one."}},"additionalProperties":false}),
             });
             specs.push(super::vault_generate::vault_generate_spec());
             specs.extend(super::visual::visual_tool_specs());
@@ -232,6 +234,7 @@ impl KernelRuntimeState {
             specs.push(super::vault_command::capture_command_spec());
             specs.push(super::vault_command::copy_for_use_spec());
             specs.push(super::vault_command::use_env_spec());
+            specs.push(super::vault_command::privileged_run_spec());
             specs.push(super::vault_command::capture_file_spec());
             specs.push(super::vault_command::write_file_spec());
             specs.push(super::vault_command::remove_capture_spec());
@@ -257,6 +260,7 @@ impl KernelRuntimeState {
             }) {
                 specs.extend(super::kernel_enrollment::kernel_enrollment_tool_specs());
             }
+            specs.push(super::kernel_restart_spec());
         }
         if matches!(provider_runs.as_slice(), [run] if self.agent_result_available(run)) {
             specs.push(super::agent_result::spec());
@@ -427,6 +431,9 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if tool_name == super::kernel_restart_tool::TOOL {
+            return self.kernel_restart_tool(auth_token, arguments).await;
+        }
         if matches!(
             tool_name,
             "chariox.machines.options"
@@ -525,6 +532,9 @@ impl KernelRuntimeState {
         }
         if tool_name == super::vault_command::VAULT_USE_ENV {
             return Box::pin(self.vault_use_env(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::PRIVILEGED_RUN {
+            return Box::pin(self.privileged_run(auth_token, arguments)).await;
         }
         if tool_name == super::vault_command::VAULT_CAPTURE_FILE {
             return Box::pin(self.vault_capture_file(auth_token, arguments)).await;

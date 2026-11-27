@@ -136,11 +136,50 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     updated_profile.kernel_removal_pending = false;
     // MP-08 / MP-09 / MP-10 / MP-11: the issuer may shorten the requested TTL.
     updated_profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
-    progress.stage("persist renewed token", Duration::from_secs(2));
-    runtime_state
-        .finish_cloud_relay_renewal(profile, Some((updated_profile, issued.token)))
-        .await?;
+    progress.stage("install renewed token", Duration::from_secs(2));
+    // The connector reads the projection: install there first, off the app lock. The durable
+    // write follows on its own task, so a slow disk under the app lock cannot stall presence.
+    // The save is accepted against what the app and the disk still carry, not against a
+    // projected profile that already shows an earlier unsaved renewal.
+    let mut expected = profile;
+    if let Some(unsaved_base) = config_projection.unsaved_renewal_removal_baseline() {
+        expected.kernel_removal_pending = unsaved_base;
+    }
+    config_projection.install_cloud_relay_renewal(
+        &config,
+        updated_profile.clone(),
+        issued.token.clone(),
+    )?;
+    spawn_renewed_token_save(
+        runtime_state.clone(),
+        expected,
+        updated_profile,
+        issued.token,
+    );
     Ok(())
+}
+
+/// A plain function, so the save future is built in its own frame and not in the async renewal's:
+/// the renewal runs on small test and worker stacks.
+#[inline(never)]
+fn spawn_renewed_token_save(
+    runtime_state: KernelRuntimeState,
+    expected: crate::config::PersistedCloudRelayProfile,
+    updated: crate::config::PersistedCloudRelayProfile,
+    token: String,
+) {
+    tokio::spawn(async move {
+        if let Err(error) = runtime_state
+            .finish_cloud_relay_renewal(expected, Some((updated, token)))
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "renewed relay token was not saved",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+    });
 }
 
 pub(crate) async fn execute_connect_cloud_relay_request(

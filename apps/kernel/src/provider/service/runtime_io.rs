@@ -474,6 +474,12 @@ impl ProviderProcessService {
     }
 
     #[cfg(test)]
+    pub(crate) fn wait_for_terminate_like_production_in_tests(&self) {
+        self.run_actor_mailbox
+            .wait_for_terminate_like_production_in_tests();
+    }
+
+    #[cfg(test)]
     pub(crate) fn use_manual_output_polls_for_tests(&self) {
         self.run_actor_mailbox.use_manual_output_polls_for_tests();
     }

@@ -698,6 +698,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::RenewKernelSudoRequester(_) => "kernel_access.sudo_requester_renew",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
+        LocalDaemonRequest::RestartKernel(_) => "kernel.restart",
         LocalDaemonRequest::ListOwnerInteractions(_) => "kernel_access.owner_interactions",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
         LocalDaemonRequest::SubscribeEvents(_) => "events.subscribe",

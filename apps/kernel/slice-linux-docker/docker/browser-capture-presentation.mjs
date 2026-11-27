@@ -76,6 +76,11 @@ export function fenceScreenshotPresentation(connection) {
     fence.run(() => send(method, params, sessionId, options), async () => {
       const at = performance.timeOrigin + performance.now();
       try {
+        // A Tab the native window does not show (a background Tab, a popup kept behind its opener) changed nothing
+        // there. Captured hidden, it paints no frames either: waiting for two failed the capture and kept this fence
+        // closed for every Tab, so no view could start until that Tab was shown. Both the capture's own hidden reading
+        // and the native window's shown Tab, read now, must agree; anything unknown keeps the proof.
+        if (await capturedHidden(fence.owner, sessionId)) return;
         const proof = await presentationWorld(fence.owner, connection, sessionId);
         fence.timing?.event?.('capture_presentation_owner', { warm: Number(Boolean(proof)), world_cached: Number(Boolean(proof?.cached)) });
         let contextId = proof?.contextId;
@@ -93,6 +98,14 @@ export function fenceScreenshotPresentation(connection) {
         if (result?.value !== true) throw Error('MP-08/MP-10: screenshot presentation did not restore');
       } finally { fence.timing?.('capture_presentation_restore', at); }
     });
+}
+
+async function capturedHidden(owner, sessionId) {
+  if (owner?.inputCapture?.visibilityBySession?.get(sessionId)?.visible !== false) return false;
+  const target = owner.targetsBySession?.get?.(sessionId);
+  if (typeof target !== 'string' || typeof owner.nativeActiveTarget !== 'function') return false;
+  const shown = await Promise.resolve().then(() => owner.nativeActiveTarget()).catch(() => null);
+  return typeof shown === 'string' && shown !== target;
 }
 
 // One deferred retry per source, shared by Browser and Computer capture.

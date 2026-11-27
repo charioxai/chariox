@@ -1291,7 +1291,6 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
                 &prompt_dispatch,
                 "dispatch prompt".to_string(),
                 Vec::new(),
-                None,
                 "unexpected prompt test response",
             )
             .await
@@ -1395,7 +1394,6 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
                 &request,
                 &launch_agent_id,
                 &remote_execution,
-                None,
                 None,
             )
             .await

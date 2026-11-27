@@ -18,11 +18,48 @@ pub(crate) struct CommandTrace {
     priority: KernelCommandPriority,
     submitted_at_ms: u64,
     observation: Option<crate::runtime::request_metrics::RequestObservation>,
+    /// Row 546: which browser operation (input, mirror credit, state read ...) and which tab a `kernel_browser` command was for.
+    browser_op: Option<String>,
+    browser_tab_id: Option<String>,
+}
+
+/// The operation name and tab id a browser command names, bounded; neither carries page content or a secret.
+fn browser_labels(command: &KernelCommand) -> (Option<String>, Option<String>) {
+    let Some(mut request) = command
+        .payload
+        .get("KernelBrowser")
+        .and_then(|value| value.get("command"))
+    else {
+        return (None, None);
+    };
+    // A person's Room input and navigation travel inside a Room envelope: the labels are the wrapped operation and tab.
+    if request.get("op").and_then(Value::as_str) == Some("room") {
+        if let Some(inner) = request.get("command") {
+            request = inner;
+        }
+    }
+    let label = |key: &str, limit: usize| {
+        request
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|text| {
+                !text.is_empty()
+                    && text.len() <= limit
+                    && text.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                    })
+            })
+            .map(str::to_owned)
+    };
+    (label("op", 48), label("tab_id", 96))
 }
 
 impl CommandTrace {
     pub(crate) fn from_command(command: &KernelCommand) -> Self {
+        let (browser_op, browser_tab_id) = browser_labels(command);
         Self {
+            browser_op,
+            browser_tab_id,
             command_id: command.command_id.clone(),
             command_type: command.command_type.clone(),
             trace_id: command.correlation_id.clone(),
@@ -51,7 +88,7 @@ impl CommandTrace {
     }
 
     fn base_fields(&self, now_ms: u64) -> Value {
-        json!({
+        let mut fields = json!({
             "trace_id": self.trace_id,
             "command_id": self.command_id,
             "command_type": self.command_type,
@@ -60,7 +97,14 @@ impl CommandTrace {
             "priority": command_priority_label(&self.priority),
             "submitted_at_ms": self.submitted_at_ms,
             "command_age_ms": elapsed_ms(self.submitted_at_ms, now_ms),
-        })
+        });
+        if let Some(op) = &self.browser_op {
+            fields["browser_op"] = json!(op);
+        }
+        if let Some(tab_id) = &self.browser_tab_id {
+            fields["browser_tab_id"] = json!(tab_id);
+        }
+        fields
     }
 }
 
@@ -652,6 +696,50 @@ mod tests {
     use crate::runtime::command::KernelCommand;
 
     #[test]
+    fn a_browser_command_log_names_its_operation_and_tab() {
+        let mut command = KernelCommand::from_local_request(
+            "cmd-browser",
+            None,
+            None,
+            &LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+        );
+        command.command_type = "kernel_browser".to_string();
+        command.payload = json!({"KernelBrowser": {"command": {"op": "mirror_next", "tab_id": "host-tab-255f4063", "subscription_id": "s1"}}});
+        let fields = CommandTrace::from_command(&command).base_fields(command.submitted_at_ms);
+        assert_eq!(fields["browser_op"], "mirror_next");
+        assert_eq!(fields["browser_tab_id"], "host-tab-255f4063");
+        // Page content never rides in the labels: anything unbounded or not an identifier is left out.
+        command.payload =
+            json!({"KernelBrowser": {"command": {"op": "input text", "tab_id": "x".repeat(200)}}});
+        let fields = CommandTrace::from_command(&command).base_fields(command.submitted_at_ms);
+        assert!(fields.get("browser_op").is_none() && fields.get("browser_tab_id").is_none());
+    }
+
+    #[test]
+    fn a_room_scoped_browser_command_log_names_the_wrapped_operation_and_tab() {
+        use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
+        // The shape a person's Room input really has: the operation and tab are inside the Room envelope.
+        let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+            command: KernelBrowserCommand::Room {
+                session_id: "s".to_string(),
+                command: Box::new(KernelBrowserCommand::Input {
+                    tab_id: "host-tab-1".to_string(),
+                    generation: 2,
+                    input: KernelBrowserInput::Click {
+                        x: 1,
+                        y: 1,
+                        button: None,
+                    },
+                }),
+            },
+        });
+        let command = KernelCommand::from_local_request("cmd-room-browser", None, None, &request);
+        let fields = CommandTrace::from_command(&command).base_fields(command.submitted_at_ms);
+        assert_eq!(fields["browser_op"], "input");
+        assert_eq!(fields["browser_tab_id"], "host-tab-1");
+    }
+
+    #[test]
     fn command_trace_uses_correlation_id_as_trace_id() {
         let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
         let command = KernelCommand::from_local_request(
@@ -780,6 +868,7 @@ mod tests {
             completion_recorded: true,
             settlement_requested: true,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         };
 
         let fields = provider_turn_completion_fields(&run, Some(&turn), Some(&activity), 2_075);
