@@ -197,7 +197,15 @@ pub(super) fn transition(
     };
     match (event, &held.state) {
         (StopEvent::Arm { shown, at_ms }, Asking | Declined) if held == *shown => {
-            with(Armed { at_ms: *at_ms })
+            Some(Some(UsageLimitStop {
+                state: Armed { at_ms: *at_ms },
+                refused: if next_resume_at(0, held.resumes_at_ms, held.refused).is_none() {
+                    0
+                } else {
+                    held.refused
+                },
+                ..held.clone()
+            }))
         }
         (StopEvent::Decline { shown }, Asking | Armed { .. }) if held == *shown => with(Declined),
         (StopEvent::ClaimDue { selected, now }, Armed { at_ms })

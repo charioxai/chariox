@@ -760,6 +760,8 @@ impl KernelRuntimeState {
                 ) {
                     let at_ms =
                         next_resume_at(stop.stopped_at_ms, stop.resumes_at_ms, stop.refused)
+                            // An explicit decision starts another cycle after automatic retries ended.
+                            .or_else(|| next_resume_at(stop.stopped_at_ms, stop.resumes_at_ms, 0))
                             .ok_or_else(|| refused("the kernel has no time to resume at"))?
                             .max(now);
                     self.decide_usage_limit_stop(
