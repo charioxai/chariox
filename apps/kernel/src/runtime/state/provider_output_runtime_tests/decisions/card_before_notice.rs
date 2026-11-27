@@ -2,17 +2,65 @@
 //! that can fail (the holder's turn cannot start yet) without the card being refused.
 use super::*;
 
+/// The same Room as `tree`, but the holder `p` has a provider run and no turn: a decision the agent below
+/// it raises must START a turn for the holder to tell it, which is what the retained-publication barrier
+/// refuses (a holder that is mid-turn is steered instead, and never reaches the barrier).
+async fn tree_with_idle_holder(label: &str) -> Tree {
+    let worktree = crate::test_support::TestWorktree::new(label);
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, g) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), g.id());
+    let p = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("p")
+                .with_parent_agent_id(g.id()),
+        )
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "room-model",
+            )
+            .with_agent_id(p.id()),
+        )
+        .unwrap();
+    app.update_provider_run_projection(run);
+    let c = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("c")
+                .with_parent_agent_id(p.id()),
+        )
+        .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), c.id());
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    Tree {
+        runtime,
+        app,
+        room: session.id().into(),
+        g: g.id().into(),
+        p: p.id().into(),
+        c: c.id().into(),
+        _worktree: worktree,
+    }
+}
+
 /// The holder's turn cannot start while a retained publication kernel has not validated its runtime
 /// preparation. The card of the agent below it is still created, listed and answerable, and the
 /// holder's child-decision event stays stored for the next delivery.
 #[tokio::test]
 async fn a_card_is_created_when_its_holder_cannot_be_told_yet() {
-    let mut t = tree(
-        "card-before-notice",
-        AgentPermissionLevel::Yolo,
-        AgentPermissionLevel::Yolo,
-    )
-    .await;
+    let mut t = tree_with_idle_holder("card-before-notice").await;
     t.runtime.owned.publication_activation = Arc::new(
         crate::runtime::state::publication_activation::PublicationActivation::new(true),
     );
