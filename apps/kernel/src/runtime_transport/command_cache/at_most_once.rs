@@ -31,11 +31,11 @@ impl CommandFingerprint {
     pub(crate) fn for_app_control(command: &KernelCommand, request: &LocalDaemonRequest) -> Self {
         use sha2::{Digest, Sha256};
         let mut fingerprint = Self::from_command_and_request(command, request);
-        // Bind receipts to authenticated caller and exact input, with a strong digest.
+        // Bind receipts to authenticated caller and steer content across reconnects.
         fingerprint.source = serde_json::json!({
             "source": command.source,
             "caller": command.caller,
-            "request": format!("{:x}", Sha256::digest(serde_json::to_vec(request).unwrap())),
+            "request": format!("{:x}", Sha256::digest(receipt_request_bytes(request))),
         })
         .to_string();
         fingerprint

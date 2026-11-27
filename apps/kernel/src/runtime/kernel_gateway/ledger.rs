@@ -421,7 +421,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconnected_steer_replays_the_first_result_and_still_conflicts_on_changed_text() {
-        let path = journal();
+        let dir = crate::test_support::TestTempDir::new("reconnected-steer-receipt");
+        let path = dir.join("ledger.jsonl");
         let steer = |attachment: &str, text: &str| {
             LocalDaemonRequest::SteerActivePrompt(crate::local::SteerActivePromptRequest {
                 session_id: "room".into(),
@@ -437,20 +438,35 @@ mod tests {
         let retry = steer("after-reconnect", "change direction");
         let ledger = GatewayLedger::open(path.clone());
         let result = json!({"PromptSteered": {"id": "first-delivery"}});
-        assert!(matches!(ledger.run("same-id", fingerprint(&first), async { Ok(result.clone()) }).await,
-            Settled::Done(Ok(_))));
+        assert!(matches!(
+            ledger
+                .run("same-id", fingerprint(&first), async { Ok(result.clone()) })
+                .await,
+            Settled::Done(Ok(_))
+        ));
         for _ in 0..2 {
-            assert!(matches!(ledger.run("same-id", fingerprint(&retry), async { panic!("retry must not execute") }).await,
-                Settled::Done(Ok(value)) if value == result));
+            assert!(
+                matches!(ledger.run("same-id", fingerprint(&retry), async { panic!("retry must not execute") }).await,
+                Settled::Done(Ok(value)) if value == result)
+            );
         }
         drop(ledger);
         let ledger = GatewayLedger::open(path.clone());
-        assert!(matches!(ledger.run("same-id", fingerprint(&retry), async { panic!("cold retry must not execute") }).await,
-            Settled::Done(Ok(value)) if value == result));
-        assert!(matches!(ledger.run("same-id", fingerprint(&steer("after-reconnect", "different text")), async { panic!("conflict must not execute") }).await,
-            Settled::Conflict));
+        assert!(
+            matches!(ledger.run("same-id", fingerprint(&retry), async { panic!("cold retry must not execute") }).await,
+            Settled::Done(Ok(value)) if value == result)
+        );
+        assert!(matches!(
+            ledger
+                .run(
+                    "same-id",
+                    fingerprint(&steer("after-reconnect", "different text")),
+                    async { panic!("conflict must not execute") }
+                )
+                .await,
+            Settled::Conflict
+        ));
         drop(ledger);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

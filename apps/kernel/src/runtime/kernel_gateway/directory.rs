@@ -190,7 +190,7 @@ fn advertises(kernel: &RelayKernelPresence, capability: &str) -> bool {
 
 /// The local protocol that introduced `GetGatewayCommandStatus`. An older target answers the request as an unknown
 /// one, so it is refused here with the update-the-target message. Renumber it with the protocol bump of that request.
-const GATEWAY_COMMAND_STATUS_PROTOCOL: u32 = 1016;
+const GATEWAY_COMMAND_STATUS_PROTOCOL: u32 = 1017;
 
 /// Why this request cannot go to this kernel, in words that say what to do, or `None`.
 pub(super) fn incompatibility(

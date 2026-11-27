@@ -88,8 +88,8 @@ impl KernelCommand {
             "command_type": self.command_type,
             "source": self.source,
             "session_id": self.session_id,
-            "attachment_id": self.attachment_id,
-            "payload": self.payload,
+            "attachment_id": receipt_attachment_id(self),
+            "payload": receipt_payload(&self.payload),
         }))
         .unwrap_or_default();
         format!("sha256:{:x}", Sha256::digest(payload))
@@ -159,6 +159,25 @@ impl KernelCommand {
             priority: metadata.priority,
             payload,
         }
+    }
+}
+
+// A reconnect replaces the transport attachment, not the steer the caller sent.
+// Keep every other field (including prompt file attachments and the expected turn)
+// in both the transport receipt and the durable queued-fallback identity.
+pub(crate) fn receipt_payload(payload: &Value) -> Value {
+    let mut payload = payload.clone();
+    if let Some(Value::Object(steer)) = payload.get_mut("SteerActivePrompt") {
+        steer.remove("attachment_id");
+    }
+    payload
+}
+
+pub(crate) fn receipt_attachment_id(command: &KernelCommand) -> Option<String> {
+    if command.payload.get("SteerActivePrompt").is_some() {
+        None
+    } else {
+        command.attachment_id.clone()
     }
 }
 
@@ -340,6 +359,50 @@ mod tests {
         );
         assert!(first.durable_request_fingerprint().starts_with("sha256:"));
         assert_eq!(first.durable_operation_id(Some("2")), "cmd-1:2");
+    }
+
+    #[test]
+    fn a_steer_receipt_ignores_only_the_reconnected_attachment() {
+        let request = |attachment: &str, prompt: &str| {
+            LocalDaemonRequest::SteerActivePrompt(crate::local::SteerActivePromptRequest {
+                session_id: "room".into(),
+                attachment_id: attachment.into(),
+                target_agent_id: "agent".into(),
+                expected_active_prompt_id: "turn".into(),
+                require_exact_turn: false,
+                prompt: prompt.into(),
+                attachments: vec![],
+            })
+        };
+        let first_request = request("before", "hello");
+        let retry_request = request("after", "hello");
+        let first = KernelCommand::from_local_request("id", None, None, &first_request);
+        let mut retry = KernelCommand::from_local_request("id", None, None, &retry_request);
+        assert_eq!(
+            first.durable_request_fingerprint(),
+            retry.durable_request_fingerprint()
+        );
+        let changed =
+            KernelCommand::from_local_request("id", None, None, &request("after", "changed"));
+        assert_ne!(
+            first.durable_request_fingerprint(),
+            changed.durable_request_fingerprint()
+        );
+        use crate::runtime_transport::command_cache::CommandFingerprint;
+        let receipt = CommandFingerprint::for_app_control(&first, &first_request);
+        assert_eq!(
+            receipt,
+            CommandFingerprint::for_app_control(&retry, &retry_request)
+        );
+        retry.caller.caller_id = "another-caller".into();
+        assert_ne!(
+            receipt,
+            CommandFingerprint::for_app_control(&retry, &retry_request)
+        );
+        assert_ne!(
+            receipt.clone().with_gateway_grant("grant-a"),
+            receipt.with_gateway_grant("grant-b")
+        );
     }
 
     #[test]

@@ -133,13 +133,13 @@ impl CommandFingerprint {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Self {
-        let request_bytes = serde_json::to_vec(request).unwrap_or_default();
+        let request_bytes = receipt_request_bytes(request);
         Self {
             command_type: command.command_type.clone(),
             source: serde_json::to_string(&command.source)
                 .unwrap_or_else(|_| "unknown".to_string()),
             session_id: command.session_id.clone(),
-            attachment_id: command.attachment_id.clone(),
+            attachment_id: crate::runtime::command::receipt_attachment_id(command),
             request_hash: stable_hash64(&request_bytes),
             browser_caller: matches!(
                 request,
@@ -152,6 +152,15 @@ impl CommandFingerprint {
             gateway_grant: None,
         }
     }
+}
+
+fn receipt_request_bytes(request: &LocalDaemonRequest) -> Vec<u8> {
+    if matches!(request, LocalDaemonRequest::SteerActivePrompt(_)) {
+        let payload = serde_json::to_value(request).expect("request serializes");
+        return serde_json::to_vec(&crate::runtime::command::receipt_payload(&payload))
+            .expect("receipt payload serializes");
+    }
+    serde_json::to_vec(request).expect("request serializes")
 }
 
 pub(crate) enum CommandReservation {
