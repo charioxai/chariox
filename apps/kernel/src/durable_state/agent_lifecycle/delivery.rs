@@ -545,6 +545,11 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                 ));
             }
             let already_handled = e.state == "handled";
+            if !handled && e.kind == "child_time_limit_ended" && !already_handled {
+                return Err(error(
+                    "handle the child's ended time limit first, then acknowledge with handled: true",
+                ));
+            }
             super::replies::read_in_turn(tx, &room, &agent, sequence)?;
             // Reading a pending check-in during independent work is not admission
             // of its goal continuation. Keep it deliverable through the shared owner.

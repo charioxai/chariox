@@ -273,6 +273,18 @@ fn a_child_deadline_notice_waits_for_the_parents_action_after_delivery_and_reope
         "accepted",
         "showing the notice is not the parent's decision to extend or let the child stop"
     );
+    assert!(
+        f.store
+            .agent_lifecycle(Operation::Ack {
+                room: ROOM.into(),
+                agent: AGENT.into(),
+                sequence: event.sequence,
+                handled: false,
+                now: 12,
+            })
+            .is_err(),
+        "a receipt-only acknowledgement leaves the notice open"
+    );
     settle(&f.store, "p");
     let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
     let retained = row(&reopened, event.sequence);
