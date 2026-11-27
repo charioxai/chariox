@@ -268,6 +268,7 @@ fn kernel_running_account_projection_preserves_cadence_across_runtime_owners() {
         crate::runtime::projection::DaemonConfigProjectionStore::new(
             crate::config::DaemonConfig::for_tests(),
         ),
+        Box::new(AccountSet::new),
     );
     let now = f.at(4.7);
     assert!(refresher.due_accounts(now).is_empty());
@@ -686,6 +687,7 @@ fn an_attached_claude_run_is_probed_only_while_the_kernel_has_prompt_work() {
         crate::runtime::projection::DaemonConfigProjectionStore::new(
             crate::config::DaemonConfig::for_tests(),
         ),
+        Box::new(AccountSet::new),
     );
     let probed = |now: u64| {
         !refresher.due_accounts(now).is_empty()
@@ -717,4 +719,34 @@ fn an_attached_claude_run_is_probed_only_while_the_kernel_has_prompt_work() {
     ended.mark_ended();
     runs.update(ended);
     assert!(!probed(f.at(32.0)));
+}
+
+#[test]
+fn usage_limit_waiting_accounts_are_refreshed_without_a_running_provider() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::for_provider("claude", vec![]);
+    let waiting = Arc::new(AtomicBool::new(true));
+    let flag = waiting.clone();
+    let key = f.key.clone();
+    let refresher = ProviderUsageRefresher::for_kernel(
+        f.registry.clone(),
+        crate::runtime::projection::ProviderRunProjectionStore::default(),
+        crate::runtime::projection::SessionStateProjectionStore::default(),
+        crate::runtime::projection::DaemonConfigProjectionStore::new(
+            crate::config::DaemonConfig::for_tests(),
+        ),
+        Box::new(move || {
+            if flag.load(Ordering::SeqCst) {
+                AccountSet::from([(key.provider.clone(), key.profile_id.clone())])
+            } else {
+                AccountSet::new()
+            }
+        }),
+    );
+    assert_eq!(refresher.due_accounts(f.at(5.0)), vec![f.key.clone()]);
+    waiting.store(false, Ordering::SeqCst);
+    assert!(
+        refresher.due_accounts(f.at(5.0)).is_empty(),
+        "a cancelled wait does not pay for Claude reads"
+    );
 }

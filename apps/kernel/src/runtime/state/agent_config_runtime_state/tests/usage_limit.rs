@@ -2162,7 +2162,7 @@ async fn a_turn_on_another_account_ends_the_stop_and_closes_its_card_with_the_re
 }
 
 #[tokio::test]
-async fn a_turn_on_the_limited_account_leaves_the_stop_and_its_card() {
+async fn a_turn_on_the_limited_account_ends_the_stop_and_its_card() {
     let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
         .await
         .with_second_account();
@@ -2172,8 +2172,8 @@ async fn a_turn_on_the_limited_account_leaves_the_stop_and_its_card() {
     team.goes_on_on(0, &limited).await;
     tick(team.rt(), 2).await;
 
-    assert!(team.stop(0).is_some());
-    assert_eq!(team.cards(0).len(), 1);
+    assert!(team.stop(0).is_none());
+    assert!(team.cards(0).is_empty());
 }
 
 #[tokio::test]
@@ -2265,3 +2265,26 @@ async fn changing_the_selected_profile_closes_the_stop_before_the_next_turn() {
 
 #[path = "usage_limit/cards.rs"]
 mod cards;
+
+#[tokio::test]
+async fn usage_limit_repeating_resume_preserves_the_armed_time() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit_saying(0, "You've hit your usage limit")
+        .await;
+    let armed = team.stop(0).unwrap();
+    team.decide(0, crate::local::UsageLimitStopAction::ResumeWhenBack)
+        .await
+        .unwrap();
+    assert_eq!(team.stop(0), Some(armed.clone()));
+    team.decide(0, crate::local::UsageLimitStopAction::Cancel)
+        .await
+        .unwrap();
+    team.decide(0, crate::local::UsageLimitStopAction::ResumeWhenBack)
+        .await
+        .unwrap();
+    assert_eq!(
+        team.stop(0).unwrap().state,
+        armed.state,
+        "cancel then resume must not add another fifteen minutes"
+    );
+}
