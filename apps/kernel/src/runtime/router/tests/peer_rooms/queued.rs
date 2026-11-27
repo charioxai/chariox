@@ -265,6 +265,12 @@ fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
     });
 }
 
+/// Only the sender of a queued message can make it urgent; another agent is refused and the
+/// message stays queued. The receiver waits on a timer (`spawn_waiting`): an idle agent with nothing
+/// armed would have the message released to start its turn (row 554, c1f8c73b0ab), and there would
+/// be no queued message left for the stranger to try to promote. The stranger, its token, the
+/// promotion call and every assertion are the ones this test always had: the refusal, nothing
+/// delivered, one message still in the stripe.
 #[test]
 fn only_the_sender_promotes_a_queued_message() {
     run_peer_test("queued-promote-sender-only", || async {
