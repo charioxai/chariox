@@ -302,6 +302,42 @@ impl CommandRouter {
         })
     }
 
+    /// A forwarded kernel request from a worker of another account: one call under the live
+    /// window of the leased agent's running home turn (the pre-row-405 path).
+    async fn dispatch_sudo_request(
+        &self,
+        turn: crate::local::KernelSudoTurn,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .authorize_sudo_request(&turn.entry_id, &request)?;
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            format!("{}:{}", turn.entry_id, rand::random::<u64>()),
+            turn.prompt_id.clone(),
+            Some(turn.entry_id.clone()),
+            &request,
+        );
+        command.caller = crate::runtime::command::KernelCaller::for_source(
+            &crate::runtime::command::KernelCommandSource::LocalIpc,
+        )
+        .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+        command.provider_run_id = turn.provider_run_id.clone();
+        command.caller.caller_id = turn.entry_id.clone();
+        command.caller.user_id = Some(turn.owner_user_id.clone());
+        if command.command_type.starts_with("agent.")
+            || crate::runtime::workflow_actor::is_workflow_command(&request)
+        {
+            command.caller.metaagent_id = Some(turn.agent_id.clone());
+        }
+        let response = Box::pin(self.dispatch(command, request)).await?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::to_value(response).map_err(|_| {
+                crate::runtime::kernel_access::error("kernel response serialization failed")
+            })?,
+        })
+    }
+
     pub(crate) fn runtime_tool_specs_for_auth_token(
         &self,
         auth_token: &str,
@@ -428,7 +464,23 @@ impl CommandRouter {
         self.runtime_state
             .authorize_forwarded_workspace_context(&context)?;
         if tool_name == "chariox_kernel_request" {
-            // Row 405: a leased agent acts as the owner like a local one.
+            // Row 405: a leased agent acts as the owner like a local one, but only from a worker
+            // kernel of the same authenticated owner. Another account's worker could forge the
+            // call, so there it still needs the live /sudo window bound to this exact prompt.
+            if !self.runtime_state.forwarded_peer_is_owners_kernel() {
+                if arguments
+                    .get("kernel")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kernel| !kernel.trim().is_empty())
+                {
+                    return Err(crate::runtime::kernel_access::error(
+                        "an agent on another account's worker reaches only its home kernel",
+                    ));
+                }
+                let turn = self.runtime_state.sudo_for_leased_context(&context)?;
+                let request = parse_kernel_request(&arguments)?;
+                return self.dispatch_sudo_request(turn, request).await;
+            }
             let run = crate::provider::projected_leased_provider_run_id(
                 &context.leased_agent_id,
                 &context.worker_provider_run_id,

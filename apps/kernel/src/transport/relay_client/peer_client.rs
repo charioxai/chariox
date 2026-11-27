@@ -299,6 +299,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
         kernel_id: expected_kernel_id.clone(),
         public_key: expected_public_key.clone(),
         sender_bound: true,
+        owners_kernel: false,
     };
     Ok(RelayPeerResponseWaiter::new(async move {
         let response = match response_deadline {
@@ -1055,6 +1056,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
                                         kernel_id: kernel.kernel_id.clone(),
                                         public_key: decrypted.sender_public_key,
                                         sender_bound: true,
+                                        owners_kernel: false,
                                     },
                                 ))
                             }

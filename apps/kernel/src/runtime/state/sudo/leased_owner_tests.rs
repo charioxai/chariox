@@ -191,3 +191,49 @@ fn a_leased_agent_after_a_worker_restart_still_acts_and_the_old_run_does_not() {
         assert!(f.state.list_sudo_turns("local").is_empty());
     });
 }
+
+/// The home router as a forwarded call from a worker of ANOTHER account reaches it: the
+/// lease and the peer key are admitted, but the peer's relay identity is not the owner's.
+fn home_for_foreign_worker(f: &Fixture) -> crate::runtime::router::CommandRouter {
+    let worker = crate::config::DaemonConfig::for_tests();
+    crate::config::DaemonConfig::approve_remote_machine("worker-machine").unwrap();
+    lease_agent_to_machine(f, &worker.daemon_id);
+    let mut peer = crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id);
+    peer.owners_kernel = false;
+    f.router.with_relay_peer_authority(peer)
+}
+
+// Review P1 (L15 squash 1088804874): a worker run by another Cloud user cannot forge a leased
+// agent's kernel request into the owner's authority: with no live /sudo window bound to the
+// running home prompt it is refused, here and naming another of the owner's kernels.
+#[test]
+fn a_foreign_workers_forwarded_kernel_request_needs_the_window() {
+    crate::test_support::isolated_env_test!();
+    on_big_stack(|| async {
+        let f = fixture();
+        let router = home_for_foreign_worker(&f);
+        let listed = leased_call(
+            &f,
+            &router,
+            json!({"ListProjects": {"include_archived": false}}),
+        )
+        .await;
+        assert!(
+            matches!(&listed, Err(error) if error.to_string().contains("no sudo authority")),
+            "another account's worker acted with the owner's authority: {listed:?}"
+        );
+        let worker = crate::config::DaemonConfig::for_tests();
+        let gateway = Box::pin(router.dispatch_forwarded_meta_runtime_tool_call(
+            forwarded_context(&f, &worker.daemon_id),
+            REQUEST.into(),
+            json!({"request": {"ListProjects": {"include_archived": false}}, "kernel": "second-kernel"}),
+        ))
+        .await;
+        assert!(
+            matches!(&gateway, Err(error) if error.to_string().contains("reaches only its home kernel")),
+            "another account's worker reached the owner's other kernel: {gateway:?}"
+        );
+        assert!(f.state.list_sudo_turns("local").is_empty());
+    });
+}
+

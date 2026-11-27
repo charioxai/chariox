@@ -532,6 +532,15 @@ pub(super) async fn handle_daemon_peer_request(
                         .pinned_peer_public_key(stable_peer_daemon_id(from_daemon_id))
                         .as_deref()
                         == Some(requester_public_key.as_str()),
+                owners_kernel: require_bound_daemon_sender(
+                    caller_identity.as_ref(),
+                    &encrypted_request,
+                )
+                .is_ok()
+                    && caller_identity.as_ref().is_some_and(|identity| {
+                        router
+                            .peer_is_owners_kernel(identity, stable_peer_daemon_id(from_daemon_id))
+                    }),
             },
         ),
     );

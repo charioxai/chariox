@@ -7,6 +7,9 @@ pub(crate) struct RelayPeerAuthority {
     pub(crate) kernel_id: String,
     pub(crate) public_key: String,
     pub(crate) sender_bound: bool,
+    /// The peer kernel's relay identity is this kernel's own Cloud owner, in the same realm
+    /// (row 405: only such a worker forwards with the owner's authority).
+    pub(crate) owners_kernel: bool,
 }
 
 impl RelayPeerAuthority {
@@ -46,6 +49,7 @@ pub(crate) fn test_peer_authority(worker_id: &str) -> RelayPeerAuthority {
         kernel_id: worker_id.into(),
         public_key,
         sender_bound: true,
+        owners_kernel: true,
     }
 }
 
