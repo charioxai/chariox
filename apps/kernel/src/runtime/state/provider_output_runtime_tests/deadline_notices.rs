@@ -39,6 +39,74 @@ fn notices(team: &super::child_finished::Team, agent: &str) -> Vec<String> {
     team.runtime.agent_notices_for_test(&team.room, agent)
 }
 
+#[tokio::test]
+async fn a_deadline_notice_requires_handled_for_single_and_bulk_ack() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let team = team_with("deadline-explicit-handling", None, true).await;
+    let store = &team.runtime.owned.durable_state_store;
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            &team.room,
+            &team.parent,
+            "deadline:child",
+            "100:ended",
+            "child_time_limit_ended",
+            serde_json::json!({"child_agent_id": team.child, "deadline_ms": 100}),
+        )))
+        .unwrap()
+    else {
+        panic!("deadline occurrence")
+    };
+    store
+        .agent_lifecycle(Operation::MarkShown {
+            room: team.room.clone(),
+            agent: team.parent.clone(),
+            sequences: vec![event.sequence],
+        })
+        .unwrap();
+    let bulk = team
+        .runtime
+        .ack_agent_inbox(
+            &team.room,
+            &team.parent,
+            &serde_json::json!({"through": event.sequence}),
+            11,
+        )
+        .await
+        .unwrap();
+    assert_eq!(bulk["acknowledged"], serde_json::json!([]));
+    assert_eq!(bulk["skipped"][0]["reason"], "needs_handling");
+    assert!(
+        team.runtime
+            .ack_agent_inbox(
+                &team.room,
+                &team.parent,
+                &serde_json::json!({"sequence": event.sequence}),
+                12,
+            )
+            .await
+            .is_err(),
+        "reading the notice is not handling it"
+    );
+    assert_eq!(
+        store.agent_inbox(&team.room, &team.parent, 0).unwrap()[0].state,
+        "pending"
+    );
+    team.runtime
+        .ack_agent_inbox(
+            &team.room,
+            &team.parent,
+            &serde_json::json!({"sequence": event.sequence, "handled": true}),
+            13,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.agent_inbox(&team.room, &team.parent, 0).unwrap()[0].state,
+        "handled"
+    );
+}
+
 // TL1: the Room and the agent hear of a limit 10 minutes and 1 minute before it ends, once each.
 #[tokio::test]
 async fn a_limit_is_announced_ten_minutes_and_one_minute_ahead_once_each() {
