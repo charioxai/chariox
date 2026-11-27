@@ -530,25 +530,48 @@ async fn privileged_cli_uses_its_bound_agent_run_and_keeps_other_vault_actions_o
     unlock(&f);
     let _dir = with_fake_sudo(&f, SECRET);
     let handle = sudo_entry(&f, "cli-sudo", SECRET, &origin(&f)).await;
-    use crate::local::{KernelConnectionClass, LocalDaemonRequest, OwnerVaultRequest, LocalDaemonResponse, OwnerVaultResult};
+    use crate::local::{
+        KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse, OwnerVaultRequest,
+        OwnerVaultResult,
+    };
     for (request, allowed) in [
-        (OwnerVaultRequest::RunPrivileged { id: handle.clone(), argv: vec!["/bin/echo".into(), "cli-ran".into()], machine: None, timeout_seconds: None }, true),
+        (
+            OwnerVaultRequest::RunPrivileged {
+                id: handle.clone(),
+                argv: vec!["/bin/echo".into(), "cli-ran".into()],
+                machine: None,
+                timeout_seconds: None,
+            },
+            true,
+        ),
         (OwnerVaultRequest::Reveal { id: handle.clone() }, false),
         (OwnerVaultRequest::Delete { id: handle.clone() }, false),
     ] {
         let request = LocalDaemonRequest::OwnerVault(request);
-        let mut command = crate::runtime::command::KernelCommand::from_local_request("cli-sudo", None, None, &request);
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            "cli-sudo", None, None, &request,
+        );
         command.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
         command.caller.metaagent_id = f.run.agent_instance_id().map(str::to_owned);
         command.provider_run_id = Some(f.run.id().to_owned());
         let result = f.router.dispatch(command.clone(), request.clone()).await;
         if allowed {
-            let LocalDaemonResponse::OwnerVault { result: OwnerVaultResult::PrivilegedRun { outcome, .. } } = result.unwrap() else { panic!("expected privileged result") };
+            let LocalDaemonResponse::OwnerVault {
+                result: OwnerVaultResult::PrivilegedRun { outcome, .. },
+            } = result.unwrap()
+            else {
+                panic!("expected privileged result")
+            };
             assert_eq!(outcome.stdout, "cli-ran\n");
             assert_eq!(outcome.exit_code, Some(0));
             assert!(!outcome.stderr.contains(SECRET));
             command.provider_run_id = None;
-            assert!(f.router.dispatch(command, request).await.is_err(), "no run cannot elevate");
-        } else { assert!(result.is_err(), "other Vault actions stay owner-only"); }
+            assert!(
+                f.router.dispatch(command, request).await.is_err(),
+                "no run cannot elevate"
+            );
+        } else {
+            assert!(result.is_err(), "other Vault actions stay owner-only");
+        }
     }
 }

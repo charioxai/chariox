@@ -17,6 +17,7 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: "privileged run", brief: "Run one command with sudo using a Vault entry", flags: [{ name: "--entry", value: "NAME", required: true }, { name: "--machine", value: "ID" }, TIMEOUT, SOCKET, { name: "--command-id", value: "ID" }], summary: "run argv after -- as root on this kernel's machine, with the machine-bound Vault entry named by --entry. The kernel supplies the password on stdin and masks it in JSON stdout/stderr; --timeout is 1-240 seconds (default 120). The ordinary agent sandbox stays in force" },
   { name: "agent settings", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT"], summary: "read an agent's current settings and pending profile", brief: "Read an agent's settings" },
   {
     name: "agent settings set",
@@ -175,10 +176,8 @@ export function topLevelHelpText(): string {
     "Usage: chariox <command> [arguments]",
     "Run chariox without a command to open the terminal client.",
     "Run chariox guide for agent command details and examples.",
-    "",
     "General", ...general,
     ...Array.from(groups, ([title, rows]) => ["", title, ...rows]).flat(),
-    "",
   ].join("\n")
 }
 

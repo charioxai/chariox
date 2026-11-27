@@ -30,6 +30,13 @@ enum Who {
 
 fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static str)> {
     Some(match request {
+        LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::RunPrivileged {
+            ..
+        }) => (
+            Who::OwnerOrAgent,
+            "vault_owner_only",
+            "A privileged run requires the owner or its live agent.",
+        ),
         LocalDaemonRequest::OwnerVault(_) => (
             Who::Owner,
             "vault_owner_only",

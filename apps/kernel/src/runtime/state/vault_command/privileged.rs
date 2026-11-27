@@ -80,6 +80,42 @@ impl Run {
 }
 
 impl KernelRuntimeState {
+    pub(crate) async fn agent_cli_privileged_run(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        id: &str,
+        argv: &[String],
+        machine: Option<&str>,
+        timeout_seconds: Option<u64>,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        let run_id = command
+            .provider_run_id
+            .as_deref()
+            .ok_or_else(|| error("a privileged CLI run requires its authenticated provider run"))?;
+        let run = self.owned.provider_store.get_run(run_id)?;
+        if run.agent_instance_id() != command.caller.metaagent_id.as_deref()
+            || run.owner_user_id() != crate::runtime::command::command_caller_user_id(command)
+        {
+            return Err(error(
+                "the privileged CLI caller does not own this provider run",
+            ));
+        }
+        let token = run
+            .runtime_mcp_auth_token()
+            .ok_or_else(|| error("the privileged CLI provider run has no runtime tools"))?;
+        let result = self.privileged_run(token, serde_json::json!({
+            "credential_id": id, "argv": argv, "machine": machine, "timeout_seconds": timeout_seconds
+        })).await?;
+        let outcome = serde_json::from_value(result.payload)
+            .map_err(|e| error(format!("privileged CLI result: {e}")))?;
+        Ok(crate::local::LocalDaemonResponse::OwnerVault {
+            result: crate::local::OwnerVaultResult::PrivilegedRun {
+                id: id.to_owned(),
+                outcome,
+            },
+        })
+    }
+
     pub(crate) async fn privileged_run(
         &self,
         token: &str,
@@ -96,28 +132,28 @@ impl KernelRuntimeState {
             args.timeout_seconds,
         )?;
         let target = run.target();
+        let ids = self
+            .resolve_entry_refs(context.home.as_ref(), [args.credential_id.as_str()], None)
+            .await?;
+        let credential_id = &ids[0];
         // A leased run's entry is the home Vault's; the home checks its binding.
         if context.home.is_none() {
-            check_entry_machine(
-                &self.home_runtime_secret_service()?,
-                &args.credential_id,
-                &run,
-            )?;
+            check_entry_machine(&self.home_runtime_secret_service()?, credential_id, &run)?;
         }
         let _unlock = self
             .prepare_workspace_vault_uses(
                 &context,
-                &[(args.credential_id.as_str(), target.clone())],
+                &[(credential_id.as_str(), target.clone())],
                 "privileged_run",
             )
             .await?;
         self.recheck_vault_command_context(&context)?;
         let password = self
-            .read_workspace_vault_value(&context, &args.credential_id, &target)
+            .read_workspace_vault_value(&context, credential_id, &target)
             .await?;
         self.recheck_vault_command_context(&context)?;
         let outcome = self
-            .run_with_password(Some(context), run, &args.credential_id, password)
+            .run_with_password(Some(context), run, credential_id, password)
             .await?;
         Ok(RuntimeToolResult {
             ok: true,
@@ -141,6 +177,8 @@ impl KernelRuntimeState {
             machine.as_deref(),
             timeout_seconds,
         )?;
+        let ids = self.resolve_entry_refs(None, [id], None).await?;
+        let id = ids[0].as_str();
         let service = self.home_runtime_secret_service()?;
         check_entry_machine(&service, id, &run)?;
         let password =
