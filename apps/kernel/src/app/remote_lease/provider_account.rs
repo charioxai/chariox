@@ -367,7 +367,7 @@ exit 2
         let mut wrong_owner = materialization;
         wrong_owner.profile.owner_user_id = "owner-b".to_string();
         let mismatch = RemoteLeaseRuntime::new(&mut app)
-            .ensure_remote_provider_account(context, wrong_owner)
+            .ensure_remote_provider_account(context.clone(), wrong_owner)
             .expect_err("a materialization of another owner must be refused");
         assert!(
             mismatch
@@ -378,6 +378,37 @@ exit 2
         assert!(app
             .provider_account_profile_registry()
             .list("owner-b", Some("claude"))
+            .unwrap()
+            .is_empty());
+
+        // The owner rule does not depend on Claude's refusal: a provider that still
+        // materializes on a worker (OpenCode without credentials) is refused for the same
+        // reason, and only the owner mismatch can be that reason.
+        let opencode_of_another_owner = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
+                owner_user_id: "owner-b".to_string(),
+                provider: "opencode".to_string(),
+                profile_id: "work".to_string(),
+                label: "Work".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: Vec::new(),
+            generated_at_ms: 1,
+        };
+        let opencode_mismatch = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, opencode_of_another_owner)
+            .expect_err("another owner's OpenCode account must be refused on this lease");
+        assert!(
+            opencode_mismatch
+                .to_string()
+                .contains("owner does not match the execution lease"),
+            "{opencode_mismatch}"
+        );
+        assert!(app
+            .provider_account_profile_registry()
+            .list("owner-b", Some("opencode"))
             .unwrap()
             .is_empty());
         let _ = std::fs::remove_dir_all(root);
