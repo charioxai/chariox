@@ -87,6 +87,15 @@ async function main() {
   verifySignedFiles(document, signed, pins)
   await checkArtifacts(kind, tree, document.request.entries.filter((entry) => entry.sha256))
 
+  if (kind === "managed") {
+    const attestation = JSON.parse(document.attestationBytes)
+    const relay = attestation.artifacts.find(artifact => artifact.name === "chariox-relay")
+    const path = join(tree, "rootfs/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay")
+    if (await artifactDigest(path, "builder-attested slice relay") !== relay.sha256) {
+      throw new Error("builder-attested slice relay differs from the staged context")
+    }
+  }
+
   const timestamp = new Date(Number(process.env.SOURCE_DATE_EPOCH ?? "0") * 1000)
   const embedded = LAYOUTS[kind].embedded(tree)
   for (const [name, path] of Object.entries(embedded)) {

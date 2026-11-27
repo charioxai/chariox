@@ -8,7 +8,7 @@ const BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const SIGNATURE_DEPENDENT = ["chariox-build-attestation-signature", "chariox-builder-public-key"]
 const ATTESTATION_NAMES = {
   boot: ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"],
-  managed: ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay", "chariox-app-package", "chariox-app-wasm-worker"],
+  managed: ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay", "chariox-app-package", "chariox-app-wasm-worker", "chariox"],
 }
 // The boot facade pins the release authority as its builder; the managed rootfs has its own builder authority.
 // The two on-disk formats differ only in a trailing newline (documents and signatures).
@@ -116,6 +116,7 @@ export function parseSigningRequest(bytes, expectedDigest) {
   // The manifest must pin the same binaries the builder attested; relay lives in the slice context for managed.
   for (const artifact of attestation.artifacts) {
     const pinned = entry(artifact.name)
+    if (!pinned && artifact.name !== "chariox-relay") fail(`manifest lacks builder-attested artifact ${artifact.name}`)
     if (pinned && pinned.sha256 !== artifact.sha256) fail(`manifest entry ${artifact.name} differs from the builder attestation`)
   }
   if (kind === "managed") {

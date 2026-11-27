@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import { test } from "node:test"
 
+import { managedReleaseAttestation } from "./build-managed-kernel-release.mjs"
 import { rawPublicKey, sha, signingRequestBytes } from "./release-signing-documents.mjs"
 
 const scripts = fileURLToPath(new URL(".", import.meta.url))
@@ -132,7 +133,7 @@ test("boot assembly refuses a wrong key pin, a tampered artifact and a second as
 })
 
 // Managed releases: a synthetic staged rootfs with the two directory entries.
-async function stageManaged(root) {
+async function stageManaged(root, { relayBytes = "relay" } = {}) {
   const staged = join(root, "managed")
   const lib = join(staged, "rootfs/usr/lib/chariox")
   await mkdir(join(lib, "slice-image"), { recursive: true })
@@ -140,16 +141,17 @@ async function stageManaged(root) {
   await mkdir(join(staged, "rootfs/usr/local/bin"), { recursive: true })
   await writeFile(join(lib, "slice-image/slice-image.json"), "{}\n")
   await writeFile(join(lib, "slice-build-context/Cargo.toml"), "[workspace]\n")
-  const names = ["chariox-kernel", "chariox-managed-bootstrap", "chariox-app-package", "chariox-app-wasm-worker"]
+  const names = ["chariox-kernel", "chariox-managed-bootstrap", "chariox-app-package", "chariox-app-wasm-worker", "chariox"]
   for (const name of names) await writeFile(join(staged, "rootfs/usr/local/bin", name), `${name}\n`)
   await writeFile(join(lib, "build-attestation.json"), "attestation placeholder\n")
   const { sha256File, sha256Tree } = await import("./release-tree-digest.mjs")
   const digests = Object.fromEntries(await Promise.all(names.map(async (name) => [name, await sha256File(join(staged, "rootfs/usr/local/bin", name))])))
+  const relayDirectory = join(lib, "slice-build-context/apps/kernel/slice-linux-docker/prebuilt")
+  await mkdir(relayDirectory, { recursive: true })
+  if (relayBytes !== null) await writeFile(join(relayDirectory, "chariox-relay"), relayBytes)
   const relay = sha(Buffer.from("relay"))
-  const attestationBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, sourceCommit: commit, sourceTree: tree, target: "x86_64-unknown-linux-gnu", artifacts: [
-    { name: "chariox-kernel", sha256: digests["chariox-kernel"] }, { name: "chariox-managed-bootstrap", sha256: digests["chariox-managed-bootstrap"] }, { name: "chariox-relay", sha256: relay },
-    { name: "chariox-app-package", sha256: digests["chariox-app-package"] }, { name: "chariox-app-wasm-worker", sha256: digests["chariox-app-wasm-worker"] },
-  ] }))
+  // Use the real producer's serializer, including its sixth (CLI) entry.
+  const attestationBytes = managedReleaseAttestation(commit, tree, { ...digests, "chariox-relay": relay })
   await writeFile(join(lib, "build-attestation.json"), attestationBytes)
   const sliceImage = await sha256Tree(join(lib, "slice-image"))
   const sliceBuildContext = await sha256Tree(join(lib, "slice-build-context"))
@@ -219,8 +221,31 @@ test("managed split flow signs with separate builder and release keys and refuse
     for (const name of ["build-attestation.sig", "builder-public-key", "release-manifest.json", "release-manifest.sig", "release-public-key"]) {
       assert.ok((await readFile(join(good, "rootfs/usr/lib/chariox", name))).length > 0, name)
     }
+    const releasePin = join(root, "release-public-key")
+    const builderPin = join(root, "builder-public-key")
+    await writeFile(releasePin, release.pin)
+    await writeFile(builderPin, builder.pin)
+    const verify = run("../deploy/runtime-release/verify-rootfs.mjs", [join(good, "rootfs"), receipt.releases.managed.manifestDigest, releasePin, builderPin])
+    assert.equal(verify.status, 0, verify.stderr)
     assert.match(assemble(good).stderr, /already exists/)
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+
+test("managed assembly refuses a signed context with a missing or different attested relay", async () => {
+  for (const relayBytes of [null, "another relay"]) {
+    const root = await mkdtemp(join(tmpdir(), "signsplit-managed-relay-"))
+    try {
+      const [release, builder] = await Promise.all(["release", "builder"].map(name => throwawayKey(root, name)))
+      const { staged, request, requestDigest } = await stageManaged(root, { relayBytes })
+      const signedDirectory = join(root, "signed")
+      const signed = run("sign-digests-on-mac.mjs", ["--request", `${request}@${requestDigest}`, "--release-key", release.path, "--builder-key", builder.path, "--output", signedDirectory, "--test-allow-non-mac"])
+      assert.equal(signed.status, 0, signed.stderr)
+      const assembled = run("assemble-signed-release.mjs", ["--kind", "managed", "--tree", staged, "--request", request, "--signed", signedDirectory, "--release-public-key", release.pin, "--builder-public-key", builder.pin])
+      assert.notEqual(assembled.status, 0)
+      assert.match(assembled.stderr, /builder-attested slice relay/)
+    } finally { await rm(root, { recursive: true, force: true }) }
   }
 })

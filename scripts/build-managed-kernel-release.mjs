@@ -599,6 +599,13 @@ async function removeOwnedScratchDirectory(path, identity) {
   await rm(path, { recursive: true, force: false })
 }
 
+export function managedReleaseAttestation(sourceCommit, sourceTree, artifactDigests) {
+  const names = ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay", "chariox-app-package", "chariox-app-wasm-worker", "chariox"]
+  return Buffer.from(JSON.stringify({ schemaVersion: 1, sourceCommit, sourceTree, target: BUILD_TARGET,
+    artifacts: names.map(name => ({ name, sha256: artifactDigests[name] })),
+  }))
+}
+
 export async function runManagedKernelReleaseBuild(options, {
   acquireBuilderLease = acquireManagedReleaseBuilderLease,
   environment = process.env,
@@ -791,20 +798,9 @@ export async function runManagedKernelReleaseBuild(options, {
       await copyFile(exportedBinary, sourceBinary, constants.COPYFILE_EXCL)
       await chmod(sourceBinary, 0o755)
     }
-    const attestation = Buffer.from(JSON.stringify({
-      schemaVersion: 1,
-      sourceCommit: commit,
-      sourceTree: tree,
-      target: BUILD_TARGET,
-      artifacts: [
-        { name: "chariox-kernel", sha256: await sha256File(join(pending, "chariox-kernel")) },
-        { name: "chariox-managed-bootstrap", sha256: await sha256File(join(pending, "chariox-managed-bootstrap")) },
-        { name: "chariox-relay", sha256: await sha256File(join(pending, "chariox-relay")) },
-        { name: "chariox-app-package", sha256: await sha256File(join(pending, "chariox-app-package")) },
-        { name: "chariox-app-wasm-worker", sha256: await sha256File(join(pending, "chariox-app-wasm-worker")) },
-        { name: "chariox", sha256: await sha256File(join(pending, "chariox")) },
-      ],
-    }))
+    const attestation = managedReleaseAttestation(commit, tree, Object.fromEntries(await Promise.all(
+      ARTIFACTS.map(async name => [name, await sha256File(join(pending, name))]),
+    )))
     await writeFile(join(pending, "build-attestation.json"), attestation, { flag: "wx", mode: 0o644 })
     await writeFile(
       join(pending, "build-attestation.sig"),
