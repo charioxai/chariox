@@ -565,6 +565,31 @@ async fn privileged_cli_uses_its_bound_agent_run_and_keeps_other_vault_actions_o
             assert_eq!(outcome.stdout, "cli-ran\n");
             assert_eq!(outcome.exit_code, Some(0));
             assert!(!outcome.stderr.contains(SECRET));
+            let mut named = request.clone();
+            if let LocalDaemonRequest::OwnerVault(OwnerVaultRequest::RunPrivileged { id, .. }) =
+                &mut named
+            {
+                *id = "sudo".into();
+            }
+            assert!(
+                f.router.dispatch(command.clone(), named).await.is_ok(),
+                "a unique Vault name uses the same operation"
+            );
+            for foreign in [false, true] {
+                let mut mismatched = command.clone();
+                if foreign {
+                    mismatched.caller.user_id = Some("another-owner".into());
+                } else {
+                    mismatched.caller.metaagent_id = Some("another-agent".into());
+                }
+                assert!(
+                    f.router
+                        .dispatch(mismatched, request.clone())
+                        .await
+                        .is_err(),
+                    "the CLI must match its provider run's agent and owner"
+                );
+            }
             command.provider_run_id = None;
             assert!(
                 f.router.dispatch(command, request).await.is_err(),
