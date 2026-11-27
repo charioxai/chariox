@@ -302,7 +302,6 @@ export function guideText(): string {
     "interaction_closed means someone else answered or it expired: drop the question. Do not choose for the person.",
     "A record with no question but a pointer is the person's alone: show pointer.one_line verbatim and do not answer it.",
     "Or add chariox events mcp as an MCP server: its tool chariox_next_choice waits, asks and answers. A subscription lasts until its grant ends or you cancel it.",
-    "Commands:",
     ...commands,
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
