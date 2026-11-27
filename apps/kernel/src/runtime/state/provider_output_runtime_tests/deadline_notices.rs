@@ -191,6 +191,27 @@ async fn an_ended_limit_with_a_parent_tells_the_parent_agent_once_and_never_the_
     );
 }
 
+// A deadline ending needs no incoming message to tell the parent.
+#[tokio::test]
+async fn an_ended_limit_tells_the_parent_without_an_incoming_message() {
+    let team = team_with("deadline-no-message", None, true).await;
+    set_deadline(&team, &team.child, crate::session::unix_epoch_ms() - 1).await;
+    for _ in 0..2 {
+        team.runtime
+            .tick_agent_deadlines(crate::session::unix_epoch_ms())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        kinds(&team, &team.parent)
+            .iter()
+            .filter(|kind| kind.as_str() == "child_time_limit_ended")
+            .count(),
+        1,
+        "the parent hears once even without a refused delivery or queued message"
+    );
+}
+
 // Row 754 (T3): a top-level agent has no parent to ask, so its ended limit tells no agent: the
 // Room's stop notice is the whole story, and the owner's external agent may extend or clear the
 // limit itself (D190b). No person card exists to clear.
