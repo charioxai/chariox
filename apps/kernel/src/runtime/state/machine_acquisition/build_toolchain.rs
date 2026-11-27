@@ -4,9 +4,13 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 impl KernelRuntimeState {
-    pub(super) async fn target_build_toolchain(&self, kernel_id: &str, harness: &str) -> Value {
+    pub(super) async fn target_build_toolchain(
+        &self,
+        kernel_id: &str,
+        origin: &crate::runtime::kernel_gateway::Origin,
+    ) -> Value {
         let unavailable = || json!({"state": "unavailable"});
-        let Ok(grant) = self.job_machine_grant(kernel_id, harness) else {
+        let Ok(grant) = self.machine_grant_for_origin(kernel_id, origin) else {
             return unavailable();
         };
         let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);

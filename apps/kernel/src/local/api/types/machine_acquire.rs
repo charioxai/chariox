@@ -22,6 +22,9 @@ pub enum MachineAcquisitionRequest {
         /// What the machine is for; the owner's card names it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
+        /// Omitted means an ordinary owner-visible machine, even for an agent caller.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visibility: Option<MachineAcquisitionVisibility>,
     },
     Status {
         allocation_ref: String,
@@ -29,6 +32,13 @@ pub enum MachineAcquisitionRequest {
     Release {
         allocation_ref: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineAcquisitionVisibility {
+    Owner,
+    AgentTree,
 }
 
 /// The answer to a [`MachineAcquisitionRequest`], and the payload of the `chariox.machines.*` tools.

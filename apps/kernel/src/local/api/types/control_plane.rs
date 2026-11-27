@@ -17,6 +17,8 @@ pub enum ControlPlaneRequest {
         /// The machine's hard stop in seconds; the service stops the machine then. Absent keeps it until released.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_s: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access_scope: Option<ControlPlaneAccessScope>,
     },
     AcquireJob {
         capability_revision: String,

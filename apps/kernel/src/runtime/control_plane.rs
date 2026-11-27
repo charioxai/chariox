@@ -52,7 +52,26 @@ pub(crate) async fn execute_acquire(
     request: &MachineAcquisitionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     // Owner and grant holders acquire as the owner, so a retry from another process finds its request.
-    let key = format!("owner:{}", state.kernel_owner_user_id());
+    let key = if matches!(
+        request,
+        MachineAcquisitionRequest::Acquire {
+            visibility: Some(crate::local::MachineAcquisitionVisibility::AgentTree),
+            ..
+        }
+    ) {
+        command
+            .reach_caller_id()
+            .and_then(|id| state.reach_for_id(&id))
+            .map(|caller| caller.agent_id)
+            .ok_or_else(|| {
+                unavailable(
+                    "control_plane_grant_required",
+                    "Private acquisition requires an authenticated home agent",
+                )
+            })?
+    } else {
+        format!("owner:{}", state.kernel_owner_user_id())
+    };
     let result = state
         .machine_acquire(&key, request.clone(), |request, _| async move {
             match execute(config, state, command, gateway, &request).await? {
@@ -74,7 +93,32 @@ pub(crate) async fn execute(
     gateway: &crate::runtime::kernel_gateway::KernelGateway,
     request: &ControlPlaneRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let mut request = request;
+    let agent_caller = command
+        .reach_caller_id()
+        .and_then(|id| state.reach_for_id(&id));
+    let mut attested_request = request.clone();
+    if let ControlPlaneRequest::Acquire {
+        access_scope: Some(scope),
+        timeout_s,
+        ..
+    } = &mut attested_request
+    {
+        let caller = agent_caller.as_ref().ok_or_else(|| {
+            unavailable(
+                "control_plane_grant_required",
+                "Private acquisition requires an authenticated home agent",
+            )
+        })?;
+        if !timeout_s.is_some_and(|seconds| seconds > 0) {
+            return Err(unavailable(
+                "invalid_request",
+                "Private acquisition requires a teardown time",
+            ));
+        }
+        // An agent may select private visibility, but only its home derives whose scope it is.
+        *scope = state.private_machine_scope(&caller.agent_id)?;
+    }
+    let mut request = &attested_request;
     let replayed: ControlPlaneRequest;
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // People use their authenticated owner connection; agents use the same process-bound
@@ -210,10 +254,14 @@ pub(crate) async fn execute(
     if let Some(guard) = approval_guard.as_mut() {
         guard.posting();
     }
+    let mut body = cloud_request_body(&profile.account_id, credential, request);
+    if let Some(caller) = &agent_caller {
+        body["agentId"] = serde_json::json!(caller.agent_id);
+    }
     let send = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
-        cloud_request_body(&profile.account_id, credential, request),
+        body,
     );
     let sent = match acquisition_hold {
         // The service's answer settles the admitted request even when its caller is cancelled.
@@ -284,6 +332,23 @@ pub(crate) async fn execute(
         ..
     } = &mut result
     {
+        if let ControlPlaneRequest::Acquire { access_scope, .. } = request {
+            let private = purpose.as_deref() == Some("agent_private");
+            if access_scope.is_some() != private
+                || (!private
+                    && purpose
+                        .as_deref()
+                        .is_some_and(|kind| kind != "user_machine"))
+                || kernel_target
+                    .as_ref()
+                    .is_some_and(|target| &target.access_scope != access_scope)
+            {
+                return Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The connected service returned another allocation visibility or agent scope",
+                ));
+            }
+        }
         let expected = match request {
             ControlPlaneRequest::Get { allocation_ref }
             | ControlPlaneRequest::JobStarted { allocation_ref, .. }
@@ -392,6 +457,41 @@ fn unavailable(code: &str, message: &str) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_owner_request_cannot_supply_a_private_agent_identity() {
+        let config = DaemonConfig::for_tests();
+        let app = crate::test_support::bootstrap_authenticated_app(config.clone()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        );
+        let request = ControlPlaneRequest::Acquire {
+            capability_revision: "capability".into(),
+            request_id: "private-forgery".into(),
+            class_id: None,
+            region: None,
+            timeout_s: Some(60),
+            access_scope: Some(crate::local::ControlPlaneAccessScope::AgentTree {
+                agent_id: "claimed-agent".into(),
+                ancestor_agent_ids: vec!["claimed-parent".into()],
+            }),
+        };
+        let shape = crate::local::LocalDaemonRequest::ControlPlane(request.clone());
+        let mut command = KernelCommand::from_local_request("private-forgery", None, None, &shape);
+        command.caller.metaagent_id = Some("claimed-agent".into());
+        let error = execute(
+            &config,
+            &router.runtime_state(),
+            &command,
+            router.kernel_gateway(),
+            &request,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("control_plane_grant_required"));
+    }
+
     #[tokio::test]
     async fn mp08_mp11_self_hosted_discovery_is_empty_and_membership_cannot_spend() {
         let config = DaemonConfig::for_tests();
@@ -422,6 +522,7 @@ mod tests {
             }
         ));
         let acquire = ControlPlaneRequest::Acquire {
+            access_scope: None,
             capability_revision: "forged".into(),
             request_id: "one".into(),
             class_id: None,
@@ -448,6 +549,7 @@ mod tests {
     #[test]
     fn the_acquire_request_matches_the_shared_contract() {
         let request = ControlPlaneRequest::Acquire {
+            access_scope: None,
             capability_revision: "a".repeat(128),
             request_id: "kernel-acquire-1".into(),
             class_id: None,
