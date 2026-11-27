@@ -641,10 +641,13 @@ mod tests {
             (None, GatewayKernelUpdate::UpdateNeeded)
         );
         assert_eq!(listed.len(), 3);
-        // A named refused kernel is never a route: the request refuses it as offline.
+        // A listed refused kernel is never a route; asking for it says why, not "unknown".
+        let refusal = directory.resolve("pc").await.unwrap_err();
+        assert_eq!(refusal.code(), "kernel_update_needed");
+        assert!(refusal.message().contains("1011"), "{}", refusal.message());
         assert_eq!(
-            directory.resolve("pc").await.unwrap_err().code(),
-            "kernel_unknown"
+            directory.resolve("k-silent").await.unwrap_err().code(),
+            "kernel_offline"
         );
         // It is updated and registers: the refused entry is gone, the live one shows it current.
         source.refused.lock().unwrap().clear();
