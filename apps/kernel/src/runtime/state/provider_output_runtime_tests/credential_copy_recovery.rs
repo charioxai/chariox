@@ -285,6 +285,7 @@ async fn run_case(recovery: RecoveryCase) {
             warning_sent: false,
             deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(3600)),
             placement: None,
+            limit_grant: None,
         };
         assert!(runtime.owned.prompt_state_owner.bind_sudo_turn(
             &session,

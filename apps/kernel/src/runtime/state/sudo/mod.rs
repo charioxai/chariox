@@ -20,6 +20,7 @@ mod goal;
 mod kernel_restart_tests;
 pub(crate) mod leased;
 mod lifecycle;
+mod limit_grant;
 mod login_recovery;
 mod operation;
 mod policy;
@@ -27,6 +28,7 @@ mod process;
 mod receipts;
 mod scope;
 mod window;
+pub(crate) use limit_grant::{LimitGrant, RequestedRaise};
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt, sudo_request_forbidden};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
@@ -51,6 +53,8 @@ mod inbox_batch_tests;
 mod leased_owner_tests;
 #[cfg(test)]
 mod leased_route_tests;
+#[cfg(test)]
+mod limit_authority_tests;
 #[cfg(test)]
 mod operation_tests;
 #[cfg(test)]

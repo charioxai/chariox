@@ -577,6 +577,7 @@ fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
         warning_sent: false,
         deadline: None,
         placement: None,
+        limit_grant: None,
     };
     previous.session.set_sudo_windows(vec![window.clone()]);
     assert!(can_skip_session_snapshot(&previous, Some(&previous), true));

@@ -9,6 +9,9 @@ export type ControlPlaneRequest =
   | { action: "get_job" | "cancel_job"; job_ref: string }
   | { action: "job_started"; allocation_ref: string; capability_revision: string }
   | { action: "list" }
+  | { action: "limits" }
+  // The person's approval of a raise is attached by the kernel, never sent by a client.
+  | { action: "set_limits"; expected_version: number; machines_at_once: number; spend_per_day_micros: number }
   | { action: "get"; allocation_ref: string }
   | { action: "release" | "start" | "stop"; allocation_ref: string; capability_revision: string; request_id: string; expected_revision: number }
   | { action: "start_saved_state" | "delete_saved_state"; allocation_ref: string; saved_state_ref: string; capability_revision: string; request_id: string; expected_revision: number }
@@ -16,10 +19,29 @@ export type ControlPlaneRequest =
 export type ControlPlaneResponse =
   | { kind: "job_cancelled"; job_ref: string }
   | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; offers?: MachineOption[]; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
+  | { kind: "limits"; machines_at_once: number; spend_per_day_micros: number; currency: string; version: number; machines_in_use?: number; spend_today_micros?: number }
   | { kind: "machines"; machines: ControlPlaneMachineRow[]; saved_states: ControlPlaneSavedStateRow[] }
   | { kind: "machine"; revision: number; available_actions: string[]; allocation_ref: string; state: string; access_state: string; access_reason: string | null; purpose?: string; machine_label?: string; address?: string | null; kernel_diagnostics?: MachineKernelDiagnostics; kernel_target: null | {
       kernel_id: string; machine_id: string; relay_realm_id: string; key_thumbprint: string
     } }
+
+/**
+ * What `MachineAcquisition { action: "limits" }` answers (`result.limits`): the account's limits, which
+ * the connected service holds (null when it has none), and the person's own limits for acquiring without
+ * asking with what applies once the account's bound them.
+ */
+export type MachineLimitsReading = {
+  account: { machines_at_once: number; machines_in_use?: number; spend_per_day_micros: number; spend_today_micros?: number; currency: string; version: number } | null
+  no_ask: {
+    enabled: boolean
+    machines_at_once: number
+    spend_per_day_micros: number | null
+    classes: string[] | null
+    effective_machines_at_once: number
+    effective_spend_per_day_micros: number | null
+    clamped: boolean
+  }
+}
 
 export type MachineKernelDiagnostics = {
   relay_error?: string

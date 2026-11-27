@@ -72,6 +72,45 @@ pub enum ControlPlaneRequest {
         request_id: String,
         expected_revision: u64,
     },
+    /// The account's machine limits, as the connected service holds them.
+    Limits {},
+    /// Change the account's limits. `expected_version` is the version the caller read. A raise by an
+    /// agent carries the person's `approval`, which only the kernel attaches (see `LimitApproval`).
+    SetLimits {
+        expected_version: u64,
+        machines_at_once: u32,
+        spend_per_day_micros: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<LimitApproval>,
+    },
+}
+
+/// The two numbers the account limits are made of; spend is in millionths of the account's currency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountLimitValues {
+    pub machines_at_once: u32,
+    pub spend_per_day_micros: u64,
+}
+
+/// How the person allowed an agent's raise: their `/sudo` naming it, or a card they accepted that
+/// showed exactly these old and new values. The service raises only from `from` to `to`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitApproval {
+    pub kind: LimitApprovalKind,
+    /// The sudo entry or the card's interaction id, kept for the audit.
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub from: AccountLimitValues,
+    pub to: AccountLimitValues,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitApprovalKind {
+    Sudo,
+    Card,
 }
 
 impl ControlPlaneRequest {
@@ -116,6 +155,18 @@ pub enum ControlPlaneResponse {
     },
     Capabilities {
         machine_allocation: Option<MachineAllocationCapability>,
+    },
+    Limits {
+        machines_at_once: u32,
+        spend_per_day_micros: u64,
+        currency: String,
+        version: u64,
+        /// How many machines count against `machines_at_once` now, when the service says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machines_in_use: Option<u32>,
+        /// What is committed against `spend_per_day_micros` today, the number the daily cap is checked against.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spend_today_micros: Option<u64>,
     },
     Machines {
         machines: Vec<ControlPlaneMachineRow>,
@@ -163,6 +214,52 @@ pub struct MachineAllocationCapability {
     pub job_offers: Vec<JobMachineOffer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_default_class_id: Option<String>,
+    /// The account's machine limit and how many count against it now: said before anyone is asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_machines: Option<AccountMachines>,
+    /// What is committed today against the account's daily cap, said beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_spend: Option<AccountSpend>,
+}
+
+/// "X of Y EUR spent today", in the account's currency (millionths).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountSpend {
+    pub used_micros: u64,
+    pub allowed_micros: u64,
+    pub currency: String,
+}
+
+impl AccountSpend {
+    pub fn spent_today_text(&self) -> String {
+        format!(
+            "{:.2} of {:.2} {} spent today",
+            self.used_micros as f64 / 1_000_000.0,
+            self.allowed_micros as f64 / 1_000_000.0,
+            self.currency
+        )
+    }
+}
+
+/// "N of M machines in use", as the connected service counts them (every fleet together).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountMachines {
+    pub in_use: u32,
+    pub allowed: u32,
+}
+
+impl AccountMachines {
+    /// "2 of 3 machines in use".
+    pub fn in_use_text(&self) -> String {
+        format!(
+            "{} of {} {} in use",
+            self.in_use,
+            self.allowed,
+            if self.allowed == 1 { "machine" } else { "machines" }
+        )
+    }
 }
 
 /// One machine the connected service offers: its size, rate in the account's currency, region and stock now.

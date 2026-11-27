@@ -22,7 +22,7 @@ test("offload setting defaults Off, writes the kernel and reads back its confirm
   const on = await executeConfigCommand(parseShellCommand("config agents-offload on"), { client })
   assert.equal(on.ok, true)
   assert.match(on.message ?? "", /: On/)
-  assert.equal(requests.length, 3)
+  assert.equal(requests.filter(request => !request.MachineAcquisition).length, 3, "the account read comes after the config requests")
   const off = await executeConfigCommand(parseShellCommand("config agents-offload off"), { client })
   assert.equal(off.ok, true)
   assert.match(off.message ?? "", /: Off/)
@@ -60,4 +60,25 @@ test("offload limits change one key each, unset back to the defaults, and the su
     assert.equal(refused.ok, false, bad)
     assert.match(refused.message ?? "", /usage: config agents-offload/)
   }
+})
+
+test("the offload summary says when the account's limits lower the person's own", async () => {
+  const limits = (clamped: boolean) => ({ MachineAcquisition: { result: { limits: {
+    account: { machines_at_once: 2, spend_per_day_micros: 3_000_000, currency: "EUR", version: 1 },
+    no_ask: { enabled: true, machines_at_once: 6, spend_per_day_micros: null, classes: null, effective_machines_at_once: 2, effective_spend_per_day_micros: 3_000_000, clamped },
+  } } } })
+  const agents = { offload_without_asking: true, offload_max_machines: 6 }
+  const client = (reading: Record<string, unknown> | "refused") => ({ send: async (request: Record<string, unknown>) => {
+    if (request.MachineAcquisition) {
+      if (reading === "refused") throw new Error("This kernel has no connected machine service")
+      return reading
+    }
+    return { UserConfig: { path: "settings", config: { version: 1, agents } } }
+  } })
+  const read = (reading: Record<string, unknown> | "refused") => executeConfigCommand(parseShellCommand("config agents-offload"), { client: client(reading) })
+  assert.match((await read(limits(true))).message ?? "", /at most 6 at the same time; no daily cap\) The account limits them: at most 2 at the same time, 3 EUR per day\.$/)
+  assert.doesNotMatch((await read(limits(false))).message ?? "", /account limits them/)
+  const refused = await read("refused")
+  assert.equal(refused.ok, true)
+  assert.doesNotMatch(refused.message ?? "", /account limits them/)
 })

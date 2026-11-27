@@ -109,6 +109,8 @@ pub(super) async fn service(
                     // One guard for both fields: a second lock in the same statement would wait on the first.
                     let listed_now = listed.lock().unwrap().clone();
                     let capability = MachineAllocationCapability {
+                        account_machines: None,
+                        account_spend: None,
                         revision: "v1".into(),
                         actions: vec!["acquire".into()],
                         // A service that lists no options still has its one default machine.

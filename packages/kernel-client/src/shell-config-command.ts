@@ -22,6 +22,7 @@ import {
   unsetUserConfigValueRequest,
   upsertCredentialRequest,
 } from "./ipc-requests.js"
+import type { MachineLimitsReading } from "./ipc-control-plane-requests.js"
 import type { ParsedShellCommand, ShellCommandResult } from "./shell-core.js"
 import type { ShellContext } from "./shell-core.js"
 import {
@@ -53,7 +54,7 @@ export async function executeConfigCommand(
     }
     const response = await deps.client.send(getUserConfigRequest())
     const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
-    return { ok: true, message: offloadSummary(payload.config.agents), data: payload }
+    return { ok: true, message: offloadSummary(payload.config.agents) + await accountBound(deps), data: payload }
   }
   if (!action || action === "show") {
     const response = await deps.client.send(getUserConfigRequest())
@@ -322,6 +323,22 @@ function amountMicros(value: string): string | null {
   const match = /^(\d{1,12})(?:\.(\d{1,6}))?$/.exec(value)
   if (!match) return null
   return (BigInt(match[1]!) * 1_000_000n + BigInt((match[2] ?? "").padEnd(6, "0"))).toString()
+}
+
+/**
+ * What the account's limits make of the person's own: said only when they lower a value. The kernel reads
+ * the account through its control-plane port; a kernel with no connected account says nothing here.
+ */
+async function accountBound(deps: ShellConfigCommandDeps): Promise<string> {
+  try {
+    const response = await deps.client.send({ MachineAcquisition: { action: "limits" } }) as { MachineAcquisition?: { result?: { limits?: MachineLimitsReading } } }
+    const limits = response.MachineAcquisition?.result?.limits
+    if (!limits?.account || !limits.no_ask.clamped) return ""
+    const spend = limits.no_ask.effective_spend_per_day_micros
+    return ` The account limits them: at most ${limits.no_ask.effective_machines_at_once} at the same time${spend === null ? "" : `, ${spend / 1_000_000} ${limits.account.currency} per day`}.`
+  } catch {
+    return ""
+  }
 }
 
 function offloadSummary(agents: { offload_without_asking?: boolean; offload_classes?: string[]; offload_max_machines?: number; offload_daily_cap_micros?: number } | undefined): string {

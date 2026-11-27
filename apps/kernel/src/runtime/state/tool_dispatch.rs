@@ -259,6 +259,8 @@ impl KernelRuntimeState {
                     .is_some_and(|credential| !credential.is_empty())
             }) {
                 specs.extend(super::kernel_enrollment::kernel_enrollment_tool_specs());
+                // The account's limits live with the connected account: no account, no limit tools.
+                specs.extend(super::machine_acquisition::limits_tool_specs());
             }
             specs.push(super::kernel_restart_spec());
         }
@@ -440,6 +442,8 @@ impl KernelRuntimeState {
                 | "chariox.machines.acquire"
                 | "chariox.machines.status"
                 | "chariox.machines.release"
+                | "chariox.machines.limits"
+                | "chariox.machines.set_limits"
         ) {
             return self.machine_tool(auth_token, tool_name, arguments).await;
         }

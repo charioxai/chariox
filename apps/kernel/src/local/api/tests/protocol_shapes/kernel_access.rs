@@ -25,6 +25,7 @@ fn sudo_protocol_487_window_extension_and_session_status_shapes() {
         warning_sent: false,
         deadline: Some(std::time::Instant::now()),
         placement: None,
+        limit_grant: None,
     };
     let extend = LocalDaemonRequest::ExtendKernelSudo(crate::local::ExtendKernelSudoRequest {
         session_id: "s".into(),
