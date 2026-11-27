@@ -792,14 +792,65 @@ fn an_agent_shell_cannot_reach_the_user_manager_or_the_session_bus() {
 /// /proc. A kernel that holds a local token is non-dumpable (PR_SET_DUMPABLE 0,
 /// disable_kernel_process_dumpability), which makes its /proc files root-owned,
 /// so a same-uid agent is refused and needs no pid namespace. Root bypasses the
-/// flag, so a root test run proves nothing and is skipped.
+/// flag, so the body runs in a child that is never root.
+///
+/// The flag belongs to the whole process, and tests run as threads of one process:
+/// setting it here would make every later test lose /proc access to itself and its
+/// children (process_environment PermissionDenied, kernel_access_grants timeouts) on
+/// a non-root runner. So the test re-executes the test binary for this one test, as
+/// an ordinary user, and the parent only checks that the child's assertions passed.
 #[test]
 fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
-    // SAFETY: geteuid and prctl take no pointers.
-    if unsafe { libc::geteuid() } == 0 {
-        eprintln!("skipped: root reads every /proc file");
+    use std::os::unix::process::CommandExt;
+    const CHILD: &str = "CHARIOX_ROUTE3_NON_DUMPABLE_GUARD_CHILD";
+    const NAME: &str = "an_agent_shell_cannot_read_the_kernels_state_through_its_process";
+    if std::env::var_os(CHILD).is_some() {
+        route3_guard_body();
         return;
     }
+    if unsafe { libc::geteuid() } == 0 && !crate::test_support::test_binary_allows_other_execute() {
+        return;
+    }
+    let mut probe = std::process::Command::new("/proc/self/exe");
+    probe
+        .args([NAME, "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1");
+    // SAFETY: only async-signal-safe libc calls between fork and exec.
+    unsafe {
+        probe.pre_exec(|| {
+            // Root keeps CAP_DAC_OVERRIDE and would hide the very defect the guard stops.
+            if libc::geteuid() == 0
+                && (libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setgid(65534) != 0
+                    || libc::setuid(65534) != 0)
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = probe
+        .output()
+        .expect("the guard test re-executes the test binary");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success() && text.contains("1 passed"),
+        "the isolated route 3 guard failed or did not run:\n{text}"
+    );
+}
+
+/// The body of the route 3 guard, unchanged: it runs only in the isolated child.
+fn route3_guard_body() {
+    // SAFETY: geteuid and prctl take no pointers.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "root reads every /proc file; the child must run as an ordinary user"
+    );
     let kernel = DummyKernelHome::new();
     assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
     let pid = std::process::id();
