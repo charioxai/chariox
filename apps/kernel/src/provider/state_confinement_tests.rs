@@ -788,6 +788,18 @@ fn an_agent_shell_cannot_reach_the_user_manager_or_the_session_bus() {
     assert!(output.contains("bus-address-unset"), "{output}");
 }
 
+/// The shared test process must stay dumpable. A test that needs the non-dumpable flag
+/// (PR_SET_DUMPABLE 0) runs it in an isolated child; this fails loudly if one ever leaks it
+/// into the process every other test shares (PR_GET_DUMPABLE: 1 = dumpable).
+fn assert_test_process_dumpable() {
+    // SAFETY: PR_GET_DUMPABLE takes no pointers.
+    let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
+    assert_eq!(
+        dumpable, 1,
+        "a test made the shared test process non-dumpable: run PR_SET_DUMPABLE 0 in an isolated child"
+    );
+}
+
 /// Cell (a), route 3: the kernel's own process shows its mounts, unmasked, under
 /// /proc. A kernel that holds a local token is non-dumpable (PR_SET_DUMPABLE 0,
 /// disable_kernel_process_dumpability), which makes its /proc files root-owned,
@@ -808,6 +820,7 @@ fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
         route3_guard_body();
         return;
     }
+    assert_test_process_dumpable();
     if unsafe { libc::geteuid() } == 0 && !crate::test_support::test_binary_allows_other_execute() {
         return;
     }
@@ -841,6 +854,8 @@ fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
         output.status.success() && text.contains("1 passed"),
         "the isolated route 3 guard failed or did not run:\n{text}"
     );
+    // The child's flag died with the child: this process is still dumpable.
+    assert_test_process_dumpable();
 }
 
 /// The body of the route 3 guard, unchanged: it runs only in the isolated child.
@@ -872,6 +887,7 @@ fn route3_guard_body() {
 /// without any change to the mask.
 #[test]
 fn the_mask_follows_the_one_list_of_protected_folders() {
+    assert_test_process_dumpable();
     let kernel = DummyKernelHome::new();
     let listed = super::protected_folders();
     assert!(listed.iter().any(|folder| folder.ends_with("state")));
