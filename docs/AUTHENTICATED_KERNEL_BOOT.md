@@ -64,6 +64,16 @@ a reviewed image recipe change. Routine releases change only the URL/digest.
 Changing the trust root requires a new base image. No key supplied beside a
 release can replace the image pin.
 
+For a remote signer, `scripts/package-runtime-release.mjs --signing-request
+<path>` stages unsigned artifacts and a small digest-bound request instead of
+reading a private key. Cloud's boot wrapper supplies its signed deployment unit.
+Run `scripts/sign-digests-on-mac.mjs` on the established signing Mac with the
+request's independently checked SHA-256 and existing key paths. Only the request,
+detached signatures, public pins and signing receipt cross the signing boundary.
+`scripts/assemble-signed-release.mjs` embeds those signatures and verifies every
+artifact and signature against independently supplied public pins before
+publication. A request or an unsigned staged directory is not a release.
+
 The lane drill is deliberately separate: an ephemeral TEST key signs two local
 builds, and the candidate image pins only its TEST public key. The HTTPS test
 server uses an ephemeral certificate with explicit CA trust on the validation
@@ -80,3 +90,19 @@ explicit repository root and rejects attached-volume serial/size fields. A
 confirmed restart reuses its persisted identity and receipt. Schema 3 remains
 for the existing attached-volume path. This private bootstrap envelope change
 does not change the kernel client or relay wire shapes.
+
+For a builder separate from the signer, pass `--signing-mode external` to
+`scripts/build-managed-kernel-release.mjs`. It performs the same admitted exact
+source build and exports its six binaries and unsigned builder attestation;
+it neither opens a private key nor emits a signature/public-key claim. Stage
+those artifacts with the Cloud packager's `--signing-request` path, sign on the
+established Mac and assemble/verify before publishing. Unsigned builder output
+cannot satisfy release publication or fresh-rental deployment acceptance.
+
+D257 image acceptance requires the existing supported Codex, Claude Code,
+OpenCode, Git and gh executables. The final source/managed slice runtime admission
+probe runs each `--version`; Cloud's shared Boat/Hetzner base recipe already
+installs and probes the same tools. Fresh-rental deployment acceptance records
+actual executable paths, versions and exit codes. Reusable images contain no
+provider or GitHub account credentials. Runtime birth/account transfer and
+own-machine tool installation are separate from release packaging.

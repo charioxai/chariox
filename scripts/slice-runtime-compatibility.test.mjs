@@ -18,7 +18,12 @@ for (const rejected of [null, 'chariox-kernel', 'chariox-relay']) {
       await writeFile(path, `#!/bin/sh\n[ "$1" = '${option}' ] || exit 91\nexit ${name === rejected ? 127 : 0}\n`);
       await chmod(path, 0o755);
     }
-    const result = spawnSync('sh', [script, root], { encoding: 'utf8' });
+    for (const name of ['codex', 'claude', 'opencode', 'git', 'gh']) {
+      const path = join(root, name);
+      await writeFile(path, '#!/bin/sh\n[ "$1" = --version ] || exit 91\nprintf "fixture-version\\n"\n');
+      await chmod(path, 0o755);
+    }
+    const result = spawnSync('/bin/sh', [script, root], { encoding: 'utf8', env: { ...process.env, PATH: root } });
     assert.equal(result.status, rejected ? 1 : 0, result.stderr);
     if (rejected) assert.match(result.stderr, /Rebuild.*without CHARIOX_PREBUILT_RUNTIME=1/);
   });
@@ -26,5 +31,23 @@ for (const rejected of [null, 'chariox-kernel', 'chariox-relay']) {
 
 test('slice image checks the binaries inside the final runtime', async () => {
   const dockerfile = await readFile(new URL('../apps/kernel/slice-linux-docker/docker/Dockerfile', import.meta.url), 'utf8');
-  assert.ok(dockerfile.indexOf('RUN /opt/chariox-slice/check-runtime.sh') > dockerfile.indexOf('COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay'));
+  const copy = dockerfile.indexOf('COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/');
+  assert.ok(copy >= 0, 'the runtime binary directory is copied from the builder');
+  assert.ok(dockerfile.indexOf('RUN /opt/chariox-slice/check-runtime.sh') > copy);
 });
+
+for (const rejected of ['codex', 'claude', 'opencode', 'git', 'gh']) for (const missing of [false, true]) {
+  test(`D257 image admission refuses a ${missing ? 'missing' : 'unusable'} ${rejected} executable`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'chariox-image-tools-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    for (const name of ['chariox-kernel', 'chariox-relay', 'codex', 'claude', 'opencode', 'git', 'gh']) {
+      if (missing && name === rejected) continue;
+      const path = join(root, name);
+      await writeFile(path, `#!/bin/sh\nexit ${name === rejected ? 127 : 0}\n`);
+      await chmod(path, 0o755);
+    }
+    const result = spawnSync('/bin/sh', [script, root], { encoding: 'utf8', env: { ...process.env, PATH: root } });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, new RegExp(`requires working ${rejected}`));
+  });
+}

@@ -182,7 +182,7 @@ async function verifyBuilderAttestation(
     attestation.sourceTree !== manifest.sourceTree ||
     attestation.target !== BUILD_TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== (attestsAppBinaries ? 5 : 3)
+    attestation.artifacts.length !== (attestsAppBinaries ? 5 : 3) + (verifiedArtifactDigests.has("chariox") ? 1 : 0)
   ) {
     fail("builder attestation source identity or target does not match the signed release")
   }
@@ -197,6 +197,7 @@ async function verifyBuilderAttestation(
       ["chariox-app-package", verifiedArtifactDigests.get("chariox-app-package")],
       ["chariox-app-wasm-worker", verifiedArtifactDigests.get("chariox-app-wasm-worker")],
     ] : []),
+    ...(verifiedArtifactDigests.has("chariox") ? [["chariox", verifiedArtifactDigests.get("chariox")]] : []),
   ]
   for (const [index, artifact] of attestation.artifacts.entries()) {
     validateObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")

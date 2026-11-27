@@ -7,3 +7,11 @@ if ! "$runtime_bin/chariox-kernel" --print-local-daemon-protocol-version >/dev/n
   echo 'Slice runtime binaries cannot start with this image libc/libraries. Rebuild the slice image from source without CHARIOX_PREBUILT_RUNTIME=1, or supply binaries built for Debian 12 (glibc 2.36) and its runtime libraries.' >&2
   exit 1
 fi
+
+for required_tool in codex claude opencode git gh; do
+  if ! command -v "$required_tool" >/dev/null 2>&1 \
+      || ! "$required_tool" --version >/dev/null 2>&1; then
+    echo "Slice image requires working $required_tool from its existing toolchain. Rebuild the image with its supported packages." >&2
+    exit 1
+  fi
+done
