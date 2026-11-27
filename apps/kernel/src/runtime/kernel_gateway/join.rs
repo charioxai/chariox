@@ -14,8 +14,8 @@ use super::self_hosted::status_of;
 use super::update_needed;
 use super::{map_failure, map_open_failure, KernelGateway, REQUEST_COUNTER};
 use crate::local::{
-    GatewayKernel, GatewayKernelStatus, GatewayKernelVia, JoinKernelLinkRequest,
-    JoinTerminalPairingLinkRequest, LocalDaemonRequest, TerminalType,
+    GatewayKernel, GatewayKernelStatus, GatewayKernelUpdate, GatewayKernelVia,
+    JoinKernelLinkRequest, JoinTerminalPairingLinkRequest, LocalDaemonRequest, TerminalType,
 };
 
 /// A scoped relay's pairing link carries this instead of a transport token.
@@ -157,6 +157,8 @@ impl KernelGateway {
             last_seen_ms: crate::session::unix_epoch_ms(),
             gateway_ready: super::directory::is_gateway_ready(&presence),
             via: GatewayKernelVia::SelfHosted,
+            protocol: None,
+            update: GatewayKernelUpdate::Current,
         };
         self.paired.save(PairedKernel {
             presence,

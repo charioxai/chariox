@@ -16,7 +16,8 @@ use super::names;
 use super::paired::PairedKernel;
 use super::{map_failure, KernelGateway, REQUEST_COUNTER};
 use crate::local::{
-    GatewayKernel, GatewayKernelStatus, GatewayKernelVia, LocalDaemonRequest, RelayStatusRequest,
+    GatewayKernel, GatewayKernelStatus, GatewayKernelUpdate, GatewayKernelVia, LocalDaemonRequest,
+    RelayStatusRequest,
 };
 
 const PROBE_DEADLINE: Duration = Duration::from_secs(5);
@@ -124,17 +125,7 @@ impl KernelGateway {
                             now_ms,
                         )
                 })
-                .map(|probed| GatewayKernel {
-                    name: names::display_name(&probed.presence),
-                    label: names::label(&probed.presence),
-                    kernel_id: probed.presence.kernel_id.clone(),
-                    machine_id: probed.presence.machine_id.clone(),
-                    machine_alias: probed.presence.machine_alias.clone(),
-                    status: probed.status,
-                    last_seen_ms: probed.last_seen_ms,
-                    gateway_ready: is_gateway_ready(&probed.presence),
-                    via: GatewayKernelVia::SelfHosted,
-                })
+                .map(listed)
                 .collect(),
         ))
     }
@@ -177,6 +168,23 @@ impl KernelGateway {
             status,
             last_seen_ms,
         }
+    }
+}
+
+/// One paired kernel as `chariox kernels` lists it.
+fn listed(probed: &Probed) -> GatewayKernel {
+    GatewayKernel {
+        name: names::display_name(&probed.presence),
+        label: names::label(&probed.presence),
+        kernel_id: probed.presence.kernel_id.clone(),
+        machine_id: probed.presence.machine_id.clone(),
+        machine_alias: probed.presence.machine_alias.clone(),
+        status: probed.status,
+        last_seen_ms: probed.last_seen_ms,
+        gateway_ready: is_gateway_ready(&probed.presence),
+        via: GatewayKernelVia::SelfHosted,
+        protocol: None,
+        update: GatewayKernelUpdate::Current,
     }
 }
 
@@ -238,6 +246,46 @@ mod tests {
         let ambiguous = named(&kernels, "shared").unwrap_err();
         assert_eq!(ambiguous.code(), "kernel_ambiguous");
         assert!(ambiguous.message().contains("k-x") && ambiguous.message().contains("k-y"));
+    }
+
+    // Row 490: a paired kernel's list entry carries the protocol its status answer gave, kept
+    // while it is offline, and the same update rule as a hosted kernel.
+    #[test]
+    fn a_paired_kernel_is_listed_with_the_protocol_its_status_answer_gave() {
+        let current = super::super::update_needed::MINIMUM_TARGET_PROTOCOL;
+        let entry = |protocol: Option<u32>, status| {
+            let mut presence = paired("k-x", None, Some("b3")).presence;
+            TargetStatus {
+                protocol,
+                capabilities: Vec::new(),
+                machine_alias: None,
+            }
+            .apply_to(&mut presence);
+            listed(&Probed {
+                presence,
+                status,
+                last_seen_ms: 5,
+            })
+        };
+        let new = entry(Some(current), GatewayKernelStatus::Online);
+        assert_eq!(
+            (new.protocol, new.update),
+            (Some(current), GatewayKernelUpdate::Current)
+        );
+        let old = entry(Some(current - 1), GatewayKernelStatus::Offline);
+        assert_eq!(
+            (old.protocol, old.update, old.status),
+            (
+                Some(current - 1),
+                GatewayKernelUpdate::UpdateNeeded,
+                GatewayKernelStatus::Offline
+            )
+        );
+        let silent = entry(None, GatewayKernelStatus::Online);
+        assert_eq!(
+            (silent.protocol, silent.update),
+            (None, GatewayKernelUpdate::UpdateNeeded)
+        );
     }
 
     #[test]

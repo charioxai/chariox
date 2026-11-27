@@ -1,10 +1,10 @@
 use super::*;
 use crate::local::{
     ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
-    GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelDirectoryEntry,
-    KernelFileKind, KernelFileStat, ListGatewayKernelsRequest, ListKernelDirectoryRequest,
-    OnBehalfOf, ReadKernelFileRequest, StatKernelFileRequest, WriteKernelFileRequest,
-    KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
+    GatewayKernelUpdate, GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest,
+    KernelDirectoryEntry, KernelFileKind, KernelFileStat, ListGatewayKernelsRequest,
+    ListKernelDirectoryRequest, OnBehalfOf, ReadKernelFileRequest, StatKernelFileRequest,
+    WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 use crate::transport::kernel_protocol::{KernelEvent, KernelIncomingFrame, KernelOutgoingFrame};
 
@@ -60,6 +60,8 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             last_seen_ms: 1_000,
             gateway_ready: true,
             via: GatewayKernelVia::Hosted,
+            protocol: Some(1015),
+            update: GatewayKernelUpdate::Current,
         }],
     };
     let frame: KernelIncomingFrame = serde_json::from_value(serde_json::json!({

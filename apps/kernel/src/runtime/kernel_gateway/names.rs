@@ -152,6 +152,8 @@ mod tests {
             last_seen_ms: 0,
             gateway_ready: true,
             via: crate::local::GatewayKernelVia::Hosted,
+            protocol: None,
+            update: crate::local::GatewayKernelUpdate::Current,
         };
         let listed = grouped(vec![
             entry("mac", "main"),

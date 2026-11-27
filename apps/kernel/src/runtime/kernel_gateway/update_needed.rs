@@ -3,9 +3,15 @@
 use super::error::GatewayError;
 use super::link::Link;
 use super::self_hosted::status_of;
+use crate::local::GatewayKernelUpdate;
 
 /// Forwarded Room writes and their acknowledgments use the current local protocol.
 pub(crate) const MINIMUM_TARGET_PROTOCOL: u32 = crate::local::LOCAL_DAEMON_PROTOCOL_VERSION;
+
+/// Whether a kernel that reports `protocol` is new enough for this kernel's gateway.
+pub(super) fn update_state(_protocol: Option<u32>) -> GatewayKernelUpdate {
+    GatewayKernelUpdate::Current
+}
 
 /// `refusal`, unless the target's protocol shows it is too old: then `UpdateNeeded`.
 fn settle(name: &str, protocol: Option<u32>, refusal: GatewayError) -> GatewayError {
@@ -60,6 +66,24 @@ mod tests {
                 MINIMUM_TARGET_PROTOCOL - 1
             )
         );
+    }
+
+    // Row 490: the list says what the refusal says: below the gateway's minimum, or no protocol.
+    #[test]
+    fn the_list_marks_a_kernel_below_the_minimum_or_without_a_protocol() {
+        assert_eq!(
+            update_state(Some(MINIMUM_TARGET_PROTOCOL)),
+            GatewayKernelUpdate::Current
+        );
+        assert_eq!(
+            update_state(Some(MINIMUM_TARGET_PROTOCOL + 1)),
+            GatewayKernelUpdate::Current
+        );
+        assert_eq!(
+            update_state(Some(MINIMUM_TARGET_PROTOCOL - 1)),
+            GatewayKernelUpdate::UpdateNeeded
+        );
+        assert_eq!(update_state(None), GatewayKernelUpdate::UpdateNeeded);
     }
 
     #[test]

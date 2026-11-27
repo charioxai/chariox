@@ -15,10 +15,24 @@ use crate::runtime::projection::{
 };
 use crate::transport::relay_client::RelayClientState;
 
+/// A kernel the machine list names that the relay carries no traffic for because it is too old
+/// (it never appears among the live kernels), with the protocol it reported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdateNeededKernel {
+    pub(crate) kernel_id: String,
+    pub(crate) machine_id: String,
+    pub(crate) machine_alias: Option<String>,
+    pub(crate) protocol: Option<u32>,
+}
+
 pub(crate) trait InventorySource: Send + Sync {
     fn via(&self) -> GatewayKernelVia;
     /// The kernels the latest refresh listed as live; never this kernel itself.
     fn kernels(&self) -> Vec<RelayKernelPresence>;
+    /// The kernels the latest refresh named that are too old to be live; none by default.
+    fn update_needed_kernels(&self) -> Vec<UpdateNeededKernel> {
+        Vec::new()
+    }
     fn is_fresh(&self) -> bool;
     /// Listed within the last `max_age_ms`. A question asked by a person or an agent
     /// (`chariox kernels`) wants a list this young, not one that is merely good enough to route by.
