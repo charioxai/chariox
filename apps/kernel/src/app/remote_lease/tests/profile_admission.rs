@@ -929,6 +929,18 @@ async fn leased_prompt_profile_change_does_not_reseed_the_old_home_thread() {
     let copied = registry
         .create_managed(owner, "codex", "receiving worker account")
         .unwrap();
+    registry
+        .update_observation(
+            owner,
+            "codex",
+            &copied.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     let lease = {
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
         let execution = runtime
