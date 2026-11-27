@@ -230,21 +230,18 @@ impl KernelGateway {
         command_id: &str,
     ) -> Result<(), GatewayError> {
         self.job_targets.bind(target)?;
-        let result = self
-            .send(
-                &target.kernel_id,
-                origin,
-                command_id,
-                &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
-                REQUEST_DEADLINE,
-                ForwardAccess::Granted(Some(target)),
-            )
-            .await
-            .map(|_| ());
-        if result.is_err() {
-            self.job_targets.remove(&target.kernel_id);
-        }
-        result
+        // The service's canonical pin remains valid when a probe loses its connection or
+        // caller grant. Removing it here would also erase a concurrent successful attach.
+        self.send(
+            &target.kernel_id,
+            origin,
+            command_id,
+            &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+            REQUEST_DEADLINE,
+            ForwardAccess::Granted(Some(target)),
+        )
+        .await
+        .map(|_| ())
     }
     pub(crate) async fn forget_job_machine(&self, kernel_id: &str) {
         self.job_targets.remove(kernel_id);
@@ -765,6 +762,30 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), "kernel_access_ended");
+        let subscription_error = gateway
+            .subscribe(
+                &target.kernel_id,
+                SubscribeRequest {
+                    grant_id: origin.grant_id.clone(),
+                    session_id: "private-room".into(),
+                    attachment_id: "private-subscription".into(),
+                    scope: None,
+                    resume_from_event_id: None,
+                },
+            )
+            .await
+            .err()
+            .expect("owner subscription must be refused");
+        assert_eq!(subscription_error.code(), "kernel_access_ended");
+        assert!(gateway
+            .attach_job_machine(&target, &origin, "failed-private-reattach")
+            .await
+            .is_err());
+        assert!(
+            gateway.job_targets.get(&target.kernel_id).is_some(),
+            "a failed reattach must retain the established canonical pin"
+        );
+        assert!(gateway.job_targets.scope(&target.kernel_id).is_some());
         assert!(gateway.directory.kernels().await.unwrap().is_empty());
     }
 

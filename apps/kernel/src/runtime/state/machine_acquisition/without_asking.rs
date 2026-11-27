@@ -386,6 +386,23 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    pub(crate) fn private_acquired_machines_to_reconcile(
+        &self,
+    ) -> Result<Vec<String>, DaemonError> {
+        Ok(self
+            .owned
+            .durable_state_store
+            .acquired_machines(i64::MAX as u64)?
+            .into_iter()
+            .filter(|machine| !machine.inventory_visible)
+            .filter_map(|machine| match machine.state {
+                AcquiredState::Running { allocation_ref }
+                | AcquiredState::Deleting { allocation_ref } => Some(allocation_ref),
+                _ => None,
+            })
+            .collect())
+    }
+
     /// Settles each of `expected` against the service's whole list `machines`, sent after they
     /// were read: one missing from it has ended.
     pub(crate) fn reconcile_acquired_machines(

@@ -153,6 +153,12 @@ pub(crate) async fn execute(
             ))
         };
     };
+    if matches!(
+        request,
+        ControlPlaneRequest::Capabilities {} | ControlPlaneRequest::Acquire { .. }
+    ) {
+        reconcile_private_acquisitions(profile, credential, state).await?;
+    }
     let mut acquisition_hold = None;
     let mut approval_guard = None;
     if matches!(
@@ -454,9 +460,175 @@ fn unavailable(code: &str, message: &str) -> DaemonError {
     }
 }
 
+/// Reconcile accepted hidden allocations through home enrollment, even after their agent exits.
+/// This internal response never becomes a local inventory or a model-visible target grant.
+async fn reconcile_private_acquisitions(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    credential: &str,
+    state: &KernelRuntimeState,
+) -> Result<(), DaemonError> {
+    let expected = state.private_acquired_machines_to_reconcile()?;
+    if expected.is_empty() {
+        return Ok(());
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AllocationStatus {
+        allocation_ref: String,
+        state: String,
+        since: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AllocationStatuses {
+        kind: String,
+        allocations: Vec<AllocationStatus>,
+    }
+    let response = crate::runtime::cloud_api_client::post_cloud_json::<AllocationStatuses>(
+        profile.api_url.clone(),
+        "/control-plane",
+        cloud_request_body(
+            &profile.account_id,
+            credential,
+            serde_json::json!({
+                "action":"allocation_statuses", "allocation_refs":expected,
+            }),
+        ),
+    )
+    .await?;
+    if response.kind != "allocation_statuses"
+        || response
+            .allocations
+            .iter()
+            .any(|allocation| !expected.contains(&allocation.allocation_ref))
+    {
+        return Err(unavailable(
+            "control_plane_binding_invalid",
+            "The service returned another acquisition's status",
+        ));
+    }
+    for allocation in response.allocations {
+        let at = chrono::DateTime::parse_from_rfc3339(&allocation.since)
+            .ok()
+            .and_then(|date| u64::try_from(date.timestamp_millis()).ok())
+            .ok_or_else(|| {
+                unavailable(
+                    "control_plane_binding_invalid",
+                    "The allocation status has no valid observation time",
+                )
+            })?;
+        // Absence, failure and a requested Delete are never proof of stopped billing.
+        state.observe_acquired_machine(&allocation.allocation_ref, &allocation.state, at);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn confirmed_private_deletion_settles_without_an_agent_status_request() {
+        use crate::durable_state::acquired_machines::{
+            AcquiredMachine, AcquiredMachineWrite, AcquiredState, AcquisitionKey,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let config = DaemonConfig::for_tests();
+        let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        );
+        let state = router.runtime_state();
+        let store = state.durable_state_store();
+        store
+            .admit_attempt(
+                AcquiredMachine {
+                    agent_id: "gone-agent".into(),
+                    request_id: "private".into(),
+                    job_ref: None,
+                    inventory_visible: false,
+                    room_id: "gone-room".into(),
+                    class_id: "small".into(),
+                    rate_micros: 1,
+                    currency: "EUR".into(),
+                    started_ms: crate::session::unix_epoch_ms(),
+                    state: AcquiredState::Pending,
+                },
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+        store
+            .write_acquired_machine(AcquiredMachineWrite::Accept {
+                key: AcquisitionKey::Request {
+                    agent_id: "gone-agent".into(),
+                    request_id: "private".into(),
+                },
+                allocation_ref: "private".into(),
+            })
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let service = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            loop {
+                let mut chunk = [0; 4096];
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let header_end = end + 4;
+                    let header = String::from_utf8_lossy(&bytes[..end]);
+                    let size: usize = header
+                        .lines()
+                        .find_map(|line| {
+                            line.split_once(':')
+                                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                                .map(|(_, value)| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if bytes.len() >= header_end + size {
+                        let body: serde_json::Value =
+                            serde_json::from_slice(&bytes[header_end..header_end + size]).unwrap();
+                        assert_eq!(body["request"]["action"], "allocation_statuses");
+                        assert_eq!(
+                            body["request"]["allocation_refs"],
+                            serde_json::json!(["private"])
+                        );
+                        assert!(
+                            body.get("agentId").is_none(),
+                            "home reconciliation must not require a live old agent"
+                        );
+                        break;
+                    }
+                }
+            }
+            let body = serde_json::json!({"kind":"allocation_statuses", "allocations":[{
+                "allocation_ref":"private", "state":"deleted", "since":chrono::Utc::now().to_rfc3339(),
+            }]}).to_string();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let profile = crate::config::PersistedCloudRelayProfile {
+            api_url,
+            account_id: "owner".into(),
+            ..Default::default()
+        };
+        reconcile_private_acquisitions(&profile, "synthetic-enrollment", &state)
+            .await
+            .unwrap();
+        service.await.unwrap();
+        assert!(matches!(
+            store.acquired_machine("private").unwrap().unwrap().state,
+            AcquiredState::Ended { .. }
+        ));
+        assert!(state
+            .private_acquired_machines_to_reconcile()
+            .unwrap()
+            .is_empty());
+    }
 
     #[tokio::test]
     async fn an_owner_request_cannot_supply_a_private_agent_identity() {
