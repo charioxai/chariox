@@ -245,18 +245,12 @@ fn an_agents_spawn_through_kernel_request_is_its_own_child() {
     on_big_stack(|| async {
         let f = super::tests::fixture_with_options(None, true);
         let parent = f.run.agent_instance_id().unwrap().to_string();
-        let session = f
-            .state
-            .owned
-            .session_store
-            .get_session(&f.request.session_id)
-            .unwrap();
         let prompt = "reach405-spawning-turn";
-        f.state
-            .owned
-            .prompt_state_owner
-            .submit_prepared_prompt_with_queue_policy(
-                &session,
+        f.app
+            .lock()
+            .await
+            .prompt_owner_submit_prepared_prompt(
+                &f.request.session_id,
                 PromptQueueItem::new(
                     prompt,
                     &f.request.attachment_id,
@@ -265,9 +259,19 @@ fn an_agents_spawn_through_kernel_request_is_its_own_child() {
                     PromptStatus::Queued,
                 ),
                 false,
-                false,
             )
             .unwrap();
+        assert_eq!(
+            f.state
+                .owned
+                .session_store
+                .get_session(&f.request.session_id)
+                .unwrap()
+                .active_prompt_for_agent(&parent)
+                .unwrap()
+                .id(),
+            prompt
+        );
         f.state
             .owned
             .durable_state_store
