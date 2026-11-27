@@ -89,3 +89,5 @@ receipt and refuses later work; DEADLINE-04 checks the edited deadline and a
 cleared deadline after restart and admits work past the old time. Both require the real CLI, kernels, relay and a
 product-linked real provider. Storage, protocol and runtime fixture tests are
 supplementary regression checks.
+
+A `child_time_limit_ended` notice stays in the parent's inbox until the parent handles it and acknowledges it with `chariox.events.ack`. Delivery into a running turn alone does not settle it; an unhandled notice remains available after reload or restart.
