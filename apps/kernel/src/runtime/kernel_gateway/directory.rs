@@ -9,7 +9,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 use super::error::GatewayError;
 use super::inventory::{InventorySource, UpdateNeededKernel};
 use super::names;
-use crate::local::{GatewayKernel, GatewayKernelStatus};
+use crate::local::{GatewayKernel, GatewayKernelStatus, GatewayKernelUpdate};
 
 /// The capability a kernel advertises when it enforces `on_behalf_of`.
 const GATEWAY_CAPABILITY: &str = "kernel_gateway_v1";
@@ -97,7 +97,31 @@ impl Directory {
             return Ok(kernel);
         }
         self.refresh().await?;
-        self.lookup(name)
+        self.lookup(name).map_err(|error| match error {
+            GatewayError::Unknown { .. } => self.refused_refusal(name).unwrap_or(error),
+            other => other,
+        })
+    }
+
+    /// A name that only a kernel the relay refused for its age carries: say why it cannot be used,
+    /// as the refusal of any too-old target does, instead of "unknown" for a kernel the list shows.
+    fn refused_refusal(&self, name: &str) -> Option<GatewayError> {
+        let refused = self.refused.lock().expect("directory poisoned");
+        let known: Vec<&RelayKernelPresence> = refused.values().map(|seen| &seen.kernel).collect();
+        let kernel = names::find(&known, name).ok()?;
+        Some(match kernel.local_protocol {
+            Some(kernel_protocol)
+                if super::update_needed::update_state(Some(kernel_protocol))
+                    == GatewayKernelUpdate::UpdateNeeded =>
+            {
+                GatewayError::UpdateNeeded {
+                    name: name.into(),
+                    kernel_protocol,
+                    needed_protocol: super::update_needed::MINIMUM_TARGET_PROTOCOL,
+                }
+            }
+            _ => GatewayError::Offline { name: name.into() },
+        })
     }
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.

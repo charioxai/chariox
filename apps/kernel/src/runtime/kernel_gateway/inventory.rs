@@ -43,10 +43,31 @@ pub(crate) trait InventorySource: Send + Sync {
 /// The kernels `machines` name that are not among the `live` ones and are too old for this
 /// gateway. The machine list names a refused kernel next to the live ones (remote_inventory.rs).
 pub(crate) fn update_needed_in(
-    _machines: &[crate::local::RemoteMachineRecord],
-    _live: &[RelayKernelPresence],
+    machines: &[crate::local::RemoteMachineRecord],
+    live: &[RelayKernelPresence],
 ) -> Vec<UpdateNeededKernel> {
-    Vec::new()
+    let live: std::collections::BTreeSet<&str> = live
+        .iter()
+        .map(|kernel| kernel.kernel_id.as_str())
+        .collect();
+    machines
+        .iter()
+        .flat_map(|machine| {
+            machine
+                .kernels
+                .iter()
+                .map(move |kernel| UpdateNeededKernel {
+                    kernel_id: kernel.kernel_id.clone(),
+                    machine_id: machine.machine_id.clone(),
+                    machine_alias: machine.machine_alias.clone(),
+                    protocol: kernel.local_protocol,
+                })
+        })
+        .filter(|kernel| !live.contains(kernel.kernel_id.as_str()))
+        .filter(|kernel| {
+            super::update_needed::update_state(kernel.protocol) == GatewayKernelUpdate::UpdateNeeded
+        })
+        .collect()
 }
 
 pub(crate) struct RelayInventory {
