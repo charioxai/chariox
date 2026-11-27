@@ -383,6 +383,7 @@ impl KernelRuntimeState {
                     effort,
                 },
                 before.is_some(),
+                None,
             )
             .await?;
         self.settle_leased_turn_settings(before, &leased_agent)?;
@@ -784,7 +785,12 @@ impl KernelRuntimeState {
         }
 
         let profile_update = self
-            .apply_leased_profile_transition(&leased_agent_id, expected_profile.clone(), false)
+            .apply_leased_profile_transition(
+                &leased_agent_id,
+                expected_profile.clone(),
+                false,
+                provider_resume_state,
+            )
             .await;
         let replay_leased_agent_id = leased_agent_id.clone();
         let replay_git_context = git_context.clone();
@@ -860,10 +866,6 @@ impl KernelRuntimeState {
         let context_for_prepare = home_prompt_id.clone();
         let prepared = match self
             .with_app_side_effect(move |app| {
-                if let Some(resume) = provider_resume_state {
-                    RemoteLeaseRuntime::new(app)
-                        .seed_leased_agent_resume_state(&leased_agent_for_prepare, resume)?;
-                }
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,
                     &prompt_for_prepare,
