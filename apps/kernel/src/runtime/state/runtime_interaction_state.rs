@@ -361,7 +361,17 @@ impl KernelRuntimeState {
         )?;
         // A person-only decision is projected to terminals, never dispatched to an agent's prompt
         // or Meta delegation tools. One an agent may hold, such as a machine acquisition, tells its holder.
-        self.announce_child_decision(session_id, &id).await?;
+        // The card is registered and answers whoever holds it. Telling its holding agent is a notice
+        // the holder's next delivery repeats: the child-decision event is already stored. A holder whose
+        // turn cannot start yet (publication preparation pending, account not signed in) must not fail
+        // the creation of a card that is already on screen (row 717).
+        if let Err(error) = self.announce_child_decision(session_id, &id).await {
+            tracing::warn!(
+                interaction_id = %id,
+                %error,
+                "the holder of a new decision could not be told yet; its next delivery will"
+            );
+        }
         Ok(rx)
     }
 
