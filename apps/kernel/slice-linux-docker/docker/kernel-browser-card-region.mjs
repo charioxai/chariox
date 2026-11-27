@@ -1,5 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11: person cards reference an observed element,
 // while their pixels stay on the existing protected Tab display.
+import { snapshotCardFrames, rememberCardFrame, forgetCardFrame, saveCardFrames, resolveCardFrame, maxCardAnchors, cardAnchorLifetimeMs } from './kernel-browser-card-frame.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,10 +16,11 @@ const visibilityOptions = '{visibilityProperty:true}';
 const emptyCrop = (viewport_width, viewport_height) => ({ rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width, viewport_height });
 const hasArea = box => box?.rect?.width > 0 && box.rect.height > 0;
 const registrationWaitMs = 1_000;
-const anchorLifetimeMs = 15_000;
-const maxAnchors = 1_024;
+const anchorLifetimeMs = cardAnchorLifetimeMs;
+const maxAnchors = maxCardAnchors;
 
-export function forgetCardAnchor(host, id) {
+export function forgetCardAnchor(host, id, keepFrame = false) {
+  if (!keepFrame) forgetCardFrame(host, id);
   host.cardAnchors.get(id)?.verification?.close();
   host.cardAnchors.get(id)?.releaseElement?.();
   host.cardAnchors.delete(id);
@@ -43,7 +45,7 @@ export function pruneCardAnchors(host, now = Date.now()) {
   for (const [id, anchor] of host.cardAnchors) if (anchor.expires <= now) forgetCardAnchor(host, id);
 }
 
-export function rememberCardReferences(host, scope, tab, snapshot) {
+export async function rememberCardReferences(host, scope, tab, snapshot) {
   pruneCardAnchors(host);
   let tabs = host.cardReferences.get(scope);
   if (!tabs) {
@@ -53,6 +55,31 @@ export function rememberCardReferences(host, scope, tab, snapshot) {
   const previous = tabs.get(tab.tab_id);
   const refs = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.refs : new Set();
   const children = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.children : new Set();
+  const frameOwners = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.frameOwners ?? new Map() : new Map();
+  const frameRoots = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.frameRoots ?? new Set() : new Set();
+  const documents = new Map((snapshot.dom_documents ?? []).map(document => [document.document_index, document]));
+  for (const node of snapshot.dom_nodes ?? []) {
+    const owner = documents.get(node.document_index)?.owner_node_ref;
+    // A card on a frame document belongs to its embedding slot, whose lifetime is the top document's.
+    // A challenge can replace its renderer document while that slot (and the person's step) stays alive.
+    if (node.document_index !== 0 && typeof owner === 'string' && owner.startsWith('backend:')) {
+      frameOwners.set(node.node_ref, owner);
+      if (node.node_type === 9) frameRoots.add(node.node_ref);
+    }
+  }
+  const frameIdentities = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.frameIdentities ?? new Map() : new Map();
+  if ((snapshot.dom_nodes ?? []).some(node => node.document_index === 0 && node.node_name === 'IFRAME')) {
+    const connection = await host.browser.ensureConnection();
+    const session = await host.browser.ensureTargetSession(connection, tab.target_id);
+    const frame = (await connection.send('Page.getFrameTree', {}, session)).frameTree?.frame;
+    if (!frame || frame.loaderId !== tab.document_id) throw new UserDomainRefusal('stale_reference');
+    const world = await host.browser.ensureFocusWorld(connection, session, tab.target_id, frame);
+    const { result, exceptionDetails } = await connection.send('Runtime.evaluate', {
+      contextId: world.contextId, expression: 'document.baseURI', returnByValue: true,
+    }, session);
+    if (exceptionDetails || typeof result?.value !== 'string') throw new Error('Browser card document base URI unavailable; take another snapshot');
+    for (const [ref, identity] of snapshotCardFrames(snapshot, tab.url, result.value)) frameIdentities.set(ref, identity);
+  }
   const topReferences = new Set((snapshot.dom_nodes ?? []).filter(node => node.document_index === 0).map(node => node.node_ref));
   for (const node of [...(snapshot.dom_nodes ?? []), ...(snapshot.accessibility_nodes ?? [])]) {
     if (validReference(node.node_ref)) {
@@ -63,8 +90,8 @@ export function rememberCardReferences(host, scope, tab, snapshot) {
       else children.delete(node.node_ref);
     }
   }
-  while (refs.size > 10_000) { const ref = refs.values().next().value; refs.delete(ref); children.delete(ref); }
-  tabs.set(tab.tab_id, { generation: host.generation, document_id: tab.document_id, refs, children });
+  while (refs.size > 10_000) { const ref = refs.values().next().value; refs.delete(ref); children.delete(ref); frameOwners.delete(ref); frameRoots.delete(ref); frameIdentities.delete(ref); }
+  tabs.set(tab.tab_id, { generation: host.generation, document_id: tab.document_id, refs, children, frameOwners, frameRoots, frameIdentities });
 }
 
 // DOM box quads already place same-renderer children in their renderer's
@@ -264,8 +291,8 @@ async function confirmationReference(host, scope, command) {
 }
 
 // After the kernel restarted, or after the card's own Tab navigated, a card keeps its Tab but its
-// document, generation and element are new. The card is bound again to the Tab's whole page, so the
-// person sees the page as it is now and finishes it there. A card that waits for page text keeps
+// document, generation and element are new. An observed iframe is restored by its saved identity;
+// other cards use the Tab's whole page so the person can continue. A card that waits for page text keeps
 // waiting for it on the new page (the person's step goes on across navigations); a verification
 // never rebinds: its proof belongs to one document.
 async function rebindCardRegion(host, command, scope, key) {
@@ -279,12 +306,12 @@ async function rebindCardRegion(host, command, scope, key) {
   if (!nodeId) throw new UserDomainRefusal('stale_reference');
   const { node } = await connection.send('DOM.describeNode', { nodeId }, sessionId);
   const ref = `backend:${node.backendNodeId}`;
-  forgetCardAnchor(host, key);
+  forgetCardAnchor(host, key, true);
   rememberCardReferences(host, scope, tab, { dom_nodes: [{ document_index: 0, node_ref: ref }] });
-  return resolveCardRegion(host, { op: command.op, card_id: command.card_id, tab_id: command.tab_id, ref, ...(command.done_text !== undefined ? { done_text: command.done_text } : {}) }, scope);
+  return resolveCardRegion(host, { op: command.op, card_id: command.card_id, tab_id: command.tab_id, ref, ...(command.done_text !== undefined ? { done_text: command.done_text } : {}) }, scope, undefined, true);
 }
 
-export async function resolveCardRegion(host, command, scope, signal) {
+export async function resolveCardRegion(host, command, scope, signal, recovering = false) {
   pruneCardAnchors(host);
   const key = typeof command.card_id === 'string' ? `${scope}\0${command.card_id}` : null;
   if (command.rebind === true) return rebindCardRegion(host, command, scope, key);
@@ -294,7 +321,8 @@ export async function resolveCardRegion(host, command, scope, signal) {
     command = { ...command, ref: anchor?.ref ?? await confirmationReference(host, scope, command) };
   }
   if (command.release === true) {
-    if (anchor?.tab_id === command.tab_id) forgetCardAnchor(host, key);
+    if (anchor?.tab_id === command.tab_id || host.cardFrames.get(key)?.tab_id === command.tab_id) forgetCardAnchor(host, key);
+    await saveCardFrames(host);
     return { released: true };
   }
   if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) throw new UserDomainRefusal('stale_reference');
@@ -343,9 +371,16 @@ export async function resolveCardRegion(host, command, scope, signal) {
       if (host.cardAnchors.size >= maxAnchors) throw new Error('Browser card limit reached; close an existing browser card and try again');
       // Pin only this card's binding. Snapshot cache eviction must not retire
       // a live element. Failed registration expires without a watcher renewal.
-      anchor = { scope, tab_id: command.tab_id, ref: command.ref, doneText: command.done_text ?? null, binding: { generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]), children: new Set(remembered.children.has(command.ref) ? [command.ref] : []) } };
+      anchor = { scope, tab_id: command.tab_id, ref: command.ref, doneText: command.done_text ?? null, binding: {
+        generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]),
+        children: new Set(remembered.children.has(command.ref) ? [command.ref] : []),
+        frameOwners: new Map(remembered.frameOwners?.has(command.ref) ? [[command.ref, remembered.frameOwners.get(command.ref)]] : []),
+        frameRoots: new Set(remembered.frameRoots?.has(command.ref) ? [command.ref] : []),
+      } };
       if (config) anchor.verification = await BrowserCardVerification.create(connection, sessionId, frame, config);
       host.cardAnchors.set(key, anchor);
+      rememberCardFrame(host, key, command.tab_id, remembered.frameIdentities?.get(command.ref));
+      anchor.recoverFrame = recovering && host.cardFrames.get(key)?.tab_id === command.tab_id;
     }
     anchor.expires = Date.now() + anchorLifetimeMs;
   }
@@ -373,13 +408,31 @@ export async function resolveCardRegion(host, command, scope, signal) {
       objectId = resolved.result?.objectId;
       if (!objectId) return goneElement();
     }
+    let frameOwnerRef = anchor?.frameOwnerRef ?? (remembered.frameRoots?.has(command.ref) ? remembered.frameOwners.get(command.ref) : null);
     const readBox = async after => {
-      if (remembered.children.has(command.ref)) {
-        const child = await childFrameBox(browser, connection, sessionId, tab, { ...command, after });
-        return child?.visible === false ? emptyCrop(child.viewport_width, child.viewport_height) : child;
+      if (anchor?.recoverFrame) {
+        const found = await resolveCardFrame(connection, sessionId, world.contextId, host.cardFrames.get(key).frame);
+        if (found) {
+          if (objectId) await connection.send('Runtime.releaseObject', { objectId }, sessionId);
+          objectId = undefined;
+          frameOwnerRef = anchor.frameOwnerRef = found; anchor.recoverFrame = false;
+        }
       }
+      if (remembered.children.has(command.ref) && !frameOwnerRef) {
+        let child;
+        try { child = await childFrameBox(browser, connection, sessionId, tab, { ...command, after }); }
+        catch (error) {
+          if (!/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) throw error;
+          child = null;
+        }
+        if (child !== null) return child?.visible === false ? emptyCrop(child.viewport_width, child.viewport_height) : child;
+        frameOwnerRef = remembered.frameOwners?.get(command.ref);
+        if (!frameOwnerRef) return null;
+        if (anchor) anchor.frameOwnerRef = frameOwnerRef;
+      }
+      if (frameOwnerRef && after) await delay(100);
       if (!objectId) {
-        const resolved = await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
+        const resolved = await connection.send('DOM.resolveNode', { backendNodeId: Number((frameOwnerRef ?? command.ref).slice(8)), executionContextId: world.contextId }, sessionId);
         objectId = resolved.object?.objectId;
         if (!objectId) return null;
       }
@@ -397,7 +450,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     // Row 666: a visible anchor in a challenge widget shows the whole widget (its challenge frame grows the card when it opens).
     if (anchor && box && box.done !== true && box.rect) anchor.anchorBox = { rect: box.rect, viewport_width: box.viewport_width, viewport_height: box.viewport_height };
     if (box && box.done !== true && hasArea(box) && !(command.app_confirmation === true)) {
-      const child = remembered.children.has(command.ref);
+      const child = remembered.children.has(command.ref) && !frameOwnerRef;
       // A page element holding no frame belongs to no widget: no frame walk on ordinary pages.
       const holdsFrame = child || (objectId && (await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: "function() { return this.localName === 'iframe' || typeof this.querySelector === 'function' && !!this.querySelector('iframe'); }", arguments: [{ value: null }], returnByValue: true }, sessionId)).result?.value === true);
       const extra = !holdsFrame ? [] : await widgetRects(connection, sessionId, tab, command.ref, child, child ? null : objectId, world.contextId, box.viewport_width, box.viewport_height, box.rect);
@@ -420,6 +473,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     const region = { tab_id: tab.tab_id, ref: command.ref, generation: host.generation, document_id: tab.document_id, origin, ...box,
       ...(config ? {verification:config} : {}), ...(command.done_text === undefined ? {} : {done_text:command.done_text}), ...(anchor?.verification?.receipt ? {verification_result:anchor.verification.receipt} : {}) };
     if (anchor) anchor.region = region;
+    await saveCardFrames(host);
     return {state:'present',region};
   } catch (error) {
     if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return goneElement();
