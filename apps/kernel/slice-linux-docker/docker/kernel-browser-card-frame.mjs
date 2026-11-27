@@ -2,7 +2,7 @@
 export const maxCardAnchors = 1_024;
 export const cardAnchorLifetimeMs = 15_000;
 
-export function snapshotCardFrames(snapshot, tabUrl) {
+export function snapshotCardFrames(snapshot, tabUrl, baseURI) {
   const nodes = new Map((snapshot.dom_nodes ?? []).map(node => [node.node_ref, node]));
   const documents = new Map((snapshot.dom_documents ?? []).map(document => [document.document_index, document]));
   const frames = new Map();
@@ -12,7 +12,7 @@ export function snapshotCardFrames(snapshot, tabUrl) {
     if (owner?.document_index !== 0 || owner.node_name !== 'IFRAME') continue;
     const attrs = owner.attributes ?? {};
     try {
-      frames.set(node.node_ref, { page_origin: new URL(tabUrl).origin, frame_origin: new URL(attrs.src || 'about:blank', tabUrl).origin,
+      frames.set(node.node_ref, { page_origin: new URL(tabUrl).origin, frame_origin: new URL(attrs.src || 'about:blank', baseURI).origin,
         id: attrs.id ?? '', name: attrs.name ?? '', title: attrs.title ?? '' });
     } catch { /* An unresolvable frame address cannot identify a restored frame. */ }
   }

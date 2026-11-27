@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {runInNewContext} from 'node:vm';
-import {resolveCardFrame, restoreCardFrames} from './kernel-browser-card-frame.mjs';
+import {snapshotCardFrames, resolveCardFrame, restoreCardFrames} from './kernel-browser-card-frame.mjs';
 
 test('restoring a card follows only one matching iframe on its original page origin', async () => {
   const identity = {page_origin:'https://example.com',frame_origin:'https://challenge.example',id:'',name:'',title:'Challenge'};
@@ -24,4 +24,15 @@ test('restoring a card follows only one matching iframe on its original page ori
   matches.pop(); origin = 'https://another.example';
   assert.equal(await resolveCardFrame(connection,'session',1,identity),null,'a different page cannot inherit the crop');
   assert.throws(() => restoreCardFrames([['card',{tab_id:'one',frame:{}}]]),/unreadable/);
+});
+
+
+test('saved frame origins use the observed owner document base URI', () => {
+  const snapshot = { dom_nodes: [
+    {node_ref:'backend:42',document_index:0,node_name:'IFRAME',attributes:{src:'/widget',title:'Challenge'}},
+    {node_ref:'frame:child:doc:backend:1',document_index:1,node_type:9},
+  ], dom_documents:[{document_index:0},{document_index:1,owner_node_ref:'backend:42'}] };
+  const frames = snapshotCardFrames(snapshot, 'https://example.com/page', 'https://challenge.example/base/');
+  assert.equal(frames.get('frame:child:doc:backend:1').frame_origin, 'https://challenge.example');
+  assert.equal(frames.get('frame:child:doc:backend:1').page_origin, 'https://example.com');
 });

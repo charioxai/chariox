@@ -20,6 +20,7 @@ async function withHost(run) {
   const tab = { tab_id: 'one', target_id: 'target', document_id: 'doc', url: 'https://user:pass@example.com/login?token=private#fragment' };
   const connection = { subscribe: () => () => {}, async send(method, params) {
     calls.push(method);
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: state.document_id } } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'element' } };
     if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function trackCardElement')) return {result:{objectId:'resolver'}};
@@ -263,6 +264,7 @@ test('MP-08/MP-11 an isolated-frame reference maps its owned quad into the Tab v
       ? { model: { content: [100, 120, 300, 120, 300, 220, 100, 220] } }
       : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
     return original(method, params, session);
   };
@@ -439,7 +441,8 @@ function childFrameConnection(host, state, frame) {
       if (method === 'DOM.resolveNode' && params.backendNodeId === 99) return { object: { objectId: 'owner' } };
       if (method === 'Runtime.callFunctionOn' && params.objectId === 'owner') return { result: { value: !frame.ownerHidden } };
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
-      if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
+      if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
+    if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
       return original(method, params, session);
     };
   });
@@ -516,6 +519,7 @@ test('666 a card on a challenge widget grows to the widget\'s visible frames of 
       return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
     }
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
     return original(method, params, session);
   };
@@ -661,14 +665,16 @@ test('655 a missing child backend node follows its observed iframe owner', () =>
 }));
 
 test('655 a restarted frame card restores its observed iframe crop from the Tab registry', () => withHost(async ({ host, snapshot, region, state }) => {
+  state.baseURI = 'https://challenge.example/base/';
   const ref = 'frame:child:loader:backend:1';
   host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
-    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', attributes: { src: 'https://challenge.example/widget#random=before', title: 'Challenge' } },
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', attributes: { src: '/widget#random=before', title: 'Challenge' } },
     { node_ref: ref, document_index: 1, node_type: 9 },
   ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
   await snapshot();
   const first = await region({ ref, card_id: 'restore-frame' });
   const saved = JSON.parse(await readFile(path.join(host.root, 'tabs.json'), 'utf8'));
+  assert.equal(saved.card_frames[0][1].frame.frame_origin, 'https://challenge.example', 'relative src uses the live cross-origin base URI');
   assert.equal(saved.card_frames.length, 1, 'the observed iframe identity is saved before registering the card');
   assert.equal(JSON.stringify(saved.card_frames).includes('random=before'), false, 'frame addresses are reduced to origins');
   // A new host has no renderer refs or card anchors. Only its saved Tab registry survives.

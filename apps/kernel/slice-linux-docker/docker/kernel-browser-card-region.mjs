@@ -45,7 +45,7 @@ export function pruneCardAnchors(host, now = Date.now()) {
   for (const [id, anchor] of host.cardAnchors) if (anchor.expires <= now) forgetCardAnchor(host, id);
 }
 
-export function rememberCardReferences(host, scope, tab, snapshot) {
+export async function rememberCardReferences(host, scope, tab, snapshot) {
   pruneCardAnchors(host);
   let tabs = host.cardReferences.get(scope);
   if (!tabs) {
@@ -68,7 +68,16 @@ export function rememberCardReferences(host, scope, tab, snapshot) {
     }
   }
   const frameIdentities = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.frameIdentities ?? new Map() : new Map();
-  for (const [ref, identity] of snapshotCardFrames(snapshot, tab.url)) frameIdentities.set(ref, identity);
+  if ((snapshot.dom_nodes ?? []).some(node => node.document_index === 0 && node.node_name === 'IFRAME')) {
+    const connection = await host.browser.ensureConnection();
+    const session = await host.browser.ensureTargetSession(connection, tab.target_id);
+    const world = await host.browser.ensureFocusWorld(connection, session, tab.target_id);
+    const { result, exceptionDetails } = await connection.send('Runtime.evaluate', {
+      contextId: world.contextId, expression: 'document.baseURI', returnByValue: true,
+    }, session);
+    if (exceptionDetails || typeof result?.value !== 'string') throw new Error('Browser card document base URI unavailable; take another snapshot');
+    for (const [ref, identity] of snapshotCardFrames(snapshot, tab.url, result.value)) frameIdentities.set(ref, identity);
+  }
   const topReferences = new Set((snapshot.dom_nodes ?? []).filter(node => node.document_index === 0).map(node => node.node_ref));
   for (const node of [...(snapshot.dom_nodes ?? []), ...(snapshot.accessibility_nodes ?? [])]) {
     if (validReference(node.node_ref)) {
