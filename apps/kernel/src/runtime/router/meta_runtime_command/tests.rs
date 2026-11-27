@@ -269,3 +269,34 @@ fn a_spawn_answer_states_the_worktree_the_facts_name_and_none_when_they_name_non
     let unnamed = super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(None));
     assert_eq!(unnamed["worktree"], serde_json::Value::Null);
 }
+
+#[test]
+fn account_copy_commands_keep_pinned_identity_and_operation() {
+    let parse = |command: &str| {
+        super::provider_accounts::account_copy_request(
+            &crate::runtime::metaagent_command_registry::tokenize_command(command).unwrap(),
+        )
+    };
+    let request =
+        parse("provider accounts copy-from opencode work kernel-source pinned operation --replace")
+            .unwrap();
+    let LocalDaemonRequest::CopyProviderAccountFromKernel(copy) = request else {
+        panic!("copy request")
+    };
+    assert_eq!(copy.source_kernel_id, "kernel-source");
+    assert_eq!(copy.source_key_thumbprint, "pinned");
+    assert_eq!(copy.operation_id, "operation");
+    assert!(copy.replace);
+    assert!(parse(
+        "provider accounts copy-from opencode work kernel-source pinned operation --accept"
+    )
+    .is_err());
+    assert!(parse(
+        "provider accounts copy-to codex work kernel-target pinned operation --replace --replace"
+    )
+    .is_err());
+    assert!(matches!(
+        parse("provider accounts copy-offers").unwrap(),
+        LocalDaemonRequest::ListProviderAccountCopyOffers(_)
+    ));
+}

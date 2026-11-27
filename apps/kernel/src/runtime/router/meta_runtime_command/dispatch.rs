@@ -1012,6 +1012,7 @@ impl CommandRouter {
             return Err(meta_command_error("empty Meta-mode command"));
         };
         match command {
+            "provider" => super::provider_accounts::account_copy_request(tokens),
             "agent" => {
                 let agents = self.runtime_state.session_agents(session.id());
                 meta_agent_request(
