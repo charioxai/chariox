@@ -33,17 +33,16 @@ pub(super) const GROWTH_WINDOW: Duration = Duration::from_secs(10);
 /// A command must have grown at least this much over the window to be acted
 /// on at all: intervene as little as possible. Miguel 11-23.
 pub(super) const GROWTH_MIN_BYTES: u64 = 64 * MIB;
-/// PROPOSED, not in Miguel's list (reported to him): when pressure and a full
-/// pool hold but nobody grew `GROWTH_MIN_BYTES` over the last `GROWTH_WINDOW`
-/// (the kernel's own throttle can stop a runaway's growth before the pressure
-/// average has risen), the window widens to this, so a machine in distress
-/// for minutes is not left alone because its cause stopped growing meanwhile.
+/// Miguel 11-27 (approved via orch15): when pressure and a full pool hold but
+/// nobody grew `GROWTH_MIN_BYTES` over the last `GROWTH_WINDOW` (the kernel's
+/// own throttle can stop a runaway's growth before the pressure average has
+/// risen), the window widens to this, so a machine in distress for minutes is
+/// not left alone because its cause stopped growing meanwhile.
 pub(super) const GROWTH_WINDOW_WIDE: Duration = Duration::from_secs(60);
-/// PROPOSED, not in Miguel's list (reported to him): a command that was paused
-/// and let go, and grows into exhaustion again, is stopped at once instead of
-/// being given the same throttle and pause again (a runaway would otherwise
-/// cycle for ever as each pause relieves the pressure). `false` restores the
-/// plain cycle.
+/// Miguel 11-27 (approved via orch15): a command that was paused and let go,
+/// and grows into exhaustion again, is stopped at once instead of being given
+/// the same throttle and pause again (a runaway would otherwise cycle for ever
+/// as each pause relieves the pressure).
 pub(super) const STOP_A_RE_GROWER_AT_ONCE: bool = true;
 /// Throttle at the trigger, pause this long after it. Miguel 11-23.
 pub(super) const PAUSE_AFTER: Duration = Duration::from_secs(3);
