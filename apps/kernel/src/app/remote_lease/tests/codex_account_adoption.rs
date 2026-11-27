@@ -125,7 +125,7 @@ async fn assert_codex_copy_admission(receiving: ReceivingAccount) {
         model: Some("model".into()),
         effort: None,
     };
-    app.providers_mut().write().use_codex_launch_plan_fixture();
+    app.providers_mut().use_codex_launch_plan_fixture();
     let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
     let result = router
