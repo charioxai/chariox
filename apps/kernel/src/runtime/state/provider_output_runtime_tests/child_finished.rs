@@ -1346,6 +1346,52 @@ async fn usage_limit_stop_is_readable_and_messages_wait_for_recovery() {
         assert_eq!(sent.payload["status"], "queued");
         assert_eq!(sent.payload["held"], true);
         let sequence = sent.payload["sequence"].as_u64().unwrap();
+        for state in [
+            stop.state.clone(),
+            crate::agent::UsageLimitStopState::Asking,
+            crate::agent::UsageLimitStopState::Declined,
+        ] {
+            let mut waiting = stop.clone();
+            waiting.state = state;
+            runtime
+                .owned
+                .agent_store
+                .change_usage_limit_stop(&team.child, |_| Some(Some(waiting.clone())))
+                .unwrap();
+            let result = runtime
+                .send_queued_agent_message(&team.room, &team.child, sequence)
+                .await;
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => {
+                    panic!("Send now must not report Dispatching while usage holds the message")
+                }
+            };
+            assert!(error
+                .to_string()
+                .contains("Resume the agent or choose another account"));
+            let (event, _) = runtime
+                .owned
+                .durable_state_store
+                .agent_inbox_event(sequence)
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.state, "pending");
+            assert_eq!(
+                runtime
+                    .owned
+                    .agent_store
+                    .get_agent(&team.child)
+                    .unwrap()
+                    .usage_limit_stop(),
+                Some(&waiting)
+            );
+        }
+        runtime
+            .owned
+            .agent_store
+            .change_usage_limit_stop(&team.child, |_| Some(Some(stop.clone())))
+            .unwrap();
         runtime
             .deliver_agent_inbox(&team.room, &team.child)
             .await
