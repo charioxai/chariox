@@ -729,10 +729,13 @@ impl KernelRuntimeState {
         }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
-        if let Err(error) =
+        let waiting_for_usage = target.usage_limit_wait().is_some();
+        if let Err(error) = if waiting_for_usage {
+            Ok(())
+        } else {
             self.owned
                 .require_agent_account_authenticated(target, None, "send agent message")
-        {
+        } {
             // The refusal is definite: a delegate that cannot start never completes, so nothing
             // may keep the sender's turn waiting on it.
             self.owned.settle_failed_delegate_start(
@@ -808,6 +811,13 @@ impl KernelRuntimeState {
                 if args.urgent { "urgent" } else { "next turn" }
             ),
         );
+        if waiting_for_usage {
+            self.publish_task_change(target_room);
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested,"held":true,"note":"Waiting for usage; this message is queued for the agent's next turn."}),
+            });
+        }
         // Only an urgent message acts on its recipient's turn; any other waits for the next one.
         if !event.urgent {
             // Row 554: an idle recipient with nothing armed has no next turn coming: this message starts it.
