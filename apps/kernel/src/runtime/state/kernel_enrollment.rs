@@ -8,7 +8,7 @@ use sha2::Digest;
 /// The owner answers within the code's own lifetime; the card never outlives it.
 const MAX_WAIT: Duration = Duration::from_secs(600);
 /// How long one tool call waits for the owner before saying the card is still open.
-const ANSWER_WINDOW: Duration = if cfg!(test) {
+pub(super) const ANSWER_WINDOW: Duration = if cfg!(test) {
     Duration::from_secs(2)
 } else {
     Duration::from_secs(60)

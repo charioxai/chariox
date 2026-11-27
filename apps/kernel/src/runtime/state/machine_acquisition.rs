@@ -155,6 +155,13 @@ impl KernelRuntimeState {
                 capability_revision: first,
             });
         }
+        // Asking again while the owner's card is open shows no second card.
+        if let Some(waiting) = self.open_owner_wait(&room, &id) {
+            return Err(acquisition_error(
+                super::owner_wait::WAITING_FOR_OWNER,
+                &waiting,
+            ));
+        }
         let outside_limits = match self.admit_without_asking(
             &room,
             agent.unwrap_or_default(),
@@ -304,66 +311,56 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
-        let mut pending = PendingAcquisition(Some((self.clone(), room.clone(), id.clone())));
-        let asked = std::time::Instant::now();
-        let waited =
-            tokio::time::timeout(Duration::from_secs(ACQUISITION_DECISION_SECONDS), receiver).await;
-        // Only an answer is the owner's decision; every other end says what closed the card.
-        let mut expired = false;
-        let unanswered = match waited {
-            Ok(Ok(answer)) if answer.status == "answered" => {
-                pending.0 = None;
-                if answer.choice_id.as_deref() != Some("approve") {
+        let wait = super::owner_wait::OwnerWait {
+            room: room.clone(),
+            agent: agent.map(str::to_owned),
+            card_id: id.clone(),
+            label: "Machine acquisition".into(),
+            lifetime: Duration::from_secs(ACQUISITION_DECISION_SECONDS),
+            // A job's own acquisition is no provider tool call: it waits for the whole card.
+            in_call: matches!(request, ControlPlaneRequest::Acquire { .. })
+                .then_some(super::owner_wait::IN_CALL),
+        };
+        let waited = self
+            .wait_for_owner(wait, receiver, {
+                let (id, owner, agent, room) = (
+                    id.clone(),
+                    owner.clone(),
+                    agent.map(str::to_owned),
+                    room.clone(),
+                );
+                let receipt_message = receipt_message.clone();
+                move |state, answer| {
+                    settle_acquisition(state, &room, &id, &owner, agent, receipt_message, answer)
+                }
+            })
+            .await?;
+        match waited {
+            super::owner_wait::Waited::Waiting(message) => {
+                return Err(acquisition_error(
+                    super::owner_wait::WAITING_FOR_OWNER,
+                    &message,
+                ));
+            }
+            super::owner_wait::Waited::Ended(outcome) => match outcome.status {
+                "approved" => {}
+                "denied" => {
+                    return Err(acquisition_error("acquisition_denied", &outcome.message));
+                }
+                "failed" => {
                     return Err(acquisition_error(
-                        "acquisition_denied",
-                        "The owner denied this request, so it was not sent to the service; nothing was allocated or charged",
+                        "acquisition_unavailable",
+                        &outcome.message,
                     ));
                 }
-                None
-            }
-            Ok(Ok(answer)) => Some(match answer.reply {
-                Some(reason) => format!("it could not be answered: {reason}"),
-                None => format!("nobody answered it within {} s", asked.elapsed().as_secs()),
-            }),
-            Ok(Err(_)) => Some(format!(
-                "the kernel withdrew it after {} s, before anyone answered",
-                asked.elapsed().as_secs()
-            )),
-            Err(_) => {
-                expired = true;
-                Some(format!(
-                    "nobody answered it within {} s",
-                    asked.elapsed().as_secs()
-                ))
-            }
-        };
-        if let Some(why) = unanswered {
-            self.timeout_runtime_interaction(&room, &id).await?;
-            if expired {
-                // The card is gone and the agent's try ended: the receipt says when it ran out.
-                self.save_machine_receipt(
-                    &room,
-                    MachineApprovalReceipt {
-                        id: id.clone(),
-                        shown_in_agent_id: agent.map(str::to_owned),
-                        message: receipt_message.clone(),
-                        state: MachineApprovalReceiptState::Expired,
-                        expires_at_ms: Some(crate::session::unix_epoch_ms()),
-                    },
-                );
-            }
-            return Err(acquisition_error(
-                "acquisition_unanswered",
-                &format!(
-                    "The owner's card {id} for this request closed without a decision: {why}. It was not sent to the service and nothing was allocated or charged; retry with the same request_id when the owner can answer."
-                ),
-            ));
+                _ => {
+                    return Err(acquisition_error(
+                        "acquisition_unanswered",
+                        &outcome.message,
+                    ));
+                }
+            },
         }
-        self.owned.durable_state_store.append_event(
-            "compute.acquisition_approved",
-            Some(id.clone()),
-            serde_json::json!({"owner":owner,"approved_at_ms":crate::session::unix_epoch_ms()}),
-        )?;
         // The card is gone; the receipt keeps the approved request visible until the service answers.
         self.save_machine_receipt(
             &room,
@@ -659,15 +656,61 @@ impl Drop for AcquirePurpose {
     }
 }
 
-/// Dropping a waiting job withdraws its decision before an agent can leave a stale stripe.
-struct PendingAcquisition(Option<(KernelRuntimeState, String, String)>);
-impl Drop for PendingAcquisition {
-    fn drop(&mut self) {
-        if let Some((state, room, id)) = self.0.take() {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move {
-                    let _ = state.timeout_runtime_interaction(&room, &id).await;
-                });
+/// Only an explicit Approve allows the acquisition, only an explicit Deny denies it, and a card
+/// that closed any other way is `timed_out`: nothing was decided. The approval is recorded here,
+/// so a retry with the same request_id finds it whether the agent waited in the call or not.
+fn settle_acquisition(
+    state: &KernelRuntimeState,
+    room: &str,
+    id: &str,
+    owner: &str,
+    agent: Option<String>,
+    receipt_message: String,
+    answer: super::owner_wait::OwnerAnswer,
+) -> super::owner_wait::OwnerOutcome {
+    use super::owner_wait::{OwnerAnswer, OwnerOutcome};
+    match answer {
+        OwnerAnswer::Chose(choice) if choice == "approve" => {
+            match state.owned.durable_state_store.append_event(
+                "compute.acquisition_approved",
+                Some(id.to_owned()),
+                serde_json::json!({"owner":owner,"approved_at_ms":crate::session::unix_epoch_ms()}),
+            ) {
+                Ok(_) => OwnerOutcome {
+                    status: "approved",
+                    message: "The owner approved this machine. Call chariox.machines.acquire again with the same request_id to acquire it".into(),
+                },
+                Err(error) => OwnerOutcome {
+                    status: "failed",
+                    message: format!("The owner approved, but the kernel could not record it, so nothing was sent: {error}. Ask again with the same request_id"),
+                },
+            }
+        }
+        OwnerAnswer::Chose(_) => OwnerOutcome {
+            status: "denied",
+            message: "The owner denied this request, so it was not sent to the service; nothing was allocated or charged".into(),
+        },
+        OwnerAnswer::Interrupted => OwnerOutcome {
+            status: "interrupted",
+            message: format!("The kernel restarted while the owner's card {id} was open; nothing was decided and nothing was sent to the service. Call again with the same request_id to raise the card again."),
+        },
+        OwnerAnswer::Unanswered { why, expired } => {
+            if expired {
+                // The card is gone and the agent's try ended: the receipt says when it ran out.
+                state.save_machine_receipt(
+                    room,
+                    MachineApprovalReceipt {
+                        id: id.to_owned(),
+                        shown_in_agent_id: agent,
+                        message: receipt_message,
+                        state: MachineApprovalReceiptState::Expired,
+                        expires_at_ms: Some(crate::session::unix_epoch_ms()),
+                    },
+                );
+            }
+            OwnerOutcome {
+                status: "timed_out",
+                message: format!("The owner's card {id} for this request closed without a decision: {why}. It was not sent to the service and nothing was allocated or charged; retry with the same request_id when the owner can answer."),
             }
         }
     }
@@ -702,7 +745,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without it the first option in stock is acquired. A named option out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire without asking: within the owner's limits (allowed classes, machines at once, daily spending; service limits always apply) it goes ahead with no card (the Room records class, rate and cost); outside them the owner's card says why and the call waits up to 5 minutes for it. Returns allocation_ref, machine type and terms; poll status until access is available, then reach the kernel with Room commands. timeout_s is the machine's hard stop: the service stops the machine then; release earlier when done. Reuse request_id when retrying after a lost response, a timeout or a refusal: it keeps the first try's option and returns the allocation the service accepted. Use a new one only when a refusal says the service closed the old one. Say in purpose, in one line, what the machine is for; the card shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without it the first option in stock is acquired. A named option out of stock is refused with the options in stock. The kernel asks the owner first unless the owner lets agents acquire without asking: within the owner's limits (allowed classes, machines at once, daily spending; service limits always apply) it goes ahead with no card (the Room records class, rate and cost); outside them the owner's card says why; unanswered after 60 s the call returns waiting_for_owner and the answer (approved, denied, timed_out) reaches your inbox: then call again with the same request_id. Returns allocation_ref; poll status until access is available, then reach the kernel with Room commands. timeout_s is the hard stop; release earlier when done. Reuse request_id to retry after a lost response, timeout or refusal: it keeps the first try's option and returns the accepted allocation. Use a new one only when a refusal says the service closed the old one. Say in purpose, in one line, what it is for; the card shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
@@ -753,10 +796,15 @@ impl KernelRuntimeState {
                 .clone()
                 .ok_or_else(|| acquisition_error("invalid_request", "allocation_ref is required"))
         };
+        // The agent retries with this id, so it is chosen here when the agent gave none.
+        let request_id = args
+            .request_id
+            .clone()
+            .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));
         let request = match tool {
             "chariox.machines.options" => MachineAcquisitionRequest::Options {},
             "chariox.machines.acquire" => MachineAcquisitionRequest::Acquire {
-                request_id: args.request_id.clone(),
+                request_id: Some(request_id.clone()),
                 class_id: args.class_id.clone(),
                 region: args.region.clone(),
                 timeout_s: args.timeout_s,
@@ -776,11 +824,26 @@ impl KernelRuntimeState {
             }
         };
         let origin = &reach.origin();
-        let result = self
+        let result = match self
             .machine_acquire(&reach.agent_id, request, |request, command_id| async move {
                 self.job_control_plane(origin, &request, &command_id).await
             })
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            // Not a refusal: the owner's card is open and the answer arrives as an event.
+            Err(DaemonError::MachineRequest { code, message })
+                if code == super::owner_wait::WAITING_FOR_OWNER =>
+            {
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "status": code, "request_id": request_id, "message": message,
+                    }),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         // A ready machine's status also tells the agent which build toolchain its target has installed.
         let ready_target = match &result {
             MachineAcquisitionResult::Machine(crate::local::ControlPlaneResponse::Machine {
@@ -863,6 +926,12 @@ impl KernelRuntimeState {
                 .await
                 {
                     Ok(result) => result,
+                    // The owner's card is open: the option stays as it is and the answer comes later.
+                    Err(DaemonError::MachineRequest { code, message })
+                        if code == super::owner_wait::WAITING_FOR_OWNER =>
+                    {
+                        return Err(DaemonError::MachineRequest { code, message });
+                    }
                     Err(error) => {
                         self.close_acquire_option(key, &request_id, &option, &error)?;
                         // The caller retries with its own request_id, not the service's derived one.

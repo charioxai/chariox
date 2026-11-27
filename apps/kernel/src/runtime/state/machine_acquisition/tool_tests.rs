@@ -1437,3 +1437,67 @@ async fn the_owner_card_names_the_agent_that_gave_no_purpose() {
         format!("{name} asks for a machine and gave no purpose.")
     );
 }
+
+/// Review of the owner-wait PR: an agent that gave no request_id is told the one the kernel chose
+/// when the card is still open, and retrying with it uses the approval, with no second card.
+#[tokio::test]
+async fn an_acquire_without_a_request_id_waits_names_its_id_and_the_retry_uses_the_approval() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let mut config = state.owned.config_projection.snapshot();
+    config.user_config.agents.offload_without_asking = None;
+    state.owned.config_projection.update(config);
+    let session = state
+        .owned
+        .session_store
+        .list_sessions()
+        .into_iter()
+        .next()
+        .unwrap();
+    let (room, owner) = (session.id().to_owned(), session.owner_user_id().to_owned());
+    let waiting = state
+        .machine_tool(&token, "chariox.machines.acquire", serde_json::json!({}))
+        .await
+        .unwrap()
+        .payload;
+    assert_eq!(waiting["status"], "waiting_for_owner", "{waiting}");
+    let request_id = waiting["request_id"]
+        .as_str()
+        .expect("the id the kernel chose");
+    assert!(request_id.starts_with("machine-"), "{waiting}");
+    let card = state
+        .list_owner_interactions(&owner)
+        .into_iter()
+        .find(|card| card.interaction_id.starts_with("machine-acquisition-"))
+        .expect("the owner's card is open")
+        .interaction_id;
+    state
+        .resolve_terminal_runtime_interaction(&room, &card, "approve", None, Some(&owner))
+        .await
+        .unwrap();
+    // The approval is recorded in the background; the retry with the same id acquires.
+    let mut acquired = None;
+    for _ in 0..100 {
+        match state
+            .machine_tool(
+                &token,
+                "chariox.machines.acquire",
+                serde_json::json!({"request_id": request_id}),
+            )
+            .await
+        {
+            Ok(result) if result.payload["status"] != "waiting_for_owner" => {
+                acquired = Some(result.payload);
+                break;
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
+    let acquired = acquired.expect("the retry with the same id acquires");
+    assert!(acquired["allocation_ref"].is_string(), "{acquired}");
+    assert_eq!(service.acquires.lock().unwrap().len(), 1);
+    assert!(state
+        .list_owner_interactions(&owner)
+        .iter()
+        .all(|card| !card.interaction_id.starts_with("machine-acquisition-")));
+}
