@@ -16,23 +16,29 @@ async fn spawn_idle(rooms: &Rooms) -> crate::agent::AgentInstance {
     )
 }
 
-/// An idle agent that something will wake: its task is parked on a timer and its turn is over, as
+/// An idle agent that something will wake: its task is parked on a timer and it runs no turn, as
 /// after `events.yield`. A message that is not urgent waits for that next turn. (An idle agent with
 /// nothing armed has none coming, so the same message starts its turn: see
-/// `a_message_to_an_idle_agent_with_nothing_armed_starts_its_turn`.)
+/// `a_message_to_an_idle_agent_with_nothing_armed_starts_its_turn`.) The task is made in the durable
+/// store alone, so the session state the budget test reads holds no turn of the agent.
 async fn spawn_waiting(rooms: &Rooms) -> crate::agent::AgentInstance {
-    let agent = {
-        let mut app = rooms.app.lock().await;
-        let agent = spawn_with_level(
-            &mut app,
-            &rooms.peer_room,
-            "idle",
-            AgentPermissionLevel::Yolo,
-        );
-        running_turn(&mut app, &rooms.peer_room, agent.id());
-        agent
-    };
-    rooms.park_task(&rooms.peer_room, agent.id()).await;
+    use crate::durable_state::agent_lifecycle::Operation;
+    let agent = spawn_idle(rooms).await;
+    rooms
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .agent_lifecycle(Operation::Begin {
+            owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            room: rooms.peer_room.clone(),
+            agent: agent.id().into(),
+            prompt: "armed-turn".into(),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .expect("the agent has a task");
+    rooms.park_on_timer(&rooms.peer_room, agent.id()).await;
     agent
 }
 
