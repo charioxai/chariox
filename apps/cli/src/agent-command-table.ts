@@ -295,7 +295,6 @@ export function guideText(): string {
     "5. Move files: chariox files put|get|stat|ls --kernel NAME ... (put and get resume after an interruption: run the same command again)",
     "6. Run long commands: chariox terminal open|send|read|wait|close --kernel NAME --session ID ...",
     "   Terminals keep running if you disconnect; read them later with --since. For one-off commands, run chariox exec --kernel NAME -- argv...",
-    "",
     "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540 in the foreground or your harness background option, or poll chariox events list. Keep next_cursor. A new grant follows nothing, and a wait on it is refused at once. To continue an earlier grant's follows, run chariox events subscribe --like OLD_GRANT_ID.",
     "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
     "To be woken instead of polling when a workflow finishes or an agent needs the person: chariox events sources, then chariox events subscribe --source ID; each occurrence is one record of type notification (value.source_id, display_name, occurrence_id, output.message, deadline_ms); a gap record means unread ones were dropped.",
