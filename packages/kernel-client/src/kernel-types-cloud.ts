@@ -148,7 +148,10 @@ export type OfflineMachineRecord = {
   directory?: string | null
 }
 
-/** A kernel this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it. */
+/** A kernel this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it.
+ * `protocol` is what the kernel last reported (null: too old to report one) and `update` is this kernel's own verdict
+ * on it: update_needed when it is below what this gateway needs. The web keeps its own, lower minimum, so a kernel can be
+ * update_needed here and still open there. A client shows both as they are. */
 export type GatewayKernelRecord = {
   name: string
   kernel_id: string
@@ -159,6 +162,8 @@ export type GatewayKernelRecord = {
   last_seen_ms: number | null
   gateway_ready: boolean
   via: "hosted" | "self_hosted"
+  protocol: number | null
+  update: "current" | "update_needed"
 }
 
 export type SliceRecord = {
