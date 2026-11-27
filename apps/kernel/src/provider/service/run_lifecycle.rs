@@ -80,6 +80,26 @@ impl ProviderProcessService {
                 hook();
             }
         }
+        // This fixture creates no native process. Provider/account identity and upstream
+        // admission stay intact; real process planning keeps the adapter's normal guards.
+        #[cfg(test)]
+        let launch_result = if registry.codex_launch_plan_fixture && request.adapter_key == "codex"
+        {
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "controlled-codex-account-admission".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: request.working_directory.clone(),
+                structured_endpoint: None,
+            }
+        } else {
+            adapter.connect(&request)?
+        };
+        #[cfg(not(test))]
         let launch_result = adapter.connect(&request)?;
 
         crate::logging::info_with_fields(

@@ -915,7 +915,7 @@ fn tracked_worker_copy_adoption_drops_the_previous_codex_profile_session() {
 }
 
 #[tokio::test]
-async fn leased_prompt_profile_change_does_not_reseed_the_old_home_thread() {
+async fn leased_prompt_provider_change_does_not_reseed_the_old_home_thread() {
     crate::test_support::isolated_env_test!();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;

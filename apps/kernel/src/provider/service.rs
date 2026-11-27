@@ -35,7 +35,14 @@ impl ProviderProcessService {
     pub(crate) fn with_test_fixtures() -> Self {
         Self::with_registry(ProviderRegistry {
             dev_stub_enabled: true,
+            #[cfg(test)]
+            codex_launch_plan_fixture: false,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn use_codex_launch_plan_fixture(&mut self) {
+        self.registry.codex_launch_plan_fixture = true;
     }
 
     fn with_registry(registry: ProviderRegistry) -> Self {
