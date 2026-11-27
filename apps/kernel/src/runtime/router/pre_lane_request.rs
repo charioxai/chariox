@@ -81,6 +81,14 @@ impl CommandRouter {
                     Ok(Some(response))
                 }))
             }
+            LocalDaemonRequest::RestartKernel(_) => Some(Box::pin(async move {
+                crate::hot_reload::request_restart()
+                    .await
+                    .map_err(|reason| crate::runtime::state::restart_refused(&reason))?;
+                Ok(Some(LocalDaemonResponse::KernelRestarting {
+                    hot_reload: true,
+                }))
+            })),
             LocalDaemonRequest::GetAgentReleaseNotes { .. } => Some(Box::pin(async move {
                 Ok(Some(LocalDaemonResponse::AgentReleaseNotes {
                     landing: crate::agent_release_notes::LANDING,

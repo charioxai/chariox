@@ -186,6 +186,12 @@ fn capture_process(
                 stderr,
             });
         }
+        if crate::shutdown::cancelled() {
+            // Dropping `process` stops the child and its pipe owners.
+            return Err(
+                io::Error::new(io::ErrorKind::Interrupted, "the kernel is stopping").into(),
+            );
+        }
         if lifetime.expired()? {
             return Err(CaptureError::TimedOut);
         }

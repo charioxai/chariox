@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { SessionProcess, SessionProcessState } from "./kernel-events.js"
-import { queuedJobsForAgent, remoteJobLinesForAgent } from "./queued-jobs.js"
+import { queuedJobsForAgent } from "./queued-jobs.js"
 
 const GIB = 2 ** 30
 const row = (pid: number, agent: string, state: SessionProcessState): SessionProcess => ({
@@ -18,13 +18,6 @@ test("OF-22/23 remote eligibility and estimates are kernel state, hidden without
   assert.match(job!.rateDetail!, /16 GB, about 30 min/)
   assert.equal(job!.remoteAvailable, true)
   assert.equal(queuedJobsForAgent([{ ...process, remote_available: false, estimate }], "a")[0]!.rate, undefined)
-})
-
-test("OF-52 progress uses the kernel's placement, rate, result and confirmed deletion", () => {
-  const job = { job_id: "j", agent_id: "a", command: "build", state: "running" as const, placement: "remote" as const, started_at_ms: 1000, machine_label: "offload-1234", address: "2001:db8::1", class_id: "small", rate_per_minute: { amount_micros: 1200, currency: "USD" }, estimate_micros: 40000, deleted: false }
-  assert.deepEqual(remoteJobLinesForAgent([job], "a", 253000), ["Running on offload-1234 · 2001:db8::1 · build · 4m 12s · small · $0.0012/min · ≈ $0.04"])
-  assert.deepEqual(remoteJobLinesForAgent([{ ...job, deleted: true }], "a", 253000).at(-1), "Deleted offload-1234")
-  assert.deepEqual(remoteJobLinesForAgent([job], "b", 253000), [])
 })
 
 test("an agent's waiting commands read as queued-job rows in line order", () => {
@@ -46,43 +39,4 @@ test("an agent's waiting commands read as queued-job rows in line order", () => 
     ["waiting for memory, needs 9 GB", "Needs about 9 GB; 2 GB free"],
   ])
   assert.deepEqual(queuedJobsForAgent(processes, null), [])
-})
-
-test("remote job with a cold rate explains that duration is unknown", () => {
-  const job = { job_id: "j", agent_id: "a", command: "build", state: "running" as const, placement: "remote" as const, started_at_ms: 1000, rate_per_minute: { amount_micros: 1200, currency: "USD" }, estimate_micros: null, deleted: false }
-  assert.match(remoteJobLinesForAgent([job], "a", 1000)[0]!, /\$0\.0012\/min · No duration estimate yet/)
-})
-
-
-test("remote refusal with no allocated machine does not claim execution or deletion", () => {
-  const job = { job_id: "j", agent_id: "a", command: "build", state: "finished" as const, placement: "remote" as const, started_at_ms: 1000, machine_label: null, address: null, deleted: true, result: { exit_code: null, reason: "Daily budget reached", files_back_count: 0, conflicts_count: 0, ran_on: { machine: "this machine", ip: null }, duration_ms: 0, outcome: "outside_end" as const } }
-  const lines = remoteJobLinesForAgent([job], "a", 1000)
-  assert.match(lines[0]!, /Remote request refused.*Daily budget reached/)
-  assert.doesNotMatch(lines.join("\n"), /Ran on|Deleted|this machine/)
-})
-
-test("remote progress labels reflect upload, reconnect, return and deletion instead of running", () => {
-  const job = { job_id: "j", agent_id: "a", command: "build", placement: "remote" as const, started_at_ms: 1000, machine_label: "offload-1234", deleted: false }
-  for (const [state, label] of [
-    ["uploading", "Uploading to offload-1234"],
-    ["reconnecting", "Reconnecting to offload-1234"],
-    ["returning", "Returning files from offload-1234"],
-    ["deleting", "Deleting offload-1234"],
-  ] as const) {
-    const lines = remoteJobLinesForAgent([{ ...job, state }], "a", 1000)
-    assert.equal(lines[0]!.split(" · ")[0], label)
-    assert.doesNotMatch(lines.join("\n"), /Running on|Deleted/)
-  }
-  assert.match(remoteJobLinesForAgent([{ ...job, state: "running" }], "a", 1000)[0]!, /^Running on /)
-})
-
-
-test("retained job lists render accurate counts and readable damage from compact metadata", () => {
-  const job = { job_id: "j", agent_id: "a", command: "build", state: "finished" as const,
-    placement: "remote" as const, started_at_ms: 1, machine_label: "worker", deleted: true,
-    result: { exit_code: 0, reason: null, files_back_count: 2000, conflicts_count: 1000,
-      ran_on: { machine: "worker", ip: null }, duration_ms: 123000, outcome: "completed" as const } }
-  assert.match(remoteJobLinesForAgent([job], "a")[0]!, /2m 3s.*2000 files back.*1000 conflicts/)
-  assert.deepEqual(remoteJobLinesForAgent([{ ...job, placement: "local", read_error: "Job result is missing" }], "a"),
-    ["build · Job result is missing"])
 })

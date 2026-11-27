@@ -3,14 +3,12 @@
 //! output is masked for the injected values before it is returned. Later
 //! reads elsewhere are not scrubbed (UX-first rule: what the agent does with
 //! a value it chose to use is its own action).
+use super::mask::masked;
 use super::*;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
-use zeroize::Zeroizing;
 
 pub(crate) const VAULT_USE_ENV: &str = "chariox.vault.use_env";
-/// Returned per stream; the tail is kept, where failures usually are.
-const RETURNED_BYTES: usize = 32 * 1024;
-const MAX_VARIABLES: usize = 16;
+pub(super) const MAX_VARIABLES: usize = 16;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,13 +28,13 @@ struct UseArgs {
 pub(crate) fn use_env_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_USE_ENV.into(),
-        description: "Run one command (argv, no shell) in your workspace with Vault values injected for the declared service origin: env maps variable names to credential_ids, stdin sends one credential's value to standard input. You never see the values; they appear as [vault:<credential_id>] in the returned exit_code, stdout and stderr. Works with credentials whose allowed uses include env, such as those from chariox.vault.capture_command.".into(),
+        description: "Run one command (argv, no shell) in your workspace with Vault values injected for the declared service origin: env maps variable names to credential_ids, stdin sends one credential's value to standard input. You never see the values; they appear as [vault:<credential_id>] in the returned exit_code, stdout and stderr. Entries must allow env (see chariox.vault.capture_command).".into(),
         input_schema: serde_json::json!({"type":"object","required":["argv","origin"],"properties":{
             "origin":{"type":"string","description":"Exact service origin this command uses, such as https://api.example.com"},
             "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},
             "cwd":{"type":"string","description":"Directory inside your workspace, relative to it"},
             "env":{"type":"object","additionalProperties":{"type":"string"},"maxProperties":MAX_VARIABLES,
-                "description":"Environment variable name -> credential_id"},
+                "description":"Environment variable name -> credential_id or unique description"},
             "stdin":{"type":"string","description":"credential_id whose value is written to stdin"},
             "timeout_seconds":{"type":"integer","minimum":1,"maximum":MAX_TIMEOUT_SECONDS,"default":DEFAULT_TIMEOUT_SECONDS}},
             "additionalProperties":false}),
@@ -51,8 +49,28 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
-        let args: UseArgs = serde_json::from_value(arguments)
+        let mut args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
+        {
+            let names: Vec<String> = args.env.keys().cloned().collect();
+            let mut ids = self
+                .resolve_entry_refs(
+                    context.home.as_ref(),
+                    args.env
+                        .values()
+                        .map(String::as_str)
+                        .chain(args.stdin.as_deref()),
+                    None,
+                )
+                .await?
+                .into_iter();
+            for name in names {
+                args.env.insert(name, ids.next().unwrap_or_default());
+            }
+            if args.stdin.is_some() {
+                args.stdin = ids.next();
+            }
+        }
         if args.env.is_empty() && args.stdin.is_none() {
             return Err(error("name at least one credential in env or stdin"));
         }
@@ -119,8 +137,9 @@ impl KernelRuntimeState {
         masks.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
         let output = run_command(
             self,
-            context.clone(),
+            Some(context.clone()),
             super::super::agent_process_watch::KernelCommand {
+                launch: super::super::agent_process_watch::KernelLaunch::Isolated,
                 argv,
                 cwd,
                 env,
@@ -135,8 +154,8 @@ impl KernelRuntimeState {
             KernelCommandExit::TimedOut => ("timed_out", None),
             KernelCommandExit::Lost => ("lost", None),
         };
-        let (stdout, stdout_cut) = masked(&output.stdout, &masks);
-        let (stderr, stderr_cut) = masked(&output.stderr, &masks);
+        let (stdout, stdout_cut) = masked(&output.stdout, &masks, output.truncated);
+        let (stderr, stderr_cut) = masked(&output.stderr, &masks, output.truncated);
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({"status": status, "exit_code": exit_code,
@@ -147,7 +166,7 @@ impl KernelRuntimeState {
 }
 
 /// An agent's captured values stay in the session that captured them.
-fn variable_name(name: &str) -> bool {
+pub(super) fn variable_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 128
         && chars
@@ -156,52 +175,12 @@ fn variable_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Masks the injected values in the whole stream before cutting it, so no
-/// partial value survives at the cut; then sanitizes each line.
-fn masked(raw: &[u8], masks: &[(String, Zeroizing<String>)]) -> (String, bool) {
-    let mut text = Zeroizing::new(String::from_utf8_lossy(raw).into_owned());
-    for (id, value) in masks {
-        for value in [value.as_str(), value.trim()] {
-            if !value.is_empty() && text.contains(value) {
-                text = Zeroizing::new(text.replace(value, &format!("[vault:{id}]")));
-            }
-        }
-    }
-    let text = text
-        .split('\n')
-        .map(|line| super::super::agent_process_output::sanitize(line.as_bytes()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    match text
-        .char_indices()
-        .rev()
-        .find(|(i, _)| text.len() - i >= RETURNED_BYTES)
-    {
-        Some((start, _)) => (text[start..].to_string(), true),
-        None => (text, false),
-    }
-}
-
 #[cfg(test)]
 mod unit_tests {
     use super::*;
 
     #[test]
-    fn use_env_masks_every_injected_value_before_cutting() {
-        let masks = vec![
-            (
-                "long".to_string(),
-                Zeroizing::new("abc-secret-xyz".to_string()),
-            ),
-            ("short".to_string(), Zeroizing::new("secret".to_string())),
-        ];
-        let (text, cut) = masked(b"got abc-secret-xyz and secret\n\x1b[31mred\x1b[0m", &masks);
-        assert_eq!(text, "got [vault:long] and [vault:short]\nred");
-        assert!(!cut);
-        let mut long = vec![b'a'; RETURNED_BYTES * 2];
-        long.extend_from_slice(b"secret");
-        let (text, cut) = masked(&long, &masks);
-        assert!(cut && text.ends_with("[vault:short]") && !text.contains("secret"));
+    fn variable_names_follow_the_shell_rule() {
         assert!(variable_name("API_KEY") && variable_name("_x1"));
         for refused in ["", "1X", "A-B", "A B", "A=B"] {
             assert!(!variable_name(refused), "{refused}");

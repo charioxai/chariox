@@ -11,6 +11,22 @@ impl KernelRuntimeState {
         self.sudo_for_chain(&chain)
     }
 
+    /// Row 405: a process the owner's agent runs (its provider's OS descendants) acts as
+    /// that agent, with the owner's authority and no /sudo window.
+    pub(crate) fn reach_for_peer(
+        &self,
+        peer: &ProcessIdentity,
+    ) -> Result<super::super::reach::ReachCaller, DaemonError> {
+        let chain = ancestry(peer).map_err(|_| error("provider process identity changed"))?;
+        let (_, run_id) = self.tracked_provider_run(&chain)?;
+        self.reach_caller_for_run(&run_id)
+    }
+
+    /// Whether the reach identity `id` still serves a connection from `peer`.
+    pub(crate) fn reach_peer_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
+        !peer.gone() && self.reach_for_peer(peer).is_ok_and(|reach| reach.id == id)
+    }
+
     /// The run of the nearest tracked provider process of `chain`, and where that process sits in
     /// the chain. The nearest launched provider is the boundary; shared servers fail closed.
     fn tracked_provider_run(

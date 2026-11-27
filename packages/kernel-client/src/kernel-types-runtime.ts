@@ -52,7 +52,7 @@ export type AgentLiveness = {
   stalled?: boolean
 }
 
-export type AgentWaitKind = "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held" | "card"
+export type AgentWaitKind = "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held" | "card" | "tool"
 
 export type AgentWaitingOn = {
   kind: AgentWaitKind
@@ -221,6 +221,8 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   handoff?: import("./owner-handoff.js").RuntimeHandoff | null
   /** MP-08 / MP-09 / MP-10 / MP-11: a `vault-card-*` decision for one card payment. */
   payment?: VaultPaymentApproval | null
+  /** Protocol 1016: the Vault entry a secret card's input fills (safe metadata; the kernel stores the typed value). */
+  secret_request?: { credential: { id: string } & Record<string, unknown>; overwrite?: boolean } | null
   /** APP-CONFIRM-01: an `app-confirm-*` decision for one person-confirmed App action. */
   app_confirmation?: AppConfirmationFrame | null
 }

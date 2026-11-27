@@ -249,7 +249,11 @@ fn the_enrolled_owner_is_no_guest_of_a_room_made_before_enrollment() {
                 assert!(spawn_on_b.is_ok(), "{alias}: {spawn_on_b:?}");
             } else {
                 let here = here.unwrap_err();
-                assert!(here.contains("unavailable"), "{alias}: {here}");
+                // Row 405 (PA12): a guest is told why, before any lookup.
+                assert!(
+                    here.contains("a guest of this room reaches only the agents in this room"),
+                    "{alias}: {here}"
+                );
                 let across = across.unwrap_err();
                 assert!(across.contains("room_unavailable"), "{alias}: {across}");
                 let spawn = spawn.unwrap_err();

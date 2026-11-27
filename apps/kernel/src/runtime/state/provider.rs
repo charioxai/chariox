@@ -6,6 +6,20 @@
 use super::owned::OwnedProviderRunExit;
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    /// Runs once on this thread after a launch is planned, before its session pointer is set.
+    pub(super) static AFTER_LAUNCH_PLANNED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_after_launch_planned_hook() {
+    if let Some(hook) = AFTER_LAUNCH_PLANNED.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn reusable_provider_run_for_launch(
         &self,
@@ -154,17 +168,21 @@ impl KernelRuntimeOwnedState {
             );
         }
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
+        // The kernel's lock order is sessions, then prompts. Planning and spawn admission can
+        // wait for seconds, so a launch holds neither the prompt owner nor the session store
+        // while it plans, and it sets the session pointer with the prompt owner released.
         self.prompt_state_owner
-            .with_unarchived_agent(&session, &agent_id, || {
-                let outcome = self.provider_store.start_run_provider_only(request)?;
-                self.session_store
-                    .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
-                Ok(crate::app::StartedProviderLaunch {
-                    run: outcome.into_run(),
-                    previous_active_run_id,
-                    provider_credential_env,
-                })
-            })
+            .ensure_unarchived_agent(&session, &agent_id)?;
+        let outcome = self.provider_store.start_run_provider_only(request)?;
+        #[cfg(test)]
+        run_after_launch_planned_hook();
+        self.session_store
+            .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
+        Ok(crate::app::StartedProviderLaunch {
+            run: outcome.into_run(),
+            previous_active_run_id,
+            provider_credential_env,
+        })
     }
 
     // A failed launch may have temporarily replaced another agent's pointer.

@@ -9,9 +9,6 @@ impl KernelRuntimeState {
     pub(crate) async fn launch_provider_for_remote_lease_detached(
         &self,
         launch_request: crate::provider::LaunchProviderRequest,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let runtime_init_delay_ms;
         let started = {
@@ -33,23 +30,6 @@ impl KernelRuntimeState {
                     return Ok(run);
                 }
             }
-            if crate::provider::canonical_provider_family(&launch_request.provider)
-                == Some("claude")
-                && provider_launch_credential.is_none()
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "launch remote provider without credential",
-                    message: format!(
-                        "{}: the worker must cold-launch the selected Claude profile",
-                        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
-                    ),
-                });
-            }
-            let held_credential = provider_launch_credential.clone();
-            let launch_request = apply_remote_provider_launch_credential(
-                launch_request,
-                provider_launch_credential,
-            )?;
             let launch_request = self
                 .prepare_leased_provider_launch_request_with_vault(
                     launch_request,
@@ -68,11 +48,6 @@ impl KernelRuntimeState {
             );
             let started = owned.start_provider_launch(launch_request)?;
             let run = started.run.clone();
-            if let (Some(credential), Some(agent_id)) = (held_credential, run.agent_instance_id()) {
-                owned
-                    .leased_launch_credentials
-                    .keep(agent_id, run.id(), credential);
-            }
             // Lease identity must be visible before the provider's first MCP
             // request, which can arrive immediately after the PTY is spawned.
             owned
@@ -210,9 +185,8 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         super::remote_native_provider_launch::ensure_compatible_binding(&remote_execution)?;
-        let credential_state = self.clone();
-        let credential_session_id = request.session_id.clone();
-        let credential_agent_id = agent_id.clone();
+        let account_state = self.clone();
+        let account_agent_id = agent_id.clone();
         let send_state = self.clone();
         let send_request = request.clone();
         let send_agent_id = agent_id.clone();
@@ -227,20 +201,11 @@ impl KernelRuntimeState {
             super::remote_native_provider_launch::launch_with_one_binding_refresh(
                 remote_execution,
                 move || {
-                    let state = credential_state.clone();
-                    let session_id = credential_session_id.clone();
-                    let agent_id = credential_agent_id.clone();
-                    Box::pin(async move {
-                        state
-                            .resolve_remote_provider_launch_credential(
-                                &session_id,
-                                &agent_id,
-                                "launch remote native provider run",
-                            )
-                            .await
-                    })
+                    let state = account_state.clone();
+                    let agent_id = account_agent_id.clone();
+                    Box::pin(async move { state.ensure_agent_account_on_worker(&agent_id).await })
                 },
-                move |binding, credential| {
+                move |binding| {
                     let state = send_state.clone();
                     let request = send_request.clone();
                     let grant_id = send_grant_id.clone();
@@ -251,7 +216,6 @@ impl KernelRuntimeState {
                                 &request,
                                 &agent_id,
                                 &binding,
-                                credential,
                                 grant_id.as_deref(),
                             )
                             .await
@@ -333,9 +297,6 @@ impl KernelRuntimeState {
         request: &crate::local::LaunchProviderRunRequest,
         agent_id: &str,
         remote_execution: &crate::agent::RemoteAgentBinding,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
         external_grant_id: Option<&str>,
     ) -> Result<RelayPeerResponse, DaemonError> {
         self.authorize_provider_launch_grant(external_grant_id, request)?;
@@ -389,7 +350,6 @@ impl KernelRuntimeState {
                     provider_session_id: request.provider_session_id.clone(),
                     required_mcps,
                     remote_extension_manifest: manifest,
-                    provider_launch_credential,
                 };
                 let relay_state = state.connected_relay_state_for_config(&relay_config).await;
                 state.authorize_provider_launch_grant(grant_id.as_deref(), &request)?;
@@ -658,46 +618,14 @@ impl KernelRuntimeState {
     }
 }
 
-fn apply_remote_provider_launch_credential(
-    request: crate::provider::LaunchProviderRequest,
-    credential: Option<crate::transport::relay_peer::RemoteProviderLaunchCredential>,
-) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
-    let Some(credential) = credential else {
-        return Ok(request);
-    };
-    if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
-        || credential.provider != "claude"
-        || credential.account_profile != request.account_profile
-    {
-        return Err(DaemonError::LocalTransport {
-            operation: "apply remote provider launch credential",
-            message: "remote provider launch credential does not match the leased agent profile"
-                .to_string(),
-        });
-    }
-    let token = credential.secret_input.into_zeroizing();
-    if token.trim().is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "apply remote provider launch credential",
-            message: "remote Claude launch credential is empty".to_string(),
-        });
-    }
-    let mut environment = crate::provider::ProviderCredentialEnvironment::default();
-    environment.insert(crate::provider::CLAUDE_OAUTH_TOKEN_ENV, token);
-    Ok(request.with_provider_credential_env(environment))
-}
-
 fn provider_launch_completion_is_stale(state: crate::provider::ProviderRunState) -> bool {
     state != crate::provider::ProviderRunState::Starting
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_remote_provider_launch_credential, provider_launch_completion_is_stale};
-    use crate::provider::{LaunchProviderRequest, ProviderRunState};
-    use crate::transport::relay_peer::{
-        RemoteCredentialSecretInput, RemoteProviderLaunchCredential,
-    };
+    use super::provider_launch_completion_is_stale;
+    use crate::provider::ProviderRunState;
 
     #[test]
     fn duplicate_or_cancelled_provider_launch_completion_is_stale() {
@@ -711,41 +639,5 @@ mod tests {
             ProviderRunState::Parked
         ));
         assert!(provider_launch_completion_is_stale(ProviderRunState::Ended));
-    }
-
-    #[test]
-    fn remote_claude_setup_token_is_bound_to_profile_and_kept_out_of_wire_shape() {
-        let request = LaunchProviderRequest::new("session-1", "claude", "claude", "work", "sonnet");
-        let credential = RemoteProviderLaunchCredential {
-            provider: "claude".to_string(),
-            account_profile: "work".to_string(),
-            secret_input: RemoteCredentialSecretInput::new("setup-token-secret".to_string()),
-        };
-        let debug = format!("{credential:?}");
-        assert!(!debug.contains("setup-token-secret"));
-
-        let prepared = apply_remote_provider_launch_credential(request, Some(credential))
-            .expect("matching remote Claude credential");
-        assert_eq!(
-            prepared.provider_credential_env.iter().collect::<Vec<_>>(),
-            vec![("CLAUDE_CODE_OAUTH_TOKEN", "setup-token-secret")]
-        );
-        let encoded = serde_json::to_string(&prepared).expect("serialize launch request");
-        assert!(!encoded.contains("setup-token-secret"));
-        assert!(!encoded.contains("CLAUDE_CODE_OAUTH_TOKEN"));
-    }
-
-    #[test]
-    fn remote_provider_launch_credential_rejects_profile_mismatch() {
-        let request = LaunchProviderRequest::new("session-1", "claude", "claude", "work", "sonnet");
-        let credential = RemoteProviderLaunchCredential {
-            provider: "claude".to_string(),
-            account_profile: "personal".to_string(),
-            secret_input: RemoteCredentialSecretInput::new("setup-token-secret".to_string()),
-        };
-        let error = apply_remote_provider_launch_credential(request, Some(credential))
-            .expect_err("mismatched remote credential must be rejected");
-        assert!(error.to_string().contains("does not match"));
-        assert!(!error.to_string().contains("setup-token-secret"));
     }
 }

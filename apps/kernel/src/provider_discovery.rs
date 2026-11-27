@@ -135,6 +135,9 @@ fn discover_at(
         return outcome;
     }
     for provider in PROVIDERS {
+        if crate::shutdown::cancelled() {
+            return outcome;
+        }
         if !provider_installed(provider) {
             continue;
         }
@@ -149,11 +152,17 @@ fn discover_at(
             .iter()
             .filter(|profile| needs_validation(profile, now_ms))
         {
+            if crate::shutdown::cancelled() {
+                return outcome;
+            }
             if validate(registry, owner_user_id, profile, config) {
                 outcome.validated.push(profile.profile_id.clone());
             }
         }
         for root in candidate_roots(provider, home) {
+            if crate::shutdown::cancelled() {
+                return outcome;
+            }
             match registry.machine_location_due(provider, &root, now_ms) {
                 Ok(true) => {}
                 Ok(false) => continue,

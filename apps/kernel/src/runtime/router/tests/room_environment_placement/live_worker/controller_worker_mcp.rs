@@ -1857,7 +1857,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             provider_session_id: None,
             required_mcps: Vec::new(),
             remote_extension_manifest: Default::default(),
-            provider_launch_credential: None,
         },
     )
     .await
@@ -2532,7 +2531,6 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
                 provider_session_id: None,
                 required_mcps: Vec::new(),
                 remote_extension_manifest: Default::default(),
-                provider_launch_credential: None,
             },
         )
         .await

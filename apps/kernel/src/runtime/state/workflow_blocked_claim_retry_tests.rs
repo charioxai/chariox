@@ -65,3 +65,80 @@ fn a_claim_retry_does_not_wait_on_the_prompt_owner_under_the_session_read_guard(
     launch.join().unwrap();
     retry.join().unwrap();
 }
+
+/// 20A7 15:10Z (row 689): a workflow launch planned its run with the prompt owner held, then
+/// waited for the session store's write lock, while a settlement held the session store and
+/// waited for the prompt owner. Neither is a watched lock, so the kernel stopped silently.
+/// The launch now follows the kernel's lock order: sessions, then prompts.
+#[test]
+fn a_launch_never_holds_the_prompt_owner_while_it_waits_for_the_session_store() {
+    let runtime = runtime_with_rooms(1);
+    let owned = runtime.owned.clone();
+    let session = owned
+        .session_store
+        .list_all_sessions()
+        .pop()
+        .expect("the Room exists");
+    let agent_id = owned
+        .agent_store
+        .get_session_agents(session.id())
+        .pop()
+        .expect("the Room has an agent")
+        .id()
+        .to_string();
+    let (planned, launch_planned) = mpsc::channel();
+    let (holding_sessions, sessions_held) = mpsc::channel::<()>();
+    let (launch_done, launch_finished) = mpsc::channel();
+    let launch = {
+        let owned = owned.clone();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "model",
+        )
+        .with_agent_id(agent_id.clone());
+        std::thread::spawn(move || {
+            super::provider::AFTER_LAUNCH_PLANNED.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    planned.send(()).unwrap();
+                    let _ = sessions_held.recv_timeout(Duration::from_secs(10));
+                    // Let the settlement reach the prompt owner before the pointer is set.
+                    std::thread::sleep(Duration::from_millis(300));
+                }));
+            });
+            let result = owned.start_provider_launch(request);
+            launch_done
+                .send(result.map(|_| ()).map_err(|e| e.to_string()))
+                .unwrap();
+        })
+    };
+    launch_planned
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the launch should plan its run");
+    let (settle_done, settle_finished) = mpsc::channel();
+    let settlement = {
+        let owned = owned.clone();
+        let agent_id = agent_id.clone();
+        std::thread::spawn(move || {
+            let sessions = owned.session_store.write();
+            let session = sessions.get_session(session.id()).expect("the Room exists");
+            holding_sessions.send(()).unwrap();
+            let _ = owned.prompt_state_owner.state_parts(&session, &agent_id);
+            drop(sessions);
+            settle_done.send(()).unwrap();
+        })
+    };
+    assert!(
+        finished(&settle_finished).is_some(),
+        "a settlement holding the session store waits for ever on the launch's prompt owner"
+    );
+    assert_eq!(
+        finished(&launch_finished),
+        Some(Ok(())),
+        "the launch waits for ever on the session store"
+    );
+    launch.join().unwrap();
+    settlement.join().unwrap();
+}

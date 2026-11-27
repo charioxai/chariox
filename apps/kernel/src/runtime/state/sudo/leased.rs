@@ -14,8 +14,6 @@ const LEASED_SUDO_LOST: &str = "worker no longer holds this sudo window";
 /// Worker memory only, so a worker restart drops every fence (fail closed).
 #[derive(Debug, Clone)]
 pub(crate) struct WorkerSudoGrant {
-    leased_agent_id: String,
-    home_prompt_id: String,
     entry_id: String,
     revision: u64,
     deadline: Instant,
@@ -33,7 +31,8 @@ impl KernelRuntimeState {
     pub(crate) async fn update_relay_leased_sudo(
         &self,
         leased_agent_id: &str,
-        home_prompt_id: &str,
+        // The home judges every forwarded call (row 405); the worker fence no longer binds it.
+        _home_prompt_id: &str,
         grant: LeasedSudoGrant,
     ) -> Result<(), DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
@@ -79,8 +78,6 @@ impl KernelRuntimeState {
                 grants.insert(
                     agent.clone(),
                     WorkerSudoGrant {
-                        leased_agent_id: leased_agent_id.into(),
-                        home_prompt_id: home_prompt_id.into(),
                         entry_id: grant.entry_id,
                         revision: grant.revision,
                         deadline: Instant::now() + Duration::from_millis(grant.remaining_ms),
@@ -164,8 +161,9 @@ impl KernelRuntimeState {
             .is_some_and(|grant| Instant::now() < grant.deadline)
     }
 
-    /// Worker: a leased run's privileged call passes its own fence, then goes
-    /// home. `None` means `run` is not leased and stays on the local path.
+    /// Worker: a leased run's kernel request goes home, which judges it (row 405: the owner's
+    /// agent needs no window; a live one keeps its attribution). `None` means `run` is not
+    /// leased and stays on the local path.
     pub(crate) async fn try_forward_leased_kernel_request(
         &self,
         run: &crate::provider::RuntimeProviderRun,
@@ -174,24 +172,6 @@ impl KernelRuntimeState {
         let Some(context) = self.leased_forward_context(run).await? else {
             return Ok(None);
         };
-        let live = run.agent_instance_id().is_some_and(|agent| {
-            self.owned
-                .leased_sudo_grants
-                .lock()
-                .expect("leased sudo grants poisoned")
-                .get(agent)
-                .is_some_and(|grant| {
-                    grant.catalog_ready
-                        && Instant::now() < grant.deadline
-                        && grant.leased_agent_id == context.leased_agent_id
-                        && context.home_prompt_id.as_deref() == Some(&grant.home_prompt_id)
-                })
-        });
-        if !live {
-            return Err(error(
-                "this leased turn has no live sudo window on this worker",
-            ));
-        }
         self.forward_meta_runtime_tool(
             context,
             "chariox_kernel_request",
@@ -203,7 +183,7 @@ impl KernelRuntimeState {
     }
 
     /// Home: the leased agent whose current worker run is `run_id`.
-    pub(super) fn leased_agent_for_projected_run(
+    pub(in crate::runtime::state) fn leased_agent_for_projected_run(
         &self,
         run_id: &str,
     ) -> Option<crate::agent::AgentInstance> {
@@ -225,25 +205,6 @@ impl KernelRuntimeState {
                         })
                 })
             })
-    }
-
-    /// Home: the live window for a forwarded privileged call. The forwarded
-    /// context already names the current lease, worker run and running home
-    /// prompt; the window must be bound to exactly that prompt.
-    pub(crate) fn sudo_for_leased_context(
-        &self,
-        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
-    ) -> Result<KernelSudoTurn, DaemonError> {
-        self.authorize_forwarded_workspace_context(context)?;
-        let run = crate::provider::projected_leased_provider_run_id(
-            &context.leased_agent_id,
-            &context.worker_provider_run_id,
-        );
-        let turn = self.sudo_for_run(&run)?;
-        if context.home_prompt_id.is_none() || turn.prompt_id != context.home_prompt_id {
-            return Err(error("this provider turn has no sudo authority"));
-        }
-        Ok(turn)
     }
 
     /// Home: the fence for a leased dispatch about to be submitted, if the

@@ -552,6 +552,10 @@ impl KernelRuntimeState {
             &provider_run,
             &mut poll_result,
         );
+        // A job's row is the kernel's: the provider's row of the call that started it would be a second one.
+        poll_result
+            .chunks
+            .retain(|chunk| !jobs::is_job_launch_snapshot(&chunk.kind, &chunk.bytes));
         if !poll_result.chunks.is_empty()
             || !poll_result.completions.is_empty()
             || !poll_result.notices.is_empty()

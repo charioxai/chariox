@@ -853,6 +853,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
                 request_id: "deploy".to_string(),
                 host: "deploy.example.com".to_string(),
                 use_binding: capture_binding.clone(),
+                env_uses: Vec::new(),
             },
         };
     let capture_store_request =
@@ -1249,6 +1250,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "4c3c6ebd4d7e32b14fa79ae3312e0bb09f2e0a5fe975c1e16014dbfa6213c9ad"
+        "c00e3c9e833417aa4f87fc0a5f65cf9726147b0d36a2c325b482c194cba566ed"
     );
 }

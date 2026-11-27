@@ -693,6 +693,33 @@ async fn reparented() {
 }
 
 #[test]
+fn a_nested_spawn_after_an_agents_move_under_a_lower_root_takes_the_tree_limit() {
+    run_large_stack_async_test("authority-reparented-by-agent", reparented_by_agent);
+}
+
+/// Observation, not a new refusal: an agent's move behaves as the owner's. The lane keeps its own
+/// preferences and runs within the limit of its new parent chain.
+async fn reparented_by_agent() {
+    use crate::provider::AgentExecutionMode::Plan;
+    let mut world = world("authority-reparented-by-agent").await;
+    bold_pair(&mut world, "g", "p").await;
+    {
+        let mut app = world.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(&world.room, "dev-stub")
+                    .with_alias("low-root")
+                    .with_permission_level_override(AgentPermissionLevel::Required)
+                    .with_execution_mode_override(Plan),
+            )
+            .unwrap();
+    }
+    let moved = room_command(&world, "g", "agent parent p low-root").await;
+    assert!(moved.ok, "{moved:?}");
+    assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
+}
+
+#[test]
 fn a_nested_spawn_in_a_bolder_room_takes_the_tree_limit_not_the_room_defaults() {
     run_large_stack_async_test("authority-room-defaults", room_defaults);
 }

@@ -467,6 +467,8 @@ function compactDomSnapshot(rawSnapshot, options, accessibilityNodes) {
         options.maxStringLength,
       ),
       owner_node_ref: ownerByDocumentIndex.get(documentIndex) ?? null,
+      // Bounds are page coordinates; a click point is bounds minus this offset.
+      scroll: { x: finiteOrZero(document?.scrollOffsetX), y: finiteOrZero(document?.scrollOffsetY) },
     })),
     shadow_roots: shadowRoots,
     dom_nodes: compacted,
@@ -596,4 +598,8 @@ function snapshotString(strings, index, maxLength) {
 
 function arrayValue(value, index) {
   return Array.isArray(value) ? value[index] : undefined;
+}
+
+function finiteOrZero(value) {
+  return Number.isFinite(value) ? value : 0;
 }

@@ -127,6 +127,7 @@ mod tests {
     mod provider_run_read_owner;
     mod provider_run_selection_owner;
     mod recall_owner;
+    mod restart_kernel_owner;
     mod room_control_owner;
     mod room_environment_control_owner;
     use std::collections::BTreeMap;
@@ -292,6 +293,7 @@ mod tests {
     mod session_actor_projection;
     mod session_lifecycle_projection;
     mod session_read_projection;
+    mod slice_hosted_placement;
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;

@@ -311,9 +311,7 @@ impl PromptStateOwner {
         if !self.has_provider_launch_waiters.load(Ordering::Acquire) {
             return Vec::new();
         }
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut waiting: Vec<_> = owner
             .states
@@ -352,10 +350,9 @@ impl PromptStateOwner {
         prompt_id: &str,
         message: &str,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let queue = &mut state.queued_prompts;
         if queue.front().is_none_or(|head| head.id() != prompt_id) {
@@ -399,10 +396,9 @@ impl PromptStateOwner {
             VecDeque<PromptQueueItem>,
         ) -> Result<bool, DaemonError>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let Some(current) = state.active_prompt.as_ref().filter(|prompt| {
             prompt.id() == prompt_id
@@ -490,9 +486,7 @@ impl PromptStateOwner {
                 return None;
             }
         }
-        let matches = self
-            .state
-            .lock()
+        let matches = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -526,10 +520,9 @@ impl PromptStateOwner {
         status_transition: (PromptStatus, PromptStatus),
     ) -> Option<PromptQueueItem> {
         let (expected_status, next_status) = status_transition;
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let active = state.active_prompt.as_mut()?;
         if active.id() != prompt_id
@@ -559,10 +552,9 @@ impl PromptStateOwner {
         failed_provider_session_id: &str,
         current_provider_session_id: &str,
     ) -> Option<(PromptQueueItem, PromptQueueItem)> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -605,8 +597,7 @@ impl PromptStateOwner {
                         "prompt operation `{operation_id}` is missing its request fingerprint"
                     ),
                 })?;
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .submission_for_durable_operation(session.id(), operation_id, fingerprint, prompt)
     }
@@ -616,8 +607,7 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -631,9 +621,7 @@ impl PromptStateOwner {
         session_id: &str,
         agent_id: &str,
     ) -> serde_json::Value {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(state) = owner.states.get(&PromptStateKey::new(session_id, agent_id)) else {
             return serde_json::json!({"active_prompt_id": null, "queued": 0, "own_turn": "none"});
@@ -660,8 +648,7 @@ impl PromptStateOwner {
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
         let key = PromptStateKey::new(session.id(), agent_id);
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .states
             .get(&key)
@@ -669,9 +656,7 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn active_prompt_agent_id(&self, session: &RuntimeSession) -> Option<String> {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(focused_agent_id) = session.focused_agent_id() {
             if owner
@@ -703,8 +688,7 @@ impl PromptStateOwner {
     }
 
     pub(super) fn rooms_with_running_prompts_before(&self, cutoff_ms: u64) -> BTreeSet<String> {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .states
             .iter()
@@ -718,9 +702,7 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn has_any_active_prompt(&self, session: &RuntimeSession) -> bool {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         owner.session_has_active_prompt(session)
     }
@@ -734,9 +716,7 @@ impl PromptStateOwner {
         sessions: &[RuntimeSession],
         operation: impl FnOnce() -> Result<R, DaemonError>,
     ) -> Result<Option<R>, DaemonError> {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if sessions
             .iter()
@@ -748,9 +728,7 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn active_prompt_agent_ids(&self, session: &RuntimeSession) -> Vec<String> {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         owner
             .agent_ids_for_session(session)
@@ -770,8 +748,7 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> usize {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ensure_agent_state(session, agent_id)
             .queued_prompts
@@ -795,10 +772,9 @@ impl PromptStateOwner {
         allow_queue: bool,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let agent_id = prompt.target_agent_id().to_string();
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         if session
             .agents()
             .iter()
@@ -945,10 +921,9 @@ impl PromptStateOwner {
         expected_prompt_id: Option<&str>,
         operation: impl FnOnce() -> Result<R, crate::error::DaemonError>,
     ) -> Result<R, crate::error::DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         if state.active_prompt.as_ref().map(PromptQueueItem::id) != expected_prompt_id
             || state
@@ -971,10 +946,9 @@ impl PromptStateOwner {
         agent_id: &str,
         operation: impl FnOnce(Option<&PromptQueueItem>) -> Result<R, DaemonError>,
     ) -> Result<R, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         operation(
             owner
                 .ensure_agent_state(session, agent_id)
@@ -989,10 +963,9 @@ impl PromptStateOwner {
         agent_id: &str,
         expected_prompt_id: Option<&str>,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         if expected_prompt_id.is_some_and(|expected_prompt_id| {
             state.active_prompt.as_ref().map(PromptQueueItem::id) != Some(expected_prompt_id)
@@ -1009,10 +982,9 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let mut cancelled = state.take_active_prompt()?;
         cancelled.set_status(PromptStatus::Cancelled);
@@ -1026,10 +998,9 @@ impl PromptStateOwner {
         prompt: &str,
         entry: &str,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent);
         if !state
             .active_prompt
@@ -1051,10 +1022,9 @@ impl PromptStateOwner {
         agent: &str,
         prompt: &str,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent);
         state.sudo_entry_id.is_some()
             && state
@@ -1069,10 +1039,9 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent: &str,
     ) -> Option<(String, String)> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent);
         let entry = state.sudo_entry_id.clone()?;
         state
@@ -1090,10 +1059,9 @@ impl PromptStateOwner {
         entry: &str,
         prompt: &str,
     ) -> Option<u64> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent);
         if state.sudo_entry_id.as_deref() != Some(entry)
             || !state.active_prompt.as_ref().is_some_and(|active| {
@@ -1113,10 +1081,9 @@ impl PromptStateOwner {
         entry: &str,
         prompt: &str,
     ) {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         owner.ensure_agent_state(session, agent).sudo_work = Some(SudoWorkHold {
             entry_id: entry.into(),
             prompts: BTreeSet::from([prompt.to_owned()]),
@@ -1131,10 +1098,9 @@ impl PromptStateOwner {
         entry: &str,
         prompt: &str,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(hold) = owner
             .ensure_agent_state(session, agent)
             .sudo_work
@@ -1148,19 +1114,17 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn sudo_work_held(&self, session: &RuntimeSession, agent: &str) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         owner.ensure_agent_state(session, agent).sudo_work.is_some()
     }
 
     /// End the window's hold and any binding; regular work keeps running.
     pub(crate) fn release_sudo_work(&self, session: &RuntimeSession, agent: &str, entry: &str) {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent);
         if state
             .sudo_work
@@ -1189,10 +1153,9 @@ impl PromptStateOwner {
         agent_id: &str,
         expected: Option<&str>,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let active = state.active_prompt.as_mut()?;
         // MP-08/MP-10: compare under the same lock that marks cancellation.
@@ -1212,10 +1175,9 @@ impl PromptStateOwner {
         agent_id: &str,
         prompt_id: &str,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(active) = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -1233,10 +1195,9 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -1254,10 +1215,9 @@ impl PromptStateOwner {
         provider_run_id: Option<String>,
         provider_session_id: Option<String>,
     ) -> Result<PromptQueueItem, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -1307,10 +1267,9 @@ impl PromptStateOwner {
         expected: &PromptQueueItem,
         replacement: PromptQueueItem,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = &mut owner.ensure_agent_state(session, agent_id).active_prompt;
         if active.as_ref() != Some(expected) {
             return false;
@@ -1326,10 +1285,9 @@ impl PromptStateOwner {
         prompt: PromptQueueItem,
         expected_queue: &VecDeque<PromptQueueItem>,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         if state.active_prompt.is_some() || &state.queued_prompts != expected_queue {
             return false;
@@ -1344,10 +1302,9 @@ impl PromptStateOwner {
         agent_id: &str,
         prompt_id: &str,
     ) -> Result<PromptQueueItem, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -1376,10 +1333,9 @@ impl PromptStateOwner {
         operation_id: &str,
         phase: crate::session::DurablePromptDeliveryPhase,
     ) -> Result<PromptQueueItem, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -1413,10 +1369,9 @@ impl PromptStateOwner {
         agent_id: &str,
         expected_prompt_id: Option<&str>,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let active = state.active_prompt.as_ref()?;
         if active.status() != PromptStatus::Cancelling
@@ -1434,10 +1389,9 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         if owner.agent_move_pending(&PromptStateKey::new(session.id(), agent_id)) {
             return None;
         }
@@ -1476,10 +1430,9 @@ impl PromptStateOwner {
     where
         F: FnOnce(),
     {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let active_prompt =
             state
@@ -1538,10 +1491,9 @@ impl PromptStateOwner {
         agent_id: &str,
         expected_prompt_id: Option<&str>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         if let Some(active_prompt) = state.active_prompt.as_ref() {
             return Err(DaemonError::LocalTransport {
@@ -1586,10 +1538,9 @@ impl PromptStateOwner {
         agent_id: &str,
         expected_prompt_id: Option<&str>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id))
             || owner.agent_profile_waiting_for_settlement(agent_id)
         {
@@ -1611,10 +1562,9 @@ impl PromptStateOwner {
         expected_prompt_id: &str,
         prepare: impl FnOnce(&PromptQueueItem) -> Result<(), DaemonError>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id))
             || owner.agent_profile_waiting_for_settlement(agent_id)
         {
@@ -1705,10 +1655,9 @@ impl PromptStateOwner {
         provider_run_id: &str,
         binding: OwnTurnBinding,
     ) -> ProviderTurnAdoption {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, fresh_prompt.target_agent_id());
         let (newly, binding, output) = match &state.provider_turn {
             ProviderOwnTurn::Pending(pending) if pending.provider_run_id == provider_run_id => {
@@ -1754,10 +1703,9 @@ impl PromptStateOwner {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Option<String> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner
             .states
             .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
@@ -1790,10 +1738,9 @@ impl PromptStateOwner {
         provider_run_id: &str,
         prompt: &PromptQueueItem,
     ) {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let Some(state) = owner
             .states
             .get_mut(&PromptStateKey::new(session.id(), agent_id))
@@ -1833,10 +1780,9 @@ impl PromptStateOwner {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Option<(String, Box<PromptQueueItem>)> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner
             .states
             .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
@@ -1867,9 +1813,7 @@ impl PromptStateOwner {
         provider_run_id: &str,
         prompt_id: &str,
     ) -> bool {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .expect("prompt state owner lock should not be poisoned");
         owner
             .states
@@ -1890,9 +1834,7 @@ impl PromptStateOwner {
         agent_id: &str,
         run_id: &str,
     ) -> Option<PromptQueueItem> {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .expect("prompt state owner lock should not be poisoned");
         let state = owner
             .states
@@ -1915,9 +1857,7 @@ impl PromptStateOwner {
         agent_id: &str,
         provider_run_id: &str,
     ) -> bool {
-        let owner = self
-            .state
-            .lock()
+        let owner = crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .expect("prompt state owner lock should not be poisoned");
         owner
             .states
@@ -1935,10 +1875,9 @@ impl PromptStateOwner {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Option<PendingOwnTurn> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner
             .states
             .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
@@ -1966,10 +1905,9 @@ impl PromptStateOwner {
         mut prompt: PromptQueueItem,
     ) -> Result<PromptQueueItem, DaemonError> {
         let agent_id = prompt.target_agent_id().to_string();
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, &agent_id);
         if let Some(active_prompt) = state.active_prompt.as_ref() {
             if active_prompt.id() != prompt.id() {
@@ -1998,10 +1936,9 @@ impl PromptStateOwner {
         agent_id: &str,
         active_prompt: Option<PromptQueueItem>,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         match active_prompt {
             Some(mut prompt) => {
@@ -2062,10 +1999,9 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> usize {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         let removed = state.queued_prompts.len();
         state.queued_prompts.clear();
@@ -2092,10 +2028,9 @@ impl PromptStateOwner {
         agent_id: &str,
         now: u64,
     ) -> usize {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let before = state.queued_prompts.len();
         // Steer reservation and promotion use this same owner lock.
@@ -2111,10 +2046,9 @@ impl PromptStateOwner {
         agent_id: &str,
         prompt_id: &str,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         let index = state
             .queued_prompts
@@ -2131,10 +2065,9 @@ impl PromptStateOwner {
         position: usize,
         prompt: PromptQueueItem,
     ) {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let queue = &mut owner.ensure_agent_state(session, agent_id).queued_prompts;
         if prompt.launch_wait().is_some() {
             self.has_provider_launch_waiters
@@ -2150,10 +2083,9 @@ impl PromptStateOwner {
         prompt_id: &str,
         submitted: bool,
     ) -> bool {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         let Some(queued) = state
             .queued_prompts
@@ -2178,10 +2110,9 @@ impl PromptStateOwner {
         deadline_ms: u64,
         render: impl FnOnce(&[crate::session::QueuedNotification]) -> String,
     ) -> Option<(PromptQueueItem, bool)> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         let queued = state.queued_prompts.iter_mut().find(|queued| {
             queued.prompt_origin() == crate::session::PromptOrigin::Notification
@@ -2217,10 +2148,9 @@ impl PromptStateOwner {
         prompt: impl Into<String>,
         editor: &crate::attachment::RuntimeAttachment,
     ) -> Option<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         let queued = state
             .queued_prompts
@@ -2242,20 +2172,18 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> (Option<PromptQueueItem>, VecDeque<PromptQueueItem>) {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, agent_id);
         (state.active_prompt.clone(), state.queued_prompts.clone())
     }
 
     pub(crate) fn project_into_session(&self, session: &mut RuntimeSession) {
         let projected_states = {
-            let owner = self
-                .state
-                .lock()
-                .expect("prompt state owner lock should not be poisoned");
+            let owner =
+                crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                    .expect("prompt state owner lock should not be poisoned");
             owner
                 .agent_ids_for_session(session)
                 .into_iter()
@@ -2275,10 +2203,9 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn restore_session_state(&self, session: &RuntimeSession) {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let restored_agent_ids = session
             .prompt_states()
             .keys()
@@ -2334,18 +2261,16 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn remove_session(&self, session_id: &str) {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         owner.states.retain(|key, _| key.session_id != session_id);
     }
 
     pub(crate) fn remove_agent(&self, session_id: &str, agent_id: &str) {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let key = PromptStateKey::new(session_id, agent_id);
         owner.states.remove(&key);
     }
@@ -2364,10 +2289,9 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         mut should_remove: impl FnMut(&PromptQueueItem) -> bool,
     ) -> Vec<PromptQueueItem> {
-        let mut owner = self
-            .state
-            .lock()
-            .expect("prompt state owner lock should not be poisoned");
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .expect("prompt state owner lock should not be poisoned");
         let mut agent_ids = session
             .agents()
             .iter()
@@ -3725,9 +3649,7 @@ mod tests {
             "queued",
             PromptStatus::Queued,
         );
-        owner
-            .state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &owner.state)
             .expect("prompt state lock should not be poisoned")
             .states
             .insert(
@@ -3849,22 +3771,19 @@ mod dispatch_intent_tests;
 
 impl PromptStateOwner {
     pub(crate) fn set_room_setup(&self, store: crate::session::RoomSetupStore) {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .room_setup = store;
     }
 
     pub(crate) fn set_agent_profile_admission(&self, agents: crate::agent::AgentServiceStore) {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .agent_profiles = Some(agents);
     }
 
     pub(crate) fn set_agent_move_admission(&self, store: crate::agent_move::AgentMoveStore) {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .agent_move_admission = Some(store);
     }

@@ -1,6 +1,9 @@
 //! Shared state locks identify their caller while waiting and while held.
 use std::ops::{Deref, DerefMut};
-use std::sync::{LockResult, Mutex, MutexGuard, PoisonError, TryLockError, TryLockResult};
+use std::sync::{
+    LockResult, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    TryLockError, TryLockResult,
+};
 #[cfg(test)]
 use std::time::Duration;
 use std::time::Instant;
@@ -171,6 +174,59 @@ impl<T> Drop for CheckedMutexGuard<'_, T> {
         }
         #[cfg(not(test))]
         let _ = (&self.acquired, self.name);
+    }
+}
+
+/// Locks a plain std mutex. Only a contended wait registers with the stall watchdog, so an
+/// uncontended lock costs one `try_lock` and a wait that never ends is named, with its call
+/// site, at the watchdog's threshold.
+#[track_caller]
+pub(crate) fn lock_watched<'a, T>(
+    name: &'static str,
+    mutex: &'a Mutex<T>,
+) -> LockResult<MutexGuard<'a, T>> {
+    match mutex.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(error)) => Err(error),
+        Err(TryLockError::WouldBlock) => {
+            let _waiting =
+                stall_watchdog::watch_at(name, "lock_wait", std::panic::Location::caller());
+            mutex.lock()
+        }
+    }
+}
+
+/// [`lock_watched`] for the read side of a std `RwLock`.
+#[track_caller]
+pub(crate) fn read_watched<'a, T>(
+    name: &'static str,
+    lock: &'a RwLock<T>,
+) -> LockResult<RwLockReadGuard<'a, T>> {
+    match lock.try_read() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(error)) => Err(error),
+        Err(TryLockError::WouldBlock) => {
+            let _waiting =
+                stall_watchdog::watch_at(name, "lock_wait", std::panic::Location::caller());
+            lock.read()
+        }
+    }
+}
+
+/// [`lock_watched`] for the write side of a std `RwLock`.
+#[track_caller]
+pub(crate) fn write_watched<'a, T>(
+    name: &'static str,
+    lock: &'a RwLock<T>,
+) -> LockResult<RwLockWriteGuard<'a, T>> {
+    match lock.try_write() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(error)) => Err(error),
+        Err(TryLockError::WouldBlock) => {
+            let _waiting =
+                stall_watchdog::watch_at(name, "lock_wait", std::panic::Location::caller());
+            lock.write()
+        }
     }
 }
 

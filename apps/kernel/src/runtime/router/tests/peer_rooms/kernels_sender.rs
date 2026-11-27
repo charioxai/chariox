@@ -782,7 +782,13 @@ fn a_guest_reaches_only_the_agents_of_its_own_room() {
                 )
                 .await
                 .unwrap_err();
-            assert_eq!(local, unknown, "{alias}: another room reads as unknown");
+            // Row 405 (PA12): the refusal names the reason, before any lookup, so it says nothing
+            // about the room or the agent.
+            assert!(
+                local.contains("a guest of this room reaches only the agents in this room")
+                    && local != unknown,
+                "{alias}: {local}"
+            );
             let across = a
                 .send_as(
                     token,
@@ -800,7 +806,7 @@ fn a_guest_reaches_only_the_agents_of_its_own_room() {
                 .await
                 .unwrap_err();
             assert!(
-                cancel.contains("agent is unavailable in that room"),
+                cancel.contains("a guest of this room reaches only the agents in this room"),
                 "{alias}: {cancel}"
             );
             let spawn = a

@@ -369,6 +369,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 completion_recorded: false,
                 settlement_requested: true,
                 active_tools: Default::default(),
+                active_tool_started_at_ms: Default::default(),
             });
     }
 

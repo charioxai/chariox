@@ -1165,4 +1165,22 @@ mod tests {
             "benign"
         );
     }
+    #[test]
+    fn a_snapshot_reply_keeps_the_tabs_page_size_for_find() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        let root = crate::test_support::TestWorktree::new("snapshot-page-size");
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+        let result = json!({"generation":1,"page_size":{"css_width":1280,"css_height":800},"snapshot":{
+            "browser_generation":1,"target_id":"t","document_id":"d","snapshot_revision":1,
+            "accessibility_nodes":[],
+            "dom_documents":[{"document_index":0,"url":"https://example.com/","owner_node_ref":null}],
+            "dom_nodes":[]}});
+        let output =
+            scrub_browser_result(&store, "snapshot", result, false, false, false, true).unwrap();
+        assert_eq!(
+            output["page_size"],
+            json!({"css_width":1280,"css_height":800}),
+            "find needs the tab's own page size to withhold a click point the input path refuses"
+        );
+    }
 }

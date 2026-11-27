@@ -66,6 +66,23 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
         app.config(),
     )
     .expect("observe isolated fixture account");
+    // Row 577: the home sends no token. The worker launches from its own copy of the account,
+    // which this fixture stands in for with a synthetic token in its own Vault.
+    crate::secret::unlock_chariox_encrypted_vault(
+        std::path::Path::new(&app.config().user_config.credential_vault.path),
+        "fixture passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .expect("unlock the worker's fixture vault");
+    crate::provider::store_provider_account_credential(
+        app.config(),
+        "owner",
+        "claude",
+        &account.profile_id,
+        "isolated-test-token-not-a-real-credential",
+        false,
+    )
+    .expect("the worker's own copy of the account");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     // MP-08 / MP-10 / MP-11: use the production independent readiness consumer.
@@ -123,17 +140,6 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
             }),
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            // The isolated fake CLI still enters through the real cold-launch
-            // admission path. Supply only a synthetic, profile-bound token.
-            Some(
-                crate::transport::relay_peer::RemoteProviderLaunchCredential {
-                    provider: leased.provider.clone(),
-                    account_profile: leased.account_profile.clone(),
-                    secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
-                        "isolated-test-token-not-a-real-credential".to_string(),
-                    ),
-                },
-            ),
             Default::default(),
         )
         .await

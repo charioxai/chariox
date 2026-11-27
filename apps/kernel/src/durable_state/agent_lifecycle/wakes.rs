@@ -519,8 +519,10 @@ fn fire_one(
     if outlived {
         wake.interval_ms = None;
     }
+    // An earlier fire the agent has seen (`acknowledged`, not yet `handled`) does not hold the next one: a handling that may come only
+    // when its wait ends would stop the timer, silently and without a due time that moves (row 554).
     if wake.interval_ms.is_some() {
-        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed'))", params![wake.room_id,wake.agent_id,wake.id], |r| r.get(0)).map_err(sql)?;
+        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','acknowledged','expired','failed'))", params![wake.room_id,wake.agent_id,wake.id], |r| r.get(0)).map_err(sql)?;
         if pending {
             return Ok(None);
         }
@@ -1052,11 +1054,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // outcome. Otherwise a successor cancels the clock while
                     // leaving the owning task asleep on its dead registration.
                     cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
-                    // The owning turn asked for this cancellation, so its receipt
-                    // needs no handling (a successor turn's wake-up still does).
-                    if caller.task_id == t.task_id {
-                        handle_cancel_receipt(tx, &wake)?;
-                    }
+                    // The agent asked for this cancellation, from its own turn or a later
+                    // one (row 470), so its receipt needs no handling and starts no turn.
+                    handle_cancel_receipt(tx, &wake)?;
                 }
                 None => {
                     if !stop_cancels_wake(&t, &id) {

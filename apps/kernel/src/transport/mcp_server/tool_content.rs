@@ -102,7 +102,7 @@ pub(super) fn runtime_tool_content_ordered(
         metadata.insert("chariox_truncated".to_string(), Value::Bool(true));
         metadata.insert(
             "chariox_guidance".to_string(),
-            Value::String(if pretty { "Snapshot exceeded the 64 KiB MCP text limit. Use chariox.kernel_browser with command {op:find,tab_id,generation,query,kind:field|button|link|any} to get matching controls and node_refs. Empty query lists controls. Follow next_offset with the returned document_id beside command to get more." } else { "Result exceeded the 64 KiB MCP text limit. Request smaller tool output." }.to_string()),
+            Value::String(if pretty { "Snapshot exceeded the 64 KiB MCP text limit. Use chariox.kernel_browser with command {op:find,tab_id,generation,query,kind:field|button|link|container|any} to get matching controls, boxes (container: a token box with its Copy/Reveal buttons) and node_refs with bounds. Empty query lists controls. Follow next_offset with the returned document_id beside command to get more." } else { "Result exceeded the 64 KiB MCP text limit. Request smaller tool output." }.to_string()),
         );
         metadata.insert("preview".to_string(), Value::String(preview));
         payload = Value::Object(metadata);

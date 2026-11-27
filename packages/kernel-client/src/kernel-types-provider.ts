@@ -261,7 +261,8 @@ export type ProviderAccountProfile = {
 }
 
 export type ProviderAccountMaterializationStatus = {
-  target_kind: "worker" | "slice"
+  /** "copy": a tracked copy of the account at another kernel of the owner (row 577). */
+  target_kind: "worker" | "slice" | "copy"
   target_ref: string
   state: "materialized" | "stale" | "error"
   observed_at_ms: number

@@ -70,9 +70,14 @@ pub(crate) fn require_hosted_slice_worker_ref(
     if machine_scoped_slice_worker_ref(worker_ref, machine_id) {
         return Ok(());
     }
-    Err(DaemonError::LocalTransport {
-        operation: "slice.relay_identity",
-        message: "hosted slice worker reference is legacy or belongs to another Machine; create a new slice with a machine-scoped worker identity. Existing slice state was not migrated".into(),
+    crate::logging::warn_with_fields(
+        "daemon.slice",
+        "hosted slice worker reference is legacy or belongs to another Machine",
+        serde_json::json!({ "worker_kernel_ref": worker_ref, "machine_id": machine_id }),
+    );
+    Err(DaemonError::MachineRequest {
+        code: "slice_needs_new_worker".to_string(),
+        message: "This slice was made before slices were tied to their machine, so it cannot start here; create a new slice with `agent spawn --slice new` and move over anything you still need.".to_string(),
     })
 }
 
@@ -118,6 +123,18 @@ mod tests {
         ] {
             assert!(require_hosted_slice_worker_ref(&invalid, "machine-a").is_err());
         }
+        let refusal = require_hosted_slice_worker_ref("slice:drill", "machine-a")
+            .unwrap_err()
+            .to_string();
+        for internal in [
+            "slice.relay_identity",
+            "slice:",
+            "worker reference",
+            "Machine",
+        ] {
+            assert!(!refusal.contains(internal), "{internal} in: {refusal}");
+        }
+        assert!(refusal.contains("agent spawn --slice new"), "{refusal}");
         assert!(require_hosted_slice_worker_ref(&valid, "machine-b").is_err());
         assert!(require_hosted_slice_worker_ref(&valid, "").is_err());
     }

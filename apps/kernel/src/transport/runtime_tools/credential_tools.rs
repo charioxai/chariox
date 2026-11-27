@@ -453,7 +453,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
-            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle for its required use_binding. No sudo or task approval is needed. The typed secret is never returned to the model. Declare command_environment (exact name and service origin) or command_stdin for vault.use_env, file for vault.write_file, totp for browser 2FA codes, or site for browser/HTTP/MCP use; create a separate entry for each use. injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
+            description: "Ask the person for a secret on one redacted card; the kernel stores it as a Vault credential for its use_binding. Returns interaction_id and registration_id: yield on the latter; you wake with stored:true and its credential_id, or cancelled, never the secret. Asking again while the card is open returns the same ids; events.cancel_wake with wake_id=interaction_id withdraws it. use_binding: command_environment (name, origin) or command_stdin for use_env, file for write_file, totp for browser 2FA, site for browser/HTTP/MCP; one entry per use. totp: base32 key or otpauth URI; backup_codes: one per line or a JSON array.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential", "prompt"],
@@ -594,7 +594,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                                     "properties":{"challenge_id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string"},"accepted_json_pointer":{"type":"string","minLength":2,"maxLength":128}},
                                     "description":"For an actual site verification: one unique challenge id, exact same-origin POST URL without query/credentials, and JSON pointer to a boolean true on acceptance. Use wait:false and only Cancel, with no until or custom reply. The card remains on rejection, records only delivery/HTTP status/classification, and closes only on a positive response from this document. Show the card before requesting a fresh code; the person types inside its live region while you wait. Never infer acceptance from disappearance."}}
                         }},
-                        "description": "Show a live browser element from your observed snapshot (tab_id and node_ref as ref). The kernel follows its position and closes the card with condition_met when the element disappears or its document changes."
+                        "description": "Live element of your snapshot (tab_id, node_ref as ref) the person acts on; the card follows it and closes with condition_met when it goes or its document changes. No done_text: it offers Done (their word)."
                     },
                     "until": {
                         "type": "object",

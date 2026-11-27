@@ -65,6 +65,8 @@ impl ProcessIdentity {
         self.presence() == Presence::Gone
     }
 
+    /// Only the identity tests ask this: approval binds to the holder, not to where the requester sits now.
+    #[cfg(test)]
     pub(crate) fn contains(&self, peer: &Self) -> bool {
         self.alive() && peer.alive() && ancestry(peer).is_ok_and(|chain| chain.contains(self))
     }

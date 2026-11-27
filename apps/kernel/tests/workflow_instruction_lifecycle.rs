@@ -169,6 +169,8 @@ async fn terminal_workflow_runs_remove_their_instructions() {
             ("CHARIOX_DAEMON_ID", DAEMON.into()),
             ("CHARIOX_PROVIDER_DEV_STUB", "1".into()),
             ("CHARIOX_DEV_STUB_WORKFLOW_OUTPUT_DELAY_MS", "3000".into()),
+            // The delayed-output stub runs `node`, which a hosted runner keeps outside /usr/bin.
+            ("PATH", real_kernel::node_path(&scratch)),
         ],
         None,
     );

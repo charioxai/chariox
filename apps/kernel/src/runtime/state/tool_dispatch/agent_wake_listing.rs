@@ -13,6 +13,7 @@ struct ListArgs {
     armed_only: bool,
     after: Option<String>,
     limit: Option<u8>,
+    wake_id: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -87,6 +88,11 @@ impl KernelRuntimeState {
     ) -> Result<Value, DaemonError> {
         let args: ListArgs = serde_json::from_value(args.clone())
             .map_err(|error| ledger::error(format!("invalid wakes arguments: {error}")))?;
+        // Row 470: one wake's state and its task's wait, read without changing either; any task of
+        // this agent's, finished or not.
+        if let Some(id) = &args.wake_id {
+            return self.read_agent_wake(task, id, now);
+        }
         let limit = args.limit.unwrap_or(16);
         if !(1..=32).contains(&limit) {
             return Err(ledger::error("wakes limit must be between 1 and 32"));
@@ -148,4 +154,38 @@ impl KernelRuntimeState {
         }
         Ok(reply(page, false))
     }
+
+    fn read_agent_wake(
+        &self,
+        task: &AgentTaskExecution,
+        id: &str,
+        now: u64,
+    ) -> Result<Value, DaemonError> {
+        let store = &self.owned.durable_state_store;
+        let wake = store
+            .agent_wake(id)?
+            .filter(|w| w.room_id == task.room_id && w.agent_id == task.agent_id)
+            .ok_or_else(|| ledger::error("wake unavailable"))?;
+        let holder = store
+            .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
+            .into_iter()
+            .find(|t| t.task_id == wake.task_id);
+        Ok(json!({
+            "now_ms": now,
+            "wake": wake_entry(&wake),
+            "task": holder.map(|t| wait_row(&t)),
+        }))
+    }
+}
+
+/// One task's wait as the agent reads it: what it waits on and until when.
+pub(super) fn wait_row(task: &AgentTaskExecution) -> Value {
+    json!({
+        "task_id": task.task_id,
+        "prompt_id": task.prompt_id,
+        "state": task.state,
+        "reason": task.reason,
+        "registration_ids": task.wait.as_ref().map(|w| &w.registration_ids),
+        "deadline_ms": task.wait.as_ref().and_then(|w| w.deadline_ms),
+    })
 }

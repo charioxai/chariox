@@ -72,6 +72,9 @@ pub(super) fn spawn_claude_child(
         command.env(name, value);
     }
     crate::provider::process_owner::stamp(&mut command);
+    // Row 554: what the agent's tools leave running is attributable to this run, wherever it is
+    // reparented to. Run ids repeat from kernel to kernel: the owner marker above tells them apart.
+    command.env("CHARIOX_PROVIDER_RUN_ID", provider_run_id);
     if let Some(working_directory) = working_directory {
         command.current_dir(working_directory);
     }

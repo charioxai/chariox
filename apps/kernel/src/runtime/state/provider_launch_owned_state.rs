@@ -120,15 +120,27 @@ impl KernelRuntimeOwnedState {
             })
             .transpose()?
             .unwrap_or_else(|| session.owner_user_id().to_string());
-        let profile = self.provider_account_profiles.get(
+        // Row 577: a copy the home made sits under the account authority (`local` for the
+        // configured Cloud owner), never under the lease owner, who stays the runtime principal.
+        let account_owner = crate::account_profile::provider_account_authority_owner_for_lease(
+            &self.config_projection.snapshot(),
+            &self.provider_account_profiles,
             &request.owner_user_id,
+            &request.provider,
+            &request.account_profile,
+        )?;
+        let profile = self.provider_account_profiles.get(
+            &account_owner,
             &request.provider,
             &request.account_profile,
         )?;
         let selection = request.account_profile.clone();
         request.account_profile = profile.profile_id;
-        let owner = request.owner_user_id.clone();
-        crate::account_profile::bind_provider_account_authority(&mut request, owner, selection);
+        crate::account_profile::bind_provider_account_authority(
+            &mut request,
+            account_owner,
+            selection,
+        );
         Ok(request)
     }
 
@@ -1105,6 +1117,12 @@ mod tests {
             .prepare_provider_launch_request(reload, config.runtime_mcp_url())
             .unwrap();
         assert_eq!(reloaded.provider_account_env, local_env);
+        // Row 614: a reload (hot-reload relaunch, in-place account switch, resume, wake) is
+        // prepared by the same builder as a first launch and keeps the agent's CLI endpoint.
+        assert!(
+            reloaded.agent_cli_endpoint.is_some(),
+            "a reloaded agent run must receive its CLI credential"
+        );
         let serialized = serde_json::to_value(&run).unwrap();
         assert!(serialized.get("resolved_provider_account").is_none());
         let restored: crate::provider::RuntimeProviderRun =
@@ -1119,6 +1137,10 @@ mod tests {
             .prepare_provider_launch_request(restored_reload, config.runtime_mcp_url())
             .expect("restored account roots must retain the home authority");
         assert_eq!(restored_prepared.provider_account_env, local_env);
+        assert!(
+            restored_prepared.agent_cli_endpoint.is_some(),
+            "a run restored from stored state is relaunched with its CLI credential"
+        );
         // Managed providers retain roots in --setenv and host bind arguments,
         // not in the scrubbed parent environment. Restoring those runs must
         // preserve the same authority without a new serialized field.
@@ -1965,41 +1987,6 @@ mod tests {
         assert_eq!(
             prepared.provider_credential_env.iter().collect::<Vec<_>>(),
             vec![("CLAUDE_CODE_OAUTH_TOKEN", "setup-token-secret")]
-        );
-        assert!(
-            !crate::secret::chariox_encrypted_vault_status(&vault_path)
-                .expect("vault status should resolve")
-                .unlocked
-        );
-
-        let mut remote_credential = Box::pin(runtime.resolve_remote_provider_launch_credential(
-            session.id(),
-            workflow_agent.id(),
-            "test remote Claude launch",
-        ));
-        tokio::select! {
-            result = &mut remote_credential => panic!("remote credential resolved before unlock: {result:?}"),
-            _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
-        }
-        let interaction = runtime
-            .owned
-            .session_store
-            .get_session(session.id())
-            .expect("session should remain available")
-            .active_interaction_for_agent(workflow_agent.id())
-            .expect("remote launch vault interaction should be visible")
-            .clone();
-        resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
-        let credential = remote_credential
-            .await
-            .expect("remote launch credential should resolve")
-            .expect("Claude launch should carry a credential");
-        assert_eq!(credential.provider, "claude");
-        assert_eq!(credential.account_profile, profile.profile_id);
-        assert!(!format!("{credential:?}").contains("setup-token-secret"));
-        assert_eq!(
-            credential.secret_input.into_zeroizing().as_str(),
-            "setup-token-secret"
         );
         assert!(
             !crate::secret::chariox_encrypted_vault_status(&vault_path)

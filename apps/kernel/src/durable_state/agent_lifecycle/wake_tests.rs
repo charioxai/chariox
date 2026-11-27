@@ -5,6 +5,7 @@ mod goal_waits;
 mod goal_yields;
 mod open_sources;
 mod owner_wait;
+mod stale_waits;
 mod unwaited_timers;
 mod wakeable_agents;
 struct Fixture {
@@ -52,12 +53,23 @@ impl Fixture {
             .unwrap()
     }
     fn create(&self, id: &str, kind: &str, due: Option<u64>, interval: Option<u64>) -> AgentWake {
+        self.create_in("p", id, kind, due, interval)
+    }
+    /// A wake armed by the turn of prompt `prompt` (its own task).
+    fn create_in(
+        &self,
+        prompt: &str,
+        id: &str,
+        kind: &str,
+        due: Option<u64>,
+        interval: Option<u64>,
+    ) -> AgentWake {
         self.wakes(Operation::CreateWake {
-            task: "p".into(),
-            prompt: "p".into(),
+            task: prompt.into(),
+            prompt: prompt.into(),
             wake: AgentWake {
                 id: id.into(),
-                task_id: "p".into(),
+                task_id: prompt.into(),
                 room_id: "room".into(),
                 agent_id: "agent".into(),
                 registration_id: format!("completion-{id}"),
@@ -724,6 +736,59 @@ fn a03_a_later_turn_keeps_an_interrupted_wake_turn_with_another_wake_still_armed
         now: 2_000,
     });
     assert_eq!(f.task(), interrupted, "t2 is still armed for this task");
+}
+
+/// Row 554 (d, e): a recurring timer the agent did not wait on keeps firing while its task waits on something else. Its first fire
+/// is handled; the next one is due an interval later and must fire then, not stay scheduled in the past.
+#[test]
+fn a_recurring_timer_the_wait_does_not_name_keeps_firing_after_its_first_fire_is_handled() {
+    let f = Fixture::new();
+    f.create("interval", "timer", Some(60_000), Some(60_000));
+    f.create("hold", "timer", Some(10_000_000), None);
+    f.wait_on(&["hold"]);
+    f.wakes(Operation::FireWakes { now: 60_000 });
+    let first = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: first,
+        handled: true,
+        now: 61_000,
+    });
+    f.wakes(Operation::FireWakes { now: 120_000 });
+    let wake = f.wake("interval");
+    assert_eq!(
+        (wake.state.as_str(), wake.fire_count, wake.next_due_ms),
+        ("scheduled", 2, Some(180_000)),
+        "the second fire was due at 120000 and the wake is {wake:?}"
+    );
+}
+
+/// Row 554 (d, e), the shape of the stuck 30-minute wake: the agent read its first fire without marking it handled
+/// (`acknowledged`). The agent has seen it, so the next fire is due on time all the same: it must not wait, silently and for ever, for
+/// a handling that may come only when the agent's wait ends.
+#[test]
+fn a_recurring_timer_keeps_firing_when_its_first_fire_was_only_acknowledged() {
+    let f = Fixture::new();
+    f.create("interval", "timer", Some(60_000), Some(60_000));
+    f.create("hold", "timer", Some(10_000_000), None);
+    f.wait_on(&["hold"]);
+    f.wakes(Operation::FireWakes { now: 60_000 });
+    let first = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: first,
+        handled: false,
+        now: 61_000,
+    });
+    f.wakes(Operation::FireWakes { now: 120_000 });
+    let wake = f.wake("interval");
+    assert_eq!(
+        (wake.state.as_str(), wake.fire_count, wake.next_due_ms),
+        ("scheduled", 2, Some(180_000)),
+        "the second fire was due at 120000 and the wake is {wake:?}"
+    );
 }
 
 #[test]

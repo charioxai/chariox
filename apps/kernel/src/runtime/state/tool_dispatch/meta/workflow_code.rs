@@ -42,11 +42,7 @@ impl KernelRuntimeState {
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
-                "WorkflowCodeArtifactCreated": { "artifact": { "metadata": {
-                    "name": metadata.name,
-                    "source_sha256": metadata.source_sha256,
-                    "validation": { "ok": metadata.validation.ok },
-                } } }
+                "WorkflowCodeArtifactCreated": { "artifact": compact_artifact(metadata) }
             }),
         })
     }
@@ -124,7 +120,7 @@ impl KernelRuntimeState {
                 serde_json::json!({ "artifact": &artifact.metadata }),
             );
         }
-        runtime_tool_result_from_local_response(response)
+        compact_workflow_code_reply(response)
     }
 
     pub(super) async fn meta_workflow_code_delete(
@@ -410,7 +406,7 @@ impl KernelRuntimeState {
                 serde_json::json!({ "entry": entry }),
             );
         }
-        runtime_tool_result_from_local_response(response)
+        compact_workflow_code_reply(response)
     }
 
     pub(super) async fn meta_workflow_registry_add_from_workflow(
@@ -441,7 +437,7 @@ impl KernelRuntimeState {
                 serde_json::json!({ "entry": entry }),
             );
         }
-        runtime_tool_result_from_local_response(response)
+        compact_workflow_code_reply(response)
     }
 
     pub(super) async fn meta_workflow_registry_delete(
@@ -508,7 +504,7 @@ impl KernelRuntimeState {
                 serde_json::json!({ "entry": entry, "apply": &result.apply }),
             );
         }
-        runtime_tool_result_from_local_response(response)
+        compact_workflow_code_reply(response)
     }
 
     pub(super) async fn meta_workflow_registry_run(
@@ -547,6 +543,15 @@ impl KernelRuntimeState {
                     "run": meta_workflow_code_run_audit_payload(result),
                 }),
             );
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "WorkflowRegistryEntryRun": {
+                        "entry": { "name": entry.name },
+                        "result": workflow_code_run_result(result),
+                    }
+                }),
+            });
         }
         runtime_tool_result_from_local_response(response)
     }
@@ -594,7 +599,7 @@ impl KernelRuntimeState {
                     })
                 })
                 .await?;
-            return runtime_tool_result_from_local_response(response);
+            return compact_workflow_code_reply(response);
         }
         let source = meta_workflow_code_source(
             session,
@@ -623,7 +628,7 @@ impl KernelRuntimeState {
                 agent,
             )
             .await?;
-        runtime_tool_result_from_local_response(response)
+        compact_workflow_code_reply(response)
     }
 
     pub(super) async fn meta_workflow_code_apply(
@@ -685,6 +690,10 @@ impl KernelRuntimeState {
                 agent,
                 serde_json::json!({ "apply": &result.apply }),
             );
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: workflow_code_apply_reply(result),
+            });
         }
         runtime_tool_result_from_local_response(response)
     }
@@ -945,7 +954,85 @@ fn meta_workflow_code_artifact(
         })
 }
 
+/// Ids, hash and validation only. The source and the compiled definition stay
+/// readable through `workflow_code.read` and the export tools.
+fn workflow_code_apply_reply(
+    result: &crate::workflow_code::WorkflowCodeCompileAndApplyResult,
+) -> serde_json::Value {
+    serde_json::json!({ "WorkflowCodeApplied": { "result": workflow_code_apply_result(result) } })
+}
+
+fn workflow_code_apply_result(
+    result: &crate::workflow_code::WorkflowCodeCompileAndApplyResult,
+) -> serde_json::Value {
+    serde_json::json!({
+        "source_sha256": result.compile.source_sha256,
+        "validation": { "ok": result.compile.validation.ok },
+        "apply": result.apply,
+    })
+}
+
+fn compact_artifact(
+    metadata: &crate::workflow_code::WorkflowCodeArtifactMetadata,
+) -> serde_json::Value {
+    serde_json::json!({ "metadata": {
+        "name": metadata.name,
+        "source_sha256": metadata.source_sha256,
+        "validation": { "ok": metadata.validation.ok },
+    } })
+}
+
+/// Validate, update, registry add and registry load reply with names, hashes and the
+/// validation result only. A failed validation keeps its diagnostics whole. The saved
+/// source and definition stay readable through `read`, the export tools and
+/// `workflow_registry.get`.
+fn compact_workflow_code_reply(
+    response: crate::local::LocalDaemonResponse,
+) -> Result<RuntimeToolResult, DaemonError> {
+    use crate::local::LocalDaemonResponse as Response;
+    let payload = match &response {
+        Response::WorkflowCodeValidated { result } => {
+            let mut compact = serde_json::json!({
+                "source_sha256": result.source_sha256,
+                "validation": result.validation,
+            });
+            if !result.logs.is_empty() {
+                compact["logs"] = serde_json::Value::String(result.logs.clone());
+            }
+            serde_json::json!({ "WorkflowCodeValidated": { "result": compact } })
+        }
+        Response::WorkflowCodeArtifactUpdated { artifact } => serde_json::json!({
+            "WorkflowCodeArtifactUpdated": { "artifact": compact_artifact(&artifact.metadata) }
+        }),
+        Response::WorkflowRegistryEntryAdded { entry } => {
+            let mut compact = serde_json::json!({
+                "name": entry.name,
+                "source_sha256": entry.source_sha256,
+                "validation": entry.validation,
+            });
+            if let Some(definition_sha256) = &entry.definition_sha256 {
+                compact["definition_sha256"] = serde_json::Value::String(definition_sha256.clone());
+            }
+            serde_json::json!({ "WorkflowRegistryEntryAdded": { "entry": compact } })
+        }
+        Response::WorkflowRegistryEntryLoaded { entry, result, .. } => serde_json::json!({
+            "WorkflowRegistryEntryLoaded": {
+                "entry": { "name": entry.name },
+                "result": workflow_code_apply_result(result),
+            }
+        }),
+        _ => return runtime_tool_result_from_local_response(response),
+    };
+    Ok(RuntimeToolResult { ok: true, payload })
+}
+
 fn workflow_code_run_reply(
+    result: &crate::workflow_code::WorkflowCodeRunResult,
+) -> serde_json::Value {
+    serde_json::json!({ "WorkflowCodeRun": { "result": workflow_code_run_result(result) } })
+}
+
+fn workflow_code_run_result(
     result: &crate::workflow_code::WorkflowCodeRunResult,
 ) -> serde_json::Value {
     use crate::workflow_code::WorkflowCodeRunInvocation;
@@ -976,11 +1063,9 @@ fn workflow_code_run_reply(
         }),
     };
     serde_json::json!({
-        "WorkflowCodeRun": { "result": {
-            "source_sha256": result.apply.compile.source_sha256,
-            "workflow_id": result.apply.apply.workflow_id,
-            "invocation": invocation,
-        } }
+        "source_sha256": result.apply.compile.source_sha256,
+        "workflow_id": result.apply.apply.workflow_id,
+        "invocation": invocation,
     })
 }
 

@@ -594,11 +594,14 @@ impl SessionRuntimeStore {
                 && if agent.session_id() == session_id {
                     agent.owner_user_id() == caller_user_id
                 } else {
+                    // Row 405 (PA10): `agent resume [cancel] --room` sends UpdateAgentConfig to the
+                    // target's room; room admission below judges it like any cross-room request.
                     self.state.room_agent_tools_enabled()
                         && matches!(
                             request,
                             LocalDaemonRequest::SpawnAgent(_)
                                 | LocalDaemonRequest::DestroyAgent(_)
+                                | LocalDaemonRequest::UpdateAgentConfig(_)
                                 | LocalDaemonRequest::CreateSession(_)
                                 | LocalDaemonRequest::DeleteSession(_)
                         )

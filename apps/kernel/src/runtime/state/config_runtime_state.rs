@@ -16,10 +16,41 @@ impl KernelRuntimeState {
         renewal: Option<(crate::config::PersistedCloudRelayProfile, String)>,
     ) -> Result<(), DaemonError> {
         self.with_authorized_app_side_effect(move |app| {
-            if app.config().cloud_relay.as_ref() == Some(&expected)
+            // A renewal installed in the projection may have failed its own save, so the app's
+            // profile can carry an older expiry than the `expected` one: same enrollment is enough.
+            let current = app.config().cloud_relay.clone();
+            // The projection knows the unsaved chain: a save it no longer tracks was overtaken by
+            // a newer save or a decision; one it tracks is judged against the chain's baseline,
+            // which an earlier renewal's save may have moved since this renewal was requested.
+            let removal_baseline = match &renewal {
+                Some((_, token)) => match app.config_projection_store().renewal_save(token) {
+                    crate::runtime::projection::RenewalSave::Superseded => return Ok(()),
+                    crate::runtime::projection::RenewalSave::Unsaved {
+                        base_removal_pending,
+                    } => base_removal_pending,
+                    crate::runtime::projection::RenewalSave::Untracked => {
+                        expected.kernel_removal_pending
+                    }
+                },
+                None => expected.kernel_removal_pending,
+            };
+            let expected_matches = match (&renewal, &current) {
+                // A removal recorded after the renewal was requested is not undone by its save.
+                (Some(_), Some(current)) => {
+                    crate::runtime::projection::same_cloud_enrollment(current, &expected)
+                        && current.kernel_removal_pending == removal_baseline
+                }
+                _ => current.as_ref() == Some(&expected),
+            };
+            if expected_matches
                 && crate::runtime::cloud_relay_control::cloud_relay_transport_selected(app.config())
             {
                 match renewal {
+                    // Saves run concurrently: an older renewal never replaces a newer one.
+                    Some((updated, _))
+                        if current.as_ref().is_some_and(|current| {
+                            current.token_expires_at_ms > updated.token_expires_at_ms
+                        }) => {}
                     Some((updated, token)) => {
                         app.persist_cloud_relay_token(updated, token)?;
                     }

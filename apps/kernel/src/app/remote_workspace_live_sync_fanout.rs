@@ -100,8 +100,10 @@ impl DaemonApp {
             target_kernel_id: attachment.kernel_id().to_string(),
             target_repo_root: attachment.repo_root().to_string(),
         };
+        // The renewed relay token lives in the projection; `self.config` can lag behind it.
+        let relay_config = self.config_projection_store().snapshot();
         match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-            &self.config,
+            &relay_config,
             ClientTarget {
                 daemon_id: Some(attachment.kernel_id().to_string()),
                 daemon_alias: None,

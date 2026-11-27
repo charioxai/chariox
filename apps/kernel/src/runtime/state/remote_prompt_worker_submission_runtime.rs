@@ -50,21 +50,19 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         "submission_dispatching_verified",
     );
     let mut attempt = 0_u32;
-    let mut provider_credential_retry_used = false;
     let mut account_reinstall_used = false;
     let mut binding_refresh_used = false;
     let transport_retry_started_at = tokio::time::Instant::now();
     #[cfg(test)]
     super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
         &dispatch.prompt_id,
-        "submission_credential_resolution_started",
+        "submission_account_resolution_started",
     );
-    let mut provider_launch_credential =
-        remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+    remote_prompt_account_if_needed(state, dispatch).await?;
     #[cfg(test)]
     super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
         &dispatch.prompt_id,
-        "submission_credential_ready",
+        "submission_account_ready",
     );
     loop {
         if let Some(error) = remote_prompt_dispatch_unavailable_slice_error(state, dispatch) {
@@ -85,7 +83,6 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 dispatch,
                 prompt.clone(),
                 attachments.clone(),
-                provider_launch_credential.clone(),
                 "unexpected remote prompt response",
             )
             .await;
@@ -108,21 +105,6 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 return Err(error);
             }
             RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
-                if provider_launch_credential.is_none()
-                    && !provider_credential_retry_used
-                    && remote_prompt_error_requires_provider_launch_credential(&error) =>
-            {
-                clear_reconciliation_pending_or_defer(state, dispatch)?;
-                provider_credential_retry_used = true;
-                provider_launch_credential = state
-                    .resolve_remote_provider_launch_credential(
-                        &dispatch.session_id,
-                        &dispatch.agent_id,
-                        "relaunch remote provider run",
-                    )
-                    .await?;
-            }
-            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
                 if !account_reinstall_used && remote_prompt_error_is_account_missing(&error) =>
             {
                 // The worker lost the account the home recorded as installed there.
@@ -136,8 +118,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 clear_reconciliation_pending_or_defer(state, dispatch)?;
                 binding_refresh_used = true;
                 refresh_remote_prompt_binding(state, dispatch).await?;
-                provider_launch_credential =
-                    remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+                remote_prompt_account_if_needed(state, dispatch).await?;
             }
             RemotePromptSubmissionOutcome::DefinitelyPreSend(error)
                 if !binding_refresh_used && remote_prompt_error_should_refresh_binding(&error) =>
@@ -145,8 +126,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 clear_reconciliation_pending_or_defer(state, dispatch)?;
                 binding_refresh_used = true;
                 refresh_remote_prompt_binding(state, dispatch).await?;
-                provider_launch_credential =
-                    remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+                remote_prompt_account_if_needed(state, dispatch).await?;
             }
             RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
                 if remote_prompt_error_should_retry_transport(&error) =>
@@ -616,33 +596,22 @@ fn remote_prompt_error_is_account_missing(error: &DaemonError) -> bool {
     )
 }
 
-fn remote_prompt_error_requires_provider_launch_credential(error: &DaemonError) -> bool {
-    matches!(
-        error,
-        DaemonError::RelayTransport { operation, code, .. }
-            if matches!(*operation, "read relay peer response" | "read temporary relay peer response")
-                && code == crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-    )
-}
-
-async fn remote_prompt_provider_launch_credential_if_needed(
+/// Row 577: a cold launch needs the worker to hold its own tracked copy of the account;
+/// a live worker run does not.
+async fn remote_prompt_account_if_needed(
     state: &KernelRuntimeState,
     dispatch: &crate::app::KernelRemotePromptDispatch,
-) -> Result<Option<crate::transport::relay_peer::RemoteProviderLaunchCredential>, DaemonError> {
+) -> Result<(), DaemonError> {
     let agent = state.owned.agent_store.get_agent(&dispatch.agent_id)?;
     if agent
         .remote_execution()
         .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
         .is_some()
     {
-        return Ok(None);
+        return Ok(());
     }
     state
-        .resolve_remote_provider_launch_credential(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            "launch remote provider run",
-        )
+        .ensure_agent_account_on_worker(&dispatch.agent_id)
         .await
 }
 
@@ -748,8 +717,7 @@ pub(super) fn remote_prompt_error_is_known_pre_admission_rejection(error: &Daemo
     ) && (super::provider_turn_admission::provider_memory_wait_reason(error).is_some()
         || matches!(
             code.as_str(),
-            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-                | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
+            crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
                 | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
                 | "leased_agent_not_found"
                 | "execution_lease_not_found"
@@ -844,9 +812,6 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         prompt: String,
         attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
         unexpected_response_message: &'static str,
     ) -> Result<String, DaemonError> {
         let attempt = self
@@ -854,7 +819,6 @@ impl KernelRuntimeState {
                 dispatch,
                 prompt,
                 attachments,
-                provider_launch_credential,
                 unexpected_response_message,
             )
             .await;
@@ -866,9 +830,6 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         prompt: String,
         attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
         unexpected_response_message: &'static str,
     ) -> RemotePromptSubmissionOutcome {
         let attempt = self
@@ -876,7 +837,6 @@ impl KernelRuntimeState {
                 dispatch,
                 prompt,
                 attachments,
-                provider_launch_credential,
                 unexpected_response_message,
             )
             .await;
@@ -888,9 +848,6 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         prompt: String,
         attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
         unexpected_response_message: &'static str,
     ) -> RemotePromptSubmissionAttempt {
         let agent_id = dispatch.agent_id.clone();
@@ -1069,7 +1026,6 @@ impl KernelRuntimeState {
                     git_context: Some(git_context),
                     required_mcps,
                     remote_extension_manifest: manifest,
-                    provider_launch_credential,
                     native_skill_selections,
                 };
                 mark_transport_started.store(true, Ordering::Relaxed);

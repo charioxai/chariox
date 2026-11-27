@@ -1,4 +1,4 @@
-//! The user moves an agent in the agent tree; no agent request reaches this.
+//! The owner moves an agent in the agent tree, or an agent of the owner does with the owner's reach.
 use super::*;
 use crate::agent::AgentRef;
 use crate::local::{LocalDaemonResponse, SetAgentParentRequest};
@@ -7,6 +7,7 @@ impl KernelRuntimeState {
     pub(crate) async fn set_agent_parent(
         &self,
         caller_user_id: &str,
+        moved_by_agent_id: Option<&str>,
         request: SetAgentParentRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let agent = self
@@ -19,8 +20,16 @@ impl KernelRuntimeState {
             });
         }
         let placement = self.owned.place_agent(caller_user_id, &request)?;
-        self.append_agent_durable_event("agent.updated", &placement.agent, None)
-            .await?;
+        // History names who moved the agent: the agent that did, or no agent when the owner did.
+        self.owned.durable_state_store.append_event(
+            "agent.updated",
+            Some(placement.agent.id().to_string()),
+            serde_json::json!({
+                "agent": placement.agent,
+                "capability_name": null,
+                "moved_by": moved_by_agent_id,
+            }),
+        )?;
         self.finish_moved_decisions(&placement.moved).await?;
         // The moved team's existing local runs start their next turn within the new parent chain.
         self.limit_local_runs(

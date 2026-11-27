@@ -16,6 +16,11 @@ test('a failed hash assertion yields the file, the computed hash and the pinned 
   assert.deepEqual(found.map(({ file, left, right }) => [file, left, right]), [['apps/kernel/src/x.rs', a, b], ['apps/kernel/src/y.rs', b, a]])
 })
 
+test('a failed hash assertion without the old "assertion failed" header is a mismatch too', () => {
+  const found = mismatches(`thread 't' (1) panicked at apps/kernel/src/z.rs:12:5:\n  left: "${a}"\n right: "${b}"\n`)
+  assert.deepEqual(found.map(({ file, left, right }) => [file, left, right]), [['apps/kernel/src/z.rs', a, b]])
+})
+
 test('an assertion that is not two hashes is not a mismatch', () => {
   assert.deepEqual(mismatches('panicked at x.rs:1:1:\nassertion `left == right` failed\n  left: Number(1)\n right: Number(2)\n'), [])
 })

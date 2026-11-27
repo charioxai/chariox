@@ -107,3 +107,23 @@ test('MP-11 owner replacement while its first isolated world is created keeps pr
  const capture=connection.send('Page.captureScreenshot',{},'session');await new Promise(resolve=>setImmediate(resolve));replace();created.resolve({documentId:'doc',contextId:9});
  await assert.rejects(capture,/presentation owner retired/);assert.equal(evaluated,false);assert.equal(fence.stable(Date.now()+100),false);
 });
+// Row 664: a Tab the native window does not show (a popup kept behind its opener) paints no frames to prove restoration
+// with, and its capture changed nothing there: the fence closes again instead of staying shut for every Tab. A Tab whose
+// capture began hidden but that the native window shows now (the person selected it) still proves its restoration.
+test('MP-08/MP-10 a Tab the native window does not show needs no restoration proof and leaves the fence open',async()=>{
+ const sent=[];const connection={send:async(method)=>{sent.push(method);if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Runtime.evaluate')return {result:{value:false}};return {frameTree:{frame:{id:'top'}},executionContextId:3};}};
+ fenceScreenshotPresentation(connection);
+ let shown='target-opener';
+ const owner={inputCapture:{visibilityBySession:new Map([['popup',{visible:false}],['shown',{visible:true}]])},
+  targetsBySession:new Map([['popup','target-popup'],['shown','target-opener']]),nativeActiveTarget:async()=>shown};
+ connection.presentationFence.bindOwner(owner,()=>{});
+ assert.deepEqual(await connection.send('Page.captureScreenshot',{},'popup'),{data:'png'});
+ assert.deepEqual(sent,['Page.captureScreenshot'],'no proof is asked of a Tab the native window does not show');
+ assert.equal(connection.presentationFence.stable(Date.now()+5),true,'native pixels are admitted again');
+ await assert.rejects(connection.send('Page.captureScreenshot',{},'shown'),/did not restore/,'a shown Tab still proves its restoration');
+ shown='target-popup';sent.length=0;
+ await assert.rejects(connection.send('Page.captureScreenshot',{},'popup'),/did not restore/,'a hidden lease whose Tab is shown now proves its restoration');
+ assert.ok(sent.includes('Runtime.evaluate'));
+ owner.nativeActiveTarget=async()=>{throw Error('extension unavailable')};
+ await assert.rejects(connection.send('Page.captureScreenshot',{},'popup'),/did not restore/,'an unknown shown Tab keeps the proof');
+});

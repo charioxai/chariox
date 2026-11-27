@@ -116,93 +116,6 @@ async fn a_read_of_the_agents_own_room_runs_without_a_card() {
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
 
-// A read that reaches past the agent's Room (another Room, every Room, a name lookup across
-// Rooms, the daemon) is the person's to allow, like the writes a card carries: it waits for the
-// passkey card, and Cancel returns nothing.
-#[tokio::test]
-async fn a_read_beyond_the_agents_room_waits_for_the_persons_card() {
-    let f = fixture_with_options(None, true);
-    let other_room = {
-        let mut app = f.app.lock().await;
-        crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "other-workspace",
-                "other-worktree",
-            ))
-            .unwrap()
-            .0
-    };
-    let other = other_room.id().to_string();
-    let reads = [
-        serde_json::json!({"ListSessions": null}),
-        serde_json::json!({"GetSessionState": {"session_id": other}}),
-        serde_json::json!({"ListAgents": {"session_id": other}}),
-        serde_json::json!({"ListSessionMembers": {"session_id": other}}),
-        serde_json::json!({"ResolveSession": {"session_ref": other}}),
-        serde_json::json!({"GetDaemonHealth": null}),
-    ];
-    for read in reads {
-        let call = raise(&f, "Look around", read.clone());
-        let prompt = card(&f).await;
-        answer(&f, &prompt, "cancel", None).await.unwrap();
-        let result = call.await.unwrap().unwrap();
-        assert_eq!(result["ran"], false, "{read}: {result}");
-        assert_eq!(result["status"], "cancelled", "{read}: {result}");
-        assert!(result.get("response").is_none(), "{read}: {result}");
-    }
-}
-
-#[tokio::test]
-async fn an_action_card_describes_the_request_in_the_kernels_words_and_cancel_runs_nothing() {
-    let f = fixture_with_options(None, true);
-    let before = alias(&f);
-    let call = raise(&f, "Harmless read", rename(&f));
-    let prompt = card(&f).await;
-    assert_eq!(prompt.title, "Approve one action");
-    assert!(
-        prompt.message.contains("AliasSession"),
-        "{}",
-        prompt.message
-    );
-    assert!(
-        prompt.message.contains("renamed-by-card"),
-        "{}",
-        prompt.message
-    );
-    assert!(
-        !prompt.message.contains("harmless") && !prompt.message.contains("Harmless"),
-        "the agent's own wording never reaches the card: {}",
-        prompt.message
-    );
-    assert_eq!(prompt.refuse_choice_id, "cancel");
-    answer(&f, &prompt, "cancel", None).await.unwrap();
-    let result = call.await.unwrap().unwrap();
-    assert_eq!(result["status"], "cancelled");
-    assert_eq!(result["ran"], false);
-    assert_eq!(alias(&f), before, "Cancel runs nothing");
-    assert!(f.state.passkey_prompts_for("local").is_empty());
-}
-
-#[tokio::test]
-async fn approving_with_the_passkey_runs_the_action_once_and_a_wrong_passkey_runs_nothing() {
-    let f = fixture_with_options(None, true);
-    let before = alias(&f);
-    let call = raise(&f, "Harmless read", rename(&f));
-    let prompt = card(&f).await;
-    assert!(answer(&f, &prompt, "approve", Some("wrong passkey"))
-        .await
-        .is_err());
-    assert_eq!(alias(&f), before, "a wrong passkey runs nothing");
-    answer(&f, &prompt, "approve", Some(PASSKEY)).await.unwrap();
-    // PCD-12: the second answer from another client finds the card gone.
-    assert!(answer(&f, &prompt, "approve", Some(PASSKEY)).await.is_err());
-    let result = call.await.unwrap().unwrap();
-    assert_eq!(result["status"], "answered");
-    assert_eq!(result["choice_id"], "approve");
-    assert_eq!(result["ran"], true, "{result}");
-    assert_eq!(alias(&f).as_deref(), Some("renamed-by-card"));
-}
-
 #[tokio::test]
 async fn a_card_cannot_carry_a_request_the_persons_terminal_keeps() {
     let f = fixture_with_options(None, true);
@@ -212,41 +125,6 @@ async fn a_card_cannot_carry_a_request_the_persons_terminal_keeps() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("cannot authorize"), "{error}");
-    assert!(f.state.passkey_prompts_for("local").is_empty());
-}
-
-#[tokio::test]
-async fn an_agent_that_stops_waiting_withdraws_its_card() {
-    let f = fixture_with_options(None, true);
-    let call = raise(&f, "Harmless read", rename(&f));
-    let _ = card(&f).await;
-    call.abort();
-    let _ = call.await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !f.state.passkey_prompts_for("local").is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the abandoned card is withdrawn");
-}
-
-#[tokio::test]
-async fn reviewer_cancel_active_prompt_withdraws_its_action_card() {
-    let f = fixture_with_options(None, true);
-    let before = alias(&f);
-    start_asking_prompt(&f);
-    let call = raise(&f, "Rename", rename(&f));
-    let prompt = card(&f).await;
-    cancel_asking_prompt(&f).await;
-    let late = answer(&f, &prompt, "approve", Some(PASSKEY)).await;
-    assert!(
-        late.is_err(),
-        "a cancelled prompt must not retain an approvable action"
-    );
-    let result = call.await.unwrap().unwrap();
-    assert_eq!(result["ran"], false);
-    assert_eq!(alias(&f), before);
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
 
@@ -319,4 +197,32 @@ async fn reviewer_approved_action_rechecks_the_cancelled_asking_prompt() {
         "resolved approval must not survive its asking prompt"
     );
     assert_ne!(alias(&f).as_deref(), Some("renamed-by-card"));
+}
+
+// Row 405: what the owner's agent may do itself runs at once: no card, no passkey, no prompt.
+#[tokio::test]
+async fn a_read_beyond_the_agents_room_runs_without_a_card() {
+    let f = fixture_with_options(None, true);
+    for read in [
+        serde_json::json!({"ListSessions": null}),
+        serde_json::json!({"GetDaemonHealth": null}),
+    ] {
+        let result = raise(&f, "Look around", read.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["ran"], true, "{read}: {result}");
+        assert_eq!(result["card"], false, "{read}: {result}");
+    }
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+}
+
+#[tokio::test]
+async fn an_owners_agents_action_runs_at_once_without_a_card() {
+    let f = fixture_with_options(None, true);
+    let result = raise(&f, "Rename", rename(&f)).await.unwrap().unwrap();
+    assert_eq!(result["ran"], true, "{result}");
+    assert_eq!(result["card"], false, "{result}");
+    assert_eq!(alias(&f).as_deref(), Some("renamed-by-card"));
+    assert!(f.state.passkey_prompts_for("local").is_empty());
 }

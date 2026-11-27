@@ -565,8 +565,9 @@ async fn own_room_slice() {
     );
 }
 
+// Row 405 (PA11): the owner's agent deletes another of the owner's agents in another room.
 #[test]
-fn a_cross_room_peer_cannot_be_deleted_by_an_unrelated_agent() {
+fn the_owners_agent_deletes_a_cross_room_peer_of_the_owner() {
     run_large_stack_async_test("delete-cross-room-peer", || async {
         let world = world("delete-cross-room-peer").await;
         let other = &world.other_room;
@@ -574,17 +575,14 @@ fn a_cross_room_peer_cannot_be_deleted_by_an_unrelated_agent() {
         let [peer] = agents.as_slice() else {
             panic!("the destination Room starts with one ordinary peer");
         };
-        let refused = room_command(
+        let deleted = room_command(
             &world,
             "a",
             &format!("agent delete {} --room {other}", peer.id()),
         )
         .await;
-        assert!(
-            !refused.ok && error_text(&refused).contains("agents above"),
-            "{refused:?}"
-        );
-        assert!(agents_of(&world, other)
+        assert!(deleted.ok, "{deleted:?}");
+        assert!(!agents_of(&world, other)
             .await
             .iter()
             .any(|agent| agent.id() == peer.id()));

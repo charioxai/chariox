@@ -340,8 +340,19 @@ function formatHealth(environment: RoomEnvironmentSnapshot): string {
   const unhealthy = environment.health.filter((health) => health.state !== "ready" || health.diagnostic_code)
   if (!unhealthy.length) return "ready"
   return unhealthy
-    .map((health) => `${health.component} ${health.state}${health.diagnostic_code === "controller_recovered" ? " (controller recovered; retry interrupted browser actions)" : health.component === "browser_controller" && health.state === "unavailable" ? " (retry when the controller is available)" : health.diagnostic_code ? ` (${health.diagnostic_code})` : ""}`)
+    .map((health) => `${health.component} ${health.state}${healthNote(health)}`)
     .join(", ")
+}
+
+const slowerVideoNote = "video is slower: no native frame channel"
+
+function healthNote(health: RoomEnvironmentSnapshot["health"][number]): string {
+  const code = health.diagnostic_code
+  if (code === "controller_recovered") return " (controller recovered; retry interrupted browser actions)"
+  if (code === "controller_recovered_native_frame_channel_unavailable") return ` (controller recovered; retry interrupted browser actions; ${slowerVideoNote})`
+  if (code === "native_frame_channel_unavailable") return ` (${slowerVideoNote})`
+  if (health.component === "browser_controller" && health.state === "unavailable") return " (retry when the controller is available)"
+  return code ? ` (${code})` : ""
 }
 
 function requireReplayCursor(cursor: number): void {

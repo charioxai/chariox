@@ -1,5 +1,10 @@
 # Sudo windows (protocol 974)
 
+Row 405: the owner's agents no longer need `/sudo`. They act with the owner's authority on all the
+owner's kernels, except payments and secrets (`docs/KERNEL_ACCESS.md`, "The owner's agents act as
+the owner"). A window below still binds an agent's work and attribution; it adds no authority beyond
+the owner's, and it never covers payments or secrets.
+
 MP-08 / MP-10 / MP-11 A04. In a Chariox terminal, focus a local regular agent
 and enter `/sudo <prompt>`. Every connected host terminal receives one passkey
 popup naming the agent, the full prompt, its attachments (a note shows its
@@ -193,14 +198,17 @@ launch path (managed isolation, the agent's resource domain, its own process
 session, settled at kernel shutdown) and wait for the command, 120 s by
 default and at most 240 s, after which it is stopped.
 
-- `chariox.vault.capture_command {request_id, argv, cwd?, host, use_binding, label?,
+- `chariox.vault.capture_command {request_id, argv, cwd?, host, origin?, env?: {NAME: credential_id}, use_binding, label?,
   extract?, timeout_seconds?}` stores a secret the command prints into the
   owner's Vault: the whole trimmed stdout, a JSON Pointer into stdout JSON, or
   a regex group. The required typed binding declares one environment name plus origin,
   stdin origin, or canonical absolute workspace file path, and records `created_by_kind = vault_capture` with the session,
   agent and provider run. The result is `{credential_id, label, host, length,
   created}`; stdout never leaves the kernel, and a failure says what went
-  wrong ("nothing was stored") with at most a sanitized stderr tail. The same
+  wrong ("nothing was stored") with at most a sanitized stderr tail. `origin` and `env` run the
+  command with existing Vault entries (an API token a setup command needs), checked as in
+  `use_env` before anything is unlocked or run; their values are masked in that stderr tail, so a
+  command that needs a token and prints a new secret is captured in one step with no file. The same
   `request_id` returns the committed handle without running the command again.
 - `chariox.vault.use_env {argv, origin, cwd?, env?: {NAME: credential_id}, stdin?,
   timeout_seconds?}` injects `env` credentials into the command's environment
@@ -210,6 +218,21 @@ default and at most 240 s, after which it is stopped.
   reads elsewhere are not scrubbed: what the agent does with the command's
   effects is its own action. Uses depend on the declared destination, not the
   creating session.
+
+- `chariox.privileged.run {argv, credential_id, machine?, timeout_seconds?}` is not a sudo window: the
+  kernel runs one command as root with `sudo -S -k -p '' -- sh -c 'exec "$@" </dev/null' sh <timeout> -k 3 <seconds> <argv>` as its own user, outside
+  the agent's sandbox (the sandbox's no-new-privileges flag stops sudo for every agent command, and stays),
+  and types the sudo password from the Vault entry `credential_id` on sudo's stdin only: never argv,
+  environment or a file. The entry is the owner's: a `command_stdin` entry whose origin is
+  `https://<kernel id>.machine.chariox.invalid` (a refusal names the origin to use), so a password only
+  works on its own machine; each use is a Vault Activity line. The owner's agents may use it by default;
+  the entry is the person-held part. It returns `{status, exit_code, stdout, stderr, machine, ran_as,
+  truncated}` with the password read `[vault:<credential_id>]`; sudo's own refusals come back as
+  `wrong_password`, `not_in_sudoers`, `command_not_allowed`, `needs_terminal`, `kernel_cannot_elevate`,
+  `sudo_missing`, `timeout_missing` (no `timeout`, or `gtimeout` of Homebrew coreutils, found before the password is read), `machine_unknown` or `entry_wrong_machine`, each with the next step. The owner runs the
+  same command with `OwnerVault` `run_privileged {id, argv, machine?, timeout_seconds?}`
+  (`chariox request`). A program that runs as root can still read the kernel's own memory: the
+  guarantee is that no Chariox surface shows the password to the model.
 
 Two file tools complete the set:
 

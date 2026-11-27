@@ -13,12 +13,13 @@
   "docker/browser-controller-dialogs.mjs": "9212918c1f0f91e539ef899ea403dde095d010ef43c4a1ddaa2bf83ed253730f",
   "docker/browser-controller-events.mjs": "9d973443965ec80d3e7f05fbb8cd48c468e17ed7d1a6bf0ebe38658b9f048044",
   "docker/browser-controller-files.mjs": "3670b49598c0dda3b36bd25a35413fe28c2adec94c81b160e9e9ec6ae1229d20",
-  "docker/browser-controller-frames.mjs": "69b9c510e2f265156a384ac614d39b37ce43ebe2364afba4935034f108ca4878",
+  "docker/browser-controller-frames.mjs": "5356a20c0f74b0c0bb77624fc06e7c1aa44e0db25ed1fac418b21b49e49804c2",
+  "docker/kernel-browser-state-signal.mjs": "cd9d18da6b24145b983a120ec7a2f61c63e2f237cd067a0ad8facf71524c973e",
   "docker/browser-controller-history.mjs": "89b0f43bed1174a0a47cc34c419b7c8fc180172463d157e4cd97827c3c4d8b0e",
   "docker/browser-controller-image.mjs": "64b7d3963375e2212ee2692b5be655d3aa4ac173e0f650140a9a44bd78ca9eb9",
   "docker/browser-controller-input.mjs": "3c386fb8e94d960d175ad94dfb754c619ee9cb12b674eaff1792222d4aa63d1e",
   "docker/browser-controller-permissions.mjs": "f87bc18294a986c44e86f8fbcd83206a27c4ed0595411090cc4c0a6df3584608",
-  "docker/browser-controller-snapshot.mjs": "0886748de1e15176f628074424ba4ad44cd978c1a23bf0abd943022baf5bde10",
+  "docker/browser-controller-snapshot.mjs": "4d21b41d9c68eb2eace41dcdaebaf6a55d6b28bfa44b0ff974752017fa8627e7",
   "docker/browser-controller-upload-staging.mjs": "1436432e8b4913c6fda5b691cd186fd9c9031161e0469881139f6e73a108ef60",
   "docker/tint2rc": "e3d74c6480c9746d0b6238de32559dbb90e46e767ba5d84db690efb78a0f8812",
   "chromium-seccomp.json": "9bca667a1e5f4ff084f2784f37d38d69bee86f1a305ec9dc30d3e1c61b5125b5",
@@ -51,5 +52,5 @@
   "docker/browser-submit-outcome.mjs": "9711eaddb9eb27c55d7977dcb373fd84fe867fcc7d489bbfc0449b0303f387da",
   "docker/kernel-browser-node-ref.mjs": "ee5c0f20c61044131fbbb7f228aca1a467cb47eec147e416f7f00494cca0e44a",
   "docker/kernel-browser-payment.mjs": "0e0a9603e89af208c19109c16b44668c5e04f8c6a8de1e3e88c130d113737c5a",
-  "docker/kernel-browser-refusal.mjs": "88d892eab9bdd36b4e5dfa8a6a4f342d1ae11c96396addaa8a08562c8cf05aef"
+  "docker/kernel-browser-refusal.mjs": "c6084c43b0bd03793983f41a4f87fad23a416ebaf316dccf2722c8fbfc289fb8"
 }

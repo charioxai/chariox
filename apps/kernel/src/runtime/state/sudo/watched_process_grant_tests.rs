@@ -261,11 +261,16 @@ async fn allow_for_this_agent_ends_the_cards_until_a_parent_revokes_it() {
     let revoked = room_command(format!("agent revoke {} watched-process", turn.agent_id)).await;
     assert!(revoked.ok, "{revoked:?}");
     assert_eq!(revoked.payload["response"]["was_held"], true);
+    // `agent children` rows are compact: a row lists only what is set, so a revoked agent no
+    // longer carries a `grants` entry at all. The child must still be listed, as an object.
     let children = room_command("agent children".into()).await;
-    assert_eq!(
-        children.payload["response"]["children"][0]["grants"],
-        serde_json::json!([])
-    );
+    assert!(children.ok, "{children:?}");
+    let row = children.payload["response"]["children"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == turn.agent_id.as_str()))
+        .and_then(|row| row.as_object())
+        .unwrap_or_else(|| panic!("the revoked agent is still listed: {children:?}"));
+    assert!(!row.contains_key("grants"), "{children:?}");
 
     // The next watched command asks again.
     let (third, ()) = tokio::join!(watch("third"), async {

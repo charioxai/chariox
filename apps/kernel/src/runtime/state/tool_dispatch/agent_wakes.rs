@@ -62,6 +62,46 @@ pub(in crate::runtime::state) fn new_wake(
 }
 
 impl KernelRuntimeState {
+    /// The agent's armed watch of exactly this command, label, match text and directory, if any.
+    pub(in crate::runtime::state) fn process_already_watched(
+        &self,
+        task: &AgentTaskExecution,
+        args: &serde_json::Value,
+    ) -> Result<Option<AgentWake>, DaemonError> {
+        let Ok(argv) = serde_json::from_value::<Vec<String>>(args["argv"].clone()) else {
+            return Ok(None);
+        };
+        let Ok(label) = label(args) else {
+            return Ok(None);
+        };
+        let pattern = args["match_text"].as_str().map(metadata);
+        let cwd = args["cwd"].as_str();
+        let store = &self.owned.durable_state_store;
+        // Only a watch this task can wait on: its own, or one whose task has ended. An earlier
+        // task that still waits keeps its watch (a later wait takes it over at its yield), so
+        // the requester gets a watch of its own as before.
+        let holders = store.agent_tasks(Some(&task.room_id), Some(&task.agent_id))?;
+        let usable = |holder: &str| {
+            holder == task.task_id
+                || holders.iter().any(|t| {
+                    t.task_id == holder
+                        && t.state == crate::durable_state::agent_lifecycle::ExecutionState::Done
+                })
+        };
+        Ok(store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?
+            .into_iter()
+            .find(|w| {
+                usable(&w.task_id)
+                    && w.kind == "process"
+                    && matches!(w.state.as_str(), "scheduled" | "starting" | "running")
+                    && w.command == argv
+                    && w.label == label
+                    && w.match_text == pattern
+                    && w.detail["cwd"].as_str() == cwd
+            }))
+    }
+
     pub(super) async fn dispatch_agent_wake_tool(
         &self,
         run: Option<&crate::provider::RuntimeProviderRun>,
@@ -136,6 +176,13 @@ impl KernelRuntimeState {
                 self.arm_terminal_wake(task, wake, detail).await?
             }
             "chariox.events.process" => {
+                // Row 470: a second watcher of the same command and label is the first one; its
+                // registration is the one to wait on, and a wait takes it over from its task.
+                if let Some(first) = self.process_already_watched(task, args)? {
+                    return Ok(
+                        serde_json::json!({"wake_id":first.id,"registration_id":first.registration_id,"pid":first.pid,"verified_at_ms":first.verified_at_ms,"already_watching":true}),
+                    );
+                }
                 let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
                 if agent.remote_execution().is_some() {
                     let argv: Vec<String> = serde_json::from_value(args["argv"].clone())
@@ -158,6 +205,7 @@ impl KernelRuntimeState {
                     let mut wake = new_wake(task, "process", label(args)?, now);
                     wake.command = argv;
                     wake.match_text = pattern;
+                    wake.detail = serde_json::json!({"cwd": args["cwd"].as_str()});
                     let wake = self
                         .start_home_leased_process(
                             wake,
@@ -197,6 +245,7 @@ impl KernelRuntimeState {
                 let mut wake = new_wake(task, "process", label(args)?, now);
                 wake.command = argv.clone();
                 wake.match_text = match_text;
+                wake.detail = serde_json::json!({"cwd": args["cwd"].as_str()});
                 self.approve_agent_process(&run, &wake, &cwd, &task.prompt_id)
                     .await?;
                 let run = self.watched_process_run(run.id())?;

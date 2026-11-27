@@ -456,6 +456,7 @@ response_policies! {
         SemanticRecallEvents,
         RuntimeNotices,
         AgentReleaseNotes,
+        KernelRestarting,
         KernelAccessDecisionResponded,
         InteractionResponded,
         DeploymentCredentialEnrollmentArmed,

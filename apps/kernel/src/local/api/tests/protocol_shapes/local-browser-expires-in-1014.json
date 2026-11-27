@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1015,
+  "local_protocol": 1016,
   "LocalBrowserConnectIssued": ["endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms"],
   "LocalTerminalConnectIssued": ["endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms", "paired_origin"],
   "LocalBrowserLeaseRenewed": ["expires_at_ms", "expires_in_ms", "next_sequence"],

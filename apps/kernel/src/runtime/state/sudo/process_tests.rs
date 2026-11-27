@@ -346,7 +346,7 @@ fn sudo_shell_cli_child() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sudo_shell_live_throwaway_kernel_cli_loses_authority_after_yield() {
+async fn sudo_shell_live_throwaway_kernel_cli_keeps_owner_authority_after_yield() {
     let scratch = ShellDrillScratch::new();
     let scratch_root = scratch.path();
     let executable = std::env::current_exe().unwrap();
@@ -466,20 +466,21 @@ done
         .expect("completed sudo prompt");
     std::fs::remove_file(scratch_root.join("result")).unwrap();
     std::fs::write(scratch_root.join("probe"), "probe").unwrap();
-    let denied: serde_json::Value =
+    // Row 405: the yield ends the window, not the owner's agent: its shell keeps the owner's
+    // authority while its provider run is current.
+    let after: serde_json::Value =
         serde_json::from_str(&file(&scratch_root.join("result")).await).unwrap();
-    assert_eq!(
-        denied["error"]["code"], "kernel_access_not_covered",
-        "{denied}"
-    );
+    assert!(after["error"].is_null(), "{after}");
     if cli.is_some() {
         let status = file(&scratch_root.join("cli-status")).await;
         let output = file(&scratch_root.join("cli-output")).await;
-        assert_ne!(status.trim(), "0", "{output}");
-        assert!(output.contains("This process has no access"), "{output}");
+        assert_eq!(status.trim(), "0", "{output}");
         println!("chariox-shell after yield: {}", output.trim());
     }
-    println!("live shell CLI: test passkey admitted; setsid root={}; ListSessions accepted; same command after yield refused", root(&f).pid);
+    println!(
+        "live shell CLI: setsid root={}; ListSessions accepted during and after the window",
+        root(&f).pid
+    );
     let _ = shutdown.0.take().unwrap().send(());
     server.await.unwrap().unwrap();
 }
@@ -767,11 +768,12 @@ async fn sudo_review_shell_subscriptions_are_owner_session_bound() {
             f.request.attachment_id.as_str(),
             true,
         ),
+        // Row 405: any of the owner's sessions, through an attachment of the owner's own.
         (
             "other session",
             other_session.id(),
             other_attachment.id(),
-            false,
+            true,
         ),
         (
             "guest attachment",
@@ -1119,6 +1121,7 @@ async fn a_sub_agent_requests_one_owner_access_card_with_its_own_identity() {
         f.state
             .set_agent_parent(
                 "local",
+                None,
                 crate::local::SetAgentParentRequest {
                     session_id: room_id.clone(),
                     agent_id: child_id.to_owned(),
