@@ -3187,6 +3187,91 @@ mod tests {
     /// MP-08 / MP-09 / MP-10 / MP-11: `chariox.file.copy` slices reach a leased agent's workspace
     /// only from the home that holds its lease, through the real encrypted peer handler.
 
+    // Review of the L15 squash (P1): a forwarding peer counts as one of the owner's own kernels
+    // (row 405 owner reach for leased agents) only when its bound relay identity is this kernel's
+    // Cloud user in the same realm; another user, another realm, a slice, a Kernel identity of
+    // another sender, or a kernel with no Cloud owner never does.
+    #[test]
+    fn only_a_peer_of_the_same_cloud_owner_is_the_owners_kernel() {
+        let _env = crate::env_lock::lock();
+        let router = |cloud: bool| {
+            let mut config = lease_worker_config();
+            config.kernel_runtime_role = crate::config::KernelRuntimeRole::General;
+            config.remote_lease_capacity = None;
+            if !cloud {
+                config.cloud_relay = None;
+            }
+            CommandRouter::with_interactive_capacity(
+                Arc::new(Mutex::new(
+                    DaemonApp::bootstrap(config).expect("kernel should boot"),
+                )),
+                1,
+            )
+        };
+        let identity =
+            |kind: RelaySubjectKind, subject: &str, realm: &str, user: &str| RelayCallerIdentity {
+                realm_id: realm.to_string(),
+                subject: subject.to_string(),
+                subject_kind: kind,
+                expires_at_ms: u64::MAX,
+                token_id: Some("token-1".to_string()),
+                user_id: Some(user.to_string()),
+                public_key_thumbprint: None,
+            };
+        let home = router(true);
+        let sender = "kernel-worker";
+        for (case, peer, expected) in [
+            (
+                "same owner, machine identity",
+                identity(RelaySubjectKind::Machine, "machine-2", "realm-1", "user-1"),
+                true,
+            ),
+            (
+                "same owner, its own kernel identity",
+                identity(RelaySubjectKind::Kernel, sender, "realm-1", "user-1"),
+                true,
+            ),
+            (
+                "another user",
+                identity(RelaySubjectKind::Machine, "machine-2", "realm-1", "user-2"),
+                false,
+            ),
+            (
+                "another realm",
+                identity(RelaySubjectKind::Machine, "machine-2", "realm-2", "user-1"),
+                false,
+            ),
+            (
+                "a kernel identity of another sender",
+                identity(RelaySubjectKind::Kernel, "kernel-else", "realm-1", "user-1"),
+                false,
+            ),
+            (
+                "a slice",
+                identity(RelaySubjectKind::Kernel, "slice:one", "realm-1", "user-1"),
+                false,
+            ),
+        ] {
+            let subject_sender = if peer.subject.starts_with("slice:") {
+                peer.subject.clone()
+            } else {
+                sender.to_string()
+            };
+            assert_eq!(
+                home.peer_is_owners_kernel(&peer, &subject_sender),
+                expected,
+                "{case}"
+            );
+        }
+        assert!(
+            !router(false).peer_is_owners_kernel(
+                &identity(RelaySubjectKind::Machine, "machine-2", "realm-1", "user-1"),
+                sender,
+            ),
+            "a kernel with no Cloud owner treats no peer as its owner's"
+        );
+    }
+
     // MP-08 / MP-09 / MP-10 / MP-11 (files r1): the files of this machine answer a kernel of the
     // same Cloud owner and nobody else, and never from the kernel's own state.
     #[test]

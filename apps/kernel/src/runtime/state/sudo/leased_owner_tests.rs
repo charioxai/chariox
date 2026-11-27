@@ -289,3 +289,40 @@ fn an_agents_spawn_through_kernel_request_is_its_own_child() {
         );
     });
 }
+
+// Review P1 (L15 squash 1088804874): the leased agent's reach identity itself. Under a call that
+// another account's worker forwarded it resolves to nothing, whichever tool the call came
+// through; under the owner's own worker it is the owner's.
+#[test]
+fn a_foreign_workers_call_resolves_no_leased_reach() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let worker = crate::config::DaemonConfig::for_tests();
+    crate::config::DaemonConfig::approve_remote_machine("worker-machine").unwrap();
+    lease_agent_to_machine(&f, &worker.daemon_id);
+    let context = forwarded_context(&f, &worker.daemon_id);
+    let run = crate::provider::projected_leased_provider_run_id(
+        &context.leased_agent_id,
+        &context.worker_provider_run_id,
+    );
+    let mut foreign = crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id);
+    foreign.owners_kernel = false;
+    let refused = f
+        .state
+        .with_relay_peer_authority(foreign)
+        .reach_caller_for_run(&run);
+    assert!(
+        matches!(&refused, Err(error) if error.to_string().contains("only the owner's own workers")),
+        "another account's worker resolved the owner's reach: {refused:?}"
+    );
+    let owners = f
+        .state
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            &worker.daemon_id,
+        ))
+        .reach_caller_for_run(&run);
+    assert!(
+        owners.is_ok(),
+        "the owner's own worker lost reach: {owners:?}"
+    );
+}

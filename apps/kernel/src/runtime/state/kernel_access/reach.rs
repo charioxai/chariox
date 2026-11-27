@@ -91,7 +91,14 @@ impl KernelRuntimeState {
             ));
         }
         // A leased agent's run lives on its worker; at home it is the agent's current worker run.
+        // A call that another account's worker forwards never resolves to the owner's authority:
+        // that worker could forge it (review of the L15 squash, P1).
         if let Some(agent) = self.leased_agent_for_projected_run(run_id) {
+            if self.relay_peer_authority.is_some() && !self.forwarded_peer_is_owners_kernel() {
+                return Err(reach_error(
+                    "only the owner's own workers act with the owner's authority",
+                ));
+            }
             return self.reach_caller(run_id, &agent);
         }
         let run = self
