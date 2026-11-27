@@ -79,6 +79,23 @@ pub fn free_port() -> u16 {
         .port()
 }
 
+/// PATH for a kernel whose dev-stub provider runs `node`: the system directories plus only the
+/// `node` of the test runner, linked under `scratch`. A runner's own PATH also holds the provider
+/// CLIs it installed, which the kernel would discover and validate in the background.
+pub fn node_path(scratch: &Path) -> OsString {
+    let bin = scratch.join("tools/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let runner_path = std::env::var_os("PATH").expect("PATH must include Node.js for these tests");
+    let node = std::env::split_paths(&runner_path)
+        .map(|directory| directory.join("node"))
+        .find(|candidate| candidate.is_file())
+        .expect("Node.js must be on PATH for these tests");
+    let link = bin.join("node");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&node, &link).unwrap();
+    std::env::join_paths([bin, PathBuf::from("/usr/bin"), PathBuf::from("/bin")]).unwrap()
+}
+
 /// Starts the kernel under `scratch`; `open_files` lowers its descriptor limit.
 pub fn start(scratch: &Path, env: &[(&str, OsString)], open_files: Option<u64>) -> Kernel {
     std::fs::create_dir_all(scratch.join("project")).unwrap();
