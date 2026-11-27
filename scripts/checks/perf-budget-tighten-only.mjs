@@ -49,7 +49,7 @@ export default {
 
 // The messages of the commits since the base: {messages} or {error}. CI checks a pull request out at depth 1, which leaves
 // those commits out of the clone; they are fetched from origin first, so the raise lines are read whatever the clone depth.
-function messagesSince(root, base) {
+export function messagesSince(root, base) {
   const head = gitOut(root, 'rev-parse', 'HEAD')
   for (const deepen of [null, '--deepen=100', '--unshallow']) {
     if (deepen) {
