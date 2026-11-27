@@ -2622,15 +2622,32 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
         };
         let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
         assert_eq!(result["generation"], 1, "{} keeps generation", command_name);
-        assert!(
-            result["tabs"].is_array(),
-            "capturing Tabs must preserve browser inventory through every boundary"
-        );
-        assert!(result["tabs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tab| tab["tab_id"] == "host-tab-new"));
+        if command_name == "state" {
+            assert!(
+                result["tabs"].is_array(),
+                "capturing Tabs must preserve browser inventory through every boundary"
+            );
+            assert!(result["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tab| tab["tab_id"] == "host-tab-new"));
+        } else {
+            // Row 552: an action answers with the acted tab and the tab count; only a state read
+            // (or start, restart, stop) lists every tab. The fixed keys must survive the capture.
+            assert!(
+                result.get("tabs").is_none(),
+                "{command_name} no longer lists every tab"
+            );
+            assert!(
+                result["tab_count"].as_u64().is_some_and(|n| n >= 1),
+                "capturing Tabs must preserve the tab count key on {command_name}"
+            );
+            assert_eq!(
+                result["tab"]["tab_id"], "host-tab-new",
+                "the acted tab keeps its opaque identity on {command_name}"
+            );
+        }
     }
     let stopped = call(
         f,
@@ -2717,13 +2734,28 @@ async fn vflag_capture_inventory_schema_collisions_preserve_outer_runtime_result
         let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
         assert_eq!(result["state"], "ready", "{operation} keeps its state enum");
         assert_eq!(result["generation"], 1, "{operation} keeps generation");
-        let tabs = result["tabs"]
-            .as_array()
-            .expect("capturing Tabs preserves the fixed inventory key");
-        let tab = tabs
-            .iter()
-            .find(|tab| tab["tab_id"] == "host-tab-new")
-            .expect("the filled tab keeps its opaque identity");
+        // Row 552: a state read lists every tab; an action answers with the acted tab and the
+        // tab count. Either way the fixed keys survive and the page-derived title is scrubbed.
+        let tab = if operation == "state" {
+            let tabs = result["tabs"]
+                .as_array()
+                .expect("capturing Tabs preserves the fixed inventory key");
+            tabs.iter()
+                .find(|tab| tab["tab_id"] == "host-tab-new")
+                .expect("the filled tab keeps its opaque identity")
+                .clone()
+        } else {
+            assert!(
+                result.get("tabs").is_none(),
+                "{operation} no longer lists every tab"
+            );
+            assert!(
+                result["tab_count"].as_u64().is_some_and(|n| n >= 1),
+                "{operation} keeps the fixed tab count key"
+            );
+            result["tab"].clone()
+        };
+        assert_eq!(tab["tab_id"], "host-tab-new");
         assert_eq!(tab["document_id"], "doc-login");
         assert_eq!(
             tab["title"], "[redacted] [redacted] [redacted] [redacted]",
