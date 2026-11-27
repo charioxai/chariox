@@ -616,3 +616,27 @@ test('666 review: a widget whose frames render in the page\'s own process (no if
     assert.ok(last.rect.x + last.rect.width < 400, `round ${round}: closed again, only the anchor: ${JSON.stringify(last.rect)}`);
   }
 }));
+
+test('655 a card on a child document keeps its frame owner across a child reload', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', node_type: 1 },
+    { node_ref: ref, document_index: 1, node_name: '#document', node_type: 9 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await childFrameConnection(host, state, { owner: [100, 120, 300, 120, 300, 220, 100, 220] });
+  await snapshot();
+  assert.equal((await region({ ref, card_id: 'frame-card' })).state, 'present');
+  const connection = await host.browser.ensureConnection(), original = connection.send;
+  connection.send = async (method, params, session) => {
+    const result = await original(method, params, session);
+    if (method === 'Page.getFrameTree') {
+      const change = tree => { if (tree.frame.id === 'child') tree.frame.loaderId = 'new-child-doc'; for (const child of tree.childFrames ?? []) change(child); };
+      change(result.frameTree);
+    }
+    return result;
+  };
+  const followed = await region({ ref, card_id: 'frame-card', generation: 1, document_id: 'doc' });
+  assert.equal(followed.state, 'present', 'the child document changing does not retire the frame card');
+  assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+  assert.equal((await region({ ref, card_id: 'new-frame-card' })).state, 'present', 'a recently observed frame root still attaches after its document reload');
+}));

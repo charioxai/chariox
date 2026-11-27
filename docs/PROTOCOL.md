@@ -7332,6 +7332,13 @@ move to the element when it gains area and back to the page when it loses it. A 
 still never moves the card under the pointer. The card carries one Cancel: an agent choice labelled Cancel under
 another id is the card's own Cancel (`choice_id: "cancel"`, status `cancelled`).
 
+Row 655 frame lifetime (no shape change): a card raised on an observed child document root is
+bound to its iframe owner in the original top document. Reloading or replacing that child
+document preserves the card and its crop. A card on a child element follows the same owner
+if the child document or element disappears. The owner must come from the agent's observed
+snapshot; a foreign reference still refuses. Losing the owner or navigating the top document
+uses the ordinary person-card page rebind described above.
+
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
 that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that
 id or a choice labelled Done). The agent hears `status: "answered"`, `choice_id: "done"`: the person's word, which

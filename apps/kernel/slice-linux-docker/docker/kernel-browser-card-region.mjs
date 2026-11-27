@@ -53,6 +53,18 @@ export function rememberCardReferences(host, scope, tab, snapshot) {
   const previous = tabs.get(tab.tab_id);
   const refs = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.refs : new Set();
   const children = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.children : new Set();
+  const frameOwners = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.frameOwners ?? new Map() : new Map();
+  const frameRoots = previous?.generation === host.generation && previous.document_id === tab.document_id ? previous.frameRoots ?? new Set() : new Set();
+  const documents = new Map((snapshot.dom_documents ?? []).map(document => [document.document_index, document]));
+  for (const node of snapshot.dom_nodes ?? []) {
+    const owner = documents.get(node.document_index)?.owner_node_ref;
+    // A card on a frame document belongs to its embedding slot, whose lifetime is the top document's.
+    // A challenge can replace its renderer document while that slot (and the person's step) stays alive.
+    if (node.document_index !== 0 && typeof owner === 'string' && owner.startsWith('backend:')) {
+      frameOwners.set(node.node_ref, owner);
+      if (node.node_type === 9) frameRoots.add(node.node_ref);
+    }
+  }
   const topReferences = new Set((snapshot.dom_nodes ?? []).filter(node => node.document_index === 0).map(node => node.node_ref));
   for (const node of [...(snapshot.dom_nodes ?? []), ...(snapshot.accessibility_nodes ?? [])]) {
     if (validReference(node.node_ref)) {
@@ -63,8 +75,8 @@ export function rememberCardReferences(host, scope, tab, snapshot) {
       else children.delete(node.node_ref);
     }
   }
-  while (refs.size > 10_000) { const ref = refs.values().next().value; refs.delete(ref); children.delete(ref); }
-  tabs.set(tab.tab_id, { generation: host.generation, document_id: tab.document_id, refs, children });
+  while (refs.size > 10_000) { const ref = refs.values().next().value; refs.delete(ref); children.delete(ref); frameOwners.delete(ref); frameRoots.delete(ref); }
+  tabs.set(tab.tab_id, { generation: host.generation, document_id: tab.document_id, refs, children, frameOwners, frameRoots });
 }
 
 // DOM box quads already place same-renderer children in their renderer's
@@ -343,7 +355,12 @@ export async function resolveCardRegion(host, command, scope, signal) {
       if (host.cardAnchors.size >= maxAnchors) throw new Error('Browser card limit reached; close an existing browser card and try again');
       // Pin only this card's binding. Snapshot cache eviction must not retire
       // a live element. Failed registration expires without a watcher renewal.
-      anchor = { scope, tab_id: command.tab_id, ref: command.ref, doneText: command.done_text ?? null, binding: { generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]), children: new Set(remembered.children.has(command.ref) ? [command.ref] : []) } };
+      anchor = { scope, tab_id: command.tab_id, ref: command.ref, doneText: command.done_text ?? null, binding: {
+        generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]),
+        children: new Set(remembered.children.has(command.ref) ? [command.ref] : []),
+        frameOwners: new Map(remembered.frameOwners?.has(command.ref) ? [[command.ref, remembered.frameOwners.get(command.ref)]] : []),
+        frameRoots: new Set(remembered.frameRoots?.has(command.ref) ? [command.ref] : []),
+      } };
       if (config) anchor.verification = await BrowserCardVerification.create(connection, sessionId, frame, config);
       host.cardAnchors.set(key, anchor);
     }
@@ -373,13 +390,18 @@ export async function resolveCardRegion(host, command, scope, signal) {
       objectId = resolved.result?.objectId;
       if (!objectId) return goneElement();
     }
+    let frameOwnerRef = anchor?.frameOwnerRef ?? (remembered.frameRoots?.has(command.ref) ? remembered.frameOwners.get(command.ref) : null);
     const readBox = async after => {
-      if (remembered.children.has(command.ref)) {
+      if (remembered.children.has(command.ref) && !frameOwnerRef) {
         const child = await childFrameBox(browser, connection, sessionId, tab, { ...command, after });
-        return child?.visible === false ? emptyCrop(child.viewport_width, child.viewport_height) : child;
+        if (child !== null) return child?.visible === false ? emptyCrop(child.viewport_width, child.viewport_height) : child;
+        frameOwnerRef = remembered.frameOwners?.get(command.ref);
+        if (!frameOwnerRef) return null;
+        if (anchor) anchor.frameOwnerRef = frameOwnerRef;
       }
+      if (frameOwnerRef && after) await delay(100);
       if (!objectId) {
-        const resolved = await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
+        const resolved = await connection.send('DOM.resolveNode', { backendNodeId: Number((frameOwnerRef ?? command.ref).slice(8)), executionContextId: world.contextId }, sessionId);
         objectId = resolved.object?.objectId;
         if (!objectId) return null;
       }
@@ -397,7 +419,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     // Row 666: a visible anchor in a challenge widget shows the whole widget (its challenge frame grows the card when it opens).
     if (anchor && box && box.done !== true && box.rect) anchor.anchorBox = { rect: box.rect, viewport_width: box.viewport_width, viewport_height: box.viewport_height };
     if (box && box.done !== true && hasArea(box) && !(command.app_confirmation === true)) {
-      const child = remembered.children.has(command.ref);
+      const child = remembered.children.has(command.ref) && !frameOwnerRef;
       // A page element holding no frame belongs to no widget: no frame walk on ordinary pages.
       const holdsFrame = child || (objectId && (await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: "function() { return this.localName === 'iframe' || typeof this.querySelector === 'function' && !!this.querySelector('iframe'); }", arguments: [{ value: null }], returnByValue: true }, sessionId)).result?.value === true);
       const extra = !holdsFrame ? [] : await widgetRects(connection, sessionId, tab, command.ref, child, child ? null : objectId, world.contextId, box.viewport_width, box.viewport_height, box.rect);
