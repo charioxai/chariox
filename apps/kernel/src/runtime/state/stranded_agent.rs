@@ -30,7 +30,9 @@ const WAIT_PHRASES: &[&str] = &[
     "will be woken",
     "wake me when",
 ];
-/// Words that say it does not.
+/// Words that say it does not. The last four are the fleet's own words for it (20A7 11-27, row
+/// 554): a lane that says nothing was waiting or that it is parked states no wait, and a
+/// backstop armed on those words only burned a turn of the lane every interval.
 const NOT_WAITING: &[&str] = &[
     "not waiting",
     "no longer waiting",
@@ -41,6 +43,10 @@ const NOT_WAITING: &[&str] = &[
     "no need to wait",
     "don't need to wait",
     "not awaiting",
+    "nothing was waiting",
+    "nothing is waiting",
+    "waiting for nothing",
+    "parked",
 ];
 
 /// The sentence of the end of `answer` that says the agent waits, if one does.
@@ -235,8 +241,25 @@ impl KernelRuntimeOwnedState {
         let Some(task) = store.agent_turn_task(room, agent, prompt)? else {
             return Ok(());
         };
+        let phrase = stated_wait(answer);
+        if task.state != ExecutionState::Working {
+            return Ok(());
+        }
         // A yield is the agent's own choice of what to wait for: the kernel adds nothing to it.
-        if task.state != ExecutionState::Working || task.wait.is_some() {
+        // It says which wakes carry the stated wait, so the agent is never left guessing.
+        if let Some(wait) = task.wait.as_ref() {
+            if let Some(phrase) = phrase.as_deref() {
+                self.record_notice_for_agent(
+                    room,
+                    None,
+                    Some(agent),
+                    self.attachment_store.list_session_attachment_ids(room),
+                    format!(
+                        "Kernel: your turn ended saying \"{phrase}\"; your task waits on {}, and those wakes start your next turn.",
+                        wait.registration_ids.join(", ")
+                    ),
+                );
+            }
             return Ok(());
         }
         let nothing_armed = !task.obligations.iter().any(|o| o.needs_live_source());
@@ -292,19 +315,43 @@ impl KernelRuntimeOwnedState {
         }
 
         if nothing_armed {
-            if let Some(phrase) = stated_wait(answer) {
-                let due = now + DEFAULT_WAIT_TIMEOUT_MS;
-                let mut wake =
-                    kernel_wake(&task, "timer", format!("{BACKSTOP_LABEL}: {phrase}"), now);
-                wake.state = "scheduled".into();
-                wake.next_due_ms = Some(due);
-                match self.arm_wake_source(&task, &wake) {
-                    Ok(()) => told.push(format!(
-                        "your turn ended saying \"{phrase}\" with nothing armed; the kernel armed a backstop timer for {} (in {} minutes) and will wake you then if nothing else does",
-                        clock_utc(due),
-                        DEFAULT_WAIT_TIMEOUT_MS / 60_000
-                    )),
-                    Err(error) => tracing::warn!(%error, "row 554: a backstop timer could not be armed"),
+            if let Some(phrase) = phrase.as_deref() {
+                // The rescue is once. A turn that the backstop of the task before it fired to
+                // start does not arm another one: a lane that only restates its wait would burn
+                // a turn every interval while nothing is pending (20A7 11-27, row 554: ~30
+                // lanes looping on exactly that). The agent is told, never stranded silently.
+                let tasks = store.agent_tasks(Some(room), Some(agent))?;
+                let previous = tasks
+                    .iter()
+                    .rposition(|earlier| earlier.task_id == task.task_id)
+                    .and_then(|at| at.checked_sub(1))
+                    .map(|before| tasks[before].task_id.clone());
+                let wakes = store.agent_wakes(Some(room), Some(agent))?;
+                let rescued = previous.is_some_and(|armed_by| {
+                    wakes.iter().any(|wake| {
+                        wake.label.starts_with(BACKSTOP_LABEL)
+                            && wake.task_id == armed_by
+                            && wake.last_fired_at_ms.is_some()
+                    })
+                });
+                if rescued {
+                    told.push(format!(
+                        "your turn ended saying \"{phrase}\"; this turn was the backstop the kernel armed for it, so the kernel will not arm another; register a wake yourself, or start a turn when it changes"
+                    ));
+                } else {
+                    let due = now + DEFAULT_WAIT_TIMEOUT_MS;
+                    let mut wake =
+                        kernel_wake(&task, "timer", format!("{BACKSTOP_LABEL}: {phrase}"), now);
+                    wake.state = "scheduled".into();
+                    wake.next_due_ms = Some(due);
+                    match self.arm_wake_source(&task, &wake) {
+                        Ok(()) => told.push(format!(
+                            "your turn ended saying \"{phrase}\" with nothing armed; the kernel armed a backstop timer for {} (in {} minutes) and will wake you then if nothing else does",
+                            clock_utc(due),
+                            DEFAULT_WAIT_TIMEOUT_MS / 60_000
+                        )),
+                        Err(error) => tracing::warn!(%error, "row 554: a backstop timer could not be armed"),
+                    }
                 }
             }
         }
@@ -347,6 +394,24 @@ mod tests {
             None
         );
         assert_eq!(stated_wait(""), None);
+    }
+
+    /// Row 554, 20A7 11-27: the fleet's own negations and parked answers armed backstops for
+    /// nothing, and each firing burned a turn of the lane.
+    #[test]
+    fn a_negated_or_parked_answer_states_no_wait() {
+        assert_eq!(
+            stated_wait("Nothing was waiting on it, so I closed it."),
+            None
+        );
+        assert_eq!(
+            stated_wait("Still waiting for nothing else; the only new event was a timer backstop."),
+            None
+        );
+        assert_eq!(
+            stated_wait("The lane is parked for the night, still waiting on the morning review."),
+            None
+        );
     }
 
     #[test]

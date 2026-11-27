@@ -2409,11 +2409,13 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
     assert_eq!(early, 0, "no deadline has passed");
 }
 
-/// A sweep pass held past the dead-man tolerance is reported with the step it waits on, so the
-/// person sees what holds supervision instead of only when it was last seen.
+/// Row 689 (20A7 11-27: the pass waited on the wake dead-man check since 12:32:57Z): a
+/// degraded check — a source probe that does not answer — never holds the pass. The check runs
+/// apart from it, the pass returns, and the check still does its work, so a lost source is
+/// still reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stalled_sweep_is_reported_with_the_step_it_waits_on() {
-    let f = fixture("stalled-sweep-report", false).await;
+async fn a_degraded_wake_deadman_check_never_holds_the_pass_and_still_works() {
+    let f = fixture("deadman-degraded", false).await;
     let task = f.begin("turn-1");
     let wake = f.arm(&task, "wake-a").unwrap();
     f.wait_on(&task, &wake.registration_id);
@@ -2423,33 +2425,161 @@ async fn a_stalled_sweep_is_reported_with_the_step_it_waits_on() {
     let runtime = f.runtime.clone();
     let stalled = tokio::spawn(async move { runtime.sweep_agent_lifecycle().await });
     tokio::task::spawn_blocking(move || {
-        entered_rx.recv_timeout(std::time::Duration::from_secs(20))
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the check probes the source")
     })
     .await
-    .unwrap()
-    .expect("the sweep probes the source");
-    // The pass has been held for longer than the dead-man tolerance.
-    f.runtime.agent_wakes_last_swept_for_test(
-        crate::session::unix_epoch_ms() - 4 * crate::durable_state::agent_lifecycle::SWEEP_MS,
+    .unwrap();
+    // The pass returns while the probe is still held: the dead-man check runs apart from it.
+    let passed = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !stalled.is_finished() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        passed.is_ok(),
+        "the pass returns while the wake dead-man check is held by a source that does not answer"
     );
-    let scheduler = {
-        let runtime = f.runtime.clone();
-        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
-    };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while !f.notices().contains("Kernel supervision sweep stalled")
-        && std::time::Instant::now() < deadline
-    {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    scheduler.abort();
+    // The probe is still held: no report about the check escapes per pass, and the pass
+    // returned without waiting for it.
+    // The check still does its work once released: a lost source is reported.
+    f.driver.lost.store(true, Ordering::Release);
     release_tx.send(()).unwrap();
-    stalled.await.unwrap().unwrap();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), stalled).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while f.wake_state("wake-a") != "lost" && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(f.wake_state("wake-a"), "lost");
+    assert!(
+        f.notices().contains("was lost (test source vanished)"),
+        "the loss is still shown to the room: {}",
+        f.notices()
+    );
+}
+
+fn backstops(f: &Fixture) -> Vec<AgentWake> {
+    f.store()
+        .agent_wakes(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .into_iter()
+        .filter(|wake| {
+            wake.label
+                .starts_with(crate::runtime::state::stranded_agent::BACKSTOP_LABEL)
+        })
+        .collect()
+}
+
+/// Row 554: a turn that ends stating a wait with nothing armed gets exactly one backstop, is
+/// told about it, and the turn the backstop fires to start does not arm another: a lane that
+/// only restates its wait must not burn a turn every interval while nothing is pending
+/// (20A7 11-27: ~30 lanes looping on exactly that), and it is told, never stranded silently.
+#[tokio::test]
+async fn a_backstop_rescues_a_stated_wait_once_and_never_chains() {
+    let f = fixture("row-554-backstop-chain", false).await;
+    let turn_1 = f.begin("turn-1");
+    f.runtime.owned.arm_wakes_at_turn_end(
+        &f.room,
+        &f.agent,
+        "turn-1",
+        &f.run,
+        "Waiting for the review.",
+    );
+    let armed = backstops(&f);
+    assert_eq!(armed.len(), 1, "one stated wait arms one backstop");
+    assert_eq!(armed[0].state, "scheduled");
+    assert!(
+        f.notices().contains("the kernel armed a backstop timer"),
+        "the agent is told what the kernel did: {}",
+        f.notices()
+    );
+
+    // The backstop fires and starts the next turn; that turn restates the wait.
+    let fired = crate::session::unix_epoch_ms()
+        + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS
+        + 1_000;
+    let Outcome::Wakes(_) = f
+        .store()
+        .agent_lifecycle(Operation::FireWakes { now: fired })
+        .unwrap()
+    else {
+        panic!("fire returns wakes")
+    };
+    let backstop = backstops(&f).pop().unwrap();
+    assert!(
+        backstop.last_fired_at_ms.is_some(),
+        "the backstop fired to start the next turn"
+    );
+    // The firing settles the turn it armed, as the delivery path does, and the next turn begins.
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: turn_1.prompt_id.clone(),
+            run: f.run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    let _turn_2 = f.begin("turn-2");
+    f.runtime.owned.arm_wakes_at_turn_end(
+        &f.room,
+        &f.agent,
+        "turn-2",
+        &f.run,
+        "Still waiting for the review.",
+    );
+    assert_eq!(
+        backstops(&f).len(),
+        1,
+        "the turn a backstop fired to start arms no second one"
+    );
+    assert!(
+        f.notices().contains("the kernel will not arm another"),
+        "the agent is told the rescue was once, not stranded silently: {}",
+        f.notices()
+    );
+}
+
+/// Row 554 A: a turn that ended saying it waits while its own yield carries the wait is told
+/// which wakes it waits on, so the agent is never left guessing what the kernel adopted.
+#[tokio::test]
+async fn a_turn_that_waits_on_its_yield_is_told_which_wakes_carry_it() {
+    let f = fixture("row-554-wait-told", false).await;
+    let task = f.begin("turn-1");
+    let wake = f.arm(&task, "wake-told").unwrap();
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id.clone()],
+            cursor: 0,
+            deadline: Some(now + 60_000),
+            reason: "Wait for the test source".into(),
+            now,
+        })
+        .unwrap();
+    f.runtime.owned.arm_wakes_at_turn_end(
+        &f.room,
+        &f.agent,
+        "turn-1",
+        &f.run,
+        "Waiting for the review.",
+    );
     assert!(
         f.notices()
-            .contains("its pass waits on the wake dead-man check since"),
-        "{}",
+            .contains(&format!("your task waits on {}", wake.registration_id)),
+        "the agent is told which wake carries its stated wait: {}",
         f.notices()
+    );
+    assert!(
+        backstops(&f).is_empty(),
+        "a task with its own wait armed gets no backstop"
     );
 }
 

@@ -1555,9 +1555,9 @@ impl KernelRuntimeState {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
         step.enter("the wake dead-man check");
-        if let Err(error) = self.sweep_agent_wakes(now).await {
-            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
-        }
+        // The check runs apart from the pass: a source or a store that does not answer degrades
+        // wake delivery checks, reported once, and never holds this pass.
+        self.spawn_wake_deadman_check(now);
         step.enter("peer follow settlement");
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
@@ -1609,7 +1609,22 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         let mut patience = super::task_work_flight::SWEEP_PATIENCE;
-        for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
+        let mut tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
+        // Live work first: the task with the freshest progress is the newest turn's, and a
+        // restored backlog (20A7 11-27: 2466 old tasks of 612 agents) never asks before it.
+        tasks.sort_by(|a, b| b.last_progress_at_ms.cmp(&a.last_progress_at_ms));
+        for task in tasks {
+            let monitor = &self.owned.agent_wakes;
+            // A task that did not settle is asked again when its backoff expires, not every
+            // pass: the pass is O(new work), however much history it restores.
+            if monitor.task_ask_held(&task.task_id, now) {
+                continue;
+            }
+            // The pass's patience is spent: the tasks it never asked are the next pass's work,
+            // not a warn each.
+            if patience.is_zero() {
+                break;
+            }
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let key = format!("sweep-task:{}", task.task_id);
             let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
@@ -1620,14 +1635,19 @@ impl KernelRuntimeState {
                 .await
             {
                 super::task_work_flight::TaskStep::Done(Err(error)) => return Err(error),
-                super::task_work_flight::TaskStep::Done(Ok(ended)) => blocked.extend(ended),
+                super::task_work_flight::TaskStep::Done(Ok(ended)) => {
+                    monitor.task_settled(&task_id);
+                    blocked.extend(ended);
+                }
                 super::task_work_flight::TaskStep::Busy => {}
                 super::task_work_flight::TaskStep::TimedOut => {
+                    let backoff = monitor.task_did_not_settle(&task_id, now);
                     crate::logging::warn_with_fields(
                         "runtime.agent_lifecycle",
-                        "supervision sweep moved on from a task that did not settle in time; the next sweep asks again",
+                        "supervision sweep moved on from a task that did not settle in time; it is not asked again until its backoff expires",
                         serde_json::json!({"task_id": task_id, "agent_id": agent_id,
-                            "step": step.current().map(|(name, _)| name)}),
+                            "step": step.current().map(|(name, _)| name),
+                            "ask_backoff_s": backoff / 1000}),
                     );
                 }
             }

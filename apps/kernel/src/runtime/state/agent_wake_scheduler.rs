@@ -19,6 +19,16 @@ const STALL_FAULT_ENV: &str = "CHARIOX_WAKE_SCHEDULER_STALL_FILE";
 /// settlement of that agent's tasks does not end.
 const TASK_STALL_FAULT_ENV: &str = "CHARIOX_SWEEP_TASK_STALL_FILE";
 
+/// First re-ask of a task the sweep waited for and that did not settle, doubling per further miss
+/// up to `ASK_BACKOFF_MAX_MS`. A task that cannot settle is warned once per miss, not once per
+/// pass: the restored backlog of a whole fleet (20A7 11-27: 2466 tasks of 612 agents, 43887
+/// "did not settle" warns in 50 min) must not flood the pass that asks it.
+const ASK_BACKOFF_MS: u64 = 5 * 60_000;
+const ASK_BACKOFF_MAX_MS: u64 = 60 * 60_000;
+/// How long the wake dead-man check may run in its own work before the next pass starts it
+/// again. The check probes sources that may not answer; the pass never waits on it.
+const WAKE_CHECK_LIMIT: Duration = Duration::from_secs(180);
+
 /// What a report of a lost watch tells its agent to do: the kernel never starts the work again, the agent does.
 const LOST_NEXT_STEP: &str = "what it watched is gone: start it again and watch the new one";
 
@@ -29,8 +39,14 @@ pub(crate) struct AgentWakeMonitor {
     scheduler_stall_alerted: AtomicBool,
     sweep_stall_alerted: AtomicBool,
     tick_failure_alerted: AtomicBool,
+    /// The wake dead-man check is degraded: reported once when it starts, again when it recovers,
+    /// never per pass.
+    deadman_degraded: AtomicBool,
     stall_fault: Option<PathBuf>,
     task_stall_fault: std::sync::Mutex<Option<PathBuf>>,
+    /// Per task the sweep asked and waited for: when it may be asked again, and how many times in
+    /// a row it has not settled. Tasks absent from it are asked by the next pass that finds them.
+    task_asks: std::sync::Mutex<BTreeMap<String, TaskAsk>>,
     /// What the scheduler loop and the lifecycle sweep wait on, named in their stall reports.
     pub(super) scheduler_step: super::supervision_step::SupervisionStep,
     pub(super) sweep_step: super::supervision_step::SupervisionStep,
@@ -49,10 +65,12 @@ impl AgentWakeMonitor {
             scheduler_stall_alerted: AtomicBool::new(false),
             sweep_stall_alerted: AtomicBool::new(false),
             tick_failure_alerted: AtomicBool::new(false),
+            deadman_degraded: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
             task_stall_fault: std::sync::Mutex::new(
                 std::env::var_os(TASK_STALL_FAULT_ENV).map(PathBuf::from),
             ),
+            task_asks: std::sync::Mutex::new(BTreeMap::new()),
             processes: Default::default(),
             scheduler_step: Default::default(),
             sweep_step: Default::default(),
@@ -106,6 +124,45 @@ impl AgentWakeMonitor {
         };
         format!("Kernel supervision sweep stalled since {}: {held}; wake delivery checks are degraded; timers still fire", iso(since))
     }
+
+    /// True while the task's ask backoff holds: the pass skips it without a claim, a spawn or a
+    /// warn.
+    pub(super) fn task_ask_held(&self, task: &str, now: u64) -> bool {
+        self.task_asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(task)
+            .is_some_and(|ask| ask.next_ask_ms > now)
+    }
+
+    /// Records a task the sweep waited for and that did not settle: warned once for this miss,
+    /// not asked again until a doubling backoff expires.
+    pub(super) fn task_did_not_settle(&self, task: &str, now: u64) -> u64 {
+        let mut asks = self.task_asks.lock().unwrap_or_else(|e| e.into_inner());
+        let ask = asks.entry(task.to_owned()).or_default();
+        ask.misses = ask.misses.saturating_add(1);
+        let backoff = ASK_BACKOFF_MS
+            .saturating_mul(1_u64 << ask.misses.saturating_sub(1).min(4))
+            .min(ASK_BACKOFF_MAX_MS);
+        ask.next_ask_ms = now.saturating_add(backoff);
+        backoff
+    }
+
+    /// A task the sweep settled: the next pass that finds it undone asks it again at once.
+    pub(super) fn task_settled(&self, task: &str) {
+        self.task_asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(task);
+    }
+}
+
+/// One task the sweep asked and waited for: when it may be asked again, and how many times in a
+/// row it has not settled.
+#[derive(Default)]
+struct TaskAsk {
+    next_ask_ms: u64,
+    misses: u32,
 }
 
 fn armed(w: &AgentWake) -> bool {
@@ -386,6 +443,44 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// The pass's own dead-man heartbeat, and the check apart from it. The heartbeat says the
+    /// sweep passed; the check (deadline cleanup, due-timer rescue, receipt alerts, source
+    /// probes) runs in its own work, so a source that does not answer — or a store that does
+    /// not — degrades wake delivery checks without ever holding the pass (20A7 11-27: the pass
+    /// waited on this check from 12:32:57Z). A degraded check is reported once, on the
+    /// transition, and again when it recovers; never per pass.
+    pub(super) fn spawn_wake_deadman_check(&self, now: u64) {
+        let monitor = &self.owned.agent_wakes;
+        monitor.sweep_ms.store(now, Ordering::Release);
+        monitor.sweep_stall_alerted.store(false, Ordering::Release);
+        let Some(claim) = self.task_work.claim("wake-deadman") else {
+            return;
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _claim = claim;
+            let degraded = &state.owned.agent_wakes.deadman_degraded;
+            match tokio::time::timeout(WAKE_CHECK_LIMIT, state.sweep_agent_wakes(now)).await {
+                Ok(Ok(())) => {
+                    if degraded.swap(false, Ordering::AcqRel) {
+                        tracing::warn!("MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check recovered; wake delivery checks run again");
+                    }
+                }
+                Ok(Err(error)) => {
+                    if !degraded.swap(true, Ordering::AcqRel) {
+                        tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is degraded; it runs apart from the sweep and is retried until it recovers");
+                    }
+                }
+                Err(_) => {
+                    if !degraded.swap(true, Ordering::AcqRel) {
+                        tracing::warn!("MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is held by a source that does not answer; it runs apart from the sweep and a fresh check starts when this one ends");
+                    }
+                }
+            }
+        });
+    }
+
     /// Proof of life: wait for the scheduler's arm receipt of a new timer.
     pub(super) async fn await_wake_verification(&self, id: &str) -> Option<u64> {
         let deadline = Instant::now() + Duration::from_millis(VERIFY_WAIT_MS);
@@ -401,14 +496,6 @@ impl KernelRuntimeState {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         None
-    }
-
-    #[cfg(test)]
-    pub(crate) fn agent_wakes_last_swept_for_test(&self, at_ms: u64) {
-        self.owned
-            .agent_wakes
-            .sweep_ms
-            .store(at_ms, Ordering::Release);
     }
 
     pub(super) fn wake_scheduler_health(&self, now: u64) -> serde_json::Value {

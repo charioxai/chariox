@@ -106,7 +106,7 @@ impl TaskWorkFlight {
     /// lack of a place keeps its turn: the places that free up go to it, oldest first, before
     /// they go to work that was not turned away, so the same enumeration of undone work cannot
     /// keep the first `WORK_AT_ONCE` pieces in the places for ever.
-    fn claim(&self, key: &str) -> Option<TaskWorkClaim> {
+    pub(super) fn claim(&self, key: &str) -> Option<TaskWorkClaim> {
         self.claim_at(key, Instant::now())
     }
 
