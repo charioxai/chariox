@@ -144,6 +144,7 @@ pub(super) async fn handle_daemon_peer_event(
                     kernel_id: stable_sender_id.into(),
                     public_key: sender_public_key,
                     sender_bound: verified_sender,
+                    owners_kernel: false,
                 },
                 expected_binding: None,
                 expected_prompt_id: None,

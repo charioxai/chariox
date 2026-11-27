@@ -207,6 +207,26 @@ impl KernelRuntimeState {
             })
     }
 
+    /// Home: the live window for a forwarded kernel request from a worker of another account
+    /// (row 405 grants owner reach only from the owner's own workers). The forwarded context
+    /// already names the current lease, worker run and running home prompt; the window must be
+    /// bound to exactly that prompt.
+    pub(crate) fn sudo_for_leased_context(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+    ) -> Result<KernelSudoTurn, DaemonError> {
+        self.authorize_forwarded_workspace_context(context)?;
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        let turn = self.sudo_for_run(&run)?;
+        if context.home_prompt_id.is_none() || turn.prompt_id != context.home_prompt_id {
+            return Err(error("this provider turn has no sudo authority"));
+        }
+        Ok(turn)
+    }
+
     /// Home: the fence for a leased dispatch about to be submitted, if the
     /// prompt is the running turn bound to a live window of its agent.
     pub(in crate::runtime::state) fn leased_sudo_fence(

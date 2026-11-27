@@ -73,6 +73,23 @@ impl CommandRouter {
         }
     }
 
+    /// Row 405: the peer's bound relay identity (its kernel `sender`, or its Machine) belongs
+    /// to this kernel's own Cloud owner, in the same realm; the same check as other
+    /// same-owner peer requests.
+    pub(crate) fn peer_is_owners_kernel(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+        sender: &str,
+    ) -> bool {
+        !identity.subject.trim().is_empty()
+            && (identity.subject_kind != chariox_relay::auth::RelaySubjectKind::Kernel
+                || identity.subject == sender)
+            && self
+                .runtime_state
+                .authenticated_owner_of(identity)
+                .is_some()
+    }
+
     pub(crate) fn same_owner_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
