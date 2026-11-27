@@ -232,3 +232,59 @@ fn a_steer_accepted_after_its_prompt_settled_returns_to_pending_at_once() {
     });
     assert_eq!(row(&f.store, r.sequence).state, "pending");
 }
+
+#[test]
+fn a_child_deadline_notice_waits_for_the_parents_action_after_delivery_and_reopen() {
+    let f = Fixture::new();
+    f.begin("p");
+    let mut event = occurrence(
+        ROOM,
+        AGENT,
+        "deadline:child",
+        "100:ended",
+        "child_time_limit_ended",
+        serde_json::json!({"child_agent_id": "child", "deadline_ms": 100}),
+    );
+    event.urgent = true;
+    let Outcome::Event(event) = f.apply(Operation::Occur(event)) else {
+        panic!("event")
+    };
+    f.apply(Operation::Attempt {
+        room: ROOM.into(),
+        agent: AGENT.into(),
+        sequence: event.sequence,
+        prompt: "deadline-steer".into(),
+        target: Some("p".into()),
+        run: Some("run".into()),
+        now: 10,
+        work: None,
+        through: 0,
+    });
+    read(&f.store, event.sequence);
+    f.apply(Operation::Receipt {
+        room: ROOM.into(),
+        agent: AGENT.into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+        now: 11,
+    });
+    assert_eq!(
+        row(&f.store, event.sequence).state,
+        "accepted",
+        "showing the notice is not the parent's decision to extend or let the child stop"
+    );
+    settle(&f.store, "p");
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    let retained = row(&reopened, event.sequence);
+    assert_eq!(retained.state, "accepted");
+    assert_eq!(retained.payload["child_agent_id"], "child");
+    assert_eq!(retained.payload["deadline_ms"], 100);
+    f.apply(Operation::Ack {
+        room: ROOM.into(),
+        agent: AGENT.into(),
+        sequence: event.sequence,
+        handled: true,
+        now: 13,
+    });
+    assert_eq!(row(&reopened, event.sequence).state, "handled");
+}
