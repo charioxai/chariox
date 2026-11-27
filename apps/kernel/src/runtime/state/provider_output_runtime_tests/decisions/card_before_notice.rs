@@ -110,6 +110,15 @@ async fn a_card_is_created_when_its_holder_cannot_be_told_yet() {
         crate::runtime::state::publication_activation::PublicationActivation::new(false),
     );
     assert!(t.runtime.owned.require_publication_activation().is_ok());
+    // The refused start left a retry record 30 s ahead; make it due (the existing test-ledger helper,
+    // as `agent_start_retry_tests` does) instead of sleeping.
+    t.runtime
+        .owned
+        .durable_state_store
+        .agent_ledger_sql_for_test(&format!(
+            "UPDATE agent_inbox_start_failures SET retry_at_ms=1 WHERE sequence={}",
+            before[0].sequence
+        ));
     t.runtime
         .deliver_agent_inbox_for_test(&t.room, &t.p)
         .await
