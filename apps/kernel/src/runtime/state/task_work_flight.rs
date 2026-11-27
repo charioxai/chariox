@@ -15,7 +15,7 @@ const WORK_LIMIT: Duration = Duration::from_secs(180);
 /// long it waits for all of them together in one pass. The work goes on apart from the sweep, up
 /// to `WORK_LIMIT`, and the next sweep asks again. A pass stays well under the dead-man check
 /// (three sweeps) even when several tasks hold.
-const TASK_WAIT: Duration = Duration::from_secs(5);
+pub(super) const TASK_WAIT: Duration = Duration::from_secs(5);
 pub(super) const SWEEP_PATIENCE: Duration = Duration::from_secs(20);
 
 /// How the work of one task ended as far as the sweep that asked for it is concerned.
@@ -82,6 +82,22 @@ fn admit(
 #[derive(Clone, Default)]
 pub(super) struct TaskWorkFlight {
     admission: Arc<std::sync::Mutex<Admission>>,
+    /// The last task a pass reached when it stopped for patience; the next pass starts after it.
+    cursor: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+/// `items` starting after the one `key` names `cursor`, then the ones before it: a pass that
+/// stopped for patience goes on where it stopped, so the first tasks of the ledger do not spend
+/// the patience of every pass. A cursor that names none of them starts from the first.
+pub(super) fn after_cursor<T>(
+    mut items: Vec<T>,
+    cursor: Option<&str>,
+    key: impl Fn(&T) -> &str,
+) -> Vec<T> {
+    if let Some(at) = cursor.and_then(|cursor| items.iter().position(|item| key(item) == cursor)) {
+        items.rotate_left(at + 1);
+    }
+    items
 }
 
 /// The right to run the work named `key`, held until the work ends, however it ends.
@@ -147,6 +163,22 @@ impl TaskWorkFlight {
                 key: key.to_owned(),
             },
         )
+    }
+
+    pub(super) fn after_cursor(&self, tasks: Vec<AgentTaskExecution>) -> Vec<AgentTaskExecution> {
+        let cursor = self
+            .cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        after_cursor(tasks, cursor.as_deref(), |task| task.task_id.as_str())
+    }
+
+    pub(super) fn set_cursor(&self, cursor: Option<String>) {
+        *self
+            .cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cursor;
     }
 
     #[cfg(test)]
@@ -245,7 +277,7 @@ impl KernelRuntimeState {
             }
         });
         let wait = TASK_WAIT.min(*patience);
-        let started = Instant::now();
+        let started = tokio::time::Instant::now();
         let outcome = tokio::time::timeout(wait, answered).await;
         *patience = patience.saturating_sub(started.elapsed());
         match outcome {
@@ -267,6 +299,20 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pass_that_stopped_goes_on_after_the_last_task_it_reached() {
+        let items = ["a", "b", "c", "d", "e"].map(String::from).to_vec();
+        let order = |cursor| after_cursor(items.clone(), cursor, |item| item.as_str());
+        assert_eq!(order(None), ["a", "b", "c", "d", "e"]);
+        assert_eq!(order(Some("b")), ["c", "d", "e", "a", "b"]);
+        assert_eq!(order(Some("e")), ["a", "b", "c", "d", "e"]);
+        assert_eq!(
+            order(Some("gone")),
+            ["a", "b", "c", "d", "e"],
+            "a task that left the set restarts from the first"
+        );
+    }
 
     #[test]
     fn the_same_work_does_not_start_twice_while_it_runs() {

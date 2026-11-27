@@ -196,10 +196,44 @@ impl DurableKernelStateStore {
         Ok(latest.as_deref() != Some("app.binding.owner_revoked"))
     }
 
+    #[cfg(test)]
+    pub(crate) fn dev_installation_reads_for_test(&self) -> usize {
+        self.dev_installation_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The active dev installations; `None` when the shared connection is busy, which the caller
+    /// retries at its next pass instead of waiting for it. A look that finds none marks the store
+    /// known-empty until an App registry write is applied (row 690).
+    pub(crate) fn active_dev_app_installations_if_free(
+        &self,
+    ) -> Result<Option<Vec<(String, String, String)>>, DaemonError> {
+        let Some(connection) = self.try_lock_connection("durable_state.dev_app_installations")?
+        else {
+            return Ok(None);
+        };
+        self.read_dev_app_installations(&connection).map(Some)
+    }
+
     pub(crate) fn active_dev_app_installations(
         &self,
     ) -> Result<Vec<(String, String, String)>, DaemonError> {
         let connection = self.lock_connection("durable_state.dev_app_installations")?;
+        self.read_dev_app_installations(&connection)
+    }
+
+    fn read_dev_app_installations(
+        &self,
+        connection: &Connection,
+    ) -> Result<Vec<(String, String, String)>, DaemonError> {
+        #[cfg(test)]
+        self.dev_installation_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Marked before the read: a write applied meanwhile clears it again after it is applied.
+        self.writer
+            .health
+            .dev_installations_known_empty
+            .store(true, std::sync::atomic::Ordering::Release);
         let mut statement = connection.prepare("SELECT owner_id,dev_room_id,installation_id FROM app_installations WHERE channel='dev' AND active_json IS NOT NULL ORDER BY installation_id")
             .map_err(|error| DaemonError::InternalInvariant {operation:"apps.dev_bindings", message:error.to_string()})?;
         let rows = statement
@@ -208,11 +242,19 @@ impl DurableKernelStateStore {
                 operation: "apps.dev_bindings",
                 message: error.to_string(),
             })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
+        let installations = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|error| DaemonError::InternalInvariant {
                 operation: "apps.dev_bindings",
                 message: error.to_string(),
-            })
+            })?;
+        if !installations.is_empty() {
+            self.writer
+                .health
+                .dev_installations_known_empty
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+        Ok(installations)
     }
 
     pub(crate) fn list_app_installations(

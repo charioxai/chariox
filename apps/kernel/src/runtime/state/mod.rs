@@ -1898,6 +1898,8 @@ mod lifecycle_sweep_flight;
 #[cfg(test)]
 mod lifecycle_sweep_load_tests;
 #[cfg(test)]
+mod sweep_patience_tests;
+#[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]
 mod pump_stall_tests;
