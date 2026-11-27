@@ -489,10 +489,10 @@ impl KernelRuntimeState {
                 for (path, value) in changes {
                     match value {
                         Some(value) => {
-                            app.set_user_config_value(path.into(), value)?;
+                            app.set_user_config_value(path, value)?;
                         }
                         None => {
-                            app.unset_user_config_value(path.into())?;
+                            app.unset_user_config_value(path)?;
                         }
                     }
                 }
