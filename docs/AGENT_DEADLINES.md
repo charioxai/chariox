@@ -14,8 +14,8 @@ One `SetAgentDeadline` request returns the resulting durable receipt;
 run, not the agent: once its cleanup has finished (`stopped_at_ms` is set), the owner, or a parent that
 may edit it, sets a new time or `none`, and the agent takes prompts again with its context. A deadline
 bounds only the agent that carries it: its sub-agents are neither stopped nor limited by it, so they
-keep working. When a reached limit retires work the agent owed — messages queued to it, a delivery
-or a start it refused — the PARENT agent receives one urgent `child_time_limit_ended` event that
+keep working. When a limit ends, whether the child is idle, running a turn or waiting,
+the PARENT agent receives one urgent `child_time_limit_ended` event that
 names the extend command: the parent extends the limit and prompts the agent again, or lets it
 stay stopped. No card reaches the person; a time limit is the parent agent's setting, never the
 person's to answer. A top-level agent has no parent to ask: the Room's stop notice is the whole

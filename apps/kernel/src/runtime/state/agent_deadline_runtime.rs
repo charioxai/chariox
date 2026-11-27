@@ -24,31 +24,6 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
-    /// Whether a pending inbox message waits for the agent: one the limit retires was never
-    /// refused by a delivery, so the tick tells the parent once instead.
-    pub(super) fn has_pending_agent_message(&self, room: &str, agent: &str) -> bool {
-        let mut after = 0;
-        loop {
-            let Ok(events) = self
-                .owned
-                .durable_state_store
-                .agent_work_inbox(room, agent, after, None)
-            else {
-                return false;
-            };
-            let Some(last) = events.last().map(|event| event.sequence) else {
-                return false;
-            };
-            if events
-                .iter()
-                .any(|event| event.kind == "message" && event.state == "pending")
-            {
-                return true;
-            }
-            after = last;
-        }
-    }
-
     pub(crate) async fn set_agent_deadline(
         &self,
         caller_user_id: &str,
@@ -210,9 +185,6 @@ impl KernelRuntimeState {
             }
             // What the limit stops is read before the cleanup removes it, and kept across retries.
             let work = self.deadline_work_at_reach(&deadline);
-            // Messages the limit retires were never refused by a delivery; the parent is told once.
-            let retires_messages = deadline.reached_at_ms.is_none()
-                && self.has_pending_agent_message(&deadline.session_id, &deadline.agent_id);
             // Fence every due agent before awaiting any physical cleanup.
             self.owned
                 .durable_state_store
@@ -222,10 +194,6 @@ impl KernelRuntimeState {
                     now,
                     stopped: false,
                 })?;
-            if retires_messages {
-                self.tell_parent_limit_ended(&deadline.session_id, &deadline.agent_id)
-                    .await;
-            }
             due.push((deadline, work));
         }
         let outcomes =
@@ -239,6 +207,10 @@ impl KernelRuntimeState {
                 .await
                 {
                     Ok(Ok(())) => {
+                        // Every expiry tells the parent, even with no pending message. Stop
+                        // the child first; a failed parent delivery must not keep it running.
+                        // Leave the receipt unfinished on failure so the next tick retries.
+                        self.send_limit_ended_notice(deadline).await?;
                         let stopped = self
                             .owned
                             .durable_state_store

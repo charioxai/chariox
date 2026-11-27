@@ -361,7 +361,10 @@ impl KernelRuntimeState {
 
     /// One durable urgent event per ended limit, to the nearest living ancestor: a reload, a
     /// restart or a repeated refusal re-reads the same occurrence instead of raising another.
-    async fn send_limit_ended_notice(&self, deadline: &AgentDeadline) -> Result<(), DaemonError> {
+    pub(super) async fn send_limit_ended_notice(
+        &self,
+        deadline: &AgentDeadline,
+    ) -> Result<(), DaemonError> {
         let child = self.owned.agent_store.get_agent(&deadline.agent_id)?;
         let Some(parent) = self.living_ancestor(&child) else {
             return Ok(());
