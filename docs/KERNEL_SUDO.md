@@ -234,6 +234,22 @@ default and at most 240 s, after which it is stopped.
   (`chariox request`). A program that runs as root can still read the kernel's own memory: the
   guarantee is that no Chariox surface shows the password to the model.
 
+The same operation is available from an agent shell or the owner's CLI:
+
+```sh
+chariox privileged run --entry "sudo of this machine" -- whoami
+```
+
+`--entry` accepts an exact Vault id or a unique entry name. Optional `--machine`
+selects `this` or this kernel's id; another kernel is refused. `--timeout` is
+1–240 seconds (120 by default). Arguments after `--` are passed unchanged,
+without a shell. The command prints the masked outcome as JSON and returns the
+command's exit code. A shell of a live provider run keeps that agent's Vault
+checks and Activity attribution; an owner's local client keeps owner attribution.
+It never accepts a password argument. Other Vault menu operations remain
+owner-only. An uncertain result is never retried automatically; check the
+command's effects before deciding whether to run it again.
+
 Two file tools complete the set:
 
 - `chariox.vault.capture_file {request_id, path, host, use_binding, label?, extract?,

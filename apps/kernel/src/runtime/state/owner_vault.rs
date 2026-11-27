@@ -169,6 +169,29 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: OwnerVaultRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        // A CLI run projects the same operation as privileged.run, with the
+        // transport-bound provider run. It grants no other Vault operation.
+        if let OwnerVaultRequest::RunPrivileged {
+            id,
+            argv,
+            machine,
+            timeout_seconds,
+        } = &request
+        {
+            if command.caller.connection_class
+                == Some(crate::local::KernelConnectionClass::KernelAgent)
+            {
+                return self
+                    .agent_cli_privileged_run(
+                        command,
+                        id,
+                        argv,
+                        machine.as_deref(),
+                        *timeout_seconds,
+                    )
+                    .await;
+            }
+        }
         // KA, sudo and host forwarding cannot turn an agent into an owner client.
         let owner = self.owner_client_user_id(command)?;
         self.require_unlocked_vault()?;

@@ -17,6 +17,7 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: "privileged run", brief: "Run one command with sudo using a Vault entry", flags: [{ name: "--entry", value: "NAME", required: true }, { name: "--machine", value: "ID" }, TIMEOUT, SOCKET], summary: "run argv after -- as root on this kernel's machine, with the machine-bound Vault entry named by --entry. The kernel supplies the password on stdin and masks it in JSON stdout/stderr; --timeout is 1-240 seconds (default 120). The ordinary agent sandbox stays in force" },
   { name: "agent settings", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT"], summary: "read an agent's current settings and pending profile", brief: "Read an agent's settings" },
   {
     name: "agent settings set",
@@ -175,10 +176,8 @@ export function topLevelHelpText(): string {
     "Usage: chariox <command> [arguments]",
     "Run chariox without a command to open the terminal client.",
     "Run chariox guide for agent command details and examples.",
-    "",
     "General", ...general,
     ...Array.from(groups, ([title, rows]) => ["", title, ...rows]).flat(),
-    "",
   ].join("\n")
 }
 
@@ -296,7 +295,6 @@ export function guideText(): string {
     "5. Move files: chariox files put|get|stat|ls --kernel NAME ... (put and get resume after an interruption: run the same command again)",
     "6. Run long commands: chariox terminal open|send|read|wait|close --kernel NAME --session ID ...",
     "   Terminals keep running if you disconnect; read them later with --since. For one-off commands, run chariox exec --kernel NAME -- argv...",
-    "",
     "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540 in the foreground or your harness background option, or poll chariox events list. Keep next_cursor. A new grant follows nothing, and a wait on it is refused at once. To continue an earlier grant's follows, run chariox events subscribe --like OLD_GRANT_ID.",
     "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
     "To be woken instead of polling when a workflow finishes or an agent needs the person: chariox events sources, then chariox events subscribe --source ID; each occurrence is one record of type notification (value.source_id, display_name, occurrence_id, output.message, deadline_ms); a gap record means unread ones were dropped.",
@@ -304,7 +302,6 @@ export function guideText(): string {
     "interaction_closed means someone else answered or it expired: drop the question. Do not choose for the person.",
     "A record with no question but a pointer is the person's alone: show pointer.one_line verbatim and do not answer it.",
     "Or add chariox events mcp as an MCP server: its tool chariox_next_choice waits, asks and answers. A subscription lasts until its grant ends or you cancel it.",
-    "Commands:",
     ...commands,
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
