@@ -7,12 +7,16 @@ pub(super) const RETURNED_BYTES: usize = 32 * 1024;
 /// Masks the injected values in the whole stream before cutting it, so no
 /// partial value survives at the cut; then sanitizes each line. A stream the
 /// kernel stopped collecting at its limit (`at_limit`) may end inside a value:
-/// whatever there begins one is dropped too.
+/// it is first cut back to before any value it may have cut.
 pub(super) fn masked(
     raw: &[u8],
     masks: &[(String, Zeroizing<String>)],
     at_limit: bool,
 ) -> (String, bool) {
+    let raw = match at_limit {
+        true => &raw[..before_cut_value(raw, masks)],
+        false => raw,
+    };
     let mut bytes = Zeroizing::new(raw.to_vec());
     for (id, value) in masks {
         for value in [value.as_str(), value.trim()] {
@@ -20,10 +24,6 @@ pub(super) fn masked(
                 bytes = replaced(&bytes, value.as_bytes(), format!("[vault:{id}]").as_bytes());
             }
         }
-    }
-    if at_limit {
-        let kept = bytes.len() - value_start_at_end(&bytes, masks);
-        bytes.truncate(kept);
     }
     let text = Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned());
     let text = text
@@ -54,18 +54,35 @@ fn replaced(bytes: &[u8], value: &[u8], with: &[u8]) -> Zeroizing<Vec<u8>> {
     out
 }
 
-/// The length of the longest end of `bytes` that is the start of an injected value.
-fn value_start_at_end(bytes: &[u8], masks: &[(String, Zeroizing<String>)]) -> usize {
-    masks
-        .iter()
-        .flat_map(|(_, value)| [value.as_bytes(), value.trim().as_bytes()])
+/// Where a stream cut at the limit ends before any injected value it may have
+/// cut, read on the bytes as collected: before its longest end that begins a
+/// value, and then before any whole value that runs across that point.
+fn before_cut_value(raw: &[u8], masks: &[(String, Zeroizing<String>)]) -> usize {
+    let values = || {
+        masks
+            .iter()
+            .flat_map(|(_, value)| [value.as_bytes(), value.trim().as_bytes()])
+            .filter(|value| !value.is_empty())
+    };
+    let started = values()
         .filter_map(|value| {
             (1..value.len())
                 .rev()
-                .find(|&len| bytes.ends_with(&value[..len]))
+                .find(|&len| raw.ends_with(&value[..len]))
         })
         .max()
-        .unwrap_or(0)
+        .unwrap_or(0);
+    let mut end = raw.len() - started;
+    while let Some(start) = values()
+        .flat_map(|value| {
+            (end.saturating_sub(value.len() - 1)..end)
+                .filter(move |&at| raw[at..].starts_with(value))
+        })
+        .min()
+    {
+        end = start;
+    }
+    end
 }
 
 #[cfg(test)]
@@ -121,13 +138,29 @@ mod unit_tests {
     }
 
     #[test]
-    fn a_value_ending_exactly_at_the_limit_is_masked_whole() {
+    fn a_value_ending_exactly_at_the_limit_leaves_nothing_of_it() {
+        let masks = vec![mask("key", "secret-value")];
+        let (text, _) = masked(b"out secret-value", &masks, true);
+        assert_eq!(text, "out [vault:key]");
+        // A value that ends with its own start may be cut there: it is dropped whole.
         let masks = vec![mask("key", "abab-secret-abab")];
-        let (text, _) = masked(b"out abab-secret-abab", &masks, true);
-        assert_eq!(text, "out [vault:key]");
-        // A value repeating its own start is masked whole, and the start after it dropped.
-        let (text, _) = masked(b"out abab-secret-ababab", &masks, true);
-        assert_eq!(text, "out [vault:key]");
+        for raw in [&b"out abab-secret-abab"[..], b"out abab-secret-ababab"] {
+            let (text, _) = masked(raw, &masks, true);
+            assert_eq!(text, "out ", "{}", String::from_utf8_lossy(raw));
+        }
+    }
+
+    #[test]
+    fn a_cut_longer_value_is_dropped_even_where_a_shorter_one_inside_it_is_whole() {
+        let masks = vec![mask("long", "abcdefghi"), mask("short", "abc")];
+        for kept in 1.."abcdefghi".len() {
+            let raw = cut_inside(b"pad ", "abcdefghi", kept);
+            let (text, _) = masked(&raw, &masks, true);
+            assert_eq!(text, "pad ", "{kept} bytes of the longer value at the cut");
+        }
+        // Not cut: the shorter value is masked where the command printed it.
+        let (text, _) = masked(b"pad abcdef", &masks, false);
+        assert_eq!(text, "pad [vault:short]def");
     }
 
     #[test]
