@@ -264,29 +264,41 @@ fn an_agents_spawn_through_kernel_request_is_its_own_child() {
             worktree_placement: None,
             metaagent: false,
         });
-        let result = Box::pin(f.router.dispatch_authenticated_runtime_tool_call(
-            "sudo-fixture-bearer",
-            REQUEST,
-            json!({ "request": serde_json::to_value(&spawn).unwrap() }),
-        ))
-        .await;
-        assert!(
-            result.as_ref().is_ok_and(|result| result.ok),
-            "the owner's agent could not spawn: {result:?}"
-        );
-        let child = f
-            .state
-            .owned
-            .agent_store
-            .list_agents()
-            .into_iter()
-            .find(|agent| agent.alias() == Some("reach405-child"))
-            .expect("the spawned agent");
-        assert_eq!(
-            child.parent_agent_id(),
-            Some(parent.as_str()),
-            "an agent's spawn through chariox_kernel_request became a root agent"
-        );
+        for (alias, request) in [
+            ("reach405-child", serde_json::to_value(&spawn).unwrap()),
+            (
+                "reach405-batch",
+                json!({"SpawnAgents": {
+                    "session_id": f.request.session_id,
+                    "no_subscribe": true,
+                    "agents": [{"alias": "reach405-batch", "provider": "dev-stub", "metaagent": false}]
+                }}),
+            ),
+        ] {
+            let result = Box::pin(f.router.dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                REQUEST,
+                json!({ "request": request }),
+            ))
+            .await;
+            assert!(
+                result.as_ref().is_ok_and(|result| result.ok),
+                "the owner's agent could not spawn: {result:?}"
+            );
+            let child = f
+                .state
+                .owned
+                .agent_store
+                .list_agents()
+                .into_iter()
+                .find(|agent| agent.alias() == Some(alias))
+                .expect("the spawned agent");
+            assert_eq!(
+                child.parent_agent_id(),
+                Some(parent.as_str()),
+                "an agent's spawn through chariox_kernel_request became a root agent"
+            );
+        }
     });
 }
 

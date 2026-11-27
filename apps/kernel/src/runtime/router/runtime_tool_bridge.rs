@@ -299,8 +299,10 @@ impl CommandRouter {
         // MP-08/MP-10/MP-11: an agent's spawns and workflows stay its own (spawn parent,
         // child_finished, the workflow's controlling agent).
         if command.command_type.starts_with("agent.")
+            || matches!(request, crate::local::LocalDaemonRequest::SpawnAgents(_))
             || crate::runtime::workflow_actor::is_workflow_command(&request)
         {
+            command.caller.caller_kind = crate::runtime::command::KernelCallerKind::Metaagent;
             command.caller.metaagent_id = Some(reach.agent_id.clone());
         }
         let response = Box::pin(self.dispatch(command, request)).await?;
