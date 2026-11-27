@@ -1,6 +1,6 @@
 # Owned kernels and optional control-plane machines
 
-> Owner D246 (2026-11-27) changes the visibility/lifetime and billing-display decisions below. See [Machine lifecycle](design/MACHINE_LIFECYCLE.md) for the three decided kinds, deadline teardown and open recovery-image questions. That amendment is design only, awaiting owner review before implementation.
+> Owner D246 / D249 (2026-11-27) changes the visibility/lifetime and billing-display decisions below. See [Machine lifecycle](design/MACHINE_LIFECYCLE.md) for the three decided kinds, deadline teardown and open recovery-image questions. That amendment is design only, awaiting owner review before implementation.
 
 MP-08 / MP-09 / MP-10 / MP-11. Design amendment, 2026-11-02; no protocol allocation or product implementation in this change.
 
