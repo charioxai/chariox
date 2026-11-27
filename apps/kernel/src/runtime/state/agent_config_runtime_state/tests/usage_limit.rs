@@ -2320,3 +2320,98 @@ async fn usage_limit_armed_task_is_waiting_in_the_shared_room_and_notice() {
         .iter()
         .any(|notice| notice.message.contains("Needs your help")));
 }
+
+#[tokio::test]
+async fn usage_limit_early_recovery_claims_the_armed_stop_after_a_new_meter_read() {
+    use crate::account_profile::{
+        ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
+        ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
+        ProviderAccountUsageSnapshot,
+    };
+    let team = team_claude(config(UsageLimitResume::Automatic), 1).await;
+    let registry = &team.rt().owned.provider_account_profiles;
+    let profile = registry.create_managed(OWNER, "claude", "Limited").unwrap();
+    registry
+        .set_default(OWNER, "claude", &profile.profile_id)
+        .unwrap();
+    crate::test_support::authenticate_provider_account(
+        registry,
+        OWNER,
+        "claude",
+        &profile.profile_id,
+    )
+    .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let reset = now + 7_200_000;
+    let reading = |state, observed_at_ms| ProviderAccountUsageSnapshot {
+        profile_id: profile.profile_id.clone(),
+        provider: "claude".into(),
+        availability: ProviderAccountUsageAvailability::Available,
+        meters: vec![ProviderAccountUsageMeter {
+            meter_id: "weekly".into(),
+            label: "Weekly".into(),
+            service_id: None,
+            kind: ProviderAccountUsageMeterKind::RollingLimit,
+            scope: ProviderAccountUsageMeterScope::Account,
+            used_percent: None,
+            used: None,
+            remaining: None,
+            total: None,
+            unit: None,
+            window_duration_minutes: Some(10080),
+            resets_at_ms: Some(reset),
+            state,
+            source: "refresh".into(),
+            observed_at_ms,
+        }],
+        observed_at_ms: Some(observed_at_ms),
+        source: "refresh".into(),
+        management_url: None,
+    };
+    registry
+        .update_usage(
+            OWNER,
+            "claude",
+            &profile.profile_id,
+            reading(ProviderAccountUsageMeterState::Exhausted, now),
+        )
+        .unwrap();
+    team.hit_the_limit_saying(0, "You've hit your usage limit; try again at 3:06 PM")
+        .await;
+    let stop = team.stop(0).unwrap();
+    assert_eq!(stop.state, UsageLimitStopState::Armed { at_ms: reset });
+    let observed = crate::session::unix_epoch_ms().max(stop.stopped_at_ms) + 1;
+    let agent = team.agent(0);
+    assert!(!team
+        .rt()
+        .owned
+        .usage_limit_capacity_is_back(&agent, &stop, observed));
+    registry
+        .update_usage(
+            OWNER,
+            "claude",
+            &profile.profile_id,
+            reading(ProviderAccountUsageMeterState::Healthy, observed),
+        )
+        .unwrap();
+    assert!(team
+        .rt()
+        .owned
+        .usage_limit_capacity_is_back(&agent, &stop, observed));
+    assert!(observed < reset);
+    assert!(team
+        .rt()
+        .claim_resume(&agent, observed, ResumeReason::Recovered(&stop))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(
+        team.rt()
+            .claim_resume(&agent, observed, ResumeReason::Recovered(&stop))
+            .await
+            .unwrap()
+            .is_none(),
+        "one observation claims only one continuation"
+    );
+    team.rt().end_resume_send(&agent);
+}
