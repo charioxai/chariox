@@ -269,7 +269,7 @@ async fn the_card(state: &KernelRuntimeState, room: &str) -> (String, String) {
 async fn the_card_of(
     state: &KernelRuntimeState,
     room: &str,
-    call: &tokio::task::JoinHandle<Result<serde_json::Value, DaemonError>>,
+    call: &mut tokio::task::JoinHandle<Result<serde_json::Value, DaemonError>>,
 ) -> (String, String) {
     for _ in 0..500 {
         if let Some(card) = state
@@ -282,7 +282,9 @@ async fn the_card_of(
         {
             return (card.id().to_owned(), card.message().to_owned());
         }
-        assert!(!call.is_finished(), "the call ended before any card was shown");
+        if call.is_finished() {
+            panic!("the call ended before any card was shown: {:?}", call.await);
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("no card was shown");
@@ -802,7 +804,7 @@ async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_
     assert_eq!(classes_of(&state), Some(vec!["small".into()]));
     no_card(&state, &room);
     // Adding one goes to the person's card naming the old and new classes; nothing changes before they answer.
-    let call = {
+    let mut call = {
         let (state, token) = (state.clone(), token.clone());
         tokio::spawn(async move {
             tool(
@@ -814,7 +816,7 @@ async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_
             .await
         })
     };
-    let (id, message) = the_card_of(&state, &room, &call).await;
+    let (id, message) = the_card_of(&state, &room, &mut call).await;
     assert!(
         message.contains("Machine classes without asking: from small to small, big."),
         "{message}"
@@ -827,7 +829,7 @@ async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_
         .unwrap();
     assert!(call.await.unwrap().is_err());
     assert_eq!(classes_of(&state), Some(vec!["small".into()]), "a denied raise changes nothing");
-    let call = {
+    let mut call = {
         let (state, token) = (state.clone(), token.clone());
         tokio::spawn(async move {
             tool(
@@ -839,7 +841,7 @@ async fn the_classes_agents_may_acquire_without_asking_are_lowered_directly_and_
             .await
         })
     };
-    let (id, _) = the_card_of(&state, &room, &call).await;
+    let (id, _) = the_card_of(&state, &room, &mut call).await;
     state
         .resolve_terminal_runtime_interaction(&room, &id, "approve", None, Some(&owner))
         .await
