@@ -429,6 +429,7 @@ async fn an_unverified_ready_machine_reports_reconnecting_and_can_be_released() 
         relay_realm_id: "realm".into(),
         key_thumbprint: "a".repeat(64),
         presence: None,
+        access_scope: None,
     });
     let inventory = &state.owned.notification_inventory_projection;
     inventory.update(Default::default(), vec![presence]);

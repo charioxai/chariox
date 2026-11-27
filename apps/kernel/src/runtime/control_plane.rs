@@ -311,6 +311,12 @@ pub(crate) async fn execute(
             *access_reason = None;
         }
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
+            if purpose.as_deref() == Some("agent_private") && target.access_scope.is_none() {
+                return Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The private allocation returned no agent authority scope",
+                ));
+            }
             let grant = grant
                 .or_else(|| command.reach_caller_id())
                 .or_else(|| {
@@ -340,7 +346,7 @@ pub(crate) async fn execute(
                     "The machine caller's kernel access ended",
                 )
             })?;
-            let attached = if purpose.as_deref() == Some("offload_job") {
+            let attached = if matches!(purpose.as_deref(), Some("offload_job" | "agent_private")) {
                 gateway
                     .attach_job_machine(
                         target,
