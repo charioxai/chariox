@@ -149,9 +149,14 @@ const frameOrigin = frame => {
 async function widgetRects(connection, sessionId, tab, ref, child, anchorObjectId, contextId, width, height, anchorRect) {
   return withBrowserFrames(connection, sessionId, tab.target_id, tab.document_id, async frames => {
     const root = frames[0], origins = new Set(), owners = new Map(), rects = new Map();
-    // The page's own frame tree names every direct child frame, whether it renders in the page's process or its own;
-    // a renderer of its own adds the child's full frame record.
-    const direct = (root.tree?.childFrames ?? []).map(({ frame }) => frames.find(entry => entry.frame.id === frame.id)?.frame ?? frame);
+    // A direct child frame is in the page's own frame tree when it renders in the page's process; a cross-process one
+    // (hCaptcha, Turnstile, reCAPTCHA) may be missing there or only a placeholder, and is a renderer of its own whose
+    // parent is the page. Both count, once, with the renderer's full frame record when there is one.
+    const direct = [];
+    for (const frame of [...(root.tree?.childFrames ?? []).map(({ frame }) => frame), ...frames.filter(entry => entry !== root && entry.parent === root).map(entry => entry.frame)]) {
+      if (direct.some(known => known.id === frame.id)) continue;
+      direct.push(frames.find(entry => entry.frame.id === frame.id)?.frame ?? frame);
+    }
     const owner = async frame => {
       if (!owners.has(frame.id)) owners.set(frame.id, (await connection.send('DOM.getFrameOwner', { frameId: frame.id }, root.sessionId)).backendNodeId);
       return owners.get(frame.id);
@@ -402,12 +407,28 @@ export async function resolveCardRegion(host, command, scope, signal) {
       const holdsFrame = child || (objectId && (await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: "function() { return this.localName === 'iframe' || typeof this.querySelector === 'function' && !!this.querySelector('iframe'); }", arguments: [{ value: null }], returnByValue: true }, sessionId)).result?.value === true);
       const extra = !holdsFrame ? [] : await widgetRects(connection, sessionId, tab, command.ref, child, child ? null : objectId, world.contextId, box.viewport_width, box.viewport_height, box.rect);
       if (extra.length) {
-        const { x, y, width: w, height: h } = box.rect, vw = box.viewport_width, vh = box.viewport_height;
-        const left = Math.max(0, Math.floor(Math.min(x, ...extra.map(r => r.left - 16))));
-        const top = Math.max(0, Math.floor(Math.min(y, ...extra.map(r => r.top - 16))));
-        const right = Math.min(vw, Math.ceil(Math.max(x + w, ...extra.map(r => r.right + 16))));
-        const bottom = Math.min(vh, Math.ceil(Math.max(y + h, ...extra.map(r => r.bottom + 16))));
+        // A page element that holds a widget (the agent named the page's main element, as its instructions say) is
+        // framed on the widget it holds, so the challenge shows at a readable scale; the card still scrolls over the
+        // whole page. An element inside the widget is framed with the rest of the widget.
+        const own = child ? [box.rect] : [];
+        const vw = box.viewport_width, vh = box.viewport_height;
+        const left = Math.max(0, Math.floor(Math.min(...own.map(r => r.x), ...extra.map(r => r.left - 16))));
+        const top = Math.max(0, Math.floor(Math.min(...own.map(r => r.y), ...extra.map(r => r.top - 16))));
+        const right = Math.min(vw, Math.ceil(Math.max(...own.map(r => r.x + r.width), ...extra.map(r => r.right + 16))));
+        const bottom = Math.min(vh, Math.ceil(Math.max(...own.map(r => r.y + r.height), ...extra.map(r => r.bottom + 16))));
         box = { ...box, rect: { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) } };
+      }
+    }
+    // Row 655/666: an anchor hidden inside a widget (the closed challenge's Verify button) shows the widget's visible
+    // frames (its checkbox) at a readable scale instead of the whole page; the agent is still told the anchor is hidden.
+    let anchorHidden = false;
+    if (box && box.done !== true && box.rect && !hasArea(box) && command.app_confirmation !== true && remembered.children.has(command.ref)) {
+      const extra = await widgetRects(connection, sessionId, tab, command.ref, true, null, world.contextId, box.viewport_width, box.viewport_height, null);
+      if (extra.length) {
+        const vw = box.viewport_width, vh = box.viewport_height;
+        const left = Math.max(0, Math.floor(Math.min(...extra.map(r => r.left - 16)))), top = Math.max(0, Math.floor(Math.min(...extra.map(r => r.top - 16))));
+        const right = Math.min(vw, Math.ceil(Math.max(...extra.map(r => r.right + 16)))), bottom = Math.min(vh, Math.ceil(Math.max(...extra.map(r => r.bottom + 16))));
+        if (right > left && bottom > top) { box = { ...box, rect: { x: left, y: top, width: right - left, height: bottom - top } }; anchorHidden = true; }
       }
     }
     if ((await current())?.loaderId !== remembered.document_id) return gone('Browser document changed');
@@ -420,7 +441,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
     const region = { tab_id: tab.tab_id, ref: command.ref, generation: host.generation, document_id: tab.document_id, origin, ...box,
       ...(config ? {verification:config} : {}), ...(command.done_text === undefined ? {} : {done_text:command.done_text}), ...(anchor?.verification?.receipt ? {verification_result:anchor.verification.receipt} : {}) };
     if (anchor) anchor.region = region;
-    return {state:'present',region};
+    return { state: 'present', region, ...(anchorHidden ? { anchor_hidden: true } : {}) };
   } catch (error) {
     if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return goneElement();
     if (/Execution context was destroyed|Cannot find context with specified id/.test(error?.message ?? '')) return gone('Browser document changed');
