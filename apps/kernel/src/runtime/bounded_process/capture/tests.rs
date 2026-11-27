@@ -241,3 +241,29 @@ fn windows_captures_both_streams_and_times_out() {
     ));
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_probe_of_a_job_that_stops_with_the_kernel_is_killed_when_shutdown_begins() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "echo $$ >&2; exec sleep 60"]);
+    let _stops = crate::shutdown::stop_cancels_this_thread();
+    crate::shutdown::stop_begins_on_this_thread();
+    let started = Instant::now();
+    let error = capture(command, Duration::from_secs(60)).unwrap_err();
+    assert!(
+        matches!(&error, CaptureError::Io(error) if error.kind() == std::io::ErrorKind::Interrupted),
+        "{error:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_probe_of_any_other_job_ignores_shutdown() {
+    crate::shutdown::stop_begins_on_this_thread();
+    let mut command = Command::new("sh");
+    command.args(["-c", "printf done"]);
+    let output = capture(command, Duration::from_secs(10)).unwrap();
+    assert_eq!(output.stdout, b"done");
+}
