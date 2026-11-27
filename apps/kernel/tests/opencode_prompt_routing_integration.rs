@@ -27,9 +27,16 @@ fn mock_opencode_without_fixture_credentials_cannot_launch() {
         .expect("remove only the isolated fake credential");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let (session, agent) = app.create_session(workspace.session_request()).unwrap();
+    // An account-free OpenCode model may run signed out (#1605); a Go model needs a verified login.
     let result = app.launch_provider(
-        LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
-            .with_agent_id(agent.id()),
+        LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "opencode-go/default",
+        )
+        .with_agent_id(agent.id()),
     );
     fs::remove_file(&fixture_path).expect("remove fixture executable");
     let error = result.unwrap_err();
