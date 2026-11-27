@@ -56,6 +56,26 @@ fn refused(message: impl Into<String>) -> DaemonError {
 }
 
 impl KernelRuntimeOwnedState {
+    /// A scheduled continuation waits for account capacity, not an owner action.
+    pub(super) fn task_usage_wait(
+        &self,
+        task: &crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    ) -> Option<String> {
+        if task.state != ExecutionState::Blocked {
+            return None;
+        }
+        let agent = self.agent_store.get_agent(&task.agent_id).ok()?;
+        let stop = agent
+            .usage_limit_stop()
+            .filter(|stop| stop.prompt_id == task.prompt_id)?;
+        match stop.state {
+            UsageLimitStopState::Armed { at_ms } => {
+                Some(format!("Waiting for usage, resumes at {}", clock(at_ms)))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn usage_limit_profile(
         &self,
         agent: &crate::agent::AgentInstance,

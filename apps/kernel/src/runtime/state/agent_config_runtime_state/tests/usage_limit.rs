@@ -2288,3 +2288,35 @@ async fn usage_limit_repeating_resume_preserves_the_armed_time() {
         "cancel then resume must not add another fifteen minutes"
     );
 }
+
+#[tokio::test]
+async fn usage_limit_armed_task_is_waiting_in_the_shared_room_and_notice() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    owe_work(&team, 0);
+    team.hit_the_limit(0).await;
+    let room = team.rt().owned.session_snapshot(&team.session_id).unwrap();
+    let task = room
+        .agent_tasks()
+        .iter()
+        .find(|task| task.prompt_id == team.lanes[0].prompt_id)
+        .unwrap();
+    assert_eq!(task.state, ExecutionState::Waiting);
+    assert!(task.owner_action.is_none());
+    assert!(task.reason.starts_with("Waiting for usage, resumes at "));
+    assert!(team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| notice.message.contains("Waiting for usage, resumes at ")));
+    assert!(!team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| notice.message.contains("Needs your help")));
+}

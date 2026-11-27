@@ -5,7 +5,7 @@ use chrono::{Datelike, TimeZone};
 
 /// The instant the limit named in `text` lifts, or `None` when the text names none the kernel
 /// can read. A time without a date is the next such time after `now_ms`; a time without a
-/// zone is read in the kernel's own zone, as the provider prints it in the machine's.
+/// zone is ambiguous: callers use the account meter's absolute reset time instead.
 pub(crate) fn usage_limit_reset_at_ms(text: &str, now_ms: u64) -> Option<u64> {
     let lowered = text.to_ascii_lowercase();
     let start = lowered.find("resets ")? + "resets ".len();
@@ -26,7 +26,7 @@ pub(crate) fn usage_limit_reset_at_ms(text: &str, now_ms: u64) -> Option<u64> {
             let zone = zone.parse::<chrono_tz::Tz>().ok()?;
             instant_in(&zone, date, hour, minute, now_ms)
         }
-        _ => instant_in(&chrono::Local, date, hour, minute, now_ms),
+        _ => None,
     }
 }
 
@@ -145,5 +145,7 @@ mod tests {
         assert_eq!(utc("resets soon (UTC)"), None);
         assert_eq!(utc("resets 4pm (Not/AZone)"), None);
         assert_eq!(utc("resets 13pm (UTC)"), None);
+        assert_eq!(utc("resets 4pm"), None);
+        assert_eq!(utc("try again at 3:06 PM"), None);
     }
 }

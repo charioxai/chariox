@@ -1169,7 +1169,10 @@ impl KernelRuntimeState {
         self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
-        if changed && task.state == ExecutionState::Blocked {
+        if changed
+            && task.state == ExecutionState::Blocked
+            && self.owned.task_usage_wait(&task).is_none()
+        {
             // Every card a task raises says, in the log, which task and why.
             crate::logging::warn_with_fields(
                 "runtime.agent_lifecycle",
@@ -1185,7 +1188,11 @@ impl KernelRuntimeState {
         }
         if changed {
             let name = self.agent_notice_name(&task.agent_id);
-            let message = super::agent_task_projection::task_status_notice(&task, &name);
+            let message = self
+                .owned
+                .task_usage_wait(&task)
+                .map(|wait| format!("{name}: {wait}."))
+                .unwrap_or_else(|| super::agent_task_projection::task_status_notice(&task, &name));
             self.owned.record_notice_for_agent(
                 &task.room_id,
                 None,
@@ -1318,11 +1325,17 @@ impl KernelRuntimeState {
     ) {
         for task in tasks {
             let notice = match task.state {
-                ExecutionState::Blocked => format!(
-                    "{}: Needs your help. {}",
-                    self.agent_notice_name(&task.agent_id),
-                    task.reason
-                ),
+                ExecutionState::Blocked => self
+                    .owned
+                    .task_usage_wait(&task)
+                    .map(|wait| format!("{}: {wait}.", self.agent_notice_name(&task.agent_id)))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}: Needs your help. {}",
+                            self.agent_notice_name(&task.agent_id),
+                            task.reason
+                        )
+                    }),
                 ExecutionState::Cancelled => format!(
                     "{}: Stopped. Its provider turn ended without an answer.",
                     self.agent_notice_name(&task.agent_id)
