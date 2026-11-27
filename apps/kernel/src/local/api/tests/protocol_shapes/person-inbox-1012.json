@@ -1,5 +1,5 @@
 {
-  "local": 1016,
+  "local": 1017,
   "requests": [
     { "GetPersonInbox": null },
     { "SetInboxCardState": { "card_ids": ["notice_5_ab"], "change": { "read": { "read": true } } } },
