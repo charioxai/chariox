@@ -1429,12 +1429,22 @@ fn write_task(
     }
     Ok(())
 }
-/// A task holds an obligation that still requires resolution: the SQL of
-/// `AgentObligation::requires_resolution` (open or settling, or failed after an accepted dispatch).
+/// A task holds an obligation that still requires resolution (the SQL of
+/// `AgentObligation::requires_resolution`: open or settling, or failed after an accepted dispatch),
+/// or an obligation entry that is not a readable obligation. (A string element comes back from
+/// `json_each` as unquoted text that is not JSON: only an object is parsed, by its `type`.) The
+/// unreadable entries stay in the set as before: reading the task fails to decode it and the ledger quarantines the row for the owner
+/// (obligation coverage unknown), which the retire rule must not skip.
 const OWES_RESOLUTION: &str = "EXISTS (SELECT 1 FROM json_each(agent_tasks.payload,'$.obligations') AS o \
-     WHERE json_extract(o.value,'$.status') IN ('open','settling') \
-        OR (json_extract(o.value,'$.status')='failed' \
-            AND json_extract(o.value,'$.dispatch_state') IS NOT 'rejected'))";
+     WHERE CASE WHEN o.type='object' THEN ( \
+            json_type(o.value,'$.id') IS NOT 'text' \
+         OR json_type(o.value,'$.kind') IS NOT 'text' \
+         OR json_type(o.value,'$.status') IS NOT 'text' \
+         OR json_type(o.value,'$.dispatch_state') IS NOT 'text' \
+         OR json_extract(o.value,'$.status') IN ('open','settling') \
+         OR (json_extract(o.value,'$.status')='failed' \
+             AND json_extract(o.value,'$.dispatch_state') IS NOT 'rejected')) \
+        ELSE 1 END)";
 /// Tasks are kept after they finish, so the lookups that run on every turn and every sweep
 /// read an index instead of decoding the whole ledger. An unreadable payload indexes as NULL.
 fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {

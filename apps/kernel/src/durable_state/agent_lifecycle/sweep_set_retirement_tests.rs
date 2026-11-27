@@ -150,3 +150,49 @@ fn a_task_that_takes_a_new_open_obligation_is_swept_again() {
     .unwrap();
     assert!(swept(&f).contains(&"history".to_string()));
 }
+
+/// An obligation entry that is not a readable obligation keeps its task in the set: reading it fails
+/// to decode the task and the row lands in the existing quarantine handling, exactly as before the
+/// retire rule. `json_each` hands a string element back as plain text, which the rule must not
+/// mistake for a closed obligation.
+#[test]
+fn a_malformed_obligation_entry_is_still_quarantined_not_retired() {
+    let f = Fixture::new();
+    f.begin("current");
+    let base = f.task();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let well_formed = serde_json::to_value(&base).unwrap();
+    for (id, entry) in [
+        ("string-entry", serde_json::json!("satisfied")),
+        ("number-entry", serde_json::json!(7)),
+        ("null-entry", serde_json::Value::Null),
+        (
+            "no-dispatch-state",
+            serde_json::json!({"id":"x","kind":"job","status":"satisfied"}),
+        ),
+        (
+            "status-not-text",
+            serde_json::json!({"id":"x","kind":"job","status":5,"dispatch_state":"accepted"}),
+        ),
+    ] {
+        let mut payload = well_formed.clone();
+        payload["task_id"] = id.into();
+        payload["prompt_id"] = format!("prompt-{id}").into();
+        payload["state"] = "done".into();
+        payload["obligations"] = serde_json::json!([entry]);
+        db.execute(
+            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload,terminal_outcome_recorded) VALUES(?1,?2,?3,?4,?5,1)",
+            params![id, base.room_id, base.agent_id, format!("prompt-{id}"), payload.to_string()],
+        )
+        .unwrap();
+    }
+    let selected = f.store.agent_tasks_to_sweep().unwrap();
+    for id in ["string-entry", "number-entry", "null-entry", "no-dispatch-state", "status-not-text"] {
+        let task = selected
+            .iter()
+            .find(|task| task.task_id == id)
+            .unwrap_or_else(|| panic!("{id}: a malformed obligation entry was retired from the sweep"));
+        assert_eq!(task.state, ExecutionState::Blocked, "{id}: quarantined");
+        assert!(task.reason.contains("quarantined"), "{id}: {}", task.reason);
+    }
+}
