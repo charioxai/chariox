@@ -386,6 +386,7 @@ pub(crate) fn agent_activity_for_session_projection(
             provider_turn_activity
                 .map(|turn| turn.started_at_ms)
                 .or_else(|| active_prompt.map(PromptQueueItem::updated_at_ms)),
+            provider_prompt_activity.and_then(ActivePromptState::running_tool),
             now_ms,
         );
         activity.insert(

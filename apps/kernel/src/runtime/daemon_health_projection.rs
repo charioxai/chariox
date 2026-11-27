@@ -113,7 +113,16 @@ pub(crate) async fn build_daemon_health_projection(
         .writer_health_snapshot();
     projection.request_timings = input.request_metrics.snapshot();
     projection.build_toolchain_version = build_toolchain::installed_version();
-    bounds::bound(projection)
+    let mut projection = bounds::bound(projection);
+    // Present only while a browser controller runs without the native frame channel (slower video).
+    let without_channel = crate::runtime::browser_controller_process::frame_channels_unavailable();
+    if without_channel > 0 {
+        projection.sample_counts.insert(
+            "browser_native_frame_channel_unavailable".into(),
+            without_channel,
+        );
+    }
+    projection
 }
 
 pub(crate) async fn execute_daemon_health_request(

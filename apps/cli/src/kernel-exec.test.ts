@@ -4,6 +4,7 @@ import test from "node:test"
 import { Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
 import { Readable } from "node:stream"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { MAX_INLINE_STDIN_BYTES, lateStdin, ownStdin, readExecInput, runKernelExec } from "./kernel-exec.js"
 
 const ended = (code: number) => ({ state: "ended", outcome: { reason: "program_exited", exit_code: code, signal: null } })
@@ -305,4 +306,198 @@ test("a close that fails while the terminal is still listed is named with the wa
     return send(body)
   }
   await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30 }, stuck, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_terminal_left_open")
+})
+
+// A relay blip: the gateway answers a request in flight with one of these (retryable) codes while the command keeps running on the kernel.
+const blip = (code: string) => Object.assign(new CommandFailure(code, `link ${code}`))
+const operationOf = (body: any) => body.KernelTerminal.operation.operation
+const lines = () => { const seen: string[] = []; return { seen, notice: (line: string) => { seen.push(line) } } }
+
+for (const code of ["kernel_connection_lost", "kernel_request_timeout", "kernel_offline", "kernel_unreachable"]) {
+  test(`a wait that fails with ${code} is retried on the same terminal and the command's real exit code comes back`, async () => {
+    const { sent, send } = kernel("built\r\n", 7)
+    let dropped = 0
+    const flaky = async (body: any) => {
+      if (operationOf(body) === "wait" && dropped++ < 3) throw code === "kernel_offline" ? new LocalIpcError("kernel request", "offline", code, false) : blip(code)
+      return send(body)
+    }
+    const out = sink(), said = lines()
+    assert.equal(await runKernelExec({ command: ["make"], timeoutSeconds: 30, kernel: "nelpx", retryStepMs: 1, notice: said.notice }, flaky, out.stream), 7)
+    assert.equal(out.text(), "built\n")
+    const operations = sent.map(operationOf)
+    assert.equal(operations.filter(name => name === "open").length, 1, "one terminal, never a second command")
+    assert.equal(operations.indexOf("close"), operations.length - 1, "the terminal is closed only after the output was read, never during the blip")
+    assert.equal(said.seen.length, 1, "one plain line for the whole outage")
+    assert.match(said.seen[0]!, /link to kernel nelpx lost, waiting for it; the command keeps running as terminal t1/)
+  })
+}
+
+test("a read_output that fails during a blip is retried from the same offset", async () => {
+  const { send } = kernel("abc\r\n", 0)
+  const reads: any[] = []
+  let dropped = false
+  const flaky = async (body: any) => {
+    if (operationOf(body) === "read_output") reads.push(body)
+    if (operationOf(body) === "read_output" && !dropped) { dropped = true; throw blip("kernel_connection_lost") }
+    return send(body)
+  }
+  const out = sink()
+  assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, flaky, out.stream), 0)
+  assert.equal(out.text(), "abc\n")
+  assert.deepEqual(reads.map(body => body.KernelTerminal.operation.after_offset), [0, 0], "the failed read and its retry ask for the same offset")
+})
+
+test("a link that is down past --timeout is named, the command is not stopped, and its terminal is findable", async () => {
+  const { sent, send } = kernel("x", 0)
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") throw blip("kernel_offline")
+    return send(body)
+  }
+  const said = lines()
+  await assert.rejects(runKernelExec({ command: ["make"], timeoutSeconds: 1, kernel: "nelpx", retryStepMs: 20, notice: said.notice }, down, sink().stream), (error: unknown) => {
+    if (!(error instanceof CommandFailure) || error.code !== "exec_link_lost") return false
+    const text = JSON.stringify(error.message) + JSON.stringify(error.details)
+    return /not stopped/.test(text) && /terminal t1/.test(text) && /nelpx/.test(text) && /terminal wait --kernel nelpx --terminal t1/.test(text) && /terminal read --kernel nelpx --terminal t1/.test(text) && /terminal close --kernel nelpx --terminal t1/.test(text) && /60 s/.test(text)
+  })
+  assert.equal(sent.some(body => operationOf(body) === "close"), false, "no close: it would end the command it cannot report on")
+  assert.equal(said.seen.length, 1)
+})
+
+test("a failure that is not a link drop still closes the terminal as before", async () => {
+  const { sent, send } = kernel("x", 0)
+  const refused = async (body: any) => {
+    if (operationOf(body) === "wait") throw new CommandFailure("terminal_refused", "no")
+    return send(body)
+  }
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, refused, sink().stream), /no/)
+  assert.equal(sent.at(-1).KernelTerminal.operation.operation, "close")
+})
+
+test("Ctrl-C while waiting for a dropped link closes the terminal and returns 130", async () => {
+  const { sent, send } = kernel("x", 0)
+  const signals = new EventEmitter() as NodeJS.Process
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") { setTimeout(() => signals.emit("SIGINT"), 30); throw blip("kernel_connection_lost") }
+    return send(body)
+  }
+  const code = await runKernelExec({ command: ["x"], timeoutSeconds: 30, signals, retryStepMs: 1000, notice: () => {} }, down, sink().stream)
+  assert.equal(code, 130)
+  assert.equal(sent.at(-1).KernelTerminal.operation.operation, "close")
+  for (const name of ["SIGINT", "SIGTERM", "SIGHUP"]) assert.equal(signals.listenerCount(name), 0)
+})
+
+test("a drop while the terminal is being opened is not retried: its id is unknown, nothing is waited on", async () => {
+  let requests = 0
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, async () => { requests++; throw blip("kernel_connection_lost") }, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "kernel_connection_lost")
+  assert.equal(requests, 1)
+})
+
+test("a terminal that cannot be closed is named with its kernel, so the way to close it works from anywhere", async () => {
+  const { send } = kernel("x", 0)
+  const signals = new EventEmitter() as NodeJS.Process
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") { setTimeout(() => signals.emit("SIGINT"), 20); throw blip("kernel_connection_lost") }
+    if (operationOf(body) === "close" || operationOf(body) === "list") throw blip("kernel_offline")
+    return send(body)
+  }
+  const written: string[] = []
+  const realWrite = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true }) as typeof process.stderr.write
+  try {
+    assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 30, signals, kernel: "nelpx", retryStepMs: 1000, notice: () => {} }, down, sink().stream), 130)
+  } finally { process.stderr.write = realWrite }
+  assert.match(written.join(""), /chariox terminal close --kernel nelpx --terminal t1/)
+})
+
+test("a retry after a drop waits only for what is left of --timeout, not a fresh full wait", async () => {
+  const { send } = kernel("ok\r\n", 0)
+  const waits: number[] = []
+  let dropped = false
+  const flaky = async (body: any) => {
+    if (operationOf(body) === "wait") {
+      waits.push(body.KernelTerminal.operation.timeout_ms)
+      if (!dropped) { dropped = true; throw blip("kernel_connection_lost") }
+    }
+    return send(body)
+  }
+  assert.equal(await runKernelExec({ command: ["x"], timeoutSeconds: 3, retryStepMs: 1500, notice: () => {} }, flaky, sink().stream), 0)
+  assert.equal(waits.length, 2)
+  assert.ok(waits[0]! <= 3000 && waits[0]! > 2500, `first wait ${waits[0]}`)
+  assert.ok(waits[1]! <= 1600, `the retry asks for what is left (about 1500 ms), not ${waits[1]}`)
+})
+
+test("a retry that never answers ends at --timeout with the command left running", async () => {
+  const { sent, send } = kernel("x", 0)
+  let waits = 0
+  const stalled = async (body: any) => {
+    if (operationOf(body) === "wait") {
+      if (waits++ === 0) throw blip("kernel_connection_lost")
+      return new Promise<never>(() => {})
+    }
+    return send(body)
+  }
+  const started = Date.now()
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 1, retryStepMs: 20, kernel: "nelpx", notice: () => {} }, stalled, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_link_lost")
+  assert.ok(Date.now() - started < 2500, `ended after ${Date.now() - started} ms`)
+  assert.equal(sent.some(body => operationOf(body) === "close"), false)
+})
+
+test("the pause between tries never runs past --timeout", async () => {
+  const { send } = kernel("x", 0)
+  const down = async (body: any) => {
+    if (operationOf(body) === "wait") throw blip("kernel_offline")
+    return send(body)
+  }
+  const started = Date.now()
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 1, retryStepMs: 5000, notice: () => {} }, down, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_link_lost")
+  assert.ok(Date.now() - started < 2000, `ended after ${Date.now() - started} ms`)
+})
+
+// The kernel removes a finished one-command terminal as it answers the read of its last byte; a drop that loses
+// that answer leaves a retry with "no such terminal". The output is incomplete: a failure that names the exit code and the bytes delivered.
+function lostLastPage(text: string, code: number, firstPage: number) {
+  const { send } = kernel(text, code)
+  const bytes = Buffer.from(text)
+  let lastReads = 0
+  const gone = () => Object.assign(new Error("this kernel has no terminal `t1`"), { code: "terminal_refused" })
+  return async (body: any) => {
+    const operation = operationOf(body)
+    if (operation === "read_output") {
+      const after = body.KernelTerminal.operation.after_offset
+      if (after === 0 && firstPage < bytes.length) {
+        return { RoomTerminal: { result: { result: "output", output: { terminal: terminal(ended(code), bytes.length), data_base64: bytes.subarray(0, firstPage).toString("base64"), next_offset: firstPage, gap: false } } } }
+      }
+      if (lastReads++ === 0) throw blip("kernel_connection_lost") // the kernel answered; the reply was lost with the link
+      throw gone()
+    }
+    if (operation === "close") throw gone()
+    if (operation === "list") return { RoomTerminal: { result: { result: "listed", terminals: [] } } }
+    return send(body)
+  }
+}
+
+for (const code of [0, 7]) {
+  test(`B-1: the last output page lost with the link is a failure naming the command's exit code ${code}, never a success`, async () => {
+    const out = sink()
+    await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, lostLastPage("abc\r\n", code, 99), out.stream), (error: unknown) =>
+      error instanceof CommandFailure && error.code === "exec_output_lost" && error.details?.exit_code === code && /last page of the command's output/.test(error.message))
+  })
+}
+
+test("B-2: the failure says how much of the output was delivered, and that part was written", async () => {
+  const out = sink()
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, lostLastPage("abcde123", 0, 5), out.stream), (error: unknown) =>
+    error instanceof CommandFailure && error.code === "exec_output_lost" && /5 of 8 bytes/.test(error.message) && error.details?.delivered_bytes === 5 && error.details?.total_bytes === 8)
+  assert.equal(out.text(), "abcde")
+})
+
+test("a retried read that fails for another reason is still an error, not a lost page", async () => {
+  const { send } = kernel("abc", 0)
+  let reads = 0
+  const refused = async (body: any) => {
+    if (operationOf(body) === "read_output") { if (reads++ === 0) throw blip("kernel_connection_lost"); throw new CommandFailure("terminal_refused", "busy") }
+    if (operationOf(body) === "list") return { RoomTerminal: { result: { result: "listed", terminals: [terminal({ state: "ended" }, 3)] } } }
+    return send(body)
+  }
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30, retryStepMs: 1, notice: () => {} }, refused, sink().stream), /busy/)
 })

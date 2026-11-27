@@ -83,6 +83,11 @@ impl ProviderProcessService {
         self.run_actor_mailbox.completion_signal()
     }
 
+    /// The run mailbox, to watch which runs a command holds without the service lock.
+    pub(crate) fn run_actor_mailbox(&self) -> ProviderRunActorMailbox {
+        self.run_actor_mailbox.clone()
+    }
+
     pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
         self.run_actor_mailbox.claude_runs_exited_while_idle(only)
     }

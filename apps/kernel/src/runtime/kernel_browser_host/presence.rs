@@ -27,9 +27,30 @@ impl KernelBrowserHost {
     /// catalog; calls are never refused for not having loaded.
     pub(crate) fn load_for(&self, user: &str, agent: &str, capability: KernelBrowserCapability) {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        state.loaded.insert((user.into(), agent.into(), capability));
+        if state.loaded.insert((user.into(), agent.into(), capability)) {
+            self.write_loaded(&state.loaded);
+        }
         drop(state);
         crate::transport::mcp_server::catalog_changed();
+    }
+    /// Row 664: the listing is kept beside the browser state, so a cold restart lists the
+    /// same tools for an agent whose conversation resumes. Without it the resumed agent was
+    /// told its browser tools were gone and stopped its browser task.
+    fn write_loaded(&self, loaded: &BTreeSet<(String, String, KernelBrowserCapability)>) {
+        let path = self.root.join(LOADED_FILE);
+        let write = || -> std::io::Result<()> {
+            std::fs::create_dir_all(&self.root)?;
+            let temporary = path.with_extension("json.tmp");
+            std::fs::write(&temporary, serde_json::to_vec(loaded)?)?;
+            std::fs::rename(&temporary, &path)
+        };
+        if let Err(error) = write() {
+            crate::logging::warn_with_fields(
+                "kernel_browser",
+                "the agents' browser tool listing could not be kept for a restart",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
     }
     pub(crate) fn is_loaded_for(
         &self,
@@ -137,7 +158,11 @@ impl KernelBrowserHost {
                 retired.push((state.browsers.get(&key.0).cloned(), presence.scope));
             }
         }
+        let listed = state.loaded.len();
         state.loaded.retain(|(_, id, _)| id != agent);
+        if state.loaded.len() != listed {
+            self.write_loaded(&state.loaded);
+        }
         let models: Vec<_> = state.actors.values().cloned().collect();
         drop(state);
         // Cancellation is already requested, so no further submission starts. An App call that
@@ -184,11 +209,10 @@ impl KernelBrowserHost {
     }
     #[cfg(unix)]
     pub(crate) fn adopt_loaded(&self, handover: LoadedHandover) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .loaded
-            .extend(handover.0);
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.loaded.extend(handover.0);
+        self.write_loaded(&state.loaded);
+        drop(state);
         crate::transport::mcp_server::catalog_changed();
     }
     pub(super) fn retire_scopes(
@@ -222,6 +246,18 @@ impl KernelBrowserHost {
             _ => Ok(()),
         }
     }
+}
+
+const LOADED_FILE: &str = "loaded-tools.json";
+
+/// The tools each agent listed before the kernel stopped; an unreadable file lists none.
+pub(super) fn read_loaded(
+    root: &std::path::Path,
+) -> BTreeSet<(String, String, KernelBrowserCapability)> {
+    std::fs::read(root.join(LOADED_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 /// The user-domain tools each agent listed, carried across a hot reload.

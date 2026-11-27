@@ -491,6 +491,14 @@ async fn sudo_task_creates_a_same_workspace_session_with_kernel_default_agent_se
             .await
             .unwrap();
     }
+    // The kernel is enrolled to OWNER, so OWNER's agents act as the kernel's owner (row 405);
+    // set after the settings above, which rebuild the configuration.
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: OWNER.into(),
+        ..Default::default()
+    });
+    f.state.owned.config_projection.update(config);
     let window = f.state.list_sudo_turns(OWNER).pop().unwrap();
     let session = f
         .state

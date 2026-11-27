@@ -1262,7 +1262,6 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 &submit_dispatch,
                 submit_dispatch.prompt.clone(),
                 Vec::new(),
-                None,
                 "unexpected fake worker response",
             )
             .await

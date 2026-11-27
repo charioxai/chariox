@@ -153,14 +153,23 @@ async fn stop_of_an_idle_agent_with_several_parked_tasks_cancels_them_all() {
     };
     assert_eq!(task.state, ExecutionState::Cancelled);
     let store = &f.state.owned.durable_state_store;
+    // Row 470: the second wait took the first task's timer over, so the first task had already
+    // ended (adopted) before Stop; Stop cancels the task that holds both timers.
+    assert_eq!(task.reason, "Stopped by you");
+    assert_eq!(task.task_id, "waiting-turn-2");
+    let folded = store.agent_task(&first.task_id).unwrap().unwrap();
+    assert_eq!(folded.state, ExecutionState::Done);
+    assert!(
+        folded.reason.starts_with("adopted by task"),
+        "{}",
+        folded.reason
+    );
     for original in [first, second] {
         let stopped = store.agent_task(&original.task_id).unwrap().unwrap();
-        assert_eq!(
-            stopped.state,
-            ExecutionState::Cancelled,
-            "{}",
-            original.task_id
-        );
+        if original.task_id != "waiting-turn-1" {
+            assert_eq!(stopped.state, ExecutionState::Cancelled);
+            assert_eq!(stopped.reason, "Stopped by you");
+        }
         let wake = store
             .agent_wake(&format!("timer-{}", original.task_id))
             .unwrap()
@@ -397,6 +406,20 @@ async fn exact_owner_task_cancellation_preserves_other_waits_and_active_prompt()
                 PromptStatus::Running,
             )),
         );
+    // Row 470: the second wait took the first task's timer over and ended that task, so the
+    // owner cancels the task that holds the timers; the ended one is refused with its state.
+    let refused = cancel_request(
+        &f,
+        serde_json::json!({"CancelAgentTask":{
+            "session_id": f.request.session_id, "attachment_id": f.request.attachment_id,
+            "task_id": original.task_id, "revision": original.revision,
+        }}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("already completed"), "{refused}");
+    let original = other;
     let response = cancel_request(
         &f,
         serde_json::json!({"CancelAgentTask":{
@@ -413,25 +436,9 @@ async fn exact_owner_task_cancellation_preserves_other_waits_and_active_prompt()
     assert_eq!(task.state, ExecutionState::Cancelled);
     assert_eq!(task.reason, "Stopped by you");
     let store = &f.state.owned.durable_state_store;
-    let tasks = store
-        .agent_tasks(Some(&original.room_id), Some(&original.agent_id))
-        .unwrap();
-    assert_eq!(
-        tasks.iter().find(|t| t.task_id == other.task_id).unwrap(),
-        &other
-    );
-    assert_eq!(
-        store.agent_wake("timer-first-wait").unwrap().unwrap().state,
-        "cancelled"
-    );
-    assert_eq!(
-        store
-            .agent_wake("timer-second-wait")
-            .unwrap()
-            .unwrap()
-            .state,
-        "scheduled"
-    );
+    for timer in ["timer-first-wait", "timer-second-wait"] {
+        assert_eq!(store.agent_wake(timer).unwrap().unwrap().state, "cancelled");
+    }
     assert_eq!(
         f.state
             .owned
@@ -1247,4 +1254,166 @@ async fn idle_stop_rejects_an_agent_from_another_room() {
     assert!(matches!(f.router.dispatch(command, request).await,
         Err(DaemonError::AgentNotInSession { session_id, agent_id })
             if session_id == f.request.session_id && agent_id == other_agent.id()));
+}
+
+/// Parks a begun task on a delegate that is not a timer or watched process: a wait the fold of
+/// row 470 leaves with its task.
+fn delegate_waiting_task(f: &Fixture, prompt: &str) -> AgentTaskExecution {
+    let store = &f.state.owned.durable_state_store;
+    let room = &f.request.session_id;
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: room.clone(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: Some(f.run.id().into()),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: "local".into(),
+            room: room.clone(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: Some(f.run.id().into()),
+            id: format!("delegate-{prompt}"),
+            kind: "delegate".into(),
+            resource: Some(format!("child-{prompt}")),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Subscribe {
+            task: prompt.into(),
+            prompt: prompt.into(),
+            registration: crate::durable_state::agent_lifecycle::Registration {
+                id: format!("reg-{prompt}"),
+                task_id: prompt.into(),
+                source_id: format!("child-{prompt}"),
+                obligation_id: Some(format!("delegate-{prompt}")),
+                source_cursor: 0,
+                live: true,
+                peer: false,
+            },
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Yield {
+            task: prompt.into(),
+            prompt: prompt.into(),
+            registrations: vec![format!("reg-{prompt}")],
+            cursor: 0,
+            deadline: Some(now + 3_600_000),
+            reason: "Waiting for a helper".into(),
+            now,
+        })
+        .unwrap();
+    let Outcome::Settled { task, .. } = store
+        .agent_lifecycle(Operation::Settle {
+            room: room.clone(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: f.run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("settled task")
+    };
+    assert_eq!(task.state, ExecutionState::Waiting);
+    task
+}
+
+/// The old premise of the exact-cancel test with a wait the fold does not touch: cancelling one
+/// task cancels it and its timer only, and the other wait and the active prompt stay.
+#[tokio::test]
+async fn exact_owner_task_cancellation_preserves_a_wait_the_fold_leaves_alone() {
+    let f = fixture_with_options(None, true);
+    let other = delegate_waiting_task(&f, "helper-wait");
+    let original = waiting_task(&f, "timer-wait");
+    let store = &f.state.owned.durable_state_store;
+    assert_eq!(
+        store.agent_task(&other.task_id).unwrap().unwrap().state,
+        ExecutionState::Waiting,
+        "a delegate wait is not folded"
+    );
+    let response = cancel_request(
+        &f,
+        serde_json::json!({"CancelAgentTask":{
+            "session_id": f.request.session_id, "attachment_id": f.request.attachment_id,
+            "task_id": original.task_id, "revision": original.revision,
+        }}),
+    )
+    .await
+    .unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected task cancellation")
+    };
+    assert_eq!(task.task_id, original.task_id);
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    assert_eq!(task.reason, "Stopped by you");
+    assert_eq!(
+        store.agent_wake("timer-timer-wait").unwrap().unwrap().state,
+        "cancelled"
+    );
+    assert_eq!(store.agent_task(&other.task_id).unwrap().unwrap(), other);
+}
+
+/// Stop of an idle agent still ends every parked task when the waits do not fold: a timer wait
+/// and a delegate wait are independent tasks, and one Stop cancels both and the timer.
+#[tokio::test]
+async fn stop_of_an_idle_agent_cancels_independent_parked_tasks_the_fold_leaves_alone() {
+    let f = fixture_with_options(None, true);
+    let helper = delegate_waiting_task(&f, "helper-wait-stop");
+    let timer = waiting_task(&f, "timer-wait-stop");
+    let store = &f.state.owned.durable_state_store;
+    for task in [&helper, &timer] {
+        assert_eq!(
+            store.agent_task(&task.task_id).unwrap().unwrap().state,
+            ExecutionState::Waiting,
+            "{} is still its own wait",
+            task.task_id
+        );
+    }
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        target_agent_id: None,
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-independent-waiting",
+        None,
+        None,
+        &request,
+    );
+    let response = f.router.dispatch(command, request).await.unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected task cancellation")
+    };
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    for original in [&helper, &timer] {
+        let stopped = store.agent_task(&original.task_id).unwrap().unwrap();
+        assert_eq!(
+            stopped.state,
+            ExecutionState::Cancelled,
+            "{}",
+            original.task_id
+        );
+        assert_eq!(stopped.reason, "Stopped by you", "{}", original.task_id);
+    }
+    assert_eq!(
+        store
+            .agent_wake("timer-timer-wait-stop")
+            .unwrap()
+            .unwrap()
+            .state,
+        "cancelled"
+    );
 }

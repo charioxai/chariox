@@ -161,7 +161,7 @@ pub use launch_contract::{
 #[cfg(test)]
 pub(crate) use managed_isolation::managed_provider_isolation_env_remove;
 pub(crate) use managed_isolation::{
-    apply_managed_provider_isolation, command_from_provider_launch,
+    apply_managed_provider_isolation, chariox_cli_command, command_from_provider_launch,
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_required,
     managed_provider_parent_credential_env_remove, provider_account_environment_on_kernel,
@@ -170,7 +170,7 @@ pub(crate) use managed_isolation::{
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
-    MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
+    chariox_cli_beside, MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
 };
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_environment,

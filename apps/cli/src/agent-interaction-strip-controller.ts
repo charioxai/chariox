@@ -23,7 +23,6 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
-  remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   machineApprovalLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
@@ -55,7 +54,6 @@ export type AgentInteractionStripControllerDeps<
   subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
-  remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   machineApprovalLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
@@ -93,7 +91,6 @@ export function createAgentInteractionStripController<
         ...(deps.subAgentStripeForAgent ? { subAgentStripeForAgent: deps.subAgentStripeForAgent } : {}),
         ...(deps.queuedJobsForAgent ? { queuedJobsForAgent: deps.queuedJobsForAgent } : {}),
         ...(deps.onQueuedJobAction ? { onQueuedJobAction: deps.onQueuedJobAction } : {}),
-        ...(deps.remoteJobLinesForAgent ? { remoteJobLinesForAgent: deps.remoteJobLinesForAgent } : {}),
         ...(deps.machineApprovalLinesForAgent ? { machineApprovalLinesForAgent: deps.machineApprovalLinesForAgent } : {}),
         selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,

@@ -8,7 +8,7 @@ use chariox_kernel::local::{
     SuggestSessionAliasRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::RoomSetupRequest;
+use chariox_kernel::session::{RoomSetupRequest, SessionAgentDefaults};
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
@@ -76,10 +76,17 @@ async fn open_room(
     workspace: &ExecutionWorkspace,
     setup: RoomSetupRequest,
 ) -> Room {
+    open_room_with_request(socket, workspace.session_request().with_setup(setup)).await
+}
+
+async fn open_room_with_request(
+    socket: &mut Socket,
+    request: chariox_kernel::session::CreateSessionRequest,
+) -> Room {
     let created = send_request(
         socket,
         "create-session",
-        LocalDaemonRequest::CreateSession(workspace.session_request().with_setup(setup)),
+        LocalDaemonRequest::CreateSession(request),
     )
     .await;
     let session = response_variant(&created, "SessionCreated")["session"].clone();
@@ -92,6 +99,21 @@ async fn open_room(
         attachment_id,
         created: session,
     }
+}
+
+/// Opens a Room whose first agent is a signed-out Claude. Publishing runs on that agent, so it
+/// fails at once, with no model call, on every machine. The placeholder provider would launch
+/// the OpenCode installed there, which runs account-free models (#1605).
+async fn open_room_that_cannot_publish(
+    socket: &mut Socket,
+    workspace: &ExecutionWorkspace,
+    setup: RoomSetupRequest,
+) -> Room {
+    let request = workspace
+        .session_request()
+        .with_setup(setup)
+        .with_agent_defaults(SessionAgentDefaults::new("claude"));
+    open_room_with_request(socket, request).await
 }
 
 async fn attach_room(socket: &mut Socket, session_id: &str) -> String {
@@ -357,12 +379,11 @@ fn the_suggested_name_is_what_the_next_room_gets() {
 fn a_failed_publish_never_holds_prompts_and_can_be_retried() {
     let (saved, restore) = std::sync::mpsc::sync_channel(1);
     crate::run_kernel_websocket_runtime_test(async move {
-        // The stub provider answers no utility turns, so publishing fails the same way for
-        // every provider that cannot run it.
+        // Publishing fails the same way for every provider that cannot run it.
         let workspace = ExecutionWorkspace::new();
         let (config, shutdown, server) = start_kernel().await;
         let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
-        let room = open_room(
+        let room = open_room_that_cannot_publish(
             &mut socket,
             &workspace,
             RoomSetupRequest {
@@ -497,7 +518,7 @@ fn rejected_room_setup_progress_survives_restart(
                 .unwrap();
         }
         let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
-        let room = open_room(
+        let room = open_room_that_cannot_publish(
             &mut socket,
             &workspace,
             RoomSetupRequest {

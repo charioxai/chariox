@@ -491,6 +491,23 @@ function roomEvent(
   }
 }
 
+// A controller without the native frame channel is slower, not broken: the notice says so in plain words.
+test("a Room whose controller has no native frame channel says video is slower", async () => {
+  for (const [code, expected] of [
+    ["native_frame_channel_unavailable", /browser_controller ready \(video is slower: no native frame channel\)/],
+    ["controller_recovered_native_frame_channel_unavailable", /retry interrupted browser actions; video is slower/],
+  ] as const) {
+    const environment = roomEnvironment()
+    environment.health = [{ component: "browser_controller", state: "ready", diagnostic_code: code }]
+    const harness = activityHarness([{ RoomEnvironmentState: { environment } }])
+    await harness.controller.synchronize()
+    const notice = harness.notices[0]
+    assert.ok(notice)
+    assert.match(notice, expected)
+    assert.doesNotMatch(notice, /native_frame_channel_unavailable/)
+  }
+})
+
 // MP-08 / MP-10: current-state and replay projections attribute controller recovery.
 test("MP-08 MP-10 controller recovery is actionable when a TUI attaches after the fault", async () => {
   const environment = roomEnvironment()

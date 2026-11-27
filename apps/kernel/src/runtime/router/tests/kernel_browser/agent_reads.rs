@@ -345,8 +345,8 @@ fn a_wait_is_joined_from_short_host_slices_and_answers_matched() {
             assert_eq!(missed["matched"], false);
             assert!(missed["waited_ms"].as_u64().unwrap() >= 3100);
             assert!(
-                missed["tabs"].is_array(),
-                "the final state comes with the answer"
+                missed["tab_count"].is_number() && missed.get("tabs").is_none(),
+                "the final state comes with the answer, as the acted tab and the tab count"
             );
             let slices: Vec<u64> = host_requests(&browser.root, "wait")
                 .iter()

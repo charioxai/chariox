@@ -223,11 +223,14 @@ async fn a_browser_region_card_is_bound_again_to_the_page_a_restart_brought_back
         .is_err());
 }
 
-/// A restarted plain card whose page cannot be shown again is not the person finishing: after the
-/// observation budget the agent is told the card is unavailable, never `condition_met`.
-#[tokio::test]
-async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable_not_done() {
-    let f = fixture("async-popup-region-rebind-fails", true).await;
+/// Rows 546 and 548: a person card survives any kernel restart while its Tab can be restored; when the Tab cannot be
+/// restored (the page cannot be shown again) it ends, after the observation budget, with a plain reason: the agent is
+/// told the card is unavailable, never `condition_met`. Whatever the card waits for.
+async fn a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+    name: &str,
+    region: crate::session::RuntimeInteractionBrowserRegion,
+) {
+    let f = fixture(name, true).await;
     f.begin(&f.prompt_id);
     let result = ask(&f, serde_json::json!({})).await;
     let id = result["interaction_id"].as_str().unwrap().to_owned();
@@ -236,11 +239,12 @@ async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(&id).unwrap();
         session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
-            browser_region: browser_region(),
+            browser_region: region,
         }));
         sessions.restore_session(session);
     }
-    // The controller answers every poll "Browser restarted" and refuses every rebind.
+    // The controller answers every poll "Browser restarted" (unavailable for a card that waits for text or a proof, as the real
+    // controller does) and refuses every rebind: the Tab cannot be restored.
     let agent = f.runtime.owned.agent_store.get_agent(&f.agent).unwrap();
     let user = f
         .runtime
@@ -290,6 +294,44 @@ async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable
     );
     f.runtime.shutdown_cleanup().await.unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable_not_done() {
+    a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+        "async-popup-region-rebind-fails",
+        browser_region(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_restarted_done_text_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason() {
+    let mut region = browser_region();
+    region.done_text = Some("Welcome home".into());
+    a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+        "async-popup-region-rebind-fails-text",
+        region,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_restarted_verification_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason() {
+    let mut region = browser_region();
+    region.verification = Some(
+        serde_json::from_value(serde_json::json!({
+            "challenge_id": "c",
+            "url": "https://example.com/verify",
+            "accepted_json_pointer": "/accepted"
+        }))
+        .expect("verification config"),
+    );
+    a_restarted_card_whose_tab_cannot_be_restored_ends_with_a_plain_reason(
+        "async-popup-region-rebind-fails-proof",
+        region,
+    )
+    .await;
 }
 
 /// Kept, not a gate: the browser-region card is the person's step (CAPTCHA, consent, one-time
@@ -1739,4 +1781,122 @@ async fn async_popup_browser_verification_refuses_confirm_and_blocking_calls() {
             "{error}"
         );
     }
+}
+
+/// Row 655: an agent choice that only repeats the card's own Cancel under another id leaves ONE Cancel, and pressing it
+/// is the definitive decline.
+#[tokio::test]
+async fn row655_a_cancel_choice_with_another_id_leaves_one_cancel() {
+    let f = fixture("async-popup-one-cancel", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(
+        &f,
+        serde_json::json!({"choices":[
+            {"id":"cancel_note","label":"Cancel","reply":"cancelled","style":"secondary"},
+            {"id":"done","label":"Done","reply":"done"}
+        ],"default_on_timeout":"cancel_note"}),
+    )
+    .await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.id() == id)
+        .unwrap();
+    let cancels: Vec<_> = card
+        .choices()
+        .iter()
+        .filter(|choice| choice.label().trim().eq_ignore_ascii_case("cancel"))
+        .map(|choice| choice.id().to_owned())
+        .collect();
+    assert_eq!(
+        cancels,
+        vec!["cancel".to_owned()],
+        "exactly one Cancel, the card's own"
+    );
+    assert!(card.choice("done").is_some());
+    assert!(card.choice("cancel_note").is_none());
+}
+
+/// Row 655: a card whose element has no visible area (the empty crop) tells the agent so; a visible one adds nothing.
+#[test]
+fn row655_a_card_on_an_element_without_visible_area_tells_the_agent_it_is_not_open() {
+    let mut region = browser_region();
+    let visible = crate::session::RuntimeInteractionView {
+        browser_region: region.clone(),
+    };
+    assert_eq!(
+        super::super::tool_dispatch::hidden_region_note(Some(&visible)),
+        None
+    );
+    region.rect = crate::session::RuntimeInteractionBrowserRect {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
+    let hidden = crate::session::RuntimeInteractionView {
+        browser_region: region,
+    };
+    let note = super::super::tool_dispatch::hidden_region_note(Some(&hidden)).unwrap();
+    assert!(note.contains("not visible"));
+    assert!(note.contains("Do not tell the person"));
+    assert_eq!(super::super::tool_dispatch::hidden_region_note(None), None);
+}
+
+/// Rows 574 / 655: a plain browser card gives the person Done (the agent hears choice_id "done"); a card that closes
+/// by itself on page text or a verification gets none, and an agent's own Done is never doubled.
+#[test]
+fn row574_a_plain_browser_card_gets_a_done_choice_and_a_self_closing_one_does_not() {
+    let view = |done_text: Option<&str>| crate::transport::runtime_tools::RequestPopupViewArgs {
+        browser_region: crate::transport::runtime_tools::RequestPopupBrowserRegionArgs {
+            tab_id: "tab-one".into(),
+            reference: "backend:42".into(),
+            verification: None,
+            done_text: done_text.map(str::to_owned),
+        },
+    };
+    let cancel = || {
+        crate::session::RuntimeInteractionChoice::new(
+            "cancel",
+            "Cancel",
+            "cancel",
+            Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+        )
+    };
+    let ids = |choices: &[crate::session::RuntimeInteractionChoice]| {
+        choices
+            .iter()
+            .map(|c| c.id().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let mut plain = vec![cancel()];
+    super::super::tool_dispatch::add_person_done(Some(&view(None)), &mut plain);
+    assert_eq!(ids(&plain), ["cancel", "done"]);
+    assert_eq!(plain[1].label(), "Done");
+    let mut waiting = vec![cancel()];
+    super::super::tool_dispatch::add_person_done(Some(&view(Some("Signed in"))), &mut waiting);
+    assert_eq!(
+        ids(&waiting),
+        ["cancel"],
+        "a done_text card closes by itself"
+    );
+    let mut own = vec![
+        crate::session::RuntimeInteractionChoice::new("finished", " done ", "finished", None),
+        cancel(),
+    ];
+    super::super::tool_dispatch::add_person_done(Some(&view(None)), &mut own);
+    assert_eq!(
+        ids(&own),
+        ["finished", "cancel"],
+        "the agent's own Done is kept, not doubled"
+    );
+    let mut no_view = vec![cancel()];
+    super::super::tool_dispatch::add_person_done(None, &mut no_view);
+    assert_eq!(
+        ids(&no_view),
+        ["cancel"],
+        "a question without a page gets no Done"
+    );
 }

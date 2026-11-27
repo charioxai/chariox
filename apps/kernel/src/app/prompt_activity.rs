@@ -13,6 +13,9 @@ pub(crate) struct ActivePromptState {
     pub(crate) settlement_requested: bool,
     // Adapter-local tool state can disappear before process liveness reports exit.
     pub(crate) active_tools: BTreeMap<String, crate::provider::ProviderPromptChunk>,
+    /// When each open tool in `active_tools` started (unix ms): a later update of the same tool
+    /// keeps its first start.
+    pub(crate) active_tool_started_at_ms: BTreeMap<String, u64>,
 }
 
 impl ActivePromptState {
@@ -45,6 +48,9 @@ impl ActivePromptState {
         };
         match provider_tool_phase(&status) {
             Some(ProviderToolPhase::Open) => {
+                self.active_tool_started_at_ms
+                    .entry(id.to_string())
+                    .or_insert_with(crate::session::unix_epoch_ms);
                 self.active_tools.insert(
                     id.to_string(),
                     crate::provider::ProviderPromptChunk {
@@ -59,6 +65,7 @@ impl ActivePromptState {
             }
             Some(ProviderToolPhase::Ended) => {
                 self.active_tools.remove(id);
+                self.active_tool_started_at_ms.remove(id);
             }
             None => {}
         }
@@ -68,6 +75,7 @@ impl ActivePromptState {
         &mut self,
         reason: &str,
     ) -> Vec<crate::provider::ProviderPromptChunk> {
+        self.active_tool_started_at_ms.clear();
         std::mem::take(&mut self.active_tools)
             .into_values()
             .map(|mut chunk| {
@@ -88,6 +96,27 @@ impl ActivePromptState {
                 chunk
             })
             .collect()
+    }
+
+    /// The oldest tool the provider is running, by name, and when it started: a turn in a tool
+    /// call is working, not waiting on its provider.
+    pub(crate) fn running_tool(&self) -> Option<(String, u64)> {
+        let (id, started_at_ms) = self
+            .active_tool_started_at_ms
+            .iter()
+            .filter(|(id, _)| self.active_tools.contains_key(*id))
+            .min_by_key(|(id, started)| (**started, (*id).clone()))?;
+        let name = serde_json::from_slice::<serde_json::Value>(&self.active_tools[id].bytes)
+            .ok()
+            .and_then(|record| {
+                ["tool", "name", "tool_name", "title"]
+                    .into_iter()
+                    .find_map(|field| record.get(field)?.as_str().map(str::to_owned))
+            })
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "a tool".to_owned());
+        Some((name, *started_at_ms))
     }
 
     #[cfg(test)]
@@ -638,6 +667,7 @@ mod tests {
             completion_recorded: true,
             settlement_requested: false,
             active_tools: BTreeMap::new(),
+            active_tool_started_at_ms: Default::default(),
         };
 
         activity.request_settlement();
@@ -660,6 +690,7 @@ mod tests {
             completion_recorded: false,
             settlement_requested: false,
             active_tools: BTreeMap::new(),
+            active_tool_started_at_ms: Default::default(),
         };
 
         activity.observe_provider_tool(

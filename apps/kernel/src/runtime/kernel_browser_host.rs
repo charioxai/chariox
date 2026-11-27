@@ -139,9 +139,13 @@ impl KernelBrowserHost {
     pub(crate) fn for_database(root: PathBuf, database: &std::path::Path) -> std::io::Result<Self> {
         let app_storage_root = chariox_app_runtime::worker_process::wasm::storage::root(database)
             .map_err(std::io::Error::other)?;
+        let root = root.join("kernel-browser");
         Ok(Self {
-            inner: Arc::new(Mutex::new(HostState::default())),
-            root: root.join("kernel-browser"),
+            inner: Arc::new(Mutex::new(HostState {
+                loaded: presence::read_loaded(&root),
+                ..HostState::default()
+            })),
+            root,
             app_storage_root,
             authority_epoch: Arc::default(),
             web_bot_auth_revision: Arc::default(),
@@ -1006,6 +1010,8 @@ impl KernelBrowserHost {
             .entry(user.into())
             .or_insert_with(|| {
                 let mut model = KernelBrowserActors::default();
+                // Row 548: a hot reload or restart rebuilds this model; the agents' Tabs stay theirs.
+                model.persist_tab_openers(self.profile_root(user).join("chariox-tab-openers.json"));
                 for (_, viewer) in leases.keys().filter(|(leased, _)| leased == user) {
                     model.viewer_connected(EnvironmentActor::new(
                         viewer,
@@ -1162,6 +1168,13 @@ impl KernelBrowserHost {
         model.retire_lapsed_desktop_viewers(std::time::Instant::now());
         model.reclaim_idle_takeovers(std::time::Instant::now());
         Ok(model.snapshot())
+    }
+
+    /// What a card bound to `host_tab` meets now, from the user's actor model.
+    pub(crate) fn card_tab_state(&self, user: &str, host_tab: &str) -> Result<Value, String> {
+        let model = self.actor_model(user)?;
+        let model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        Ok(model.card_tab_state(host_tab))
     }
 
     /// Ends every Tab takeover whose person went quiet, whichever viewer is open. True when one ended.
@@ -1373,6 +1386,27 @@ mod tests {
         }
     }
 
+    /// Row 664: a cold restart (a new host over the same root, no handover) keeps the tools an
+    /// agent listed; an ended run's listing does not come back.
+    #[test]
+    fn row664_a_cold_restart_keeps_the_user_domain_tools_an_agent_loaded() {
+        use KernelBrowserCapability::{Browser, Computer};
+        let root = tempfile::tempdir().unwrap();
+        let before = KernelBrowserHost::new(root.path().to_path_buf());
+        before.load_for("owner", "agent", Browser);
+        before.load_for("owner", "ended", Computer);
+        before.revoke_agent("ended");
+        drop(before);
+
+        let after = KernelBrowserHost::new(root.path().to_path_buf());
+        assert!(after.is_loaded_for("owner", "agent", Browser));
+        assert!(!after.is_loaded_for("owner", "agent", Computer));
+        assert!(!after.is_loaded_for("owner", "ended", Computer));
+        after.revoke_agent("agent");
+        let later = KernelBrowserHost::new(root.path().to_path_buf());
+        assert!(!later.is_loaded("owner", "agent"));
+    }
+
     /// Review 6010087630 P2: ending a run waits for an App call that passed its last check
     /// and is about to submit; nothing submits after the run has ended.
     #[test]
@@ -1427,6 +1461,33 @@ mod tests {
             1,
             "no submission after the run ended"
         );
+    }
+
+    // Row 548: after a hot reload (a new host over the same profile) the agent's Tab is still the agent's.
+    #[test]
+    fn row548_a_new_host_names_the_agents_tabs_the_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let user = "user-548";
+        let inventory =
+            serde_json::json!({"generation":1,"tabs":[{"tab_id":"host-1","document_id":"a"}]});
+        let first = KernelBrowserHost::new(root.path().to_path_buf());
+        std::fs::create_dir_all(first.profile_root(user)).unwrap();
+        {
+            let model = first.actor_model(user).unwrap();
+            let mut model = model.lock().unwrap();
+            model.reconcile(&inventory).unwrap();
+            model.opened_tab(
+                EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "a"),
+                "host-1",
+            );
+        }
+        let second = KernelBrowserHost::new(root.path().to_path_buf());
+        let model = second.actor_model(user).unwrap();
+        let mut model = model.lock().unwrap();
+        let mut state = inventory.clone();
+        model.reconcile(&state).unwrap();
+        model.project_tabs(&mut state);
+        assert_eq!(state["tabs"][0]["opened_by"]["actor_id"], "agent:a");
     }
 
     #[test]

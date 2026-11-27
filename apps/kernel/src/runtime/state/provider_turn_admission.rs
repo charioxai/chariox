@@ -262,7 +262,6 @@ mod tests {
                 }),
                 Vec::new(),
                 crate::extension::RemoteExtensionManifest::default(),
-                None,
                 Default::default(),
             )
             .await

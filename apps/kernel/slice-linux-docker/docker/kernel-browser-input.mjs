@@ -234,7 +234,7 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           await connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: -1, y: -1, button: "none", buttons: 0, ...stamp }, sessionId);
           assertNotCancelled(signal); return;
         }
-        if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new PointerOutsideViewport();
+        if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new PointerOutsideViewport(viewport);
         // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click; B4: a mirror's
         // resolved right click is the page's.
         if (input.kind === "click" && input.button !== undefined && !(resolved && input.button === "right")) throw new Error("MD-2: unsupported input");

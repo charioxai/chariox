@@ -46,6 +46,20 @@ pub(crate) fn resolve_agent<'a>(
     Ok(target)
 }
 
+/// The actor itself, or an agent below it. Row 405 leaves the settings read (`agent settings
+/// [<agent>]`) of another account's agent; changes go through room admission.
+pub(crate) fn self_or_below(
+    actor: &AgentInstance,
+    target: &AgentInstance,
+    agents: &[AgentInstance],
+) -> Result<(), DaemonError> {
+    if target.id() == actor.id() && target.session_id() == actor.session_id() {
+        Ok(())
+    } else {
+        in_subtree(actor, target, agents)
+    }
+}
+
 /// A caller controls every agent below it, at any depth, and nothing else.
 /// Membership only: the permission level or mode of either agent never decides.
 pub(crate) fn in_subtree(
@@ -63,33 +77,6 @@ pub(crate) fn in_subtree(
     Err(denied(
         "only the agents above an agent in this room can control it",
     ))
-}
-
-/// The actor itself, or an agent below it.
-pub(crate) fn self_or_below(
-    actor: &AgentInstance,
-    target: &AgentInstance,
-    agents: &[AgentInstance],
-) -> Result<(), DaemonError> {
-    if target.id() == actor.id() && target.session_id() == actor.session_id() {
-        Ok(())
-    } else {
-        in_subtree(actor, target, agents)
-    }
-}
-
-/// Destructive identity changes belong only to the target's immediate parent.
-pub(crate) fn direct_child(
-    actor: &AgentInstance,
-    target: &AgentInstance,
-) -> Result<(), DaemonError> {
-    if target.session_id() == actor.session_id() && target.parent_agent_id() == Some(actor.id()) {
-        Ok(())
-    } else {
-        Err(denied(
-            "only a direct child in this room can be renamed or deleted",
-        ))
-    }
 }
 
 /// Workflow execution can reset provider context, so peers are not bindings.
@@ -182,6 +169,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
                         | "profiles"
                         | "settings"
                         | "resume"
+                        | "parent"
                 )
             ) =>
         {
@@ -234,7 +222,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         Some("room")
             if matches!(
                 tokens.get(1).map(String::as_str),
-                Some("list" | "agents" | "cards" | "create" | "delete")
+                Some("list" | "agents" | "cards" | "card" | "create" | "delete")
             ) =>
         {
             Ok(())

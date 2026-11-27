@@ -1,7 +1,7 @@
 // MP-08/MP-10 (protocol 556): the host wakes a parked state read on change and bounds it otherwise.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {StateSignal,stateChangingEvent} from './kernel-browser-state-signal.mjs';
+import {StateSignal,stateChangingEvent,expectDetach} from './kernel-browser-state-signal.mjs';
 test('MP-08/MP-10 a parked state read wakes on a signal, at its deadline or when cancelled',async()=>{
  const signal=new StateSignal();
  assert.equal(await signal.wait(null,5000),0,'the first read does not wait');
@@ -21,4 +21,14 @@ test('MP-08/MP-10 only page Tab and top-level navigation events wake a state rea
   {method:'Page.frameStartedLoading',params:{}},{method:'Page.frameStoppedLoading',params:{}},{method:'Page.loadEventFired',params:{}},
   {method:'Page.screencastFrame'},{method:'Network.requestWillBeSent'},{method:'Runtime.consoleAPICalled'},{method:'DOM.childNodeInserted'},{method:'Page.frameResized'}])
   assert.equal(stateChangingEvent(message),false,message.method);
+});
+test('655 the controller\'s own detach from a frame renderer (a card reading geometry inside a challenge frame) wakes no state read',()=>{
+ const connection={};
+ const detached={method:'Target.detachedFromTarget',params:{sessionId:'frame-session',targetId:'frame'}};
+ assert.equal(stateChangingEvent(detached,connection),true,'an unexpected detach still wakes');
+ expectDetach(connection,'frame-session');
+ assert.equal(stateChangingEvent(detached,connection),false,'the controller asked for this detach');
+ assert.equal(stateChangingEvent(detached,connection),true,'only once: a later detach of the same session wakes');
+ for(let i=0;i<2000;i++)expectDetach(connection,'s'+i);
+ assert.ok(connection.expectedDetaches.size<=1024,'bounded');
 });

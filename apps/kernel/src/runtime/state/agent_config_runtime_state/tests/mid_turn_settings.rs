@@ -40,6 +40,7 @@ fn track_activity(turn: &FailingTurn) {
             completion_recorded: false,
             settlement_requested: false,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         });
 }
 
@@ -243,6 +244,7 @@ async fn a_tool_call_that_is_still_running_is_never_ended() {
             completion_recorded: false,
             settlement_requested: false,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         })
         .active_tools
         .insert(

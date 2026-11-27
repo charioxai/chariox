@@ -289,6 +289,8 @@ pub(crate) struct KernelRuntimeState {
     slice_auth_inspections: slice_auth_inspection::SliceAuthInspections,
     /// Parents holding a finished child's wake for the siblings still working.
     sibling_windows: child_finish_window::SiblingWindows,
+    /// The last input each Tab took and refused, for the agent whose card shows it.
+    browser_input_log: browser_input_log::BrowserInputLog,
     /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
     peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
     /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
@@ -310,6 +312,8 @@ pub(crate) struct KernelRuntimeState {
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
+    /// Keeps the driver of adopted background commands alive; the registry holds it weakly.
+    adopted_process_wake_driver: Option<Arc<dyn wake_driver::WakeDriver>>,
     interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
     job_wake_driver: Option<Arc<jobs::JobDriver>>,
     /// MP-08 / MP-09 / MP-10 / MP-11: work services retain this callback weakly
@@ -480,7 +484,6 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_settings_notices: agent_settings_change::PendingSettingsNotices,
-    leased_launch_credentials: std::sync::Arc<leased_launch_credentials::LeasedLaunchCredentials>,
     /// When the kernel last sent a usage-limit resume, to stagger the next one.
     usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
     /// The agents whose claimed resume this kernel is still sending.
@@ -720,7 +723,6 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
-mod leased_launch_credentials;
 mod leased_profile_transition_runtime;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -755,10 +757,14 @@ mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
 pub(crate) use runtime_interaction_owned_state::{CardKind, LiveRoomCard};
+mod browser_input_log;
 mod browser_region_card;
 mod disk_pressure;
 mod disk_usage;
 mod in_flight_reads;
+mod kernel_restart_gate;
+mod kernel_restart_tool;
+pub(crate) use kernel_restart_tool::kernel_restart_spec;
 mod owner_vault;
 mod process_wait_notices;
 mod process_waits;
@@ -774,6 +780,7 @@ mod session_process_control;
 mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
+pub(crate) use kernel_restart_gate::restart_refused;
 mod vault_owner_gate;
 mod vault_secret_request;
 pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
@@ -790,6 +797,7 @@ mod kernel_browser_find;
 mod kernel_browser_mirror;
 mod kernel_browser_qr;
 mod kernel_browser_receipts;
+mod kernel_browser_reply;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
 mod kernel_browser_state_wait;
@@ -1269,6 +1277,7 @@ impl KernelRuntimeState {
             lifecycle_sweeps: Default::default(),
             slice_auth_inspections: Default::default(),
             sibling_windows: Default::default(),
+            browser_input_log: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
             unpaired_peer_follow_settlements: Default::default(),
@@ -1278,6 +1287,7 @@ impl KernelRuntimeState {
             terminal_input_grants: agent_grants::AgentGrants::default(),
             watched_process_grants: agent_grants::AgentGrants::default(),
             terminal_wake_driver: None,
+            adopted_process_wake_driver: None,
             interaction_wake_driver: None,
             job_wake_driver: None,
             managed_work_activity: None,
@@ -1426,7 +1436,6 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
                 pending_settings_notices: Default::default(),
-                leased_launch_credentials: Default::default(),
                 usage_limit_resumes: Default::default(),
                 usage_limit_sends: Default::default(),
                 usage_limit_resume_failures: Default::default(),
@@ -1491,6 +1500,7 @@ impl KernelRuntimeState {
         };
         runtime.link_work_to_managed_kernel();
         runtime.register_terminal_wake_driver();
+        runtime.register_adopted_process_wake_driver();
         runtime.register_job_wake_driver();
         runtime.register_interaction_wake_driver();
         runtime
@@ -1846,6 +1856,7 @@ mod background_hold;
 mod child_finish_window;
 mod child_finished_event;
 
+mod adopted_process_wake;
 mod agent_blocked_task;
 #[cfg(test)]
 mod agent_delivery_recovery_tests;
@@ -1894,6 +1905,7 @@ mod pump_stall_tests;
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
 mod slice_auth_inspection;
+mod stranded_agent;
 mod supervision_step;
 mod task_work_flight;
 mod terminal_wake;

@@ -1212,3 +1212,209 @@ async fn a_captured_private_key_is_restored_byte_for_byte_and_loads() {
     );
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+/// Row 555: a setup script that needs a Vault token and prints a new secret is captured in one
+/// step; the token reaches the command as env and the new value goes from the process into the
+/// Vault, with no file between them.
+#[tokio::test]
+async fn capture_command_binds_another_vault_entry_as_env_and_stores_what_it_prints() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let token = capture(&f, "token", printing(SECRET), json!({"kind": "stdout"}))
+        .await
+        .unwrap();
+    let token_id = token["credential_id"].as_str().unwrap().to_string();
+    let files = |dir: &std::path::Path| {
+        let mut names = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let before = files(&workspace(&f));
+    let created = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "derived", "host": "api.example.com", "origin": "https://api.example.com",
+            "env": {"KEY": token_id}, "label": "derived key",
+            "argv": ["/bin/sh", "-c", "printf 'derived-%s\\n' \"$KEY\""],
+            "use_binding": {"target": {"kind": "command_environment", "name": "NEW", "origin": "https://api.example.com"}}}),
+    )
+    .await
+    .unwrap();
+    let derived_id = created["credential_id"].as_str().unwrap().to_string();
+    assert_ne!(derived_id, token_id);
+    assert_eq!(
+        stored(&f, &derived_id).as_str(),
+        format!("derived-{SECRET}"),
+        "the command got the token from the Vault and its output was stored"
+    );
+    assert!(!created.to_string().contains(SECRET), "{created}");
+    assert_eq!(files(&workspace(&f)), before, "no file was written");
+    // A failing command's stderr excerpt never carries the bound value.
+    let failed = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "fails", "host": "api.example.com", "origin": "https://api.example.com",
+            "env": {"KEY": token_id},
+            "argv": ["/bin/sh", "-c", "echo \"bad $KEY\" >&2; exit 3"],
+            "use_binding": {"target": {"kind": "command_environment", "name": "NEW", "origin": "https://api.example.com"}}}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(failed.contains("nothing was stored"), "{failed}");
+    assert!(!failed.contains(SECRET), "{failed}");
+    // Refused before the command runs: no origin, an origin the entry is not for, an unknown entry.
+    let ran = workspace(&f).join("ran");
+    let touch = json!([
+        "/bin/sh",
+        "-c",
+        format!("touch '{}'; echo x", ran.display())
+    ]);
+    let binding = json!({"target": {"kind": "command_environment", "name": "NEW", "origin": "https://api.example.com"}});
+    for (request, extra) in [
+        ("no-origin", json!({"env": {"KEY": token_id}})),
+        (
+            "wrong-origin",
+            json!({"origin": "https://other.example.com", "env": {"KEY": token_id}}),
+        ),
+        (
+            "unknown",
+            json!({"origin": "https://api.example.com", "env": {"KEY": "missing"}}),
+        ),
+    ] {
+        let mut arguments = json!({"request_id": request, "host": "api.example.com",
+            "argv": touch, "use_binding": binding});
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert!(call(&f, CAPTURE, arguments).await.is_err(), "{request}");
+    }
+    assert!(!ran.exists(), "a refused capture ran nothing");
+    let session =
+        serde_json::to_string(&f.state.owned.session_snapshot(&turn.session_id).unwrap()).unwrap();
+    assert!(!session.contains(SECRET) && !session.contains("derived-sk_"));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn entries_are_named_by_description_in_use_env_write_file_and_copy_for_use() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let _turn = elevated(&f);
+    unlock(&f);
+    let captured = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "named", "argv": printing(SECRET), "host": "api.example.com",
+            "label": "Webhook signing secret", "extract": {"kind":"stdout"},
+            "use_binding":{"target":{"kind":"command_environment","name":"KEY","origin":"https://api.example.com"}}}),
+    )
+    .await
+    .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap().to_string();
+    // use_env: a description names the entry; the result still masks it by id.
+    let used = call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com","argv":["/usr/bin/env"],"env":{"KEY":" webhook SIGNING secret "}}),
+    )
+    .await
+    .unwrap();
+    assert!(!used.to_string().contains(SECRET), "{used}");
+    assert!(used["stdout"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("KEY=[vault:{handle}]")));
+    // copy_for_use: the copy records the resolved id as its source.
+    let copied = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"by-name","from":"Webhook signing secret",
+            "use_binding":{"target":{"kind":"site","origin":"https://api.example.com"}}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(copied["from"], handle.as_str(), "{copied}");
+    assert!(!copied.to_string().contains(SECRET), "{copied}");
+    // write_file needs a file-bound entry; a name that matches nothing keeps the tool's own refusal.
+    assert!(call(
+        &f,
+        WRITE_FILE,
+        json!({"path":"out.env","template":"KEY={{KEY}}","values":{"KEY":"no such entry"}})
+    )
+    .await
+    .is_err());
+    // Two entries with one description: refused with both ids, nothing runs; the exact id still works.
+    let twin = capture(&f, "twin-a", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let twin_b = capture(&f, "twin-b", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let (a, b) = (
+        twin["credential_id"].as_str().unwrap(),
+        twin_b["credential_id"].as_str().unwrap(),
+    );
+    let marker = workspace(&f).join("must-not-run");
+    let refused = call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com","argv":["/usr/bin/touch",marker],"env":{"KEY":"example key"}}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("more than one") && refused.contains(a) && refused.contains(b),
+        "{refused}"
+    );
+    assert!(!marker.exists());
+    assert!(call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com","argv":["/usr/bin/env"],"env":{"KEY":a}})
+    )
+    .await
+    .is_ok());
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_copy_retry_by_name_still_answers_when_the_copy_carries_the_same_label() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let _turn = elevated(&f);
+    unlock(&f);
+    let pushed = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "push", "argv": printing(SECRET), "host": "github.com",
+            "label": "deploy key", "extract": {"kind":"stdout"},
+            "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+    )
+    .await
+    .unwrap();
+    let source = pushed["credential_id"].as_str().unwrap().to_string();
+    let request = json!({"request_id":"api","from":"deploy key","label":"deploy key",
+        "use_binding":{"target":{"kind":"site","origin":"https://api.github.com"}}});
+    let first = call(&f, COPY_FOR_USE, request.clone()).await.unwrap();
+    assert_eq!(first["created"], true, "{first}");
+    assert_eq!(first["from"], source.as_str(), "{first}");
+    // The copy now shares the description; the identical request still names its source.
+    let again = call(&f, COPY_FOR_USE, request).await.unwrap();
+    assert_eq!(again["created"], false, "{again}");
+    assert_eq!(again["credential_id"], first["credential_id"], "{again}");
+    assert_eq!(again["from"], source.as_str(), "{again}");
+    // A new request by that name is now ambiguous and says so; the id still works.
+    let other = json!({"request_id":"api2","from":"deploy key",
+        "use_binding":{"target":{"kind":"site","origin":"https://api.github.com"}}});
+    let refused = call(&f, COPY_FOR_USE, other).await.unwrap_err().to_string();
+    assert!(refused.contains("more than one"), "{refused}");
+    f.state.shutdown_cleanup().await.unwrap();
+}

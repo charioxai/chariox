@@ -48,7 +48,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: LIST_SESSION_AGENTS_TOOL.to_string(),
-            description: "List Room agents (alias, state, queue) and tasks newest first. Use include_history for finished tasks and settled obligations. Use task_id for a task's obligations. Resume a list with next_*_cursor as *_cursor.".to_string(),
+            description: "List Room agents (compact rows) and tasks, newest first; get_session_agent shows one agent. include_history adds finished tasks and settled obligations; task_id, a task's. Resume with next_*_cursor.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -89,7 +89,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "room": {
                         "type": "string",
-                        "description": "Optional id of another room of the same owner on this kernel. Its ordinary agents are addressable; sub-agents are not."
+                        "description": "Optional id of another room of the owner on this kernel; the owner's agents reach all its agents, a guest none."
                     },
                     "kernel": {
                         "type": "string",

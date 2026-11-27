@@ -43,7 +43,7 @@ fn room_admission_child_is_controlled_by_its_parent() {
 }
 
 #[test]
-fn room_admission_only_the_direct_parent_deletes_a_grandchild() {
+fn room_admission_any_agent_above_names_a_grandchild_for_delete() {
     let a = agent("a", None);
     let b = agent("b", Some("a"));
     let d = agent("d", Some("b"));
@@ -57,20 +57,20 @@ fn room_admission_only_the_direct_parent_deletes_a_grandchild() {
             true,
         )
     };
-    assert!(
-        delete(&a).is_err(),
-        "a rename or delete needs a direct child, not a deeper subtree member"
-    );
+    // Row 405: the command parses for any agent; room admission judges who may delete.
+    assert!(delete(&a).is_ok(), "an agent above it names a grandchild");
     assert!(delete(&b).is_ok(), "the direct parent deletes its child");
 }
 
 #[test]
-fn room_admission_sibling_peer_and_ancestor_are_outside_the_subtree() {
+fn room_admission_sibling_peer_and_ancestor_parse_and_admission_decides() {
     let a = agent("a", None);
     let b = agent("b", Some("a"));
     let sibling = agent("s", Some("a"));
     let peer = agent("p", None);
     let agents = [a.clone(), b.clone(), sibling.clone(), peer.clone()];
+    // Row 405: the command parses for these too; room admission refuses deleting the caller
+    // itself or an agent above it (authorize_delete_scope), outside the Room and for guests.
     for (actor, target) in [(&b, "s"), (&a, "p"), (&b, "a"), (&b, "b")] {
         let result = super::request::meta_agent_request(
             &session(),
@@ -79,7 +79,7 @@ fn room_admission_sibling_peer_and_ancestor_are_outside_the_subtree() {
             &agents,
             true,
         );
-        assert!(result.is_err(), "{} must not control {target}", actor.id());
+        assert!(result.is_ok(), "{} names {target}: {result:?}", actor.id());
     }
 }
 
@@ -276,8 +276,9 @@ fn settings_set_reaches_an_agent_below_and_no_other() {
     let sibling = agent("s", None);
     let agents = [a.clone(), child.clone(), sibling];
     assert!(settings(&a, &agents, &["c", "--model", "sonnet"]).is_ok());
-    assert!(settings(&child, &agents, &["a", "--model", "sonnet"]).is_err());
-    assert!(settings(&child, &agents, &["s", "--model", "sonnet"]).is_err());
+    // Row 405 (PA11): another of the owner's agents parses too; room admission judges it.
+    assert!(settings(&child, &agents, &["a", "--model", "sonnet"]).is_ok());
+    assert!(settings(&child, &agents, &["s", "--model", "sonnet"]).is_ok());
 }
 
 #[test]

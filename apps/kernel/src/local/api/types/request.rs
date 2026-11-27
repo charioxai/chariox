@@ -3,6 +3,8 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     GetAgentReleaseNotes {},
+    /// Row 551: restart this kernel as a hot reload (`docs/ARCHITECTURE.md` 3.3.2): runs, terminals and the Vault carry on.
+    RestartKernel(RestartKernelRequest),
     SubscribeEvents(SubscribeEventsRequest),
     UnsubscribeEvents(UnsubscribeEventsRequest),
     GetEventSubscription(GetEventSubscriptionRequest),

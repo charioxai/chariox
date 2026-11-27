@@ -66,6 +66,7 @@ function sentence(wait: Wait, now: number, options: WaitReasonOptions): string {
       return label ? `timer '${label}' (${when})` : `timer (${when})`
     }
     case "card": return `${wait.text} (${age})`
+    case "tool": return `${wait.text} since ${clock(wait.since_ms, options)} (${age})`
     case "source": return wait.text.startsWith("agent ") ? `reply from ${wait.text.slice("agent ".length)} (${age})` : `${wait.text} (${age})`
     case "provider": return age
   }
@@ -84,6 +85,8 @@ export function waitReasonText(liveness: AgentLiveness | undefined, now: number,
   }
   const wait = waitOf(liveness)
   if (!wait) return undefined
+  // A tool the provider runs is work, not a wait: "running Bash since 09:41 (20m)".
+  if (wait.first.kind === "tool" && wait.more === 0) return `running ${sentence(wait.first, now, options)}`
   return `waiting: ${sentence(wait.first, now, options)}${wait.more > 0 ? `, and ${wait.more} more` : ""}`
 }
 

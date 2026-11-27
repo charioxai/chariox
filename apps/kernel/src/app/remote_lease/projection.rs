@@ -1260,7 +1260,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 prompt,
             )?;
         }
+        // A tool row of the worker's turn opens or ends a running tool of the home's admitted turn;
+        // a late row after the turn settled opens nothing.
+        let home_turn_open = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .is_some();
         for chunk in output_chunks {
+            if home_turn_open
+                && matches!(
+                    chunk.kind,
+                    crate::terminal::TerminalOutputKind::ProviderTool
+                )
+            {
+                crate::transport::flow_control::note_projected_prompt_tool_output(
+                    self.app,
+                    &projected_provider_run_id,
+                    chunk.merge_key.as_deref(),
+                    &chunk.bytes,
+                );
+            }
             self.app.fan_out_output_for_agent(
                 session_id,
                 &projected_provider_run_id,
@@ -3875,6 +3894,104 @@ mod mp11_projection_admission_tests {
                 .settlement_status,
             crate::git_observer::CompletedTurnSettlementStatus::Cancelled
         );
+    }
+
+    /// Row 36 (g) on a lease: the worker's tool rows open and end a running tool of the home's
+    /// admitted turn, which is what keeps a long leased tool from reading as a stalled provider.
+    #[test]
+    fn row36_a_leased_tool_row_is_a_running_tool_of_the_home_turn_until_it_ends() {
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".into(),
+                    worker_machine_id: "worker-machine".into(),
+                    execution_lease_id: "lease".into(),
+                    leased_agent_id: "leased".into(),
+                    active_worker_provider_run_id: Some("run".into()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                    worker_worktree_id: None,
+                },
+            )
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "leased-tool-test",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let project = |app: &mut crate::app::DaemonApp, status: &str| {
+            RemoteLeaseRuntime::new(app)
+                .project_remote_runtime_projection(
+                    crate::runtime::relay_peer_authority::test_projection_authority(
+                        "worker-kernel-1",
+                    ),
+                    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        home_session_id: session.id().into(),
+                        home_agent_id: agent.id().into(),
+                        provider_run_id: "run".into(),
+                        provider_run: None,
+                        prompts: vec![],
+                        output_chunks: vec![
+                            crate::transport::relay_peer::RelayProjectedOutputChunk {
+                                kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                                merge_key: Some("long-build".into()),
+                                bytes: serde_json::to_vec(&serde_json::json!({
+                                    "id": "long-build", "tool": "Bash", "status": status,
+                                }))
+                                .unwrap(),
+                            },
+                        ],
+                        notices: vec![],
+                        completions: vec![],
+                    },
+                )
+                .unwrap();
+        };
+        let run = crate::provider::projected_leased_provider_run_id("leased", "run");
+        let running = |app: &crate::app::DaemonApp| {
+            app.prompt_activity
+                .read()
+                .get(&run)
+                .and_then(crate::app::ActivePromptState::running_tool)
+        };
+        // No admitted home turn: a late row opens nothing.
+        project(&mut app, "running");
+        assert_eq!(running(&app), None);
+
+        let prompt = PromptQueueItem::new(
+            "leased-home-turn",
+            attachment.id(),
+            agent.id(),
+            "build it",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { .. } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap()
+        else {
+            panic!("the prompt must start");
+        };
+        let before = crate::session::unix_epoch_ms();
+        project(&mut app, "running");
+        let (tool, since) = running(&app).expect("the leased tool runs in the home turn");
+        assert_eq!(tool, "Bash");
+        assert!(since >= before);
+        // A later update of the same tool keeps its start.
+        project(&mut app, "running");
+        assert_eq!(running(&app), Some(("Bash".to_owned(), since)));
+        project(&mut app, "completed");
+        assert_eq!(running(&app), None);
     }
 
     #[test]

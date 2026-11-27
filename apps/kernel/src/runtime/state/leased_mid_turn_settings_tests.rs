@@ -78,7 +78,6 @@ async fn running_leased_turn() -> RunningLeasedTurn {
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             crate::transport::relay_peer::LeasedNativeSkills::default(),
         )
         .await
@@ -117,6 +116,7 @@ async fn running_leased_turn() -> RunningLeasedTurn {
             completion_recorded: false,
             settlement_requested: false,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         });
     RunningLeasedTurn {
         runtime,

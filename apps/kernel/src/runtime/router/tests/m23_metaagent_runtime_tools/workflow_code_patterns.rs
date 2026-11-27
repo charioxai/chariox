@@ -63,19 +63,16 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inne
         Some("routing-pattern")
     );
 
-    let applied = router
-        .runtime_state
-        .dispatch_meta_runtime_tool_call_for_agent(
-            session.id(),
-            metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-            serde_json::json!({
-                "name": "routing-pattern",
-                "provider_rebindings": provider_rebindings
-            }),
-        )
-        .await
-        .expect("metaagent should apply routing workflow-code artifact");
+    let applied = apply_with_definition_and_session(
+        &router,
+        session.id(),
+        metaagent.id(),
+        serde_json::json!({
+            "name": "routing-pattern",
+            "provider_rebindings": provider_rebindings
+        }),
+    )
+    .await;
     assert!(applied.ok, "{:?}", applied.payload);
     assert_eq!(
         applied
@@ -350,19 +347,16 @@ const worker = workflow.node({
 workflow.endpoint(worker, { handle: "entry", alias: "entry" });
 "#;
 
-    let applied = router
-        .runtime_state
-        .dispatch_meta_runtime_tool_call_for_agent(
-            session.id(),
-            metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-            serde_json::json!({
-                "source": source,
-                "language": "typescript"
-            }),
-        )
-        .await
-        .expect("metaagent should apply inline TypeScript workflow-code");
+    let applied = apply_with_definition_and_session(
+        &router,
+        session.id(),
+        metaagent.id(),
+        serde_json::json!({
+            "source": source,
+            "language": "typescript"
+        }),
+    )
+    .await;
     assert!(applied.ok, "{:?}", applied.payload);
     assert_eq!(
         applied
@@ -456,24 +450,21 @@ async fn metaagent_workflow_code_applies_canonical_fan_out_pattern_inner() {
         Some(true)
     );
 
-    let applied = router
-        .runtime_state
-        .dispatch_meta_runtime_tool_call_for_agent(
-            session.id(),
-            metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-            serde_json::json!({
-                "source": fan_out_example.source,
-                "provider_rebindings": [
-                    { "node": "planner", "provider": "dev-stub", "model": "default" },
-                    { "node": "worker_a", "provider": "dev-stub", "model": "default" },
-                    { "node": "worker_b", "provider": "dev-stub", "model": "default" },
-                    { "node": "synthesizer", "provider": "dev-stub", "model": "default" }
-                ]
-            }),
-        )
-        .await
-        .expect("metaagent should apply fan-out workflow-code source");
+    let applied = apply_with_definition_and_session(
+        &router,
+        session.id(),
+        metaagent.id(),
+        serde_json::json!({
+            "source": fan_out_example.source,
+            "provider_rebindings": [
+                { "node": "planner", "provider": "dev-stub", "model": "default" },
+                { "node": "worker_a", "provider": "dev-stub", "model": "default" },
+                { "node": "worker_b", "provider": "dev-stub", "model": "default" },
+                { "node": "synthesizer", "provider": "dev-stub", "model": "default" }
+            ]
+        }),
+    )
+    .await;
     assert!(applied.ok, "{:?}", applied.payload);
     assert_eq!(
         applied
@@ -643,16 +634,13 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
-    let owned_applied = router
-        .runtime_state
-        .dispatch_meta_runtime_tool_call_for_agent(
-            session.id(),
-            metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-            serde_json::json!({ "source": owned_source }),
-        )
-        .await
-        .expect("metaagent should apply owned existing-agent workflow-code");
+    let owned_applied = apply_with_definition_and_session(
+        &router,
+        session.id(),
+        metaagent.id(),
+        serde_json::json!({ "source": owned_source }),
+    )
+    .await;
     assert!(owned_applied.ok, "{:?}", owned_applied.payload);
     assert_eq!(
         owned_applied
@@ -780,9 +768,12 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
         .await
         .expect_err("a workflow must refuse an entry agent after its deadline");
     assert!(crate::error::is_agent_deadline_refusal(&refused));
-    assert!(refused
-        .to_string()
-        .contains("Start a new agent for new work"));
+    let refusal_text = refused.to_string();
+    assert!(
+        refusal_text.contains("`agent deadline <agent> <duration|none>`")
+            && refusal_text.contains("start a new agent for new work"),
+        "the refusal names both ways on: {refusal_text}"
+    );
     {
         let app = router.app.lock().await;
         let current = app.sessions().get_session(session.id()).unwrap();

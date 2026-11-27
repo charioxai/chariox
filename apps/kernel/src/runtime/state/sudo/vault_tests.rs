@@ -269,13 +269,14 @@ async fn vopen_plain_agent_generates_for_one_origin_without_a_prompt() {
         .unwrap();
     assert!(snapshot.active_interactions().is_empty());
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    // Row 405: the owner's plain agent needs no window for an ordinary request.
     assert!(call(
         &f,
         "chariox_kernel_request",
         json!({"request":{"ListSessions":null}})
     )
     .await
-    .is_err());
+    .is_ok());
 }
 
 #[tokio::test]
@@ -544,7 +545,8 @@ async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
 #[tokio::test]
 async fn vflag_blocking_popup_card_ends_before_the_provider_cut() {
     crate::test_support::isolated_env_test!();
-    for action in [false, true] {
+    // Row 405: an action card of the owner's agent runs at once, so only plain cards block.
+    for action in [false] {
         for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
             let f = fixture();
             let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
@@ -1259,9 +1261,30 @@ fn card_fill(field: &str, payment: Option<&Value>) -> Value {
     args
 }
 
+/// True when `needle` is in `text` as a whole run of digits: a four-digit code is also a
+/// stretch of any timestamp or number an output carries, which is not the card's code.
+fn has_digit_run(text: &str, needle: &str) -> bool {
+    text.match_indices(needle).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + needle.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_digit()) && !after.is_some_and(|c| c.is_ascii_digit())
+    })
+}
+
+#[test]
+fn a_card_code_is_found_as_a_whole_number_only() {
+    // A timestamp or an id that happens to carry the four digits is not the card's code.
+    assert!(!has_digit_run(r#"{"at":1795731674123}"#, CARD_CODE));
+    assert!(has_digit_run(r#"{"code":"7316"}"#, CARD_CODE));
+    assert!(has_digit_run("7316", CARD_CODE));
+    assert!(has_digit_run("x 7316 y", CARD_CODE));
+    assert!(has_digit_run("12 7316-7316", CARD_CODE));
+    assert!(!has_digit_run("173169", CARD_CODE));
+}
+
 fn no_card_data(text: &str) {
     assert!(
-        !text.contains(CARD_NUMBER) && !text.contains(CARD_CODE),
+        !text.contains(CARD_NUMBER) && !has_digit_run(text, CARD_CODE),
         "card data in an output"
     );
 }
@@ -2620,15 +2643,32 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
         };
         let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
         assert_eq!(result["generation"], 1, "{} keeps generation", command_name);
-        assert!(
-            result["tabs"].is_array(),
-            "capturing Tabs must preserve browser inventory through every boundary"
-        );
-        assert!(result["tabs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tab| tab["tab_id"] == "host-tab-new"));
+        if command_name == "state" {
+            assert!(
+                result["tabs"].is_array(),
+                "capturing Tabs must preserve browser inventory through every boundary"
+            );
+            assert!(result["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tab| tab["tab_id"] == "host-tab-new"));
+        } else {
+            // Row 552: an action answers with the acted tab and the tab count; only a state read
+            // (or start, restart, stop) lists every tab. The fixed keys must survive the capture.
+            assert!(
+                result.get("tabs").is_none(),
+                "{command_name} no longer lists every tab"
+            );
+            assert!(
+                result["tab_count"].as_u64().is_some_and(|n| n >= 1),
+                "capturing Tabs must preserve the tab count key on {command_name}"
+            );
+            assert_eq!(
+                result["tab"]["tab_id"], "host-tab-new",
+                "the acted tab keeps its opaque identity on {command_name}"
+            );
+        }
     }
     let stopped = call(
         f,
@@ -2715,13 +2755,28 @@ async fn vflag_capture_inventory_schema_collisions_preserve_outer_runtime_result
         let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
         assert_eq!(result["state"], "ready", "{operation} keeps its state enum");
         assert_eq!(result["generation"], 1, "{operation} keeps generation");
-        let tabs = result["tabs"]
-            .as_array()
-            .expect("capturing Tabs preserves the fixed inventory key");
-        let tab = tabs
-            .iter()
-            .find(|tab| tab["tab_id"] == "host-tab-new")
-            .expect("the filled tab keeps its opaque identity");
+        // Row 552: a state read lists every tab; an action answers with the acted tab and the
+        // tab count. Either way the fixed keys survive and the page-derived title is scrubbed.
+        let tab = if operation == "state" {
+            let tabs = result["tabs"]
+                .as_array()
+                .expect("capturing Tabs preserves the fixed inventory key");
+            tabs.iter()
+                .find(|tab| tab["tab_id"] == "host-tab-new")
+                .expect("the filled tab keeps its opaque identity")
+                .clone()
+        } else {
+            assert!(
+                result.get("tabs").is_none(),
+                "{operation} no longer lists every tab"
+            );
+            assert!(
+                result["tab_count"].as_u64().is_some_and(|n| n >= 1),
+                "{operation} keeps the fixed tab count key"
+            );
+            result["tab"].clone()
+        };
+        assert_eq!(tab["tab_id"], "host-tab-new");
         assert_eq!(tab["document_id"], "doc-login");
         assert_eq!(
             tab["title"], "[redacted] [redacted] [redacted] [redacted]",

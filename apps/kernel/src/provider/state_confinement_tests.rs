@@ -729,3 +729,228 @@ fn killing_the_sandbox_ends_the_program_it_confines() {
     }
     assert!(!survived, "the confined program outlived its sandbox");
 }
+
+/// A user manager socket and a session bus as a login session has them: the
+/// folder `XDG_RUNTIME_DIR` names, with listening sockets in it.
+struct FakeUserSession {
+    runtime: PathBuf,
+    _listeners: Vec<std::os::unix::net::UnixListener>,
+}
+
+impl FakeUserSession {
+    fn new(_kernel: &DummyKernelHome) -> Self {
+        // A socket path must fit in SUN_LEN, which the test's temp folder may not.
+        let runtime = PathBuf::from("/tmp").join(format!("sm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
+        std::fs::create_dir_all(runtime.join("systemd")).unwrap();
+        let listeners = [runtime.join("systemd/private"), runtime.join("bus")]
+            .iter()
+            .map(|path| std::os::unix::net::UnixListener::bind(path).unwrap())
+            .collect();
+        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
+        std::env::set_var(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", runtime.join("bus").display()),
+        );
+        Self {
+            runtime,
+            _listeners: listeners,
+        }
+    }
+}
+
+impl Drop for FakeUserSession {
+    fn drop(&mut self) {
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
+        let _ = std::fs::remove_dir_all(&self.runtime);
+    }
+}
+
+/// Cell (a): the user's service manager and session bus start processes outside
+/// the sandbox, where the state folder is not masked. Neither socket may be
+/// reachable from an agent's shell.
+#[test]
+fn an_agent_shell_cannot_reach_the_user_manager_or_the_session_bus() {
+    let kernel = DummyKernelHome::new();
+    let session = FakeUserSession::new(&kernel);
+    let runtime = session.runtime.display();
+    let output = run_confined(
+        &kernel,
+        &format!(
+            "if test -S '{runtime}/systemd/private'; then echo user-manager-open; else echo user-manager-closed; fi\n\
+             if test -S '{runtime}/bus'; then echo session-bus-open; else echo session-bus-closed; fi\n\
+             case \"$DBUS_SESSION_BUS_ADDRESS\" in '') echo bus-address-unset;; *) echo bus-address-set;; esac\n"
+        ),
+    );
+    assert!(output.contains("user-manager-closed"), "{output}");
+    assert!(output.contains("session-bus-closed"), "{output}");
+    assert!(output.contains("bus-address-unset"), "{output}");
+}
+
+/// The shared test process must stay dumpable. A test that needs the non-dumpable flag
+/// (PR_SET_DUMPABLE 0) runs it in an isolated child; this fails loudly if one ever leaks it
+/// into the process every other test shares (PR_GET_DUMPABLE: 1 = dumpable).
+fn assert_test_process_dumpable() {
+    // SAFETY: PR_GET_DUMPABLE takes no pointers.
+    let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
+    assert_eq!(
+        dumpable, 1,
+        "a test made the shared test process non-dumpable: run PR_SET_DUMPABLE 0 in an isolated child"
+    );
+}
+
+/// Cell (a), route 3: the kernel's own process shows its mounts, unmasked, under
+/// /proc. A kernel that holds a local token is non-dumpable (PR_SET_DUMPABLE 0,
+/// disable_kernel_process_dumpability), which makes its /proc files root-owned,
+/// so a same-uid agent is refused and needs no pid namespace. Root bypasses the
+/// flag, so the body runs in a child that is never root.
+///
+/// The flag belongs to the whole process, and tests run as threads of one process:
+/// setting it here would make every later test lose /proc access to itself and its
+/// children (process_environment PermissionDenied, kernel_access_grants timeouts) on
+/// a non-root runner. So the test re-executes the test binary for this one test, as
+/// an ordinary user, and the parent only checks that the child's assertions passed.
+#[test]
+fn an_agent_shell_cannot_read_the_kernels_state_through_its_process() {
+    use std::os::unix::process::CommandExt;
+    const CHILD: &str = "CHARIOX_ROUTE3_NON_DUMPABLE_GUARD_CHILD";
+    const NAME: &str = "an_agent_shell_cannot_read_the_kernels_state_through_its_process";
+    if std::env::var_os(CHILD).is_some() {
+        route3_guard_body();
+        return;
+    }
+    assert_test_process_dumpable();
+    if unsafe { libc::geteuid() } == 0 && !crate::test_support::test_binary_allows_other_execute() {
+        return;
+    }
+    // The child is an ordinary user. Under scripts/check-test-temp.sh the parent's TMPDIR is a
+    // root-owned 0700 directory the child cannot enter, so a root parent gives the child its own
+    // temporary root (world-traversable, removed when this guard drops). A non-root parent's
+    // TMPDIR already belongs to the same user as its child.
+    struct ChildTemp(Option<std::path::PathBuf>);
+    impl Drop for ChildTemp {
+        fn drop(&mut self) {
+            if let Some(path) = self.0.take() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+    let child_temp = ChildTemp(if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::fs::PermissionsExt as _;
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::path::PathBuf::from(format!(
+            "/tmp/chariox-route3-guard-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("the child's temporary root");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+            .expect("the child's temporary root must be writable by an ordinary user");
+        Some(dir)
+    } else {
+        None
+    });
+    let mut probe = std::process::Command::new("/proc/self/exe");
+    probe
+        .args([NAME, "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1");
+    if let Some(dir) = &child_temp.0 {
+        probe.env("TMPDIR", dir);
+    }
+    // SAFETY: only async-signal-safe libc calls between fork and exec.
+    unsafe {
+        probe.pre_exec(|| {
+            // Root keeps CAP_DAC_OVERRIDE and would hide the very defect the guard stops.
+            if libc::geteuid() == 0
+                && (libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setgid(65534) != 0
+                    || libc::setuid(65534) != 0)
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = probe
+        .output()
+        .expect("the guard test re-executes the test binary");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success() && text.contains("1 passed"),
+        "the isolated route 3 guard failed or did not run:\n{text}"
+    );
+    // The child's flag died with the child: this process is still dumpable.
+    assert_test_process_dumpable();
+}
+
+/// The body of the route 3 guard, unchanged: it runs only in the isolated child.
+fn route3_guard_body() {
+    // SAFETY: geteuid and prctl take no pointers.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "root reads every /proc file; the child must run as an ordinary user"
+    );
+    let kernel = DummyKernelHome::new();
+    assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
+    let pid = std::process::id();
+    let output = run_confined(
+        &kernel,
+        &format!(
+            "if cat '/proc/{pid}/root{home}/vault/vault.json' >/dev/null 2>&1; then echo proc-root-open; else echo proc-root-closed; fi\n\
+             if test -r '/proc/{pid}/environ'; then echo proc-environ-open; else echo proc-environ-closed; fi\n",
+            home = kernel.home.display(),
+        ),
+    );
+    assert!(output.contains("proc-root-closed"), "{output}");
+    assert!(output.contains("proc-environ-closed"), "{output}");
+    assert!(!output.contains(SECRET), "{output}");
+}
+
+/// The protected-path list is kept in one place: the mask covers exactly the
+/// folders `protected_folders` names, and a folder added to the list is masked
+/// without any change to the mask.
+#[test]
+fn the_mask_follows_the_one_list_of_protected_folders() {
+    assert_test_process_dumpable();
+    let kernel = DummyKernelHome::new();
+    let listed = super::protected_folders();
+    assert!(listed.iter().any(|folder| folder.ends_with("state")));
+    assert!(listed.iter().any(|folder| folder.ends_with("vault")));
+    let masked = |secrets: super::Secrets| -> Vec<PathBuf> {
+        let (_, args) = super::confine_command_around(
+            secrets,
+            "/bin/true".to_string(),
+            Vec::new(),
+            &kernel.agent_environment(),
+            vec![kernel.workspace.clone()],
+            &[],
+        )
+        .expect("a command is confined");
+        args.windows(2)
+            .filter(|pair| pair[0] == "--tmpfs")
+            .map(|pair| PathBuf::from(&pair[1]))
+            .collect()
+    };
+    let before = masked(super::Secrets {
+        folders: listed.clone(),
+    });
+    for folder in &listed {
+        assert!(
+            before.contains(folder),
+            "{folder:?} is listed but not masked"
+        );
+    }
+    let added = kernel.home.join("added-secret-folder");
+    std::fs::create_dir_all(&added).unwrap();
+    let added = added.canonicalize().unwrap();
+    assert!(!before.contains(&added));
+    let mut longer = listed;
+    longer.push(added.clone());
+    assert!(masked(super::Secrets { folders: longer }).contains(&added));
+}

@@ -16,6 +16,32 @@ async fn spawn_idle(rooms: &Rooms) -> crate::agent::AgentInstance {
     )
 }
 
+/// An idle agent that something will wake: its task is parked on a timer and it runs no turn, as
+/// after `events.yield`. A message that is not urgent waits for that next turn. (An idle agent with
+/// nothing armed has none coming, so the same message starts its turn: see
+/// `a_message_to_an_idle_agent_with_nothing_armed_starts_its_turn`.) The task is made in the durable
+/// store alone, so the session state the budget test reads holds no turn of the agent.
+async fn spawn_waiting(rooms: &Rooms) -> crate::agent::AgentInstance {
+    use crate::durable_state::agent_lifecycle::Operation;
+    let agent = spawn_idle(rooms).await;
+    rooms
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .agent_lifecycle(Operation::Begin {
+            owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            room: rooms.peer_room.clone(),
+            agent: agent.id().into(),
+            prompt: "armed-turn".into(),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .expect("the agent has a task");
+    rooms.park_on_timer(&rooms.peer_room, agent.id()).await;
+    agent
+}
+
 async fn send_to(rooms: &Rooms, agent: &str, extra: serde_json::Value) -> serde_json::Value {
     let mut args = serde_json::json!({
         "agent": agent,
@@ -52,7 +78,7 @@ async fn states(rooms: &Rooms, agent: &str) -> Vec<String> {
 fn a_message_to_an_idle_agent_queues_and_starts_no_turn() {
     run_peer_test("queued-idle", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({})).await;
         assert_eq!(sent["status"], "queued");
         assert_eq!(sent["note"], QUEUED_NOTE);
@@ -73,6 +99,26 @@ fn a_message_to_an_idle_agent_queues_and_starts_no_turn() {
         assert_eq!(stripe[0].preview, "compare notes on the parser");
         assert!(!stripe[0].truncated);
         assert_eq!(states(&rooms, idle.id()).await, vec!["pending"]);
+    });
+}
+
+#[test]
+fn a_message_to_an_idle_agent_with_nothing_armed_starts_its_turn() {
+    run_peer_test("queued-idle-nothing-armed", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let idle = spawn_idle(&rooms).await;
+        let sent = send_to(&rooms, "idle", serde_json::json!({})).await;
+        assert_eq!(sent["status"], "starting");
+        assert_eq!(
+            sent["note"],
+            "idle was idle with nothing armed, so this message starts its turn now; no urgent flag needed"
+        );
+        assert!(
+            rooms
+                .wait_for_message_delivery(&rooms.peer_room, idle.id())
+                .await
+        );
+        assert!(stripe(&rooms).await.is_empty(), "nothing is left queued");
     });
 }
 
@@ -113,7 +159,7 @@ fn an_urgent_message_to_an_idle_agent_starts_its_turn() {
 fn the_person_cancels_a_queued_message_from_the_queue() {
     run_peer_test("queued-person-cancel", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         send_to(&rooms, "idle", serde_json::json!({})).await;
         let id = stripe(&rooms).await[0].id.clone();
         let cancelled = rooms
@@ -143,7 +189,7 @@ fn the_person_cancels_a_queued_message_from_the_queue() {
 fn the_person_sends_a_queued_message_now_and_the_turn_starts() {
     run_peer_test("queued-person-send", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         send_to(&rooms, "idle", serde_json::json!({})).await;
         let id = stripe(&rooms).await[0].id.clone();
         rooms
@@ -171,7 +217,7 @@ fn the_person_sends_a_queued_message_now_and_the_turn_starts() {
 fn the_sender_promotes_its_queued_message_in_place_and_it_is_delivered_once() {
     run_peer_test("queued-promote", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({})).await;
         let promoted = rooms.promote(sent["message_id"].as_str().unwrap()).await;
         assert_eq!(promoted["status"], "promoted");
@@ -196,7 +242,7 @@ fn the_sender_promotes_its_queued_message_in_place_and_it_is_delivered_once() {
 fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
     run_peer_test("queued-resend-urgent", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         let key = serde_json::json!({"idempotency_key": "notes-1"});
         let queued = send_to(&rooms, "idle", key.clone()).await;
         let plain = send_to(&rooms, "idle", key).await;
@@ -223,7 +269,7 @@ fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
 fn only_the_sender_promotes_a_queued_message() {
     run_peer_test("queued-promote-sender-only", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({})).await;
         let (stranger_token, _) = {
             let mut app = rooms.app.lock().await;
@@ -261,7 +307,7 @@ fn only_the_sender_promotes_a_queued_message() {
 fn a_promotion_after_the_person_cancelled_says_so() {
     run_peer_test("queued-promote-after-cancel", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({})).await;
         let id = stripe(&rooms).await[0].id.clone();
         rooms
@@ -286,7 +332,7 @@ fn a_promotion_after_the_person_cancelled_says_so() {
 fn many_long_queued_messages_keep_the_session_state_small() {
     run_peer_test("queued-bounded", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_idle(&rooms).await;
+        let idle = spawn_waiting(&rooms).await;
         for (index, agent) in std::iter::repeat_n(["idle", "peer"], 35)
             .flatten()
             .enumerate()

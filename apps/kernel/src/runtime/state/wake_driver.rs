@@ -144,6 +144,33 @@ impl KernelRuntimeState {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    /// See `KernelRuntimeState::arm_wake_source`; the turn end arms wakes without a runtime state.
+    pub(super) fn arm_wake_source(
+        &self,
+        task: &AgentTaskExecution,
+        wake: &AgentWake,
+    ) -> Result<(), DaemonError> {
+        let store = &self.durable_state_store;
+        let driver = self.agent_wakes.drivers.get(&wake.kind)?;
+        store.agent_lifecycle(Operation::ArmWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: Box::new(wake.clone()),
+        })?;
+        if let Err(error) = driver.arm(wake) {
+            store.agent_lifecycle(Operation::CancelWake {
+                id: wake.id.clone(),
+                task: task.task_id.clone(),
+                prompt: Some(task.prompt_id.clone()),
+                pending: false,
+            })?;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 impl WakeSink {
     fn own_wake(&self, id: &str) -> Result<AgentWake, DaemonError> {
         let wake = self
@@ -280,23 +307,7 @@ impl KernelRuntimeState {
         task: &AgentTaskExecution,
         wake: &AgentWake,
     ) -> Result<(), DaemonError> {
-        let store = &self.owned.durable_state_store;
-        let driver = self.owned.agent_wakes.drivers.get(&wake.kind)?;
-        store.agent_lifecycle(Operation::ArmWake {
-            task: task.task_id.clone(),
-            prompt: task.prompt_id.clone(),
-            wake: Box::new(wake.clone()),
-        })?;
-        if let Err(error) = driver.arm(wake) {
-            store.agent_lifecycle(Operation::CancelWake {
-                id: wake.id.clone(),
-                task: task.task_id.clone(),
-                prompt: Some(task.prompt_id.clone()),
-                pending: false,
-            })?;
-            return Err(error);
-        }
-        Ok(())
+        self.owned.arm_wake_source(task, wake)
     }
 
     /// Cancels one wake. The ledger records the intent first (a driver-held

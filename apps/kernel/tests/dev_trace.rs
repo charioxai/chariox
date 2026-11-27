@@ -56,8 +56,10 @@ async fn submit(socket: &mut Socket, room: &str, agent: &str) -> Result<Value, V
 }
 
 fn start(scratch: &Path) -> real_kernel::Kernel {
-    // The trace provider launches Node.js from the test runner's installation.
-    let path = std::env::var_os("PATH").expect("PATH must include Node.js for trace tests");
+    // The trace provider launches Node.js from the test runner's installation. Only `node` joins
+    // the system PATH: the provider CLIs a runner installs would be discovered and validated in
+    // the background, and that discovery is still running when the shutdown test stops the kernel.
+    let path = real_kernel::node_path(scratch);
     real_kernel::start(
         scratch,
         &[

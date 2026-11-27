@@ -15,8 +15,8 @@ pub use super::runtime_interactions::{
     RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
     RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
     RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
-    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
-    RuntimeInteractionView, RuntimeProviderLogin,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSecretRequest,
+    RuntimeInteractionSubject, RuntimeInteractionView, RuntimeProviderLogin,
 };
 pub use super::runtime_session::{RuntimeSession, SessionCollaborationAgentCounts};
 pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};

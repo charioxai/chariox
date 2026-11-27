@@ -33,12 +33,16 @@ impl SessionStateStore {
         Weak::ptr_eq(identity, &self.weak_identity())
     }
 
+    #[track_caller]
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, SessionService> {
-        self.inner.read().expect("session state rwlock poisoned")
+        crate::runtime::checked_lock::read_watched("session_state", &self.inner)
+            .expect("session state rwlock poisoned")
     }
 
+    #[track_caller]
     pub(crate) fn write(&self) -> RwLockWriteGuard<'_, SessionService> {
-        self.inner.write().expect("session state rwlock poisoned")
+        crate::runtime::checked_lock::write_watched("session_state", &self.inner)
+            .expect("session state rwlock poisoned")
     }
 
     pub(crate) fn snapshot(&self) -> SessionService {

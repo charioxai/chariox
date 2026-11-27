@@ -12,7 +12,16 @@ const OUTPUT_LIMIT: usize = 1 << 20;
 /// Termination asks for SIGTERM, then SIGKILL after 3 s; settlement then has this long.
 const SETTLE_LIMIT: Duration = Duration::from_secs(30);
 
+/// How the kernel starts the command. A privileged run is the one launch that
+/// is not inside the agent's sandbox: it starts `sudo` as the kernel's own user,
+/// which the sandbox's no-new-privileges flag would stop.
+pub(in crate::runtime::state) enum KernelLaunch {
+    Isolated,
+    Privileged { sudo: PathBuf },
+}
+
 pub(in crate::runtime::state) struct KernelCommand {
+    pub(in crate::runtime::state) launch: KernelLaunch,
     pub(in crate::runtime::state) argv: Vec<String>,
     pub(in crate::runtime::state) cwd: PathBuf,
     /// Added to the launch after isolation, so values never become arguments.
@@ -69,28 +78,40 @@ impl KernelRuntimeState {
     /// the run and its authority; this owns launch, timeout and settlement.
     pub(in crate::runtime::state) fn run_kernel_command(
         &self,
-        context: &super::super::vault_use::VaultAgentContext,
+        context: Option<&super::super::vault_use::VaultAgentContext>,
         request: KernelCommand,
     ) -> Result<KernelCommandOutput, DaemonError> {
-        let run = &context.run;
-        self.recheck_vault_command_context(context)?;
+        let recheck = || context.map_or(Ok(()), |c| self.recheck_vault_command_context(c));
+        recheck()?;
         let failed = |e: &dyn std::fmt::Display| {
             crate::runtime::kernel_access::error(format!("command launch failed: {e}"))
         };
         let id = format!("vault-command-{:016x}", rand::random::<u64>());
-        let resources = crate::runtime::process_resources::PreparedDomain::new(
-            run.agent_instance_id().unwrap_or(run.id()),
-        )
-        .map_err(|e| failed(&e))?;
-        let mut command = command(
-            &id,
-            &request.argv,
-            &request.cwd,
-            run.pty_env(),
-            run.pty_env_remove(),
-            &resources,
-        )
-        .map_err(|e| failed(&e))?;
+        let (mut command, resources) = match &request.launch {
+            KernelLaunch::Isolated => {
+                let run = &context
+                    .ok_or_else(|| failed(&"an isolated command needs an agent"))?
+                    .run;
+                let resources = crate::runtime::process_resources::PreparedDomain::new(
+                    run.agent_instance_id().unwrap_or(run.id()),
+                )
+                .map_err(|e| failed(&e))?;
+                let command = command(
+                    &id,
+                    &request.argv,
+                    &request.cwd,
+                    run.pty_env(),
+                    run.pty_env_remove(),
+                    &resources,
+                )
+                .map_err(|e| failed(&e))?;
+                (command, Some(resources))
+            }
+            KernelLaunch::Privileged { sudo } => (
+                super::privileged_command(&id, sudo, &request.argv, &request.cwd),
+                None,
+            ),
+        };
         for (name, value) in &request.env {
             command.env(name, value.as_str());
         }
@@ -112,9 +133,11 @@ impl KernelRuntimeState {
         let owned: Owned = Arc::new(std::sync::Mutex::new(
             OwnedChild::new(child, &id).map_err(|e| failed(&e))?,
         ));
-        if let Ok(domain) = resources.start(pid) {
+        if let Some(Ok(domain)) = resources.map(|resources| resources.start(pid)) {
             domain.bind_key(&id);
-            if let Some(agent) = run.agent_instance_id() {
+            if let Some((run, agent)) =
+                context.and_then(|c| Some((&c.run, c.run.agent_instance_id()?)))
+            {
                 domain.list_as(
                     run.session_id(),
                     crate::runtime::process_resources::SessionProcessOwner::Agent(agent.into()),
@@ -134,7 +157,7 @@ impl KernelRuntimeState {
         let exit = loop {
             let now = Instant::now();
             if stopped_at.is_none() {
-                cancelled = self.recheck_vault_command_context(context).err();
+                cancelled = recheck().err();
                 if cancelled.is_some() || now >= deadline || processes.stopping() {
                     stopped_at = Some(now);
                     processes.terminate(&id);

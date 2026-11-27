@@ -1115,7 +1115,7 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
     );
     assert_eq!(
         forged_holder["error"]["message"],
-        crate::runtime::kernel_access::Refusal::NotCovered.message()
+        crate::runtime::kernel_access::Refusal::HolderOutside.message()
     );
     let grant_id = grant(&mut kernel, &mut holder).await;
     assert!(holder.request(get.clone())["error"].is_null());
@@ -1702,11 +1702,21 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
         serde_json::json!(["gone", attachment]),
         "{beat}"
     );
-    // Pairing is a person's act at a terminal; a grant holder is refused, locally or on a kernel.
-    for request in [
-        serde_json::json!({"JoinKernelLink":{"link":"chariox-terminal-pair-v1.x"}}),
-        serde_json::json!({"ForgetGatewayKernel":{"name":"b3"}}),
+    // Row 405: forgetting a kernel only reduces reach, so the owner's agent may; it is never
+    // refused as the person's own act (an unknown name fails on its own terms).
+    let forget = serde_json::json!({"ForgetGatewayKernel":{"name":"no-such-kernel"}});
+    for answered in [
+        holder.request(forget.clone()),
+        holder.request_on("b3", forget),
     ] {
+        assert_ne!(
+            answered["error"]["code"], "kernel_access_human_only",
+            "{answered}"
+        );
+    }
+    // Pairing carries an admission secret: the person's act at a terminal, locally or on a kernel.
+    {
+        let request = serde_json::json!({"JoinKernelLink":{"link":"chariox-terminal-pair-v1.x"}});
         let refused = holder.request(request.clone());
         assert_eq!(
             refused["error"]["code"], "kernel_access_human_only",

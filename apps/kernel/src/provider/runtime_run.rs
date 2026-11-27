@@ -452,6 +452,7 @@ impl RuntimeProviderRun {
             if let Some(token) = crate::runtime_transport::agent_cli::token_for_run(self) {
                 environment.insert("CHARIOX_KERNEL_URL".into(), endpoint.clone());
                 environment.insert("CHARIOX_AGENT_CLI_TOKEN".into(), token);
+                put_chariox_command_on_path(&mut environment);
             }
         }
         environment
@@ -1149,6 +1150,44 @@ impl ProviderRunTokenUsage {
             && self.last_tokens.is_none()
             && self.context_tokens.is_none()
             && self.context_window.is_none()
+    }
+}
+
+/// The agent's shell runs `chariox` with the credential it was given: the
+/// command's folder leads its PATH. Launch preparation may already have named the
+/// command (`CHARIOX_CLI`, with the local access socket): that selection is kept
+/// and its folder still goes on PATH. Otherwise the `chariox` beside the kernel
+/// is named; with none installed, nothing is added.
+fn put_chariox_command_on_path(environment: &mut BTreeMap<String, String>) {
+    let prepared = environment.get("CHARIOX_CLI").map(PathBuf::from);
+    let installed = crate::provider::chariox_cli_command();
+    // The folder that names the command: an installed link keeps its own folder
+    // even when launch preparation resolved it to the file it points to.
+    let command = match (&prepared, &installed) {
+        (Some(prepared), Some(installed))
+            if installed.canonicalize().ok() == prepared.canonicalize().ok() =>
+        {
+            installed.clone()
+        }
+        (Some(prepared), _) => prepared.clone(),
+        (None, Some(installed)) => installed.clone(),
+        (None, None) => return,
+    };
+    let Some(folder) = command.parent().map(Path::to_path_buf) else {
+        return;
+    };
+    let inherited = environment
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let mut folders = vec![folder.clone()];
+    folders.extend(std::env::split_paths(&inherited).filter(|entry| entry != &folder));
+    if let Ok(path) = std::env::join_paths(folders) {
+        environment.insert("PATH".into(), path.to_string_lossy().into_owned());
+    }
+    if prepared.is_none() {
+        environment.insert("CHARIOX_CLI".into(), command.display().to_string());
     }
 }
 

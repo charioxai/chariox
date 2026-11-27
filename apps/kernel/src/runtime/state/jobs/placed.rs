@@ -44,6 +44,7 @@ impl KernelRuntimeState {
             }
             return Err(error);
         }
+        self.write_job_row(&record.job_id, task.provider_run_id.as_deref());
         self.wait_for_job(&record.job_id, request.wait_s).await
     }
 

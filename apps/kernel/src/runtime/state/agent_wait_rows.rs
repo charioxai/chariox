@@ -190,9 +190,20 @@ impl KernelRuntimeOwnedState {
         task: &AgentTaskExecution,
         prefix: &str,
     ) -> Option<(String, String, serde_json::Value)> {
+        self.latest_kernel_tool_row(&task.room_id, &task.agent_id, prefix)
+    }
+
+    /// The newest kernel-written tool row of the agent whose key starts with `prefix`: its key,
+    /// run and content.
+    pub(super) fn latest_kernel_tool_row(
+        &self,
+        room_id: &str,
+        agent_id: &str,
+        prefix: &str,
+    ) -> Option<(String, String, serde_json::Value)> {
         let event = self
             .operational_history_store
-            .latest_transcript_by_merge_key_prefix(&task.room_id, &task.agent_id, prefix)
+            .latest_transcript_by_merge_key_prefix(room_id, agent_id, prefix)
             .ok()??;
         let entry = event.to_session_history_entry()?;
         let row = serde_json::from_str(&entry.text).ok()?;
@@ -233,11 +244,24 @@ impl KernelRuntimeOwnedState {
         key: &str,
         row: serde_json::Value,
     ) {
+        self.write_kernel_tool_row(&task.room_id, &task.agent_id, run, key, row);
+    }
+
+    /// Writes `row` as the tool row `key` of the agent's transcript in `run`, in place of the
+    /// row of that key it wrote before, and sends it to every client of the agent.
+    pub(super) fn write_kernel_tool_row(
+        &self,
+        room_id: &str,
+        agent_id: &str,
+        run: &str,
+        key: &str,
+        row: serde_json::Value,
+    ) {
         let text = row.to_string();
         let entry = SessionHistoryEntry::provider_output(
-            &task.room_id,
+            room_id,
             run,
-            Some(&task.agent_id),
+            Some(agent_id),
             TerminalOutputKind::ProviderTool,
             Some(key.to_owned()),
             text.clone(),
@@ -246,21 +270,17 @@ impl KernelRuntimeOwnedState {
             return;
         };
         let recipients = self.agent_trace_recipient_attachment_ids(
-            &task.room_id,
-            Some(&task.agent_id),
-            self.attachment_store
-                .list_session_attachment_ids(&task.room_id),
+            room_id,
+            Some(agent_id),
+            self.attachment_store.list_session_attachment_ids(room_id),
         );
-        let recipients = self.with_metaagent_trace_recipient_ids(
-            &task.room_id,
-            Some(&task.agent_id),
-            recipients,
-        );
+        let recipients =
+            self.with_metaagent_trace_recipient_ids(room_id, Some(agent_id), recipients);
         self.terminal_stream
             .fan_out_outputs(vec![TerminalOutputAppend {
-                session_id: task.room_id.clone(),
+                session_id: room_id.to_owned(),
                 provider_run_id: run.to_owned(),
-                agent_id: Some(task.agent_id.clone()),
+                agent_id: Some(agent_id.to_owned()),
                 prompt_id: event.prompt_id.clone(),
                 prompt_origin: None,
                 source_attachment_id: None,
@@ -270,6 +290,6 @@ impl KernelRuntimeOwnedState {
                 recipient_attachment_ids: recipients.into(),
                 bytes: text.into_bytes(),
             }]);
-        self.notify_metaagent_trace_activity(&task.room_id, Some(&task.agent_id));
+        self.notify_metaagent_trace_activity(room_id, Some(agent_id));
     }
 }

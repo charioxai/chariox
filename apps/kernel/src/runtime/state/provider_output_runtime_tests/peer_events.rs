@@ -626,3 +626,70 @@ async fn a_peer_address_resolves_only_inside_the_callers_own_rooms() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_message_to_a_near_miss_alias_names_the_close_aliases_and_their_rooms() {
+    let worktree = crate::test_support::TestWorktree::new("near-miss-alias");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut rooms = Vec::new();
+    for owner in [None, None, Some("someone-else")] {
+        let mut request = worktree.session_request();
+        if let Some(owner) = owner {
+            request = request.with_owner_user_id(owner);
+        }
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(request)
+            .unwrap();
+        rooms.push((session.id().to_owned(), agent.id().to_owned()));
+    }
+    crate::test_support::admit_room_test_turn(&mut app, &rooms[1].0, &rooms[1].1);
+    let mut spawn = |room: &str, alias: &str, parent: Option<&str>| {
+        let mut request =
+            crate::agent::CreateAgentRequest::new(room, "dev-stub").with_alias(alias.to_owned());
+        if let Some(parent) = parent {
+            request = request.with_parent_agent_id(parent);
+        }
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(request)
+            .unwrap()
+    };
+    spawn(&rooms[1].0, "codexaccount-r2", None);
+    spawn(&rooms[1].0, "codexaccount-hidden", Some(&rooms[1].1));
+    spawn(&rooms[2].0, "codexaccount-other", None);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&rooms[0].0)
+        .unwrap();
+    let sender = runtime.owned.agent_store.get_agent(&rooms[0].1).unwrap();
+    let resolve = |reference: &str| {
+        runtime
+            .resolve_message_target(&session, &sender, None, reference)
+            .map(|target| target.id().to_owned())
+            .unwrap_err()
+            .to_string()
+    };
+
+    let refusal = resolve("codexaccount");
+    assert!(
+        refusal.contains("agent is unavailable in this room"),
+        "{refusal}"
+    );
+    assert!(refusal.contains("@codexaccount-r2"), "{refusal}");
+    assert!(refusal.contains(&rooms[1].0), "{refusal}");
+    // Hidden sub-agents and other owners' agents stay as unknown as before.
+    assert!(
+        !refusal.contains("hidden") && !refusal.contains("other"),
+        "{refusal}"
+    );
+    // A name nothing resembles keeps the plain refusal.
+    assert!(
+        !resolve("zzz-nobody").contains("close"),
+        "{}",
+        resolve("zzz-nobody")
+    );
+}

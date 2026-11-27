@@ -2,7 +2,7 @@
 // state under /root/.chariox/dev/, a linked product Claude profile, and a notes file next to the evidence.
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, cpSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -69,6 +69,8 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, pro
       }
     }
     if (socketDir) rmSync(socketDir, { recursive: true, force: true })
+    // The kernel's own log is the evidence of why a wake was not delivered: keep it next to the notes.
+    try { cpSync(join(dir, "logs"), join(evidence, "kernel-logs"), { recursive: true }) } catch {}
     rmSync(dir, { recursive: true, force: true })
     note("kernel-exit", { code: child?.exitCode, signal: child?.signalCode })
   }
@@ -103,21 +105,33 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, pro
       env.CHARIOX_AGENT_FAULT_DIR = join(dir, "faults")
       mkdirSync(env.CHARIOX_AGENT_FAULT_DIR, { mode: 0o700 })
     }
-    const log = openSync(join(evidence, "kernel.log"), "a", 0o600)
-    try {
-      child = spawn(binary, [], { env, stdio: ["ignore", log, log] })
-      await once(child, "spawn")
-    } finally {
-      closeSync(log)
-    }
-    note("kernel-start", { pid: child.pid })
-    client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: env, controlRequestRetryDeadlineMs: 1000 })
     const rpc = async request => {
       const result = await client.send(request)
       if (result.Error) throw new Error(`refused ${Object.keys(request)[0]}: ${result.Error.code} ${result.Error.message ?? ""}`)
       return result
     }
-    await until(async () => { try { return !!(await rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, "kernel ready", readyTimeoutMs)
+    async function launch(name) {
+      const log = openSync(join(evidence, "kernel.log"), "a", 0o600)
+      try {
+        child = spawn(binary, [], { env, stdio: ["ignore", log, log] })
+        await once(child, "spawn")
+      } finally {
+        closeSync(log)
+      }
+      note(name, { pid: child.pid })
+      client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: env, controlRequestRetryDeadlineMs: 1000 })
+      await until(async () => { try { return !!(await rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, "kernel ready", readyTimeoutMs)
+    }
+    await launch("kernel-start")
+    /** A cold restart: the kernel is killed (no hand-over, so every unlock and every watched process is gone) and started again on the same state. */
+    async function coldRestart(signal = "SIGKILL") {
+      await client?.close().catch(() => {})
+      const old = child
+      old.kill(signal)
+      await until(() => old.exitCode !== null || old.signalCode !== null, "kernel killed", 30000)
+      await launch("kernel-restart")
+      return child.pid
+    }
     const profile = profilePath
       ? (await rpc({ LinkProviderAccountProfile: { provider: "claude", label, path: profilePath } })).ProviderAccountProfile.profile.profile_id
       : undefined
@@ -134,7 +148,7 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, pro
       await rpc({ LaunchProviderRun: { session_id: R, agent_id: agent, adapter_key: "claude", provider: "claude", account_profile: profile, model, variant: "low", native_tui: false } })
       return { R, agent, attached, work }
     }
-    return { dir, env, note, rpc, client, session, room, stop, profile }
+    return { dir, env, note, rpc, get client() { return client }, session, room, stop, profile, get pid() { return child.pid }, coldRestart }
   }
 }
 

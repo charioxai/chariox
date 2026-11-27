@@ -147,7 +147,7 @@ impl KernelLocalAuth {
     pub(crate) fn rejection_message(&self, port: u16, unix_socket: &Path) -> String {
         match self {
             Self::LocalToken(_) => format!(
-                "Kernel local authentication required. Terminals must send the token from {} as Authorization: Bearer. External agents must request access over the Unix socket ws+unix://{}.",
+                "Kernel local authentication required. Terminals must send the token from {} as Authorization: Bearer. An agent this kernel started uses the CHARIOX_AGENT_CLI_TOKEN in its own environment (an agent started before that was added gets it at its next start). External agents must request access over the Unix socket ws+unix://{}.",
                 DaemonConfig::default_kernel_local_auth_token_path(port).display(),
                 unix_socket.display(),
             ),

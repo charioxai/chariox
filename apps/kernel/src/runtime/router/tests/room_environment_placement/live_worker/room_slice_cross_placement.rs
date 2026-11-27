@@ -284,7 +284,6 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
                 git_context: None,
                 required_mcps: Vec::new(),
                 remote_extension_manifest: remote_extension_manifest.clone(),
-                provider_launch_credential: None,
                 native_skill_selections: Default::default(),
             },
         )

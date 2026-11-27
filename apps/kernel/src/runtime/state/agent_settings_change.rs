@@ -400,27 +400,41 @@ impl KernelRuntimeOwnedState {
     }
 
     /// Whether the process can be relaunched on the agent's profile now. The worker relaunches a
-    /// leased Claude process with the credential the home launched it with; another account's
-    /// has none there until the next prompt brings it, so a change to it waits for the turn end.
+    /// leased Claude process from its own tracked copy of the account (row 577); an account it
+    /// does not hold yet is copied there with the next prompt, so a change to it waits for the
+    /// turn end.
     pub(super) fn can_relaunch_with_held_credential(
         &self,
         run: &crate::provider::RuntimeProviderRun,
         agent: &crate::agent::AgentInstance,
     ) -> bool {
-        !self
+        if !self
             .provider_run_projection
             .is_leased_provider_run(run.id())
             || crate::provider::canonical_provider_family(agent.provider())
                 .unwrap_or(agent.provider())
                 != "claude"
-            || self
-                .leased_launch_credentials
-                .for_profile(
-                    agent.id(),
-                    agent.provider(),
-                    agent.provider_account_profile(),
-                )
-                .is_some()
+        {
+            return true;
+        }
+        let config = self.config_projection.snapshot();
+        crate::account_profile::provider_account_authority_owner_for_profile(
+            &config,
+            &self.provider_account_profiles,
+            agent.owner_user_id(),
+            agent.provider(),
+            agent.provider_account_profile(),
+        )
+        .and_then(|owner| {
+            self.provider_account_profiles.get(
+                &owner,
+                agent.provider(),
+                agent.provider_account_profile(),
+            )
+        })
+        .is_ok_and(|profile| {
+            profile.auth_state == crate::account_profile::ProviderAccountAuthState::Authenticated
+        })
     }
 }
 

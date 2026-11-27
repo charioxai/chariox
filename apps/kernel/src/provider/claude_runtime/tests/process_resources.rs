@@ -65,6 +65,7 @@ fn process_end_settles_pending_stream(memory_limit: bool) {
             completion_recorded: false,
             settlement_requested: false,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         },
     );
     heavy.state.active_turn_id = Some("resource-turn".into());

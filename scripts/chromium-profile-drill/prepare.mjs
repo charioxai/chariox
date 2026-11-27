@@ -25,6 +25,8 @@ const browserCloseModules = [
   "browser-controller-events.mjs",
   "browser-controller-files.mjs",
   "browser-controller-frames.mjs",
+  // Row 655: the frame walk tells the parked-state signal which detaches the controller asked for.
+  "kernel-browser-state-signal.mjs",
   "browser-controller-history.mjs",
   "browser-controller-image.mjs",
   "browser-controller-input.mjs",

@@ -4,7 +4,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use crate::local::{KernelConnectionClass, LocalDaemonRequest};
-use crate::provider::{AgentEndpointMode, ProviderRunState, RuntimeProviderRun};
+use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
@@ -32,7 +32,10 @@ pub(super) fn admit(router: &CommandRouter, authorization: &str) -> Option<Strin
 }
 
 fn authenticator(run: &RuntimeProviderRun) -> Option<Hmac<Sha256>> {
-    if run.endpoint_mode() != AgentEndpointMode::Managed || run.state() == ProviderRunState::Ended {
+    // Every run of an agent has its own credential, whatever the way the kernel
+    // talks to the provider (managed terminal or structured endpoint): the
+    // default Claude, Codex and OpenCode launches are structured endpoints.
+    if run.state() == ProviderRunState::Ended {
         return None;
     }
     run.runtime_mcp_server_url()?;

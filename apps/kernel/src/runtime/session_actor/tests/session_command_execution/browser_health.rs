@@ -634,3 +634,87 @@ async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery
         "even an unchanged-generation foreground observation supersedes an older health probe"
     );
 }
+
+// The controller runs without the native frame channel (video is slower, nothing is broken): the
+// Room's BrowserController component names it on every observation, through a restart, and clears
+// it when the channel is back. The Room stays Ready throughout.
+#[tokio::test]
+async fn a_controller_without_the_frame_channel_keeps_its_diagnostic_through_recovery() {
+    use crate::runtime::browser_controller_process::{
+        BrowserControllerReconciliation, FRAME_CHANNEL_UNAVAILABLE,
+    };
+    let (state, room, _tool, _) = fixture().await;
+    let process = state
+        .ensure_browser_controller_process_started(&room)
+        .await
+        .unwrap()
+        .unwrap();
+    let reconciliation = |generation: u64, diagnostic: Option<&str>| {
+        let mut process = process.clone();
+        process.runtime_generation = generation;
+        process.diagnostic_code = diagnostic.map(str::to_owned);
+        BrowserControllerReconciliation {
+            process,
+            browser: serde_json::from_value(serde_json::json!({
+                "browser_generation": generation, "event_cursor": 1, "tabs": [],
+                "focused_target_id": null,
+                "resource_inventory": {"browser_ids": [], "profile_ids": []},
+                "viewport": {"css_width": 1280, "css_height": 800, "device_scale_factor": 1,
+                    "desktop_pixel_width": 1280, "desktop_pixel_height": 800}
+            }))
+            .unwrap(),
+        }
+    };
+    let diagnostic = || {
+        let environment = state.room_environment_snapshot(&room).unwrap();
+        assert_eq!(environment.lifecycle, Lifecycle::Ready);
+        environment
+            .health
+            .iter()
+            .find(|health| health.component == Component::BrowserController)
+            .and_then(|health| health.diagnostic_code.clone())
+    };
+    let generation = process.runtime_generation;
+    state
+        .observe_browser_controller_reconciliation(
+            &room,
+            reconciliation(generation, Some(FRAME_CHANNEL_UNAVAILABLE)),
+        )
+        .unwrap();
+    assert_eq!(diagnostic().as_deref(), Some(FRAME_CHANNEL_UNAVAILABLE));
+    // A restarted controller whose channel still cannot bind: the recovery hint and the reason.
+    state
+        .observe_browser_controller_reconciliation(
+            &room,
+            reconciliation(generation + 1, Some(FRAME_CHANNEL_UNAVAILABLE)),
+        )
+        .unwrap();
+    assert_eq!(
+        diagnostic().as_deref(),
+        Some("controller_recovered_native_frame_channel_unavailable")
+    );
+    // The same controller observed again keeps it.
+    state
+        .observe_browser_controller_reconciliation(
+            &room,
+            reconciliation(generation + 1, Some(FRAME_CHANNEL_UNAVAILABLE)),
+        )
+        .unwrap();
+    assert_eq!(
+        diagnostic().as_deref(),
+        Some("controller_recovered_native_frame_channel_unavailable")
+    );
+    // A later start (fresh component) with a working channel clears nothing it did not set.
+    state
+        .update_room_environment_component_health(
+            &room,
+            Component::BrowserController,
+            Health::Ready,
+            Some(FRAME_CHANNEL_UNAVAILABLE),
+        )
+        .unwrap();
+    state
+        .observe_browser_controller_reconciliation(&room, reconciliation(generation + 1, None))
+        .unwrap();
+    assert_eq!(diagnostic(), None, "the channel is back: the note goes");
+}

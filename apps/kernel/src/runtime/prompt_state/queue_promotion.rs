@@ -8,8 +8,7 @@ pub(crate) struct PromptQueuePromotionClaim {
 
 impl Drop for PromptQueuePromotionClaim {
     fn drop(&mut self) {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .queue_promotions
             .remove(&self.key);
@@ -20,8 +19,7 @@ impl PromptStateOwner {
     /// A detached runtime promoter must assemble and dispatch the handoff;
     /// synchronous provider readiness must leave its queue head untouched.
     pub(crate) fn has_idle_queue_promotion(&self, session_id: &str, agent_id: &str) -> bool {
-        self.state
-            .lock()
+        crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .queue_promotions
             .contains(&PromptStateKey::new(session_id, agent_id))
@@ -32,10 +30,9 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueuePromotionClaim> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owner =
+            crate::runtime::checked_lock::lock_watched("prompt_state_owner", &self.state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
         if owner.execution_transition_pending(&key)
             || owner.agent_profile_waiting_for_settlement(agent_id)

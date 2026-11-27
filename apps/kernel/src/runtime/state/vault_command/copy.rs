@@ -27,10 +27,10 @@ pub(super) struct CopyArgs {
 pub(crate) fn copy_for_use_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_COPY_FOR_USE.into(),
-        description: "Copy a Vault entry's value into a NEW entry for one other declared use, inside the Vault: the model sees only the new credential_id, never the value. `from` is the credential_id to copy. use_binding declares the one destination of the copy: a site origin (an HTTPS API; the entry then sends `Authorization: Bearer <value>` to exactly that origin, for chariox.http_request_with_credential and App accounts), a command environment name and origin, a command stdin origin, or an absolute workspace file path. Payment cards, TOTP seeds and backup codes cannot be copied. Retrying with the same request_id returns the same credential.".into(),
+        description: "Copy a Vault entry's value into a NEW entry for one other declared use, inside the Vault: the model sees only the new credential_id, never the value. use_binding declares the one destination of the copy: a site origin (an HTTPS API; the entry then sends `Authorization: Bearer <value>` to exactly that origin, for chariox.http_request_with_credential and App accounts), a command environment name and origin, a command stdin origin, or an absolute workspace file path. Payment cards, TOTP seeds and backup codes cannot be copied. Retrying with the same request_id returns the same credential.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","from","use_binding"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
-            "from":{"type":"string","minLength":1,"maxLength":128,"description":"credential_id of the entry to copy"},
+            "from":{"type":"string","minLength":1,"maxLength":128,"description":"credential_id or unique description of the entry to copy"},
             "use_binding": copy_binding_schema(),
             "label":{"type":"string","maxLength":200}},
             "additionalProperties":false}),
@@ -103,7 +103,7 @@ impl KernelRuntimeState {
         actor: &VaultActor,
         recheck: VaultRecheck<'_>,
         check_binding: BindingCheck<'_>,
-        args: CopyArgs,
+        mut args: CopyArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         args.use_binding.target.validate()?;
         if let VaultUseTarget::Site { origin } = &args.use_binding.target {
@@ -116,8 +116,19 @@ impl KernelRuntimeState {
         recheck()?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, actor, &args.from, &args.use_binding);
+            // A retry names its source as before; the copy may now carry the same label.
+            let from = self
+                .resolve_entry_refs(None, [args.from.as_str()], Some(&handle))
+                .await?
+                .pop()
+                .unwrap_or_default();
+            return committed(&existing, actor, &from, &args.use_binding);
         }
+        args.from = self
+            .resolve_entry_refs(None, [args.from.as_str()], None)
+            .await?
+            .pop()
+            .unwrap_or_default();
         check_binding(&args.use_binding)?;
         let source = registry
             .get(&args.from)?
