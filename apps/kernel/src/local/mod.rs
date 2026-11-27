@@ -387,7 +387,7 @@ pub use api::{
 };
 
 pub use api::{
-    AccountLimitValues, AccountMachines, AccountLimitsReading, LimitApproval, LimitApprovalKind, LimitScope,
+    AccountLimitValues, AccountMachines, AccountSpend, AccountLimitsReading, LimitApproval, LimitApprovalKind, LimitScope,
     MachineLimitsReading, NoAskLimitsReading,
 };
 

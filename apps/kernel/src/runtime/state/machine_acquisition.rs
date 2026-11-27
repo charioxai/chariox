@@ -276,6 +276,10 @@ impl KernelRuntimeState {
             Some(machines) => format!("{description} The account has {}.", machines.in_use_text()),
             None => description,
         };
+        let description = match capability.and_then(|c| c.account_spend.as_ref()) {
+            Some(spend) => format!("{description} {}.", spend.spent_today_text()),
+            None => description,
+        };
         let description = match request {
             ControlPlaneRequest::Acquire {
                 timeout_s: Some(timeout_s),
@@ -952,6 +956,7 @@ impl KernelRuntimeState {
                 options: capability.offers,
                 default: capability.offer,
                 account_machines: capability.account_machines,
+                account_spend: capability.account_spend,
             }),
             MachineAcquisitionRequest::Limits {} => {
                 let account = read_account_limits(&capability, &plane).await?;

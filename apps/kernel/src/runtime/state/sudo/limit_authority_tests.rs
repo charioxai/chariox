@@ -20,6 +20,7 @@ fn current() -> AccountLimits {
         currency: "EUR".into(),
         version: 1,
         machines_in_use: None,
+        spend_today_micros: None,
     }
 }
 

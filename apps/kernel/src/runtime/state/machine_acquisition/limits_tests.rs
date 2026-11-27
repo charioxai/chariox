@@ -106,6 +106,7 @@ async fn service(machines: u32, spend: u64) -> Service {
                         "spend_per_day_micros":a.spend,"currency":"EUR","version":a.version});
                     if counted {
                         limits["machines_in_use"] = in_use.into();
+                        limits["spend_today_micros"] = (in_use as u64 * 500_000).into();
                     }
                     limits
                 };
@@ -128,6 +129,9 @@ async fn service(machines: u32, spend: u64) -> Service {
                         if counted {
                             capability["machine_allocation"]["account_machines"] =
                                 serde_json::json!({"in_use":in_use,"allowed":account.lock().unwrap().machines});
+                            capability["machine_allocation"]["account_spend"] = serde_json::json!({
+                                "used_micros": in_use as u64 * 500_000,
+                                "allowed_micros": account.lock().unwrap().spend, "currency": "EUR"});
                         }
                         (200, capability.to_string())
                     }
@@ -578,6 +582,7 @@ async fn an_agent_cannot_send_its_own_approval() {
         currency: "EUR".into(),
         version: 1,
         machines_in_use: None,
+        spend_today_micros: None,
     };
     let error = state
         .authorize_account_change(&command, &current, &raise)
@@ -691,15 +696,21 @@ async fn the_options_and_the_card_say_how_many_machines_are_in_use_before_anyone
         .await
         .unwrap();
     assert_eq!(options["account_machines"], serde_json::json!({"in_use":0,"allowed":3}));
+    assert_eq!(
+        options["account_spend"],
+        serde_json::json!({"used_micros":0,"allowed_micros":10_000_000,"currency":"EUR"})
+    );
     let read = tool(&state, &token, "chariox.machines.limits", serde_json::json!({}))
         .await
         .unwrap();
     assert_eq!(read["limits"]["account"]["machines_in_use"], 0);
+    assert_eq!(read["limits"]["account"]["spend_today_micros"], 0);
     let message = super::without_asking_tests::acquire_waits_for_a_card(
         &state, &token, &room, "one", "small",
     )
     .await;
     assert!(message.contains("The account has 0 of 3 machines in use."), "{message}");
+    assert!(message.contains("0.00 of 10.00 EUR spent today."), "{message}");
 }
 
 #[tokio::test]

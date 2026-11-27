@@ -164,6 +164,9 @@ pub enum ControlPlaneResponse {
         /// How many machines count against `machines_at_once` now, when the service says.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machines_in_use: Option<u32>,
+        /// What is committed against `spend_per_day_micros` today, the number the daily cap is checked against.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spend_today_micros: Option<u64>,
     },
     Machines {
         machines: Vec<ControlPlaneMachineRow>,
@@ -214,6 +217,29 @@ pub struct MachineAllocationCapability {
     /// The account's machine limit and how many count against it now: said before anyone is asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_machines: Option<AccountMachines>,
+    /// What is committed today against the account's daily cap, said beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_spend: Option<AccountSpend>,
+}
+
+/// "X of Y EUR spent today", in the account's currency (millionths).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountSpend {
+    pub used_micros: u64,
+    pub allowed_micros: u64,
+    pub currency: String,
+}
+
+impl AccountSpend {
+    pub fn spent_today_text(&self) -> String {
+        format!(
+            "{:.2} of {:.2} {} spent today",
+            self.used_micros as f64 / 1_000_000.0,
+            self.allowed_micros as f64 / 1_000_000.0,
+            self.currency
+        )
+    }
 }
 
 /// "N of M machines in use", as the connected service counts them (every fleet together).
