@@ -13,9 +13,8 @@ async fn a_card_is_created_when_its_holder_cannot_be_told_yet() {
         AgentPermissionLevel::Yolo,
     )
     .await;
-    t.runtime.owned.publication_activation = Arc::new(
-        crate::runtime::state::publication_activation::PublicationActivation::new(true),
-    );
+    t.runtime.owned.publication_activation =
+        Arc::new(crate::runtime::state::publication_activation::PublicationActivation::new(true));
     assert!(
         t.runtime.owned.require_publication_activation().is_err(),
         "the barrier is up: no holder turn starts"
@@ -58,9 +57,8 @@ async fn a_card_is_created_when_its_holder_cannot_be_told_yet() {
     // delivery path, takes the stored event.
     let before = t.decision_events(&t.p);
     assert_eq!(before.len(), 1, "{before:?}");
-    t.runtime.owned.publication_activation = Arc::new(
-        crate::runtime::state::publication_activation::PublicationActivation::new(false),
-    );
+    t.runtime.owned.publication_activation =
+        Arc::new(crate::runtime::state::publication_activation::PublicationActivation::new(false));
     assert!(t.runtime.owned.require_publication_activation().is_ok());
     t.runtime
         .deliver_agent_inbox_for_test(&t.room, &t.p)
