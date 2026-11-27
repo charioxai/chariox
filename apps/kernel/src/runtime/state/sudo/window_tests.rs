@@ -1066,10 +1066,21 @@ async fn sudo_deferred_events_outlast_the_delivery_timeout_and_run_after_the_win
         .unwrap();
     f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
     let delivered = store.agent_inbox(&room, &agent, 0).unwrap();
+    // The turn is delivered at once and the fixture agent reads its inbox as fast as the host
+    // allows, so the event is read (`acknowledged`) by the time this looks; what must hold is
+    // that it left `pending` and was neither refused nor lost.
     assert!(
-        matches!(delivered[0].state.as_str(), "submitting" | "accepted"),
+        matches!(
+            delivered[0].state.as_str(),
+            "submitting" | "accepted" | "acknowledged" | "handled"
+        ),
         "{:?}",
         delivered[0].state
+    );
+    assert!(
+        delivered[0].prompt_id.is_some(),
+        "a delivered event is bound to the turn that carries it: {:?}",
+        delivered[0]
     );
 }
 

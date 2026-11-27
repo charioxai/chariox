@@ -1261,9 +1261,30 @@ fn card_fill(field: &str, payment: Option<&Value>) -> Value {
     args
 }
 
+/// True when `needle` is in `text` as a whole run of digits: a four-digit code is also a
+/// stretch of any timestamp or number an output carries, which is not the card's code.
+fn has_digit_run(text: &str, needle: &str) -> bool {
+    text.match_indices(needle).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + needle.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_digit()) && !after.is_some_and(|c| c.is_ascii_digit())
+    })
+}
+
+#[test]
+fn a_card_code_is_found_as_a_whole_number_only() {
+    // A timestamp or an id that happens to carry the four digits is not the card's code.
+    assert!(!has_digit_run(r#"{"at":1795731674123}"#, CARD_CODE));
+    assert!(has_digit_run(r#"{"code":"7316"}"#, CARD_CODE));
+    assert!(has_digit_run("7316", CARD_CODE));
+    assert!(has_digit_run("x 7316 y", CARD_CODE));
+    assert!(has_digit_run("12 7316-7316", CARD_CODE));
+    assert!(!has_digit_run("173169", CARD_CODE));
+}
+
 fn no_card_data(text: &str) {
     assert!(
-        !text.contains(CARD_NUMBER) && !text.contains(CARD_CODE),
+        !text.contains(CARD_NUMBER) && !has_digit_run(text, CARD_CODE),
         "card data in an output"
     );
 }
