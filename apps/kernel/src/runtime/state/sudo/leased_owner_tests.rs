@@ -245,6 +245,42 @@ fn an_agents_spawn_through_kernel_request_is_its_own_child() {
     on_big_stack(|| async {
         let f = super::tests::fixture_with_options(None, true);
         let parent = f.run.agent_instance_id().unwrap().to_string();
+        let session = f
+            .state
+            .owned
+            .session_store
+            .get_session(&f.request.session_id)
+            .unwrap();
+        let prompt = "reach405-spawning-turn";
+        f.state
+            .owned
+            .prompt_state_owner
+            .submit_prepared_prompt_with_queue_policy(
+                &session,
+                PromptQueueItem::new(
+                    prompt,
+                    &f.request.attachment_id,
+                    &parent,
+                    "spawn children",
+                    PromptStatus::Queued,
+                ),
+                false,
+                false,
+            )
+            .unwrap();
+        f.state
+            .owned
+            .durable_state_store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: "local".into(),
+                room: f.request.session_id.clone(),
+                agent: parent.clone(),
+                prompt: prompt.into(),
+                run: Some(f.run.id().into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        assert!(f.state.list_sudo_turns("local").is_empty());
         let spawn = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             initial_task: None,
             peer_spawn: None,
