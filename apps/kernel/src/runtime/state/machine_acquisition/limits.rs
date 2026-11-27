@@ -54,6 +54,12 @@ impl AccountLimits {
         }
     }
 
+    /// The same limits at the same version and currency: what an approval was given for. How many machines run, or what is
+    /// spent today, moves while the person decides and is not what they approved.
+    pub(crate) fn same_limits(&self, other: &Self) -> bool {
+        self.values == other.values && self.currency == other.currency && self.version == other.version
+    }
+
     fn reading(&self) -> AccountLimitsReading {
         AccountLimitsReading {
             machines_at_once: self.values.machines_at_once,
@@ -389,8 +395,10 @@ impl KernelRuntimeState {
         }
     }
 
-    /// An agent's (or the owner's) change of the no-ask limits. A lower applies; a raise of an agent
-    /// needs the person's `/sudo` or card. The owner's own change is the owner's.
+    /// An agent's (or the owner's) change of the no-ask limits, as one transition: everything the person must say yes to is
+    /// asked before anything is written, and the write happens only if the settings are still the ones the change was
+    /// planned and approved against, so a denied card leaves nothing half done and an edit made meanwhile is never lost.
+    /// A lower applies; a raise of an agent needs the person's `/sudo` or card. The owner's own change is the owner's.
     pub(super) async fn change_no_ask_limits(
         &self,
         caller: Option<AgentCaller>,
@@ -401,16 +409,13 @@ impl KernelRuntimeState {
         account: Option<&AccountLimits>,
     ) -> Result<(), DaemonError> {
         let settings = self.owned.config_projection.snapshot().user_config.agents;
-        // The classes first: a refused or denied class change leaves the numbers as they were.
-        if let Some(classes) = classes {
-            self.change_no_ask_classes(caller.as_ref(), &settings, classes, capability)
-                .await?;
-        }
-        let current_machines = settings
-            .offload_max_machines
-            .unwrap_or(crate::config::DEFAULT_OFFLOAD_MAX_MACHINES);
+        let class_plan = classes
+            .map(|classes| plan_no_ask_classes(&settings, classes, capability))
+            .transpose()?;
         let from = AccountLimitValues {
-            machines_at_once: current_machines,
+            machines_at_once: settings
+                .offload_max_machines
+                .unwrap_or(crate::config::DEFAULT_OFFLOAD_MAX_MACHINES),
             // No cap of its own is the largest value: any number is a lower.
             spend_per_day_micros: settings.offload_daily_cap_micros.unwrap_or(u64::MAX),
         };
@@ -418,30 +423,83 @@ impl KernelRuntimeState {
             machines_at_once: machines_at_once.unwrap_or(from.machines_at_once),
             spend_per_day_micros: spend_per_day_micros.unwrap_or(from.spend_per_day_micros),
         };
-        if from == to {
-            return Ok(());
-        }
-        if let Some(caller) = caller {
+        if let Some(caller) = &caller {
+            if let Some(plan) = class_plan.as_ref().filter(|plan| plan.adds) {
+                self.ask_card(
+                    caller,
+                    &format!("classes\0{}\0{}", plan.current.join(","), plan.target.join(",")),
+                    "asks to raise your limits for machines it acquires without asking.",
+                    format!(
+                        "Machine classes without asking: from {} to {}.",
+                        plan.current.join(", "),
+                        plan.target.join(", ")
+                    ),
+                )
+                .await?;
+            }
             if raised(&from, &to) != RequestedRaise::default() {
                 let currency = account.map_or("", |a| a.currency.as_str());
-                self.raise_authority(&caller, LimitScope::NoAsk, &from, &to, currency)
+                self.raise_authority(caller, LimitScope::NoAsk, &from, &to, currency)
                     .await?;
             }
         }
+        let mut changes: Vec<(&'static str, Option<String>)> = Vec::new();
+        if let Some(plan) = &class_plan {
+            if plan.wanted.is_empty() {
+                if settings.offload_classes.is_some() {
+                    changes.push(("agents.offload_classes", None));
+                }
+            } else if settings.offload_classes.as_deref() != Some(plan.wanted.as_slice()) {
+                changes.push(("agents.offload_classes", Some(plan.wanted.join(","))));
+            }
+        }
         if to.machines_at_once != from.machines_at_once {
-            self.set_user_config_value(
-                "agents.offload_max_machines".into(),
-                to.machines_at_once.to_string(),
-            )
-            .await?;
+            changes.push((
+                "agents.offload_max_machines",
+                Some(to.machines_at_once.to_string()),
+            ));
         }
         if to.spend_per_day_micros != from.spend_per_day_micros {
-            self.set_user_config_value(
-                "agents.offload_daily_cap_micros".into(),
-                to.spend_per_day_micros.to_string(),
-            )
-            .await?;
+            changes.push((
+                "agents.offload_daily_cap_micros",
+                Some(to.spend_per_day_micros.to_string()),
+            ));
         }
+        if changes.is_empty() {
+            return Ok(());
+        }
+        self.write_no_ask_settings(settings, changes).await
+    }
+
+    /// Writes the planned changes in one step, only while the no-ask settings are still `expected`.
+    async fn write_no_ask_settings(
+        &self,
+        expected: crate::config::UserAgentsConfig,
+        changes: Vec<(&'static str, Option<String>)>,
+    ) -> Result<(), DaemonError> {
+        let config = self
+            .with_authorized_app_side_effect(move |app| {
+                let now = &app.config().user_config.agents;
+                if now.offload_classes != expected.offload_classes
+                    || now.offload_max_machines != expected.offload_max_machines
+                    || now.offload_daily_cap_micros != expected.offload_daily_cap_micros
+                {
+                    return Err(stale_settings());
+                }
+                for (path, value) in changes {
+                    match value {
+                        Some(value) => {
+                            app.set_user_config_value(path.into(), value)?;
+                        }
+                        None => {
+                            app.unset_user_config_value(path.into())?;
+                        }
+                    }
+                }
+                Ok(app.config().clone())
+            })
+            .await?;
+        self.owned.config_projection.update(config);
         Ok(())
     }
 }
@@ -459,66 +517,53 @@ fn smallest_class(capability: &MachineAllocationCapability) -> Option<String> {
         .map(|option| option.class_id.clone())
 }
 
-impl KernelRuntimeState {
-    /// The machine classes agents may acquire without asking. Taking classes away (or going back to the smallest only) applies;
-    /// adding one the setting does not allow now is a raise: the person's card, naming the old and new classes.
-    async fn change_no_ask_classes(
-        &self,
-        caller: Option<&AgentCaller>,
-        settings: &crate::config::UserAgentsConfig,
-        classes: Vec<String>,
-        capability: &MachineAllocationCapability,
-    ) -> Result<(), DaemonError> {
-        let offered: Vec<&str> = capability.offers.iter().map(|o| o.class_id.as_str()).collect();
-        let mut wanted: Vec<String> = Vec::new();
-        for class in classes {
-            if !offered.contains(&class.as_str()) {
-                return Err(acquisition_error(
-                    "invalid_request",
-                    &format!("{class} is not a machine class the service offers (chariox.machines.options lists them)"),
-                ));
-            }
-            if !wanted.contains(&class) {
-                wanted.push(class);
-            }
+/// The classes a change would leave agents allowed to acquire without asking, planned before anything is asked or written.
+struct ClassPlan {
+    /// The classes allowed now (the smallest alone when the person named none).
+    current: Vec<String>,
+    /// The classes allowed after the change.
+    target: Vec<String>,
+    /// What the setting would hold: empty is "the smallest only" (unset).
+    wanted: Vec<String>,
+    /// The change adds a class the setting does not allow now: a raise.
+    adds: bool,
+}
+
+fn plan_no_ask_classes(
+    settings: &crate::config::UserAgentsConfig,
+    classes: Vec<String>,
+    capability: &MachineAllocationCapability,
+) -> Result<ClassPlan, DaemonError> {
+    let offered: Vec<&str> = capability.offers.iter().map(|o| o.class_id.as_str()).collect();
+    let mut wanted: Vec<String> = Vec::new();
+    for class in classes {
+        if !offered.contains(&class.as_str()) {
+            return Err(acquisition_error(
+                "invalid_request",
+                &format!("{class} is not a machine class the service offers (chariox.machines.options lists them)"),
+            ));
         }
-        let smallest = smallest_class(capability);
-        let current: Vec<String> = settings
-            .offload_classes
-            .clone()
-            .unwrap_or_else(|| smallest.clone().into_iter().collect());
-        let target: Vec<String> = if wanted.is_empty() {
-            smallest.into_iter().collect()
-        } else {
-            wanted.clone()
-        };
-        if target.iter().all(|class| current.contains(class)) {
-            // Nothing is added: a lower, or the same. The smallest only is the unset state.
-        } else if let Some(caller) = caller {
-            let text = format!(
-                "Machine classes without asking: from {} to {}.",
-                current.join(", "),
-                target.join(", ")
-            );
-            self.ask_card(
-                caller,
-                &format!("classes\0{}\0{}", current.join(","), target.join(",")),
-                "asks to raise your limits for machines it acquires without asking.",
-                text,
-            )
-            .await?;
+        if !wanted.contains(&class) {
+            wanted.push(class);
         }
-        if wanted.is_empty() {
-            if settings.offload_classes.is_some() {
-                self.unset_user_config_value("agents.offload_classes".into())
-                    .await?;
-            }
-        } else if settings.offload_classes.as_deref() != Some(wanted.as_slice()) {
-            self.set_user_config_value("agents.offload_classes".into(), wanted.join(","))
-                .await?;
-        }
-        Ok(())
     }
+    let smallest = smallest_class(capability);
+    let current: Vec<String> = settings
+        .offload_classes
+        .clone()
+        .unwrap_or_else(|| smallest.clone().into_iter().collect());
+    let target: Vec<String> = if wanted.is_empty() {
+        smallest.into_iter().collect()
+    } else {
+        wanted.clone()
+    };
+    let adds = !target.iter().all(|class| current.contains(class));
+    Ok(ClassPlan {
+        current,
+        target,
+        wanted,
+        adds,
+    })
 }
 
 /// The limits moved after the caller read them.
@@ -534,5 +579,13 @@ pub(crate) fn no_account_limits() -> DaemonError {
     acquisition_error(
         "no_account_limits",
         "This kernel's connected service has no account limits",
+    )
+}
+
+/// The no-ask settings changed while the person was deciding: the change was approved against settings that are gone.
+pub(crate) fn stale_settings() -> DaemonError {
+    acquisition_error(
+        "limits_changed",
+        "The limits for acquiring without asking changed while this was open; read them again before changing them",
     )
 }

@@ -143,7 +143,7 @@ pub(crate) async fn execute(
                 .await?;
             if let Some(approval) = approval {
                 // The card stayed open for a while: the limits it showed must still be the limits.
-                if read().await? != current {
+                if !read().await?.same_limits(&current) {
                     return Err(
                         crate::runtime::state::machine_acquisition::limits::stale_limits(),
                     );

@@ -900,3 +900,93 @@ async fn a_class_the_service_does_not_offer_and_classes_of_the_account_scope_are
     assert_eq!(classes_of(&state), Some(vec!["small".into()]));
     no_card(&state, &room);
 }
+
+/// Starts a `set_limits` call that waits for the person.
+fn ask_to_change(
+    state: &KernelRuntimeState,
+    token: &str,
+    args: serde_json::Value,
+) -> tokio::task::JoinHandle<Result<serde_json::Value, DaemonError>> {
+    let (state, token) = (state.clone(), token.to_owned());
+    tokio::spawn(async move { tool(&state, &token, "chariox.machines.set_limits", args).await })
+}
+
+fn no_ask_max(state: &KernelRuntimeState) -> Option<u32> {
+    state
+        .owned
+        .config_projection
+        .snapshot()
+        .user_config
+        .agents
+        .offload_max_machines
+}
+
+#[tokio::test]
+async fn an_approval_is_not_stale_because_machines_run_or_spend_moves_meanwhile() {
+    let service = service(2, 10_000_000).await;
+    service.counts.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (state, token, room, _worktree) = super::without_asking_tests::agent_kernel(
+        service.api_url.clone(),
+        crate::config::UserAgentsConfig::default(),
+    )
+    .await;
+    let mut call = ask_to_change(&state, &token, serde_json::json!({"spend_per_day_micros":15_000_000}));
+    let (id, _) = the_card_of(&state, &room, &mut call).await;
+    // A machine starts while the person decides: the limits and their version are the ones they approved.
+    service.acquires.lock().unwrap().push(serde_json::json!({"request_id":"another"}));
+    let owner = the_owner(&state, &room);
+    state
+        .resolve_terminal_runtime_interaction(&room, &id, "approve", None, Some(&owner))
+        .await
+        .unwrap();
+    let answer = call.await.unwrap().unwrap();
+    assert_eq!(answer["limits"]["account"]["spend_per_day_micros"], 15_000_000);
+    assert_eq!(service.sets.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_combined_no_ask_change_is_all_or_nothing() {
+    let service = service(8, 10_000_000).await;
+    let settings = crate::config::UserAgentsConfig {
+        offload_classes: Some(vec!["small".into(), "big".into()]),
+        ..no_ask(Some(2), None)
+    };
+    let (state, token, room, _worktree) =
+        super::without_asking_tests::agent_kernel(service.api_url.clone(), settings).await;
+    let owner = the_owner(&state, &room);
+    // Narrowing the classes (a lower) and raising the machines (needs the person): the person says no, nothing changes.
+    let mut call = ask_to_change(&state, &token, serde_json::json!({"scope":"no_ask","classes":["small"],"machines_at_once":5}));
+    let (id, message) = the_card_of(&state, &room, &mut call).await;
+    assert!(message.contains("from 2 to 5"), "{message}");
+    state.resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner)).await.unwrap();
+    assert!(call.await.unwrap().is_err());
+    assert_eq!(classes_of(&state), Some(vec!["small".into(), "big".into()]), "the lower did not apply alone");
+    assert_eq!(no_ask_max(&state), Some(2));
+    // Adding a class (approved) and raising the machines (denied): nothing is written.
+    let settings_before = state.owned.config_projection.snapshot().user_config.agents;
+    let mut call = ask_to_change(&state, &token, serde_json::json!({"scope":"no_ask","classes":["small","big"],"machines_at_once":5}));
+    // The classes are already allowed, so only the machines ask.
+    let (id, _) = the_card_of(&state, &room, &mut call).await;
+    state.resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner)).await.unwrap();
+    assert!(call.await.unwrap().is_err());
+    assert_eq!(state.owned.config_projection.snapshot().user_config.agents, settings_before);
+}
+
+#[tokio::test]
+async fn an_approved_no_ask_raise_is_refused_when_the_setting_changed_while_the_card_was_open() {
+    let service = service(8, 10_000_000).await;
+    let (state, token, room, _worktree) =
+        super::without_asking_tests::agent_kernel(service.api_url.clone(), no_ask(Some(2), None)).await;
+    let owner = the_owner(&state, &room);
+    let mut call = ask_to_change(&state, &token, serde_json::json!({"scope":"no_ask","machines_at_once":5}));
+    let (id, _) = the_card_of(&state, &room, &mut call).await;
+    // The person lowers the setting themselves while the agent's proposal waits.
+    state
+        .set_user_config_value("agents.offload_max_machines".into(), "1".into())
+        .await
+        .unwrap();
+    state.resolve_terminal_runtime_interaction(&room, &id, "approve", None, Some(&owner)).await.unwrap();
+    let error = call.await.unwrap().unwrap_err().to_string();
+    assert!(error.contains("changed while this was open"), "{error}");
+    assert_eq!(no_ask_max(&state), Some(1), "the person's own edit is not overwritten");
+}
