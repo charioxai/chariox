@@ -828,7 +828,11 @@ impl ProviderAccountProfile {
         now_ms: u64,
     ) -> bool {
         if self.auth_state != ProviderAccountAuthState::Authenticated
-            || self.usage.availability != ProviderAccountUsageAvailability::Available
+            || !matches!(
+                self.usage.availability,
+                ProviderAccountUsageAvailability::Available
+                    | ProviderAccountUsageAvailability::Partial
+            )
             || !self
                 .usage
                 .observed_at_ms
@@ -6918,7 +6922,23 @@ mod tests {
             "an older exhausted window cannot be ignored"
         );
         profile.usage.availability = ProviderAccountUsageAvailability::Partial;
-        assert!(!profile.usage_capacity_observed_after(Some("gpt-5.3-codex-spark"), now - 1, now));
+        assert!(profile.usage_capacity_observed_after(Some("gpt-5.3-codex-spark"), now - 1, now));
+        let quota = profile.usage.meters[0].clone();
+        let mut credits = capacity_meter(
+            "Credits",
+            ProviderAccountUsageMeterKind::CreditBalance,
+            ProviderAccountUsageMeterState::Exhausted,
+            now,
+            None,
+        );
+        credits.meter_id = "credits/codex".into();
+        profile.usage.meters = vec![quota, credits];
+        assert!(profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
+        profile.usage.availability = ProviderAccountUsageAvailability::Unavailable;
+        assert!(!profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
+        profile.usage.availability = ProviderAccountUsageAvailability::Partial;
+        profile.usage.meters.clear();
+        assert!(!profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
         std::fs::remove_dir_all(root).unwrap();
     }
 

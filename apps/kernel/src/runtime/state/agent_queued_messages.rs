@@ -135,6 +135,26 @@ impl KernelRuntimeState {
         agent: &str,
         sequence: u64,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
+        let recipient = self.owned.agent_store.get_agent(agent)?;
+        if recipient.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent.to_string(),
+            });
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        if recipient.usage_limit_wait().is_some()
+            && self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent)
+                .is_none()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "send queued message",
+                message: "This agent is waiting for usage. Resume the agent or choose another account, then send this queued message again.".into(),
+            });
+        }
         let ledger::Outcome::Event(event) =
             self.owned
                 .durable_state_store
