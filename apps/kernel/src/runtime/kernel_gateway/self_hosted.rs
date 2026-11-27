@@ -33,6 +33,7 @@ impl TargetStatus {
     /// Takes the name the kernel gives itself: the pairing link only carried its ids.
     pub(super) fn apply_to(self, presence: &mut RelayKernelPresence) {
         presence.capabilities = self.capabilities;
+        presence.local_protocol = self.protocol;
         presence.machine_alias = self.machine_alias.or(presence.machine_alias.take());
     }
 }
@@ -124,17 +125,7 @@ impl KernelGateway {
                             now_ms,
                         )
                 })
-                .map(|probed| GatewayKernel {
-                    name: names::display_name(&probed.presence),
-                    label: names::label(&probed.presence),
-                    kernel_id: probed.presence.kernel_id.clone(),
-                    machine_id: probed.presence.machine_id.clone(),
-                    machine_alias: probed.presence.machine_alias.clone(),
-                    status: probed.status,
-                    last_seen_ms: probed.last_seen_ms,
-                    gateway_ready: is_gateway_ready(&probed.presence),
-                    via: GatewayKernelVia::SelfHosted,
-                })
+                .map(listed)
                 .collect(),
         ))
     }
@@ -180,6 +171,23 @@ impl KernelGateway {
     }
 }
 
+/// One paired kernel as `chariox kernels` lists it.
+fn listed(probed: &Probed) -> GatewayKernel {
+    GatewayKernel {
+        name: names::display_name(&probed.presence),
+        label: names::label(&probed.presence),
+        kernel_id: probed.presence.kernel_id.clone(),
+        machine_id: probed.presence.machine_id.clone(),
+        machine_alias: probed.presence.machine_alias.clone(),
+        status: probed.status,
+        last_seen_ms: probed.last_seen_ms,
+        gateway_ready: is_gateway_ready(&probed.presence),
+        via: GatewayKernelVia::SelfHosted,
+        protocol: probed.presence.local_protocol,
+        update: super::update_needed::update_state(probed.presence.local_protocol),
+    }
+}
+
 struct Probed {
     presence: RelayKernelPresence,
     status: GatewayKernelStatus,
@@ -198,6 +206,7 @@ fn status_after(answer: &Result<TargetStatus, GatewayError>) -> GatewayKernelSta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::GatewayKernelUpdate;
 
     fn paired(kernel_id: &str, alias: Option<&str>, machine_alias: Option<&str>) -> PairedKernel {
         PairedKernel {
@@ -238,6 +247,46 @@ mod tests {
         let ambiguous = named(&kernels, "shared").unwrap_err();
         assert_eq!(ambiguous.code(), "kernel_ambiguous");
         assert!(ambiguous.message().contains("k-x") && ambiguous.message().contains("k-y"));
+    }
+
+    // Row 490: a paired kernel's list entry carries the protocol its status answer gave, kept
+    // while it is offline, and the same update rule as a hosted kernel.
+    #[test]
+    fn a_paired_kernel_is_listed_with_the_protocol_its_status_answer_gave() {
+        let current = super::super::update_needed::MINIMUM_TARGET_PROTOCOL;
+        let entry = |protocol: Option<u32>, status| {
+            let mut presence = paired("k-x", None, Some("b3")).presence;
+            TargetStatus {
+                protocol,
+                capabilities: Vec::new(),
+                machine_alias: None,
+            }
+            .apply_to(&mut presence);
+            listed(&Probed {
+                presence,
+                status,
+                last_seen_ms: 5,
+            })
+        };
+        let new = entry(Some(current), GatewayKernelStatus::Online);
+        assert_eq!(
+            (new.protocol, new.update),
+            (Some(current), GatewayKernelUpdate::Current)
+        );
+        let old = entry(Some(current - 1), GatewayKernelStatus::Offline);
+        assert_eq!(
+            (old.protocol, old.update, old.status),
+            (
+                Some(current - 1),
+                GatewayKernelUpdate::UpdateNeeded,
+                GatewayKernelStatus::Offline
+            )
+        );
+        let silent = entry(None, GatewayKernelStatus::Online);
+        assert_eq!(
+            (silent.protocol, silent.update),
+            (None, GatewayKernelUpdate::UpdateNeeded)
+        );
     }
 
     #[test]
