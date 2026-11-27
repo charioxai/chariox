@@ -453,7 +453,7 @@ impl KernelRuntimeState {
             Err(error) => {
                 // A message queued before the limit ended is refused here, before any start.
                 if crate::error::is_agent_deadline_refusal(&error) {
-                    self.show_deadline_refusal(room, agent).await;
+                    self.tell_parent_limit_ended(room, agent).await;
                 }
                 return Err(error);
             }
@@ -602,10 +602,10 @@ impl KernelRuntimeState {
                         self.owned
                             .settle_failed_delegate_start(room, agent, &e.to_string())?;
                     }
-                    // The owner is told once that the ended limit refused this work, with the way to
+                    // The parent is told once that the ended limit refused this work, with the way to
                     // extend it; the refused delivery itself stays retired.
                     if crate::error::is_agent_deadline_refusal(&e) {
-                        self.show_deadline_refusal(room, agent).await;
+                        self.tell_parent_limit_ended(room, agent).await;
                     }
                     self.publish_task_change(room);
                     return Err(e);

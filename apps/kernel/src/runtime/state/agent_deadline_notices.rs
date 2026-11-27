@@ -303,24 +303,103 @@ impl KernelRuntimeState {
             .is_some_and(|deadline| deadline.state == AgentDeadlineState::Reached)
     }
 
-    /// TL4: who hears from `agent` now that a parent above it has stopped. The nearest agent above
-    /// it that still runs, or the owner who reads the Room when there is none. Worked out when asked,
-    /// so extending the parent gives the role back.
-    pub(super) fn receiver_line(&self, agent: &crate::agent::AgentInstance) -> String {
+    /// The nearest agent above `agent` that still runs: not archived, its own limit not ended.
+    /// Worked out when asked, so extending a stopped ancestor gives the role back.
+    fn living_ancestor(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Option<crate::agent::AgentInstance> {
         let mut next = agent.parent_agent_id().map(str::to_owned);
         while let Some(id) = next {
             let Ok(parent) = self.owned.agent_store.get_agent(&id) else {
                 break;
             };
             if !parent.archived() && !self.limit_ended(parent.id(), parent.session_id()) {
-                return format!(
-                    "Send your results and questions to {} with chariox.send_agent_message.",
-                    parent.alias().unwrap_or_else(|| parent.id())
-                );
+                return Some(parent);
             }
             next = parent.parent_agent_id().map(str::to_owned);
         }
-        "No agent above you runs now: the owner reads the Room, so say what you need in your final answer.".to_string()
+        None
+    }
+
+    /// TL4: who hears from `agent` now that a parent above it has stopped. The nearest agent above
+    /// it that still runs, or the owner who reads the Room when there is none.
+    pub(super) fn receiver_line(&self, agent: &crate::agent::AgentInstance) -> String {
+        match self.living_ancestor(agent) {
+            Some(parent) => format!(
+                "Send your results and questions to {} with chariox.send_agent_message.",
+                parent.alias().unwrap_or_else(|| parent.id())
+            ),
+            None => "No agent above you runs now: the owner reads the Room, so say what you need in your final answer.".to_string(),
+        }
+    }
+
+    /// Row 754 (D189): a time limit is the parent agent's setting, so an ended limit tells the
+    /// PARENT agent, as one urgent event naming the two things it can do: extend the limit with
+    /// `agent deadline` and prompt the agent again, or let it stay stopped. Never a person card:
+    /// a top-level agent with no parent raises nothing here — its Room notice is its whole story,
+    /// and the owner's external agent may extend or clear the limit itself (D190b).
+    pub(super) async fn tell_parent_limit_ended(&self, room: &str, agent: &str) {
+        let deadline = self
+            .owned
+            .durable_state_store
+            .agent_deadline(room, agent)
+            .ok()
+            .flatten()
+            .filter(|deadline| {
+                deadline.state == AgentDeadlineState::Reached
+                    || deadline.deadline_ms <= crate::session::unix_epoch_ms()
+            });
+        let Some(deadline) = deadline else {
+            return;
+        };
+        if let Err(error) = self.send_limit_ended_notice(&deadline).await {
+            tracing::warn!(%error, agent_id=%agent,
+                "the parent's time limit notice is retried at the next refusal");
+        }
+    }
+
+    /// One durable urgent event per ended limit, to the nearest living ancestor: a reload, a
+    /// restart or a repeated refusal re-reads the same occurrence instead of raising another.
+    async fn send_limit_ended_notice(&self, deadline: &AgentDeadline) -> Result<(), DaemonError> {
+        let child = self.owned.agent_store.get_agent(&deadline.agent_id)?;
+        let Some(parent) = self.living_ancestor(&child) else {
+            return Ok(());
+        };
+        let source = format!("deadline:{}", deadline.agent_id);
+        let occurrence_id = format!("{}:ended", deadline.deadline_ms);
+        let already_told = self
+            .owned
+            .durable_state_store
+            .agent_inbox_occurrence(&deadline.session_id, &parent.id(), &occurrence_id)?
+            .into_iter()
+            .any(|event| event.source_id == source);
+        if !already_told {
+            let name = child.alias().unwrap_or_else(|| child.id()).to_string();
+            let text = format!(
+                "Your agent {name}'s time limit ended at {}. It stopped and takes no new work. You own its limit: extend it with `agent deadline {name} <duration|none>` and prompt it again, or let it stay stopped. Its sub-agents keep their own work.",
+                clock(deadline.deadline_ms),
+            );
+            let event = urgent(occurrence(
+                &deadline.session_id,
+                &parent.id(),
+                &source,
+                &occurrence_id,
+                "child_time_limit_ended",
+                serde_json::json!({
+                    "deadline_ms": deadline.deadline_ms,
+                    "child_agent_id": deadline.agent_id,
+                    "message": text,
+                }),
+            ));
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::Occur(event))?;
+        }
+        // Boxed: the delivery of this notice can itself be refused by the parent's own ended
+        // limit, which walks further up instead of recursing here.
+        Box::pin(self.deliver_agent_inbox(&deadline.session_id, &parent.id())).await?;
+        Ok(())
     }
 
     /// Whether a limit that ended stands between `agent` and its parent.

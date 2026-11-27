@@ -228,8 +228,6 @@ impl KernelRuntimeOwnedState {
                                 interaction.id(),
                             ) || super::super::provider_stall::is_provider_stall_decision(
                                 &interaction,
-                            ) || super::super::agent_deadline_cards::is_deadline_card(
-                                interaction.id(),
                             )) && interaction.kernel_operation_id() == Some(interaction.id()),
                     }
                 {

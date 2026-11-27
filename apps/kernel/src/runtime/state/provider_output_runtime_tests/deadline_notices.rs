@@ -98,28 +98,45 @@ async fn a_limit_is_announced_ten_minutes_and_one_minute_ahead_once_each() {
 // Row 754 (D189, T1): a time limit is the parent agent's setting. An ended limit with work the
 // agent owed tells the PARENT agent alone — one urgent event per ended limit that names the two
 // things the parent can do — and the person's interaction list never sees a card for it. The
-// repeated tick and a repeated refusal re-read the same occurrence: a reload or a restart hands
-// the parent the one notice it still has (T6).
+// sweep that retires the work re-reads the same occurrence: a reload or a restart hands the
+// parent the one notice it still has (T6).
 #[tokio::test]
 async fn an_ended_limit_with_a_parent_tells_the_parent_agent_once_and_never_the_person() {
     use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
     let team = team_with("deadline-parent-notice", None, true).await;
     let store = &team.runtime.owned.durable_state_store;
-    // A message queued to the child before the limit ends: the sweep retires it.
+    // An urgent message queued to the child before the limit ends: an active turn takes it
+    // first, so the delivery attempt is the one the ended limit refuses.
     let Outcome::Event(_queued) = store
-        .agent_lifecycle(Operation::Occur(occurrence(
-            &team.room,
-            &team.child,
-            "queued-work",
-            "m1",
-            "message",
-            serde_json::json!({"message":"queued before the limit ended"}),
-        )))
+        .agent_lifecycle(Operation::Occur({
+            let mut message = occurrence(
+                &team.room,
+                &team.child,
+                "queued-work",
+                "m1",
+                "message",
+                serde_json::json!({"message":"queued before the limit ended"}),
+            );
+            message.urgent = true;
+            message
+        }))
         .unwrap()
     else {
         panic!("the message queues")
     };
     set_deadline(&team, &team.child, crate::session::unix_epoch_ms() - 1).await;
+    // A delivery the ended limit refuses tells the parent first, with the extend command.
+    let refused = team
+        .runtime
+        .deliver_agent_inbox(&team.room, &team.child)
+        .await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| crate::error::is_agent_deadline_refusal(error)),
+        "{refused:?}"
+    );
+    // The sweep then retires the still-queued message; the notice stays the one occurrence.
     for _ in 0..2 {
         team.runtime
             .tick_agent_deadlines(crate::session::unix_epoch_ms())
@@ -160,17 +177,7 @@ async fn an_ended_limit_with_a_parent_tells_the_parent_agent_once_and_never_the_
         team.runtime.list_owner_interactions(&owner).is_empty(),
         "no card for the person"
     );
-    // A delivery the ended limit refuses re-reads the same occurrence, never a second one.
-    let refused = team
-        .runtime
-        .deliver_agent_inbox(&team.room, &team.child)
-        .await;
-    assert!(
-        refused
-            .as_ref()
-            .is_err_and(|error| crate::error::is_agent_deadline_refusal(error)),
-        "{refused:?}"
-    );
+    // The sweep that retired the message re-read the same occurrence, never a second one.
     let again: Vec<_> = store
         .agent_inbox(&team.room, &team.parent, 0)
         .unwrap()

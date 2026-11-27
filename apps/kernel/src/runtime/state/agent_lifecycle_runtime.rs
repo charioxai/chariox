@@ -723,7 +723,7 @@ impl KernelRuntimeState {
             .ensure_agent_before_deadline(target_room, target.id())
         {
             if crate::error::is_agent_deadline_refusal(&error) {
-                self.show_deadline_refusal(target_room, target.id()).await;
+                self.tell_parent_limit_ended(target_room, target.id()).await;
             }
             return Err(error);
         }
