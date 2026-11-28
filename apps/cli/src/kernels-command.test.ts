@@ -3,7 +3,7 @@ import test from "node:test"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor } from "./agent-command-table.js"
 import { eventsMcpRoutes, failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withAgentKernel, withKernel } from "./kernels-command.js"
-import { Readable, Writable } from "node:stream"
+import { PassThrough, Readable, Writable } from "node:stream"
 import { runExec } from "./exec-command.js"
 import type { WebSocket } from "ws"
 import { replyWith, startFakeKernel, type FakeKernelFrame } from "./fake-unix-kernel.test-support.js"
@@ -552,4 +552,51 @@ test("workspace binary output resumes through a fresh websocket without creating
     assert.equal(kernel.frames.filter(frame => (frame.request.RunCommand as { operation?: { operation?: string } } | undefined)?.operation?.operation === "exec_open").length, 1)
     assert.ok(kernel.frames.every(frame => !('CreateSession' in frame.request) && !('EndSession' in frame.request)))
   } finally { await kernel.close() }
+})
+
+
+for (const args of [["--session", "room"], ["--workspace", "/workspace"]]) test(`exec sends EOF for interactive stdin on ${args[0]}`, async () => {
+  const input = new PassThrough() as PassThrough & { isTTY: boolean }
+  input.isTTY = true
+  const saved = Object.getOwnPropertyDescriptor(process, "stdin")!
+  Object.defineProperty(process, "stdin", { configurable: true, value: input })
+  let closed = false
+  const waiting: [WebSocket, FakeKernelFrame][] = []
+  const finish = (socket: WebSocket, frame: FakeKernelFrame) => replyWith(socket, frame, { response: { RunCommand: {
+    result: { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "exited", code: 0 } } },
+  } } })
+  const kernel = await startFakeKernel((socket, frame) => {
+    const request = frame.request.RunCommand as { operation: { operation: string } }
+    assert.ok(request)
+    const op = request.operation.operation
+    const answer = (result: unknown) => replyWith(socket, frame, { response: { RunCommand: { result } } })
+    if (op === "exec_open") return answer({ result: "exec_opened", exec_id: "tty" })
+    if (op === "exec_stdin_close") {
+      closed = true
+      answer({ result: "exec_input", next_offset: 0 })
+      for (const [reader, pending] of waiting) finish(reader, pending)
+      return
+    }
+    if (op === "exec_read") { if (closed) finish(socket, frame); else waiting.push([socket, frame]); return }
+    assert.equal(op, "exec_close")
+    answer({ result: "exec_closed" })
+  })
+  const code = process.exitCode
+  let timer: NodeJS.Timeout | undefined
+  try {
+    const running = runKernelsCommand(["exec", ...args, "--socket", kernel.path, "--", "/bin/cat"])
+    const completed = await Promise.race([running.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 500) })])
+    clearTimeout(timer)
+    // The old path is drained before asserting so a RED leaves no live input/socket.
+    if (!completed) input.end()
+    await running
+    assert.ok(completed, "an interactive stdin stream is not awaited by a command reading EOF")
+    assert.ok(closed)
+  } finally {
+    clearTimeout(timer)
+    input.destroy()
+    Object.defineProperty(process, "stdin", saved)
+    process.exitCode = code
+    await kernel.close()
+  }
 })

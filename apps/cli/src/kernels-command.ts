@@ -264,7 +264,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
         runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
           hostAgent: flags.get("--host-agent") as string | undefined, command: program, timeoutSeconds }, send,
-          { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
+          { stdin: process.stdin.isTTY ? undefined : process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
     } else if (command === "whats-new") {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       const response = await sendRequest({ GetAgentReleaseNotes: {} }, { socket, kernel: kernel ?? undefined, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { AgentReleaseNotes?: { text: string } }

@@ -39,7 +39,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "kernel_gateway_v1",
             "room_terminal_v1",
             "kernel_terminal_v1",
-            "room_exec_v1",
+            "run_command_v1",
             "agent_deadline_v1",
             "outside_steer_events_v1",
             "framed_plaintext_v1",

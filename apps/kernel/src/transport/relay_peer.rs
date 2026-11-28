@@ -1336,6 +1336,11 @@ pub enum RelayPeerRequest {
         actor: crate::room_terminal::TerminalActor,
         operation: crate::local::RoomTerminalOperation,
     },
+    RunAgentCommand {
+        leased_agent_id: String,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RunCommandOperation,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
@@ -1865,6 +1870,9 @@ pub enum RelayPeerResponse {
     },
     RoomTerminal {
         result: crate::local::RoomTerminalResult,
+    },
+    RunAgentCommand {
+        result: crate::local::RunCommandResult,
     },
     LeasedPromptSubmitted {
         provider_run_id: String,
@@ -3069,5 +3077,26 @@ mod mp08_transport_compatibility_tests {
                 .unwrap();
             assert_eq!(binding.relay_peer_protocol_compatible(), compatible);
         }
+    }
+}
+
+#[cfg(test)]
+mod run_agent_command_shapes {
+    use super::*;
+
+    #[test]
+    fn command_pipes_round_trip_on_the_original_agent_slice_peer_seam() {
+        let request = serde_json::json!({"kind":"run_agent_command", "leased_agent_id":"leased-1",
+            "actor":{"kind":"agent","agent_id":"agent-2"}, "operation":{"operation":"exec_list"}});
+        let typed: RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), request);
+        let response = serde_json::json!({"kind":"run_agent_command", "result":{"result":"exec_listed","execs":[]}});
+        let typed: RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), response);
+        assert!(serde_json::from_value::<RelayPeerRequest>(
+            serde_json::json!({"kind":"run_agent_command",
+            "actor":{"kind":"agent","agent_id":"agent-2"},"operation":{"operation":"exec_list"}})
+        )
+        .is_err());
     }
 }

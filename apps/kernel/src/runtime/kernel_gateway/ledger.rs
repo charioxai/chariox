@@ -303,12 +303,18 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
                 | RoomTerminalOperation::Snapshot { .. }
                 | RoomTerminalOperation::ReadOutput { .. }
                 | RoomTerminalOperation::Wait { .. }
-                | RoomTerminalOperation::ExecList
-                | RoomTerminalOperation::ExecWrite { .. }
-                | RoomTerminalOperation::ExecStdinClose { .. }
-                | RoomTerminalOperation::ExecRead { .. }
-                | RoomTerminalOperation::ExecCancel { .. }
-                | RoomTerminalOperation::ExecClose { .. }
+        );
+    }
+    if let crate::local::LocalDaemonRequest::RunCommand(request) = request {
+        use crate::local::RunCommandOperation as Op;
+        return matches!(
+            request.operation,
+            Op::ExecList
+                | Op::ExecRead { .. }
+                | Op::ExecWrite { .. }
+                | Op::ExecStdinClose { .. }
+                | Op::ExecCancel { .. }
+                | Op::ExecClose { .. }
         );
     }
     let variant = variant_name(request);
@@ -337,9 +343,6 @@ pub(crate) fn is_audited(request: &crate::local::LocalDaemonRequest) -> bool {
     }
 }
 
-/// The longest a forwarded shell command is waited for: its `timeout_ms`, up to one hour.
-const MAX_SHELL_WAIT_MS: u64 = 60 * 60 * 1_000;
-
 /// The target's default for waiting on an access answer (`kernel_access.request_timeout_minutes`).
 const SUDO_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -349,21 +352,17 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
     use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
     let wait_ms = match terminal_operation(request) {
         Some(RoomTerminalOperation::Wait { timeout_ms, .. }) => *timeout_ms,
-        Some(
-            RoomTerminalOperation::ReadOutput { wait_ms, .. }
-            | RoomTerminalOperation::ExecRead { wait_ms, .. },
-        ) => *wait_ms,
-        _ => 0,
+        Some(RoomTerminalOperation::ReadOutput { wait_ms, .. }) => *wait_ms,
+        _ => match request {
+            LocalDaemonRequest::RunCommand(request) => match request.operation {
+                crate::local::RunCommandOperation::ExecRead { wait_ms, .. } => wait_ms,
+                _ => 0,
+            },
+            _ => 0,
+        },
     };
     // The terminal service caps a wait at four minutes.
     let wait = std::time::Duration::from_millis(wait_ms.min(240_000));
-    // A shell command answers when it ends, and it ends by its own `timeout_ms`.
-    let wait = match request {
-        LocalDaemonRequest::RunShellCommand(shell) => {
-            std::time::Duration::from_millis(shell.timeout_ms.unwrap_or(0).min(MAX_SHELL_WAIT_MS))
-        }
-        _ => wait,
-    };
     match request {
         // The answer comes when the person has answered the popup there.
         LocalDaemonRequest::RequestKernelSudo(_) => super::REQUEST_DEADLINE + SUDO_ANSWER_WAIT,
@@ -870,7 +869,6 @@ mod tests {
         use crate::local::RoomTerminalOperation as Op;
         for repeats in [
             Op::List,
-            Op::ExecList,
             Op::Snapshot {
                 terminal_id: "t".into(),
             },
@@ -937,29 +935,60 @@ mod tests {
         assert!(!is_repeatable(&forget));
     }
 
-    // A forwarded shell command is waited for as long as it may run, not the usual 30 s.
     #[test]
-    fn a_forwarded_shell_command_waits_for_its_own_timeout() {
-        let shell = |timeout_ms| {
-            LocalDaemonRequest::RunShellCommand(crate::local::RunShellCapabilityRequest {
-                session_id: "s".into(),
-                attachment_id: "a".into(),
-                command: "sleep".into(),
-                args: vec!["400".into()],
-                working_directory: None,
-                timeout_ms,
+    fn command_start_returns_without_waiting_for_its_deadline() {
+        use crate::local::{CommandTarget, RunCommandOperation as Op, RunCommandRequest};
+        let command = |operation| {
+            LocalDaemonRequest::RunCommand(RunCommandRequest {
+                target: CommandTarget::Kernel,
+                acting_agent: None,
+                operation,
             })
         };
+        let opening = command(Op::ExecOpen {
+            command: vec!["sleep".into(), "400".into()],
+            directory: None,
+            timeout_ms: Some(400_000),
+            stdin_file: None,
+        });
+        assert_eq!(deadline_for(&opening), super::super::REQUEST_DEADLINE);
+        assert!(!is_long_wait(&opening));
+        assert!(!is_repeatable(&opening));
+        for operation in [
+            Op::ExecList,
+            Op::ExecRead {
+                exec_id: "e".into(),
+                after_cursor: 0,
+                wait_ms: 0,
+            },
+            Op::ExecWrite {
+                exec_id: "e".into(),
+                offset: 0,
+                data_base64: "YQ==".into(),
+            },
+            Op::ExecStdinClose {
+                exec_id: "e".into(),
+                offset: 0,
+            },
+            Op::ExecCancel {
+                exec_id: "e".into(),
+            },
+            Op::ExecClose {
+                exec_id: "e".into(),
+            },
+        ] {
+            assert!(is_repeatable(&command(operation)));
+        }
+        let read = command(Op::ExecRead {
+            exec_id: "e".into(),
+            after_cursor: 0,
+            wait_ms: 400_000,
+        });
         assert_eq!(
-            deadline_for(&shell(Some(400_000))),
-            super::super::REQUEST_DEADLINE + Duration::from_secs(400)
+            deadline_for(&read),
+            super::super::REQUEST_DEADLINE + Duration::from_secs(240)
         );
-        assert_eq!(deadline_for(&shell(None)), super::super::REQUEST_DEADLINE);
-        assert_eq!(
-            deadline_for(&shell(Some(u64::MAX))),
-            super::super::REQUEST_DEADLINE + Duration::from_secs(3_600)
-        );
-        assert!(is_long_wait(&shell(Some(400_000))));
+        assert!(is_long_wait(&read));
     }
 
     // EA2-11: the answer to a forwarded sudo request is the person's, so the origin waits

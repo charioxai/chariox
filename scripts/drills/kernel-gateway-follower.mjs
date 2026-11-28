@@ -144,7 +144,7 @@ function cli(r, args, input) {
       let value
       try { value = JSON.parse(out) } catch {}
       note("cli", { n, args, code, ms: Date.now()-started })
-      resolve({ code, value, err, ms: Date.now()-started })
+      resolve({ code, value, out, err, ms: Date.now()-started })
     })
   })
 }
@@ -262,18 +262,17 @@ try {
     check("a target followed while another one's cleanup was slow is still followed", seen.some(e => e.type === "terminal" && e.session_id === second), { subscribe: r.code, seen: seen.map(e => e.type) })
     await remote({ EndSession: { session_id: second } })
   } else {
-    const attachment = (await remote({ AttachToSession: { session_id: session, client_id: "gateway-drill", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
-    const run = (script, timeoutMs = 60000) => cli(home, ["request", "--kernel", target, "--command-id", randomUUID(), "--timeout", String(Math.ceil(timeoutMs / 1000) + 30)],
-      { RunShellCommand: { session_id: session, attachment_id: attachment, command: "/bin/sh", args: ["-c", script], working_directory: join(worker.dir, "work"), timeout_ms: timeoutMs } })
+    const run = (script, timeout = 60) => cli(home, ["exec", "--kernel", target, "--session", session, "--timeout", String(timeout),
+      "--", "/bin/sh", "-c", script])
     const failure = r => { try { return JSON.parse(r.err).error } catch { return { code: null } } }
     const missing = await cli(home, ["request", "--kernel", target, "--timeout", "30"], { GetSessionState: { session_id: "no-such-session" } })
     check("a missing session is exit 1 with the kernel's own code, as the guide's exit table says", missing.code === 1 && failure(missing).code === "session_not_found", { code: missing.code, error: failure(missing) })
     const small = await run("head -c 120000 /dev/zero | tr '\\0' x")
-    check("a 120 KB answer is returned", small.code === 0 && small.value?.ShellCommandCompleted?.result?.exit_code === 0, { code: small.code, error: failure(small) })
+    check("a 120 KB answer is returned", small.code === 0 && small.out.length === 120000, { code: small.code, error: failure(small) })
     const big = await run("head -c 300000 /dev/zero | tr '\\0' x")
-    check("a 300 KB answer returns a successful write receipt", big.code === 0 && big.value?.GatewayWriteCompleted?.response_kind === "ShellCommandCompleted", { code: big.code, error: failure(big) })
-    const long = await run("sleep 40", 60000)
-    check("--timeout and timeout_ms keep a 40 s command waiting past 30 s", long.code === 0 && long.ms >= 39000, { code: long.code, ms: long.ms, error: failure(long) })
+    check("a 300 KB command output streams through the relay", big.code === 0 && big.out.length === 300000, { code: big.code, error: failure(big) })
+    const long = await run("sleep 40", 60)
+    check("a 60 s command deadline allows a 40 s command to complete", long.code === 0 && long.ms >= 39000, { code: long.code, ms: long.ms, error: failure(long) })
   }
   await remote({ EndSession: { session_id: session } })
   note(failures.length ? `${label}/${scenario}/${stalled}: RED ${failures.join("; ")}` : `${label}/${scenario}/${stalled}: PASS`)

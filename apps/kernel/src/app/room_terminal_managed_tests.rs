@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use crate::config::DaemonConfig;
-use crate::local::{RoomTerminalOperation, RoomTerminalResult};
+use crate::local::{
+    CommandTarget, RoomTerminalOperation, RoomTerminalResult, RunCommandOperation,
+    RunCommandRequest, RunCommandResult,
+};
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::room_terminal::TerminalActor;
 use crate::runtime::router::CommandRouter;
@@ -78,6 +81,30 @@ impl Fixture {
                 operation,
             )
             .await
+    }
+
+    async fn command(
+        &self,
+        operation: RunCommandOperation,
+    ) -> Result<RunCommandResult, crate::error::DaemonError> {
+        use crate::runtime::command::{KernelCaller, KernelCommandSource};
+        let response = self
+            .runtime
+            .run_command_for_client(
+                &KernelCaller::for_source(&KernelCommandSource::LocalCli),
+                RunCommandRequest {
+                    target: CommandTarget::RoomWorkspace {
+                        session_id: self.session_id.clone(),
+                    },
+                    acting_agent: None,
+                    operation,
+                },
+            )
+            .await?;
+        let crate::local::LocalDaemonResponse::RunCommand { result } = response else {
+            unreachable!()
+        };
+        Ok(result)
     }
 
     async fn open(
@@ -489,12 +516,15 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
         let fixture = fixture("exec-expiry-stop");
         let deadline = tokio::time::Instant::now() + reader_lease + scheduling_margin;
         let opened = fixture
-            .terminal(RoomTerminalOperation::ExecOpen {
+            .command(RunCommandOperation::ExecOpen {
                 command: vec!["/bin/bash".into(), "-c".into(), script.into()],
+                directory: None,
+                timeout_ms: None,
+                stdin_file: None,
             })
             .await
             .unwrap();
-        assert!(matches!(opened, RoomTerminalResult::ExecOpened { .. }));
+        assert!(matches!(opened, RunCommandResult::ExecOpened { .. }));
         assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
         assert!(!fixture.reserve(), "busy exec prevents a managed stop");
         tokio::time::pause();
@@ -503,10 +533,10 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
         tokio::time::timeout_at(deadline, async {
             loop {
                 let listed = fixture
-                    .terminal(RoomTerminalOperation::ExecList)
+                    .command(RunCommandOperation::ExecList)
                     .await
                     .expect("read the Room's execs");
-                let RoomTerminalResult::ExecListed { execs } = listed else {
+                let RunCommandResult::ExecListed { execs } = listed else {
                     panic!("unexpected exec list result: {listed:?}");
                 };
                 // An exited command can stop counting as work before its reader lease is removed.
@@ -616,20 +646,11 @@ mod kernel_terminal_access {
             })
             .await;
         assert!(by_id.is_err());
-        // Commands with their own streams need a Room.
-        let exec = KernelTerminalRequest {
-            directory: None,
-            operation: RoomTerminalOperation::ExecList,
-        };
-        let refused = fixture
-            .runtime
-            .kernel_terminal_for_client(&owner(), exec)
-            .await
-            .unwrap_err();
-        assert!(
-            refused.to_string().contains("belong to a Room"),
-            "{refused}"
-        );
+        // KernelTerminal carries PTYs; retired binary operations do not enter its wire API.
+        let retired = serde_json::from_value::<KernelTerminalRequest>(serde_json::json!({
+            "operation": {"operation": "exec_list"}
+        }));
+        assert!(retired.is_err(), "binary command streams use RunCommand");
         fixture
             .runtime
             .kernel_terminal_for_client(
