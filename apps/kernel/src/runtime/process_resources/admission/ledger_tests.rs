@@ -2229,16 +2229,46 @@ fn stdout_only_writer_is_left_alone_when_another_volume_loses_room() {
 
 #[test]
 fn unplaced_writer_rate_excludes_observed_stdout_growth() {
-    let (generator, mut generator_use, log) = stream_writer(1, 2, 700 * MIB);
-    generator_use.write_rate = 1000 * MIB;
-    let current = owner("agent", true, vec![generator_use], vec![(1, generator)]);
-    current.lock().unwrap().disk_writes.insert(1, vec![log]);
-    let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
-    let members = std::slice::from_ref(&current);
-    let unplaced = unplaced_writers(members, &watched);
-    assert_eq!(unplaced.len(), 1);
-    assert_eq!(unplaced[0].rate, 300 * MIB);
-    assert_eq!(unplaced[0].volume, 1);
+    // The last interval can be steady or a burst faster than the command's
+    // two-second average. Neither changes its 600 MiB of unseen writes.
+    for latest_rate in [700 * MIB, 2800 * MIB] {
+        let (generator, mut usage, mut log) = stream_writer(1, 2, 700 * MIB);
+        usage.writes = 0;
+        usage.write_rate = 1000 * MIB;
+        log.written = 0;
+        let current = owner("agent", true, vec![usage], vec![(1, generator)]);
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, 1000)];
+            observation.disk_writes.insert(1, vec![log]);
+        }
+        let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
+        let members = std::slice::from_ref(&current);
+        assert!(unplaced_writers(members, &watched).is_empty());
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, 3000)];
+            observation.commands[0].writes = 2000 * MIB;
+            let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
+            output.written = 1400 * MIB;
+            output.rate = latest_rate;
+        }
+        let unplaced = unplaced_writers(members, &watched);
+        assert_eq!(unplaced.len(), 1);
+        assert_eq!(unplaced[0].rate, 300 * MIB);
+        assert_eq!(unplaced[0].volume, 1);
+        // A closed stream's earlier bytes stay credited for this window.
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, 3500)];
+            observation.commands[0].writes = 2500 * MIB;
+            observation.disk_writes.remove(&1);
+        }
+        assert_eq!(unplaced_writers(members, &watched)[0].rate, 440 * MIB);
+        // A replacement process must not inherit that byte history.
+        current.lock().unwrap().samples[0].process_id = "replacement".into();
+        assert!(unplaced_writers(members, &watched).is_empty());
+    }
 }
 
 #[test]

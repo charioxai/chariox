@@ -8,7 +8,7 @@ use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -134,6 +134,8 @@ pub(super) struct Entry {
     refused: Option<u64>,
     /// It is the process filling a nearly full disk: it is ended, not held.
     filling: Option<Filling>,
+    /// Command and stream byte deltas over matching sample boundaries.
+    stream_writes: Option<StreamWrites>,
     /// Real memory exhaustion paused or stopped it: that policy alone ends
     /// the wait, and these lines are what the command, its agent and its pane
     /// are told in place of the generic wait lines.
@@ -1949,6 +1951,89 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
     writers
 }
 
+/// Redirected growth and command writes must cover the same samples: a quiet
+/// stream interval must not move an earlier burst onto another volume.
+#[derive(Default)]
+struct StreamWrites {
+    process_id: String,
+    outputs: BTreeMap<u64, (BTreeSet<u64>, u64)>,
+    samples: VecDeque<(u64, u64, u64)>,
+}
+
+impl StreamWrites {
+    fn rate(
+        &mut self,
+        sample: &sampling::ProcessSample,
+        writes: u64,
+        outputs: &[disk_use::VolumeWrites],
+    ) -> u64 {
+        if self.process_id != sample.process_id {
+            *self = Self {
+                process_id: sample.process_id.clone(),
+                ..Self::default()
+            };
+        }
+        if !outputs.is_empty() {
+            let observed = outputs
+                .iter()
+                .map(|output| (output.id, (output.open.clone(), output.written)))
+                .collect::<BTreeMap<_, _>>();
+            let continuous = observed.len() == self.outputs.len()
+                && observed.iter().all(|(id, (open, written))| {
+                    self.outputs.get(id).is_some_and(|(before_open, before)| {
+                        open == before_open && written >= before
+                    })
+                });
+            if !continuous {
+                // A new or rebaselined descriptor supplies no aligned delta yet.
+                self.samples.clear();
+            }
+            self.outputs = observed;
+        }
+        // If the streams close, retain their last count: those bytes still
+        // belong to them until they leave the measurement window.
+        let streamed = self
+            .outputs
+            .values()
+            .fold(0u64, |sum, (_, written)| sum.saturating_add(*written));
+        let at = sample.sampled_at_ms;
+        if self
+            .samples
+            .back()
+            .is_some_and(|&(before_at, before, stream)| {
+                at < before_at
+                    || writes < before
+                    || (at == before_at && (writes != before || streamed != stream))
+            })
+        {
+            self.samples.clear();
+        }
+        if self
+            .samples
+            .back()
+            .is_none_or(|&(before_at, _, _)| at > before_at)
+        {
+            self.samples.push_back((at, writes, streamed));
+        }
+        let window = FREE_WINDOW.as_millis() as u64;
+        // Match the command sampler: keep one point at or before the start,
+        // and count a young command's time before its baseline as idle.
+        while self.samples.len() > 2
+            && self
+                .samples
+                .get(1)
+                .is_some_and(|&(then, _, _)| at.saturating_sub(then) >= window)
+        {
+            self.samples.pop_front();
+        }
+        let &(from, before, stream_before) = self.samples.front().unwrap();
+        let unplaced = writes
+            .saturating_sub(before)
+            .saturating_sub(streamed.saturating_sub(stream_before));
+        unplaced.saturating_mul(1000) / at.saturating_sub(from).max(window)
+    }
+}
+
 /// Agent commands writing at a runaway rate whose output volume the samples
 /// never caught: a generator that closes each file and opens the next holds
 /// one open for a few milliseconds in every few hundred, and a file seen for
@@ -1962,28 +2047,38 @@ fn unplaced_writers<'a>(
 ) -> Vec<Writer<'a>> {
     let mut writers = Vec::new();
     for member in members {
-        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
-        for command in &observation.commands {
-            let outputs = observation
-                .disk_writes
+        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        let Observation {
+            commands,
+            disk_writes,
+            samples,
+            admission,
+            ..
+        } = &mut *observation;
+        for command in commands {
+            let outputs = disk_writes
                 .get(&command.pid)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            let placed = outputs.iter().any(|output| output.receiving);
-            // Stream destinations do not locate a generator's other outputs,
-            // but their observed growth already accounts for that part of its
-            // writes. Only the remaining rate can belong to an unseen output.
-            let rate = outputs
-                .iter()
-                .filter(|output| !output.files.is_empty())
-                .fold(command.write_rate, |rate, output| {
-                    rate.saturating_sub(output.rate)
-                });
-            let holdable = observation
-                .admission
-                .get(&command.pid)
-                .is_some_and(|entry| entry.holdable);
-            if placed || !holdable || rate < RUNAWAY_WRITE {
+            let Some(entry) = admission.get_mut(&command.pid) else {
+                continue;
+            };
+            if !entry.holdable || outputs.iter().any(|output| output.receiving) {
+                entry.stream_writes = None;
+                continue;
+            }
+            let rate = if outputs.is_empty() && entry.stream_writes.is_none() {
+                command.write_rate
+            } else {
+                let Some(sample) = samples.iter().find(|sample| sample.pid == command.pid) else {
+                    continue;
+                };
+                entry
+                    .stream_writes
+                    .get_or_insert_with(StreamWrites::default)
+                    .rate(sample, command.writes, outputs)
+            };
+            if rate < RUNAWAY_WRITE {
                 continue;
             }
             for (volume, (lost, path)) in watched {
