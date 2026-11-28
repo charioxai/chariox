@@ -196,6 +196,7 @@ pub(super) async fn admit_frame(
                 close_requested,
                 frame,
                 refusal,
+                peer,
             );
             return Err(());
         }
