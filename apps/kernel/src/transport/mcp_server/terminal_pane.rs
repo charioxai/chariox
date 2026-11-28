@@ -31,6 +31,42 @@ const REQUEST_ID_PREFIX: &str = "chariox-card-";
 /// arrives as a separate POST; whoever takes the entry closes the dialog.
 static DIALOGS: LazyLock<Mutex<HashMap<String, Dialog>>> = LazyLock::new(Default::default);
 
+// A transport reconnect belongs to the same provider run. Retain its dismissals until the run ends,
+// and discard ended runs whenever another terminal connects or answers.
+static RUN_PANES: LazyLock<Mutex<HashMap<String, RunPane>>> = LazyLock::new(Default::default);
+
+struct RunPane {
+    router: Weak<CommandRouter>,
+    token: String,
+    closed_here: Arc<Mutex<BTreeSet<String>>>,
+}
+
+fn run_dismissals(
+    router: &Arc<CommandRouter>,
+    token: &str,
+    run_id: &str,
+) -> Arc<Mutex<BTreeSet<String>>> {
+    let mut panes = RUN_PANES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    panes.retain(|id, pane| {
+        pane.router.upgrade().is_some_and(|router| {
+            router
+                .runtime_mcp_catalog_run(&pane.token)
+                .is_some_and(|run| run.id() == id)
+        })
+    });
+    panes
+        .entry(run_id.to_string())
+        .or_insert_with(|| RunPane {
+            router: Arc::downgrade(router),
+            token: token.to_string(),
+            closed_here: Arc::default(),
+        })
+        .closed_here
+        .clone()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Dialog {
     run_id: String,
@@ -95,6 +131,7 @@ pub(super) fn stream(
     let token = parse_bearer_token(headers)?;
     let (run, files) = terminal_run(&router, &token)?;
     let agent_id = run.agent_instance_id()?.to_string();
+    let closed_here = run_dismissals(&router, &token, run.id());
     let pane = Pane {
         sessions_seen: router.session_projection_change_sequence(),
         inbox_seen: router.person_inbox_change_sequence(),
@@ -107,7 +144,7 @@ pub(super) fn stream(
         files,
         shutdown,
         open: None,
-        closed_here: BTreeSet::new(),
+        closed_here,
         status: None,
         model_seen: None,
         feed: None,
@@ -153,7 +190,7 @@ struct Pane {
     /// The dialog open in the terminal: request id and card id.
     open: Option<(String, String)>,
     /// Cards whose dialog the person closed here: answered, or dismissed for "not now".
-    closed_here: BTreeSet<String>,
+    closed_here: Arc<Mutex<BTreeSet<String>>>,
     status: Option<String>,
     model_seen: Option<TerminalModel>,
     feed: Option<PaneFeed>,
@@ -185,7 +222,10 @@ impl Pane {
         if let Some((request_id, card_id)) = &self.open {
             if !dialogs().contains_key(request_id) {
                 // The person answered or dismissed the dialog; the feed shows which.
-                self.closed_here.insert(card_id.clone());
+                self.closed_here
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(card_id.clone());
                 self.open = None;
                 self.feed_due = Instant::now();
             }
@@ -212,12 +252,15 @@ impl Pane {
                 self.open = None;
             }
         }
-        self.closed_here
-            .retain(|card_id| feed.cards.iter().any(|card| &card.id == card_id));
+        let mut closed_here = self
+            .closed_here
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        closed_here.retain(|card_id| feed.cards.iter().any(|card| &card.id == card_id));
         if self.open.is_none() {
             // Claude's own permission dialog is the terminal face of its card.
             let next = feed.cards.iter().find(|card| {
-                !self.closed_here.contains(&card.id)
+                !closed_here.contains(&card.id)
                     && !is_claude_native_permission(&card.id, &self.run_id)
             });
             if let Some((request, dialog)) = next.and_then(|card| dialog_for(card, feed)) {
@@ -239,7 +282,7 @@ impl Pane {
                 })));
             } else if let Some(card) = next {
                 // Nothing to open here (no link to the pane): the status line names it.
-                self.closed_here.insert(card.id.clone());
+                closed_here.insert(card.id.clone());
             }
         }
         frames
@@ -293,7 +336,7 @@ impl Pane {
                     report.model = Some(model.model.clone());
                 }
                 if seen.effort != model.effort {
-                    report.effort = model.effort;
+                    report.effort = Some(model.effort);
                 }
             }
         }
@@ -576,6 +619,10 @@ pub(super) async fn answer(router: Arc<CommandRouter>, token: &str, payload: &Va
     let Some(dialog) = dialog else {
         return;
     };
+    run_dismissals(&router, token, run.id())
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(dialog.card_id.clone());
     let Some(answer) = payload
         .get("result")
         .and_then(|result| answer_for(&dialog, result))

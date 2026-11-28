@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1031,
+  "local_protocol": 1032,
   "peer_protocol": 449,
   "claude_foreground_completed": {
     "tool": "Read",

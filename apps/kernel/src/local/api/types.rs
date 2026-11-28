@@ -583,4 +583,4 @@ pub use workspace::*;
 /// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
 /// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`.
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1031;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1032;

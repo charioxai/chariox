@@ -6,7 +6,7 @@ export type ReportPaneSettingsRequest = {
   readonly session_id: string
   readonly agent_id: string
   readonly model?: string
-  readonly effort?: string
+  readonly effort?: string | null
   readonly execution_mode?: "build" | "plan"
   readonly permission_level?: "required" | "yolo"
 }

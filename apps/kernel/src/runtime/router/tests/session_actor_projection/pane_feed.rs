@@ -262,7 +262,7 @@ async fn reported_settings_survive_a_kernel_restart() {
         session_id: terminal.session_id.clone(),
         agent_id: terminal.agent_id.clone(),
         model: Some("opus".into()),
-        effort: Some("high".into()),
+        effort: Some(Some("high".into())),
         execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
         permission_level: Some(crate::provider::AgentPermissionLevel::Required),
     });

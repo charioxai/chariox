@@ -20,8 +20,13 @@ pub struct ReportPaneSettingsRequest {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
+    /// Absent leaves effort unchanged; null clears the terminal's previous setting.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_reported_effort",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effort: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_mode: Option<crate::provider::AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,4 +153,11 @@ pub struct PaneNotice {
     pub title: String,
     pub body: Option<String>,
     pub at_ms: u64,
+}
+
+fn deserialize_reported_effort<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }

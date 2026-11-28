@@ -1,5 +1,5 @@
 {
-  "protocol_version": 1031,
+  "protocol_version": 1032,
   "relay_peer_protocol_version": 449,
   "web_bot_auth": {
     "projects": [
