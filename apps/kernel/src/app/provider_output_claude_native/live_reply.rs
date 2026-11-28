@@ -560,7 +560,7 @@ fn drawn_text(rows: &[Row]) -> String {
 }
 
 /// Whether the screen shows a block completed by `text` whose first rows the reader had taken: those rows exactly (a
-/// code symbol is a symbol), then more, drawn from the text the terminal shows without markup and without most symbols.
+/// code symbol is a symbol), then more, drawn from the rendered Markdown with literal symbols intact.
 fn grown_from(rows: &[Row], taken: &[String], text: &str) -> bool {
     !taken.is_empty()
         && rows.len() >= taken.len()
@@ -568,7 +568,61 @@ fn grown_from(rows: &[Row], taken: &[String], text: &str) -> bool {
             .iter()
             .zip(taken)
             .all(|(row, taken)| row.text == *taken)
-        && drawn_from(&drawn_text(rows), text)
+        && rendered_prefix(&drawn_text(rows), text)
+}
+
+/// Markdown syntax is omitted by the terminal, but punctuation inside its text and code is not.
+/// Only whitespace may change when the terminal wraps rows; a changed operator starts another block.
+fn rendered_prefix(mut drawn: &str, markdown: &str) -> bool {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+
+    if drawn.trim().is_empty() {
+        return false;
+    }
+    let mut lists = Vec::new();
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Start(Tag::List(first)) => lists.push(first),
+            Event::End(TagEnd::List(_)) => {
+                lists.pop();
+            }
+            Event::Start(Tag::Item) => {
+                // Claude may show the list marker or leave it to indentation. Only a marker
+                // followed by whitespace is optional; literal operators in text/code never are.
+                drawn = drawn.trim_start();
+                let markers = match lists.last_mut() {
+                    Some(Some(number)) => {
+                        let marker = format!("{number}.");
+                        *number += 1;
+                        vec![marker]
+                    }
+                    _ => vec!["•".to_string(), "-".to_string(), "*".to_string()],
+                };
+                for marker in markers {
+                    if let Some(tail) = drawn.strip_prefix(&marker) {
+                        if tail.starts_with(char::is_whitespace) {
+                            drawn = tail;
+                            break;
+                        }
+                    }
+                }
+            }
+            Event::Text(text) | Event::Code(text) => {
+                for character in text.chars().filter(|c| !c.is_whitespace()) {
+                    drawn = drawn.trim_start();
+                    if drawn.is_empty() {
+                        return true;
+                    }
+                    let Some(tail) = drawn.strip_prefix(character) else {
+                        return false;
+                    };
+                    drawn = tail;
+                }
+            }
+            _ => {}
+        }
+    }
+    drawn.trim().is_empty()
 }
 
 /// Whether the previous read showed row `index` too: a row repeated on the

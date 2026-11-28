@@ -817,3 +817,46 @@ fn a_block_that_grew_while_the_reader_was_lost_is_not_streamed_again_once_comple
         "the completed block, grown, streamed again: {again:?}"
     );
 }
+
+#[test]
+fn completed_redraw_matching_preserves_literal_code_symbols_after_markup() {
+    for markdown in [
+        "Result\n\nx = 1;\ny = 2;\n\nDone.",
+        "# Result\n\n```rust\nx = 1;\ny = 2;\n```\n\n**Done.**",
+    ] {
+        assert!(rendered_prefix("Result\nx = 1;\ny = 2;\nDone.", markdown));
+        assert!(!rendered_prefix(
+            "Result\nx += 1;\ny -= 2;\nDone.",
+            markdown
+        ));
+    }
+    for code in ["x *= 1;", "x **= 1;", "x -= 1;", "x_1 = 1;", "x[1] = 1;"] {
+        assert!(rendered_prefix(
+            &format!("Result\n{code}"),
+            &format!("Result\n\n`{code}`")
+        ));
+        assert!(!rendered_prefix(
+            "Result\nx = 1;",
+            &format!("Result\n\n`{code}`")
+        ));
+    }
+}
+
+#[test]
+fn completed_redraw_matching_accepts_rendered_lists_with_and_without_markers() {
+    let numbered = "## Plan\n\n1. **Read** the file.\n2. Then `write()` it.";
+    assert!(rendered_prefix(
+        "Plan\nRead the file.\nThen write() it.",
+        numbered
+    ));
+    assert!(rendered_prefix(
+        "Plan\n1. Read the file.\n2. Then write() it.",
+        numbered
+    ));
+    for marker in ["•", "-", "*"] {
+        assert!(rendered_prefix(
+            &format!("Plan\n{marker} Read the file."),
+            "# Plan\n\n- **Read** the file."
+        ));
+    }
+}
