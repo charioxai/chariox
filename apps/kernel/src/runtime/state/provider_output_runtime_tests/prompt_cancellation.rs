@@ -813,21 +813,31 @@ async fn structured_abort_waiter_releases_provider_lane_after_external_owner_set
 // MP-08/MP-10/MP-11: a provider that never answers Stop cannot hold the next turn.
 #[tokio::test]
 async fn unresponsive_structured_abort_terminates_provider_and_settles_task() {
-    assert_unresponsive_abort_settles(false, false).await;
+    assert_unresponsive_abort_settles(false, false, false).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn native_cancellation_reaps_a_tool_in_its_own_process_group() {
-    assert_unresponsive_abort_settles(true, false).await;
+    assert_unresponsive_abort_settles(true, false, false).await;
 }
 
 #[tokio::test]
 async fn pending_provider_reap_keeps_cancellation_owned_until_retry_succeeds() {
-    assert_unresponsive_abort_settles(false, true).await;
+    assert_unresponsive_abort_settles(false, true, false).await;
 }
 
-async fn assert_unresponsive_abort_settles(detached_tool: bool, deferred_reap: bool) {
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cancellation_retains_detached_tool_ownership_after_provider_exit_is_cached() {
+    assert_unresponsive_abort_settles(true, false, true).await;
+}
+
+async fn assert_unresponsive_abort_settles(
+    detached_tool: bool,
+    deferred_reap: bool,
+    provider_exits: bool,
+) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     let worktree = crate::test_support::TestWorktree::new("unresponsive-stop");
     let mut config = crate::DaemonConfig::for_tests();
@@ -855,7 +865,7 @@ async fn assert_unresponsive_abort_settles(detached_tool: bool, deferred_reap: b
     let mut tool_pid = None;
     if detached_tool {
         std::fs::write(&sentinel, b"alive").unwrap();
-        let script = "import os,time,sys\npid=os.fork()\nif pid==0:\n os.setsid()\n open(sys.argv[1],'w').write(str(os.getpid()))\n while os.path.exists(sys.argv[2]): time.sleep(.02)\nelse: os.waitpid(pid,0)";
+        let script = "import os,time,sys,signal\npid=os.fork()\nif pid==0:\n os.setsid()\n signal.signal(signal.SIGINT,signal.SIG_IGN)\n open(sys.argv[1],'w').write(str(os.getpid()))\n while os.path.exists(sys.argv[2]): time.sleep(.02)\nelse: os.waitpid(pid,0)";
         app.pty_mut()
             .spawn(crate::pty::PtySpawnRequest {
                 process_key: run.id().into(),
@@ -942,6 +952,20 @@ async fn assert_unresponsive_abort_settles(detached_tool: bool, deferred_reap: b
     // A hung provider call can hold this lane before the abort is even enqueued.
     let _held_lane = runtime.provider_runtime_lanes.acquire(run.id()).await;
     runtime.spawn_prompt_abort(dispatch, runtime.provider_runtime_lanes.clone());
+    if provider_exits {
+        // The provider lane stays occupied while another output pump observes
+        // exit. Its detached tool must still belong to the cancelling turn.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        app.lock().await.pty_mut().write_input(run.id(), b"\x03").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if app.lock().await.pty_mut().poll_process_state(run.id()).unwrap().is_exited() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("provider must exit and cache its status before cleanup");
+    }
     if deferred_reap {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
