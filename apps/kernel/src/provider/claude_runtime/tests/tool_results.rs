@@ -66,8 +66,7 @@ fn claude_stream_projects_matching_tool_result_error_and_input() {
 fn claude_handler_bounds_unsupported_rejection_written_to_provider() {
     use std::io::{BufRead, Read};
     let (mut state, mut batch) = parser_state();
-    let _ = state.child.kill();
-    let _ = state.child.wait();
+    crate::provider::claude_runtime::process::stop_child(&mut state.child);
     let mut echo = std::process::Command::new("/bin/cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -75,7 +74,7 @@ fn claude_handler_bounds_unsupported_rejection_written_to_provider() {
         .unwrap();
     state.stdin = echo.stdin.take().unwrap();
     let stdout = echo.stdout.take().unwrap();
-    state.child = echo;
+    state.child = crate::provider::claude_runtime::ClaudeRuntimeProcess::new(echo).unwrap();
     let reader = std::thread::spawn(move || {
         let mut line = String::new();
         std::io::BufReader::new(stdout.take(40_001))

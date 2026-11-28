@@ -885,17 +885,23 @@ enum AbortProviderExit {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn claude_stream_json_cancellation_settles_its_detached_tool_before_the_turn() {
-    assert_claude_stream_json_cancellation_settles(false).await;
+    assert_claude_stream_json_cancellation_settles(false, false).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn claude_stream_json_cancellation_settles_while_the_actor_holds_its_state() {
-    assert_claude_stream_json_cancellation_settles(true).await;
+    assert_claude_stream_json_cancellation_settles(true, false).await;
 }
 
 #[cfg(target_os = "linux")]
-async fn assert_claude_stream_json_cancellation_settles(busy_actor: bool) {
+#[tokio::test]
+async fn claude_stream_json_cancellation_settles_a_busy_already_ended_run() {
+    assert_claude_stream_json_cancellation_settles(true, true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn assert_claude_stream_json_cancellation_settles(busy_actor: bool, already_ended: bool) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     let worktree = crate::test_support::TestWorktree::new("stream-json-stop");
     let marker = worktree.path().join("tool-alive");
@@ -1040,6 +1046,17 @@ for line in sys.stdin: pass
             now: crate::session::unix_epoch_ms(),
         })
         .unwrap();
+    if already_ended {
+        let ended = runtime
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(session.id(), run.id())
+            .unwrap();
+        runtime
+            .owned
+            .provider_run_projection
+            .update(ended.into_run());
+    }
     runtime.spawn_prompt_abort(dispatch, runtime.provider_runtime_lanes.clone());
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while runtime
@@ -1401,6 +1418,15 @@ async fn assert_unresponsive_abort_settles(
 
 #[tokio::test]
 async fn tool_updates_received_during_cancellation_cleanup_keep_their_final_status() {
+    assert_tool_updates_received_during_cleanup(false).await;
+}
+
+#[tokio::test]
+async fn received_actor_poll_is_applied_before_cancellation_records_tool_statuses() {
+    assert_tool_updates_received_during_cleanup(true).await;
+}
+
+async fn assert_tool_updates_received_during_cleanup(queued: bool) {
     let worktree = crate::test_support::TestWorktree::new("cancel-tool-completion");
     let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1421,6 +1447,9 @@ async fn tool_updates_received_during_cancellation_cleanup_keep_their_final_stat
     );
     run.mark_running();
     app.providers_mut().insert_run_for_test(run.clone());
+    if queued {
+        spawn_inert_pty_for_run(&mut app, run.id());
+    }
     app.prompt_owner_submit_prepared_prompt(
         session.id(),
         crate::session::PromptQueueItem::new(
@@ -1435,6 +1464,10 @@ async fn tool_updates_received_during_cancellation_cleanup_keep_their_final_stat
     .unwrap();
     let app = Arc::new(Mutex::new(app));
     let mut runtime = owned_runtime_state(&app).await;
+    let _cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
     runtime.owned.note_prompt_started(run.id());
     runtime.owned.note_prompt_tool_output(
         run.id(),
@@ -1454,40 +1487,82 @@ async fn tool_updates_received_during_cancellation_cleanup_keep_their_final_stat
     let held = app.lock().await;
     let finishing = {
         let state = runtime.clone();
-        tokio::spawn(async move { state.finish_owned_prompt_abort(&dispatch, false).await })
+        tokio::spawn(async move {
+            loop {
+                match state.finish_owned_prompt_abort(&dispatch, false).await {
+                    Err(DaemonError::PtyCleanup { .. }) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    }
+                    result => return result,
+                }
+            }
+        })
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
         .await
         .unwrap();
-    runtime
-        .apply_owned_structured_output_batch(
-            session.id(),
-            run.id(),
-            vec![attachment.id().into()],
-            crate::provider::ProviderPromptSignalBatch {
-                chunks: vec![
-                    crate::provider::ProviderPromptChunk {
-                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
-                        merge_key: Some("tool-a".into()),
-                        bytes: br#"{"id":"tool-a","tool":"bash","status":"completed"}"#.to_vec(),
-                    },
-                    crate::provider::ProviderPromptChunk {
-                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
-                        merge_key: Some("tool-b".into()),
-                        bytes: br#"{"id":"tool-b","tool":"bash","status":"running"}"#.to_vec(),
-                    },
-                ],
-                ..Default::default()
+    let batch = crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![
+            crate::provider::ProviderPromptChunk {
+                kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                merge_key: Some("tool-a".into()),
+                bytes: br#"{"id":"tool-a","tool":"bash","status":"completed"}"#.to_vec(),
             },
-        )
-        .await
-        .unwrap();
+            crate::provider::ProviderPromptChunk {
+                kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                merge_key: Some("tool-b".into()),
+                bytes: br#"{"id":"tool-b","tool":"bash","status":"running"}"#.to_vec(),
+            },
+        ],
+        ..Default::default()
+    };
+    if queued {
+        runtime
+            .owned
+            .structured_output_records
+            .mark_poll_enqueued(run.id(), Some("tool-completion-prompt".into()));
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .push_finished_structured_output_poll_for_test(run.id().into(), Ok(Some(batch)));
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .push_finished_structured_output_poll_for_test("unrelated-ready-run".into(), Ok(None));
+    } else {
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                vec![attachment.id().into()],
+                batch,
+            )
+            .await
+            .unwrap();
+    }
     drop(held);
     tokio::time::timeout(std::time::Duration::from_secs(2), finishing)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
+    if queued {
+        runtime
+            .pump_owned_provider_output(session.id(), run.id(), vec![attachment.id().into()], true)
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .drain_finished_structured_output_poll_jobs_for_run("unrelated-ready-run")
+                .len(),
+            1,
+            "cancellation must not consume another run's received output"
+        );
+    }
     let updates: Vec<serde_json::Value> = runtime
         .owned
         .terminal_stream
