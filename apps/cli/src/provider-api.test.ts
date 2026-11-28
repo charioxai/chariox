@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { LocalIpcClient } from "./ipc.js"
-import { getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
+import { copyProviderAccountFromKernel, getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
@@ -86,6 +86,21 @@ function clientReturning(response: Record<string, unknown>): LocalIpcClient {
     send: async () => response,
   } as unknown as LocalIpcClient
 }
+
+test("account copy returns the receiving Vault wait without claiming installation", async () => {
+  const offer = { source_kernel_id: "source", source_machine_id: "source-machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "target", provider: "claude", account_profile: "work", label: "Work" }
+  const wait = { operation_id: "operation", source_kernel_id: "source", target_kernel_id: "target", target_label: "Target", expires_at_ms: Date.now() + 600_000 }
+  const client = { send: async (request: Record<string, unknown>) => "RelayStatus" in request ? { RelayStatus: { status: { daemon_id: "target" } } } : { ProviderAccountCopyWaiting: { wait } } } as unknown as LocalIpcClient
+  let result: unknown
+  await assert.doesNotReject(async () => { result = await copyProviderAccountFromKernel(client, offer, "operation") }, "a waiting copy is a valid result before installation")
+  assert.deepEqual(result, wait)
+})
+
+test("account copy rejects waiting metadata for a different operation", async () => {
+  const offer = { source_kernel_id: "source", source_machine_id: "source-machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "target", provider: "claude", account_profile: "work", label: "Work" }
+  const client = { send: async (request: Record<string, unknown>) => "RelayStatus" in request ? { RelayStatus: { status: { daemon_id: "target" } } } : { ProviderAccountCopyWaiting: { wait: { operation_id: "other", source_kernel_id: "source", target_kernel_id: "target", target_label: "Target", expires_at_ms: Date.now() + 600_000 } } } } as unknown as LocalIpcClient
+  await assert.rejects(copyProviderAccountFromKernel(client, offer, "operation"))
+})
 
 function clientRejecting(error: Error): LocalIpcClient {
   return {
