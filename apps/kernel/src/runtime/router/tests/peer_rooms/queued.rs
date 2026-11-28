@@ -614,6 +614,11 @@ fn receipt_unconfirmed_inline_message_waits_for_local_provider_acceptance() {
             "the message text was included in the wake before acceptance"
         );
         assert_eq!(event.state, "submitting");
+        let promoted = rooms.promote(sent["message_id"].as_str().unwrap()).await;
+        assert_eq!(
+            promoted["status"], "queued",
+            "an in-flight promotion stays unconfirmed: {promoted}"
+        );
         assert_eq!(
             sent["status"], "queued",
             "inline text is not provider acceptance: {sent}"
@@ -651,6 +656,11 @@ fn receipt_unconfirmed_inline_message_keeps_a_lost_local_ack_unconfirmed() {
         let (event, read) = rooms.inline_message_row(sequence).await;
         assert!(read, "the inline wake was prepared");
         assert_eq!(event.state, "uncertain");
+        let promoted = rooms.promote(sent["message_id"].as_str().unwrap()).await;
+        assert_eq!(
+            promoted["status"], "queued",
+            "an in-flight promotion stays unconfirmed: {promoted}"
+        );
         assert_eq!(
             sent["status"], "queued",
             "a lost acknowledgement is unconfirmed: {sent}"
