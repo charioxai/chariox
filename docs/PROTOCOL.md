@@ -3048,6 +3048,22 @@ owner terminal's `end` operation revokes the agent's grant in the kernel's
 durable state. The agent's request vocabulary supports observation and detach.
 The relay carries encrypted messages as it does for other kernel resources.
 
+Local 1016 (additive): while an agent watches, the owner tab also publishes
+`browser`, what its viewer delivers for each Room Browser pane it shows:
+frames/s received, painted (video plus region video), dropped and mirrored
+still updates, the pane's paint mode, input-to-paint (p50/max) for the owner's
+own pointer and key input on that pane, the connection path (`direct`, `relay`,
+`blocked`, `down`, `none`), and the viewer (`owner_tab` or `headless`, and its
+device pixel ratio). The tab counts the viewer's existing display timing
+events; nothing new is measured on the kernel. An agent's `read` with
+`snapshot: true` raises `snapshot_wanted` on the status feed; the owner tab
+answers the newest request with one JPEG of at most 512 KiB, from the pane's
+video canvas (`viewer_canvas`) or the page picture it holds for a mirrored page
+(`document_picture`), with the region videos it presents drawn at their places
+(`region_video`). The read returns the latest picture as an image. The
+vocabulary stays `watch`, `read` and `leave`; any other field or operation is
+refused and logged.
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.

@@ -39,7 +39,11 @@ pub use api::{
     RemoveNotificationSubscriptionRequest, TestNotificationSubscriptionRequest,
     UpdateNotificationSubscriptionRequest,
 };
-pub use api::{OwnerViewRequest, OwnerViewRows, OwnerViewWatcher};
+pub use api::{
+    OwnerViewBrowser, OwnerViewLatency, OwnerViewPane, OwnerViewPaneTotals, OwnerViewPath,
+    OwnerViewRequest, OwnerViewRows, OwnerViewSnapshot, OwnerViewSnapshotSource, OwnerViewViewer,
+    OwnerViewViewerKind, OwnerViewWatcher,
+};
 mod api;
 #[doc(hidden)]
 pub use api::PeerSpawnOrigin;

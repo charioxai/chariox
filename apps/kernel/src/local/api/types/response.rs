@@ -335,6 +335,9 @@ pub enum LocalDaemonResponse {
         generation: String,
         tab_id: Option<String>,
         watchers: Vec<OwnerViewWatcher>,
+        /// Local 1016 (additive): how many pictures the watching agents asked for; the owner tab answers the newest.
+        #[serde(default)]
+        snapshot_wanted: u64,
     },
     PaneFeed {
         feed: PaneFeed,

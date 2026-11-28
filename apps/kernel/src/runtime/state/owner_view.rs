@@ -7,7 +7,10 @@ use serde_json::{json, Value};
 use crate::agent::AgentInstance;
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonResponse, OwnerViewRequest, OwnerViewRows, OwnerViewWatcher};
+use crate::local::{
+    LocalDaemonResponse, OwnerViewBrowser, OwnerViewRequest, OwnerViewRows, OwnerViewSnapshot,
+    OwnerViewWatcher,
+};
 use crate::runtime::command::KernelCommand;
 use crate::session::{unix_epoch_ms, RuntimeSession, DEFAULT_LOCAL_USER_ID};
 use crate::transport::runtime_tools::RuntimeToolResult;
@@ -27,7 +30,15 @@ struct State {
     generation: String,
     tab_id: Option<String>,
     presentation: Option<(u64, OwnerViewRows)>,
+    browser: Option<(u64, OwnerViewBrowser)>,
+    /// Counts the agents' snapshot requests; the owner tab answers the newest one.
+    snapshot_wanted: u64,
+    snapshot: Option<(u64, OwnerViewSnapshot)>,
 }
+
+/// A snapshot is one bounded JPEG (512 KiB once decoded).
+const SNAPSHOT_MAX_BASE64: usize = 512 * 1024 * 4 / 3 + 4;
+const BROWSER_MAX_PANES: usize = 32;
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct OwnerAccount {
@@ -51,6 +62,8 @@ impl State {
         // watching indicator. Old publications cannot cross a membership change.
         self.generation = format!("{:032x}", rand::random::<u128>());
         self.presentation = None;
+        self.browser = None;
+        self.snapshot = None;
         if self.watchers.is_empty() {
             self.tab_id = None;
         }
@@ -61,6 +74,7 @@ impl State {
             generation: self.generation.clone(),
             tab_id: self.tab_id.clone(),
             watchers: self.watchers.values().cloned().collect(),
+            snapshot_wanted: self.snapshot_wanted,
         }
     }
 }
@@ -69,7 +83,10 @@ impl State {
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum ViewerRequest {
     Watch {},
-    Read {},
+    Read {
+        #[serde(default)]
+        snapshot: bool,
+    },
     Leave {},
 }
 
@@ -156,6 +173,8 @@ impl OwnerView {
                 generation,
                 tab_id,
                 rows,
+                browser,
+                snapshot,
             } => {
                 if state.watchers.is_empty() || state.generation != generation {
                     return Err(view_error("owner_view_changed", "The watching agents changed. Read their current status before sharing again."));
@@ -183,7 +202,24 @@ impl OwnerView {
                     }
                     Some(_) => {}
                 }
-                state.presentation = Some((unix_epoch_ms(), rows));
+                if !browser.as_ref().is_none_or(browser_valid)
+                    || !snapshot
+                        .as_ref()
+                        .is_none_or(|snapshot| snapshot_valid(snapshot, state.snapshot_wanted))
+                {
+                    return Err(view_error(
+                        "owner_view_invalid_publication",
+                        "Open the owner Web view again.",
+                    ));
+                }
+                let at = unix_epoch_ms();
+                state.presentation = Some((at, rows));
+                if let Some(browser) = browser {
+                    state.browser = Some((at, browser));
+                }
+                if let Some(snapshot) = snapshot {
+                    state.snapshot = Some((at, snapshot));
+                }
             }
             OwnerViewRequest::End { agent_id } => {
                 store.revoke_owner_view(&owner.realm_id, &owner.user_id, &agent_id)?;
@@ -236,11 +272,16 @@ impl OwnerView {
                     self.changes.record_change();
                 }
             }
-            ViewerRequest::Read {} => {
+            ViewerRequest::Read { snapshot } => {
                 if !state.watchers.contains_key(id) {
                     return Ok(refused(
                         "Start watching the owner Web view before reading it.",
                     ));
+                }
+                if snapshot {
+                    // The owner tab sees the new count on its status feed and sends one picture.
+                    state.snapshot_wanted += 1;
+                    self.changes.record_change();
                 }
             }
             ViewerRequest::Leave {} => {
@@ -254,14 +295,84 @@ impl OwnerView {
                 });
             }
         }
-        let payload = match &state.presentation {
-            Some((at, rows)) => {
-                json!({ "status": "watching", "published_at_ms": at, "rows": rows })
-            }
-            None => json!({ "status": "waiting_for_owner_tab" }),
+        let Some((at, rows)) = &state.presentation else {
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: json!({ "status": "waiting_for_owner_tab" }),
+            });
         };
+        let mut payload = json!({ "status": "watching", "published_at_ms": at, "rows": rows });
+        if let Some((at, browser)) = &state.browser {
+            payload["browser"] = json!(browser);
+            payload["browser"]["measured_at_ms"] = json!(at);
+        }
+        if let ViewerRequest::Read { snapshot: true } = request {
+            payload["snapshot"] = match &state.snapshot {
+                Some((at, snapshot)) => json!({
+                    "status": "latest",
+                    "tab_id": snapshot.tab_id,
+                    "source": snapshot.source,
+                    "captured_at_ms": at,
+                    "note": "The owner tab is sending a newer picture. Read with snapshot again for it.",
+                }),
+                None => json!({
+                    "status": "requested",
+                    "note": "The owner tab is sending a picture. Read with snapshot again in a second.",
+                }),
+            };
+            if let Some((_, snapshot)) = &state.snapshot {
+                payload["mime_type"] = json!("image/jpeg");
+                payload["image_base64"] = json!(snapshot.jpeg_base64);
+            }
+        }
         Ok(RuntimeToolResult { ok: true, payload })
     }
+}
+
+fn browser_valid(browser: &OwnerViewBrowser) -> bool {
+    let rate = |value: f64| value.is_finite() && (0.0..=1000.0).contains(&value);
+    let dpr = browser.viewer.device_pixel_ratio;
+    dpr.is_finite()
+        && dpr > 0.0
+        && dpr <= 16.0
+        && browser.panes.len() <= BROWSER_MAX_PANES
+        && browser.panes.iter().all(|pane| {
+            short_label(&pane.tab_id)
+                && short_label(&pane.mode)
+                && [
+                    pane.received_fps,
+                    pane.painted_fps,
+                    pane.region_painted_fps,
+                    pane.dropped_fps,
+                    pane.still_updates_fps,
+                ]
+                .into_iter()
+                .all(rate)
+                && pane.input_to_paint_ms.as_ref().is_none_or(|latency| {
+                    [latency.p50, latency.max]
+                        .into_iter()
+                        .all(|value| value.is_finite() && (0.0..=600_000.0).contains(&value))
+                })
+        })
+}
+
+fn snapshot_valid(snapshot: &OwnerViewSnapshot, wanted: u64) -> bool {
+    use base64::Engine as _;
+    snapshot.request > 0
+        && snapshot.request <= wanted
+        && short_label(&snapshot.tab_id)
+        && snapshot.jpeg_base64.len() <= SNAPSHOT_MAX_BASE64
+        && base64::engine::general_purpose::STANDARD
+            .decode(&snapshot.jpeg_base64)
+            .is_ok_and(|bytes| bytes.starts_with(&[0xff, 0xd8, 0xff]))
+}
+
+fn short_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn refused(message: &str) -> RuntimeToolResult {
@@ -334,6 +445,8 @@ mod tests {
                     navigator: vec![room.into()],
                     settings: vec!["Appearance".into()],
                 },
+                browser: None,
+                snapshot: None,
             })
         };
         publish(tab_id.clone(), "Room").unwrap();
@@ -359,6 +472,9 @@ mod tests {
                     .ok
             );
         }
+        owner_view_carries_viewer_stats_and_one_snapshot_per_request(
+            &view, &store, &owner, &tab_id,
+        );
         terminal(OwnerViewRequest::End {
             agent_id: "agent".into(),
         })
@@ -379,5 +495,126 @@ mod tests {
                 .unwrap()
                 .ok
         );
+    }
+
+    fn owner_view_carries_viewer_stats_and_one_snapshot_per_request(
+        view: &OwnerView,
+        store: &DurableKernelStateStore,
+        owner: &OwnerAccount,
+        tab_id: &str,
+    ) {
+        use crate::local::{
+            OwnerViewLatency, OwnerViewPane, OwnerViewPaneTotals, OwnerViewPath,
+            OwnerViewSnapshotSource, OwnerViewViewer, OwnerViewViewerKind,
+        };
+        use base64::Engine as _;
+        let read = |arguments: Value| {
+            view.viewer_request(store, owner, "agent", "agent", arguments)
+                .unwrap()
+        };
+        let status = || match view
+            .terminal_request(store, owner, OwnerViewRequest::Status {})
+            .unwrap()
+        {
+            LocalDaemonResponse::OwnerViewStatus {
+                generation,
+                snapshot_wanted,
+                ..
+            } => (generation, snapshot_wanted),
+            _ => panic!("expected status"),
+        };
+        let browser = OwnerViewBrowser {
+            viewer: OwnerViewViewer {
+                kind: OwnerViewViewerKind::Headless,
+                device_pixel_ratio: 2.0,
+            },
+            path: OwnerViewPath::Relay,
+            window_ms: 1000,
+            panes: vec![OwnerViewPane {
+                tab_id: "tab-1".into(),
+                mode: "video".into(),
+                received_fps: 59.5,
+                painted_fps: 58.0,
+                region_painted_fps: 0.0,
+                dropped_fps: 1.5,
+                still_updates_fps: 0.0,
+                input_to_paint_ms: Some(OwnerViewLatency {
+                    p50: 31.0,
+                    max: 48.0,
+                    count: 3,
+                }),
+                totals: OwnerViewPaneTotals {
+                    received: 600,
+                    painted: 580,
+                    dropped: 20,
+                    still_updates: 0,
+                },
+            }],
+        };
+        let jpeg = base64::engine::general_purpose::STANDARD.encode([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+        let snapshot = |request, jpeg_base64: &str| OwnerViewSnapshot {
+            request,
+            tab_id: "tab-1".into(),
+            source: OwnerViewSnapshotSource::ViewerCanvas,
+            jpeg_base64: jpeg_base64.into(),
+        };
+        let publish = |browser: Option<OwnerViewBrowser>, snapshot: Option<OwnerViewSnapshot>| {
+            view.terminal_request(
+                store,
+                owner,
+                OwnerViewRequest::Publish {
+                    generation: status().0,
+                    tab_id: tab_id.into(),
+                    rows: OwnerViewRows {
+                        navigator: vec!["Room".into()],
+                        settings: vec![],
+                    },
+                    browser,
+                    snapshot,
+                },
+            )
+        };
+
+        publish(Some(browser.clone()), None).unwrap();
+        let payload = read(json!({"operation": "read"})).payload;
+        assert_eq!(payload["browser"]["viewer"]["kind"], "headless");
+        assert_eq!(payload["browser"]["path"], "relay");
+        assert_eq!(payload["browser"]["panes"][0]["painted_fps"], 58.0);
+        assert!(payload["browser"]["measured_at_ms"].is_u64());
+        assert!(payload.get("snapshot").is_none() && payload.get("image_base64").is_none());
+
+        // A picture only answers a request, and only a JPEG of bounded size.
+        assert_eq!(status().1, 0);
+        assert!(publish(None, Some(snapshot(1, &jpeg))).is_err());
+        let asked = read(json!({"operation": "read", "snapshot": true})).payload;
+        assert_eq!(asked["snapshot"]["status"], "requested");
+        assert!(asked.get("image_base64").is_none());
+        assert_eq!(status().1, 1);
+        let png = base64::engine::general_purpose::STANDARD.encode([0x89, b'P', b'N', b'G']);
+        assert!(publish(None, Some(snapshot(1, &png))).is_err());
+        let huge = "A".repeat(SNAPSHOT_MAX_BASE64 + 4);
+        assert!(publish(None, Some(snapshot(1, &huge))).is_err());
+        let mut bad = browser.clone();
+        bad.panes[0].painted_fps = f64::NAN;
+        assert!(publish(Some(bad), None).is_err());
+        publish(None, Some(snapshot(1, &jpeg))).unwrap();
+        let shown = read(json!({"operation": "read", "snapshot": true})).payload;
+        assert_eq!(shown["snapshot"]["status"], "latest");
+        assert_eq!(shown["snapshot"]["source"], "viewer_canvas");
+        assert_eq!(shown["mime_type"], "image/jpeg");
+        assert_eq!(shown["image_base64"], jpeg.as_str());
+        // A publication without stats keeps the last stats.
+        assert_eq!(shown["browser"]["panes"][0]["tab_id"], "tab-1");
+
+        // The read vocabulary stays observation only.
+        for frame in [
+            json!({"operation": "read", "snapshot": "yes"}),
+            json!({"operation": "read", "snapshot": true, "click": [10, 10]}),
+            json!({"operation": "type", "text": "hello"}),
+            json!({"operation": "navigate", "url": "https://example.com"}),
+            json!({"operation": "key", "key": "Enter"}),
+        ] {
+            assert!(!read(frame).ok);
+        }
     }
 }
