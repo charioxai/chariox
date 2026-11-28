@@ -248,7 +248,7 @@ pub(crate) async fn execute_provider_account_request(
             .reconcile_provider_account_sign_in_notice(profile)
             .await?;
     }
-    if let Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles }) = &response {
+    if let Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles, .. }) = &response {
         for profile in profiles {
             runtime_state
                 .reconcile_provider_account_sign_in_notice(profile)

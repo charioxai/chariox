@@ -427,6 +427,7 @@ response_policies! {
         ProviderAccountCredentialStored,
         ProviderAccountCopyWaiting,
         ProviderAccountCopied,
+        ProviderAccountCopyWaiting,
         ProviderAccountCopyOffers,
         ProviderAccountPortabilityPreflightPassed,
         SessionProcessesStopped,

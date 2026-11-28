@@ -18,7 +18,7 @@ export type ProviderAccountCopyReceipt = {
   account_profile: string
 }
 
-export const providerAccountCopyMinimumProtocolVersion = 710
+export const providerAccountCopyMinimumProtocolVersion = 1017
 export function listProviderAccountCopyOffersRequest() {
   return { ListProviderAccountCopyOffers: {} }
 }

@@ -286,6 +286,18 @@ fn account_copy_same_kernel_links_share_the_source_credential() {
 }
 
 #[test]
+fn account_copy_repaired_background_failure_retries_the_same_operation() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::RecoverableRetry);
+}
+
+#[test]
+fn account_copy_repaired_relay_failure_rearms_the_same_wait() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::RecoverableRelay);
+}
+
+#[test]
 fn account_copy_verification_allows_unrelated_profile_operations() {
     crate::test_support::isolated_env_test!();
     run_account_copy_drill(CopyScenario::RegistryAccess);
@@ -322,6 +334,8 @@ enum CopyScenario {
     RentedReceiver,
     Recipient,
     Serial,
+    RecoverableRetry,
+    RecoverableRelay,
     RegistryAccess,
     ChangedProfile,
     Bidirectional,
@@ -472,7 +486,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         ));
         let (stop_source, stopped_source) = watch::channel(false);
         let (stop_target, stopped_target) = watch::channel(false);
-        let source_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
+        let mut source_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
             source_router.clone(),
             source_state.clone(),
             stopped_source,
@@ -483,7 +497,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             target_router.clone(),
             target_state.clone(),
             stopped_target,
-            url,
+            url.clone(),
             target.relay_token.clone().unwrap(),
         ));
         wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
@@ -1199,20 +1213,264 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         );
         std::fs::remove_file(root.join("reject")).unwrap();
         crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
-        assert_code(
-            source_request(&source_router, request.clone()).await,
-            "provider_account_copy_target_vault_locked",
-            canary,
+        let waiting = source_request(&source_router, request.clone()).await;
+        assert!(
+            waiting
+                .as_ref()
+                .is_ok_and(|reply| reply.get("ProviderAccountCopyWaiting").is_some()),
+            "a locked receiver must return the account-copy waiting contract: {waiting:?}"
         );
-        crate::secret::unlock_chariox_encrypted_vault(
-            &target_vault,
-            "fixture-pass",
-            crate::secret::VaultUnlockLease::KernelShutdown,
-        )
-        .unwrap();
+        let waiting = waiting.unwrap();
+        let wait = &waiting["ProviderAccountCopyWaiting"]["wait"];
+        assert_eq!(wait["operation_id"], "copy-3");
+        assert_eq!(wait["target_kernel_id"], target.daemon_id);
+        assert_eq!(
+            source_request(&source_router, request.clone())
+                .await
+                .unwrap(),
+            waiting
+        );
+        let notices = |value: serde_json::Value| {
+            value["CredentialVaultStatus"]["copy_unlock_requests"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let read_vault = || {
+            source_request(
+                &target_router,
+                serde_json::json!({"GetCredentialVaultStatus":null}),
+            )
+        };
+        assert_eq!(notices(read_vault().await.unwrap()).len(), 1);
+        let saved_cli = fake.with_extension("saved");
+        if scenario == CopyScenario::RecoverableRetry {
+            std::fs::rename(&fake, &saved_cli).unwrap();
+        }
+        let read_progress = || {
+            source_request(
+                &source_router,
+                serde_json::json!({"ListProviderAccountProfiles":{}}),
+            )
+        };
+        let progress = |value: serde_json::Value, op: &str| {
+            value["ProviderAccountProfilesListed"]["copies"]
+                .as_array()
+                .and_then(|copies| {
+                    copies
+                        .iter()
+                        .find(|copy| {
+                            [
+                                &copy["operation_id"],
+                                &copy["wait"]["operation_id"],
+                                &copy["receipt"]["operation_id"],
+                            ]
+                            .into_iter()
+                            .any(|id| id == op)
+                        })
+                        .cloned()
+                })
+                .unwrap_or_default()
+        };
+        if scenario == CopyScenario::RecoverableRelay {
+            stop_source.send(true).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), &mut source_task)
+                .await
+                .expect("the fixture source connector must disconnect")
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if registry
+                        .read()
+                        .await
+                        .daemon_in_realm("copy-realm", &source.daemon_id)
+                        .is_none()
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the source peer must leave the relay");
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-3");
+                    if copy["status"] == "failed" {
+                        assert_eq!(copy["code"], "provider_account_copy_unavailable");
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("the waiting copy must report its disconnected relay");
+            stop_source.send_replace(false);
+            source_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
+                source_router.clone(),
+                source_state.clone(),
+                stop_source.subscribe(),
+                url.clone(),
+                source.relay_token.clone().unwrap(),
+            ));
+            wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if source_state.read().await.connected() {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the source must acknowledge its repaired relay connection");
+            let resumed = source_request(&source_router, request.clone())
+                .await
+                .expect("repair must let the SAME operation resume its original unlock wait");
+            assert_eq!(resumed, waiting, "retry must preserve the original expiry");
+            assert_eq!(notices(read_vault().await.unwrap()).len(), 1);
+        }
+        source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
+            "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
+        }})).await.unwrap();
+        if scenario == CopyScenario::RecoverableRetry {
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-3");
+                    if copy["status"] == "failed" {
+                        assert_eq!(copy["code"], "provider_account_copy_cli_missing");
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("the resumed copy must report the missing receiving CLI");
+            let mut changed = request.clone();
+            changed["CopyProviderAccountToKernel"]["replace"] = false.into();
+            assert_code(
+                source_request(&source_router, changed).await,
+                "provider_account_copy_conflict",
+                canary,
+            );
+            std::fs::rename(&saved_cli, &fake).unwrap();
+            let (first, second) = tokio::join!(
+                source_request(&source_router, request.clone()),
+                source_request(&source_router, request.clone())
+            );
+            let installed = first
+                .expect("repair must let the SAME operation retry reach the receiving kernel");
+            assert_eq!(
+                second.expect("a concurrent identical retry must settle the same operation"),
+                installed
+            );
+            let receipt = &installed["ProviderAccountCopied"]["receipt"];
+            assert_eq!(receipt["operation_id"], "copy-3");
+            assert_eq!(receipt["account_profile"], target_id);
+            let settled = progress(read_progress().await.unwrap(), "copy-3");
+            assert_eq!(settled["status"], "installed");
+            assert_eq!(settled["receipt"], *receipt);
+            assert_eq!(
+                source_request(&source_router, request.clone()).await.unwrap(),
+                installed,
+                "an installed retry must replay the same receipt"
+            );
+        } else {
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-3");
+                    if copy["status"] == "installed" {
+                        assert_eq!(copy["receipt"]["account_profile"], target_id);
+                        break;
+                    }
+                    assert_ne!(copy["status"], "failed", "{copy}");
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("source must resume the copy after target unlock");
+        }
+        assert!(notices(read_vault().await.unwrap()).is_empty());
         assert!(source_request(&source_router, request.clone())
             .await
-            .is_ok());
+            .unwrap()
+            .get("ProviderAccountCopied")
+            .is_some());
+
+        if matches!(
+            scenario,
+            CopyScenario::Serial | CopyScenario::RecoverableRetry | CopyScenario::RecoverableRelay
+        ) {
+            let mut cancel_copy = request.clone();
+            cancel_copy["CopyProviderAccountToKernel"]["operation_id"] = "copy-cancelled".into();
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            assert!(source_request(&source_router, cancel_copy.clone())
+                .await
+                .unwrap()
+                .get("ProviderAccountCopyWaiting")
+                .is_some());
+            let notice = notices(read_vault().await.unwrap())
+                .pop()
+                .expect("target has an unlock request");
+            source_request(
+                &target_router,
+                serde_json::json!({"AnswerUserDomainInteraction":{
+                    "interaction_id": notice["interaction_id"], "choice_id":"cancel"
+                }}),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-cancelled");
+                    if copy["status"] == "failed" {
+                        assert_eq!(copy["code"], "provider_account_copy_cancelled");
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("target cancel must stop the source retry");
+            assert!(notices(read_vault().await.unwrap()).is_empty());
+            assert_code(
+                source_request(&source_router, cancel_copy.clone()).await,
+                "provider_account_copy_cancelled",
+                canary,
+            );
+            source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
+                "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
+            }})).await.unwrap();
+            if matches!(
+                scenario,
+                CopyScenario::RecoverableRetry | CopyScenario::RecoverableRelay
+            ) {
+                let (observer, mut observations) = tokio::sync::mpsc::unbounded_channel();
+                target_state
+                    .write()
+                    .await
+                    .test_set_authenticated_peer_request_observer(observer);
+                let retry = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    source_request(&source_router, cancel_copy),
+                )
+                .await
+                .expect("a cancelled copy must settle without contacting the target again");
+                target_state
+                    .write()
+                    .await
+                    .test_clear_authenticated_peer_request_observer();
+                assert_code(retry, "provider_account_copy_cancelled", canary);
+                assert!(
+                    matches!(
+                        observations.try_recv(),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                            | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+                    ),
+                    "unlocking after cancellation must not send another copy"
+                );
+            }
+        }
         // Target admission also sees authenticated wrong-owner/realm and forged binding cases.
         let base_binding = serde_json::json!({
             "operation_id":"direct-peer", "provider":"claude", "source_profile_id":profile.profile_id,

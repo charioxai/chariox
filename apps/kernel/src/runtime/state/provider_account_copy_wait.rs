@@ -42,6 +42,16 @@ struct Outgoing {
     progress: ProviderAccountCopyProgress,
 }
 
+fn retryable_failure(code: &str) -> bool {
+    matches!(
+        super::provider_account_copy_offer::copy_peer_failure(code),
+        DaemonError::ProviderAccountCopy {
+            retryable: true,
+            ..
+        }
+    )
+}
+
 impl KernelRuntimeState {
     pub(crate) fn account_copy_unlock_requests(
         &self,
@@ -90,7 +100,7 @@ impl KernelRuntimeState {
             .lock()
             .expect("copy waits poisoned");
         copies.retain(|_, copy| copy.remove_at > Timer::now());
-        let Some(copy) = copies.get(&binding.operation_id) else {
+        let Some(copy) = copies.get_mut(&binding.operation_id) else {
             return Ok(None);
         };
         if copy.owner != owner || &copy.binding != binding {
@@ -104,9 +114,63 @@ impl KernelRuntimeState {
                 Ok(Some(ProviderAccountCopyOutcome::Installed(receipt.clone())))
             }
             ProviderAccountCopyProgress::Failed { code, .. } => {
-                Err(super::provider_account_copy_offer::copy_peer_failure(code))
+                if !retryable_failure(code) {
+                    return Err(super::provider_account_copy_offer::copy_peer_failure(code));
+                }
+                if Timer::now() >= copy.remove_at - COPY_UNLOCK_WAIT {
+                    copy.progress = ProviderAccountCopyProgress::Failed {
+                        operation_id: binding.operation_id.clone(),
+                        code: "provider_account_copy_cancelled".into(),
+                    };
+                    drop(copies);
+                    self.notify_account_copy_progress();
+                    return Err(failure("provider_account_copy_cancelled"));
+                }
+                // Keep the binding reserved while an explicit retry contacts the peer.
+                Ok(None)
             }
         }
+    }
+
+    pub(super) fn remember_account_copy_retry(
+        &self,
+        owner: &str,
+        binding: &ProviderAccountCopyBinding,
+        result: &Result<ProviderAccountCopyOutcome, DaemonError>,
+    ) {
+        let progress = match result {
+            Ok(ProviderAccountCopyOutcome::Installed(receipt)) => {
+                ProviderAccountCopyProgress::Installed {
+                    receipt: receipt.clone(),
+                }
+            }
+            Err(DaemonError::ProviderAccountCopy { code, .. }) => {
+                ProviderAccountCopyProgress::Failed {
+                    operation_id: binding.operation_id.clone(),
+                    code: (*code).into(),
+                }
+            }
+            _ => return,
+        };
+        {
+            let mut copies = self
+                .account_copy_waits
+                .outgoing
+                .lock()
+                .expect("copy waits poisoned");
+            let Some(copy) = copies.get_mut(&binding.operation_id) else {
+                return;
+            };
+            if copy.owner != owner || &copy.binding != binding {
+                return;
+            }
+            if !matches!(&copy.progress, ProviderAccountCopyProgress::Failed { code, .. } if retryable_failure(code))
+            {
+                return;
+            }
+            copy.progress = progress;
+        }
+        self.notify_account_copy_progress();
     }
 
     pub(super) fn wait_for_account_copy<F, Fut>(
@@ -115,32 +179,58 @@ impl KernelRuntimeState {
         binding: ProviderAccountCopyBinding,
         wait: ProviderAccountCopyWait,
         mut retry: F,
-    ) where
+    ) -> Result<ProviderAccountCopyOutcome, DaemonError>
+    where
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<RelayPeerResponse, DaemonError>> + Send,
     {
         let remaining = wait
             .expires_at_ms
             .saturating_sub(crate::session::unix_epoch_ms());
-        let deadline = Timer::now() + Duration::from_millis(remaining).min(COPY_UNLOCK_WAIT);
+        let mut deadline = Timer::now() + Duration::from_millis(remaining).min(COPY_UNLOCK_WAIT);
         {
             let mut copies = self
                 .account_copy_waits
                 .outgoing
                 .lock()
                 .expect("copy waits poisoned");
-            if copies.contains_key(&binding.operation_id) {
-                return;
+            if let Some(copy) = copies.get_mut(&binding.operation_id) {
+                if copy.owner != owner || copy.binding != binding {
+                    return Err(failure("provider_account_copy_conflict"));
+                }
+                match &copy.progress {
+                    ProviderAccountCopyProgress::WaitingForUnlock { wait } => {
+                        return Ok(ProviderAccountCopyOutcome::Waiting(wait.clone()));
+                    }
+                    ProviderAccountCopyProgress::Installed { receipt } => {
+                        return Ok(ProviderAccountCopyOutcome::Installed(receipt.clone()));
+                    }
+                    ProviderAccountCopyProgress::Failed { code, .. }
+                        if !retryable_failure(code) =>
+                    {
+                        return Err(super::provider_account_copy_offer::copy_peer_failure(code));
+                    }
+                    ProviderAccountCopyProgress::Failed { .. } => {}
+                }
+                deadline = deadline.min(copy.remove_at - COPY_UNLOCK_WAIT);
+                if Timer::now() >= deadline {
+                    return Err(failure("provider_account_copy_cancelled"));
+                }
+                copy.progress =
+                    ProviderAccountCopyProgress::WaitingForUnlock { wait: wait.clone() };
+            } else {
+                copies.insert(
+                    binding.operation_id.clone(),
+                    Outgoing {
+                        owner,
+                        binding: binding.clone(),
+                        remove_at: deadline + COPY_UNLOCK_WAIT,
+                        progress: ProviderAccountCopyProgress::WaitingForUnlock {
+                            wait: wait.clone(),
+                        },
+                    },
+                );
             }
-            copies.insert(
-                binding.operation_id.clone(),
-                Outgoing {
-                    owner,
-                    binding: binding.clone(),
-                    remove_at: deadline + COPY_UNLOCK_WAIT,
-                    progress: ProviderAccountCopyProgress::WaitingForUnlock { wait },
-                },
-            );
         }
         let state = self.clone();
         tokio::spawn(async move {
@@ -189,6 +279,7 @@ impl KernelRuntimeState {
             }
             state.notify_account_copy_progress();
         });
+        Ok(ProviderAccountCopyOutcome::Waiting(wait))
     }
 
     pub(super) fn notify_account_copy_progress(&self) {
@@ -244,6 +335,7 @@ impl KernelRuntimeState {
         let mut unlocks = super::vault_unlock_requests::vault_unlock_notifications(path);
         let answer = self
             .create_kernel_operation_interaction(
+                super::CardKind::VaultCredentialPayment,
                 "",
                 owner,
                 RuntimeInteraction::for_kernel_operation(

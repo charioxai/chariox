@@ -751,7 +751,7 @@ impl CommandRouter {
                 boxed_handler(|| async move {
                     let caller = command_caller_user_id(&command);
                     self.runtime_state
-                        .copy_provider_account_to_kernel(&caller, request)
+                        .begin_provider_account_copy_to_kernel(&caller, request)
                         .await
                         .map(
                             crate::provider_account_copy::ProviderAccountCopyOutcome::into_response,
