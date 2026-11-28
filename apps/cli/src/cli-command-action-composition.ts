@@ -633,10 +633,16 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       const source = (client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client
       const operations = copyOperations.get(source) ?? new Map<string, string>()
       copyOperations.set(source, operations)
-      const key = JSON.stringify([offer.target_kernel_id, offer.source_kernel_id, offer.source_key_thumbprint, offer.account_profile])
+      const key = JSON.stringify([offer.target_kernel_id, offer.source_kernel_id, offer.source_key_thumbprint, offer.provider, offer.account_profile])
       const operation = operations.get(key) ?? `account-copy-${randomUUID()}`
       operations.set(key, operation)
-      return copyProviderAccountFromKernel(source, offer, operation).then(receipt => { operations.delete(key); return receipt })
+      return copyProviderAccountFromKernel(source, offer, operation).then(receipt => {
+        if ("account_profile" in receipt) operations.delete(key)
+        return receipt
+      }, error => {
+        if (error !== null && typeof error === "object" && "code" in error && error.code === "provider_account_copy_cancelled") operations.delete(key)
+        throw error
+      })
     },
     ...(deps.confirmProcessStop ? { confirmProcessStop: deps.confirmProcessStop } : {}),
     stopSessionProcesses: async target => {

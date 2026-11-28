@@ -880,8 +880,7 @@ test("a waiting login copy never selects a profile or claims installation", asyn
   const deps: ProviderCommandHandlerDeps = {
     currentProviderId: () => "claude", flashFooter() {}, appendNotice: value => notices.push(value),
     listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
-    // The kernel already returns Wait; the pre-fix dependency type accepts only receipts.
-    copyProviderAccountFromKernel: async () => wait as never,
+    copyProviderAccountFromKernel: async () => wait,
     getRelayStatus: async () => ({ daemon_id: "b" }),
     refreshWaitingRoomInventory: async () => { refreshes++ },
     applyAccountSelection: async profile => { selected.push(profile) },
