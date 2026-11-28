@@ -55,15 +55,15 @@ async fn leased_prompt_is_rejected_before_launch_when_the_account_needs_sign_in(
         .relay_submit_leased_prompt(
             &leased.id,
             profile,
+            None,
             "try once more",
             "",
             Vec::new(),
             None,
             Some(context),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
-            None,
+            crate::transport::relay_peer::LeasedNativeSkills::default(),
         )
         .await
         .expect_err("an unauthenticated worker account must refuse the prompt");
@@ -76,13 +76,13 @@ async fn leased_prompt_is_rejected_before_launch_when_the_account_needs_sign_in(
         .worker_prompt_receipts
         .get(&leased.id, "home-prompt-1")
         .expect("the refused admission is recorded");
-    assert_eq!(receipt.receipt.phase, WorkerPromptReceiptPhase::Rejected);
-    let reason = receipt
-        .receipt
-        .rejection_reason
-        .as_deref()
-        .expect("the refusal reason travels with the receipt");
-    assert!(reason.contains("is not authenticated"), "{reason}");
+    assert_eq!(
+        receipt.receipt.phase,
+        WorkerPromptReceiptPhase::Rejected(
+            crate::transport::relay_peer::LeasedPromptRejection::AccountUnusable
+        ),
+        "the account refusal reason travels with the receipt"
+    );
     assert!(app
         .providers()
         .get_run_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
@@ -121,13 +121,13 @@ async fn unobserved_claude_replica_is_admitted_but_a_signed_out_one_is_refused()
         )
         .unwrap();
     RemoteLeaseRuntime::new(&mut app)
-        .require_leased_agent_authenticated(&leased.id)
+        .require_leased_prompt_account(&leased.id)
         .expect("an unobserved Claude replica waits for the home's launch credential");
     app.provider_account_profile_registry()
-        .mark_needs_sign_in(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
+        .mark_logged_out(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
         .unwrap();
     let error = RemoteLeaseRuntime::new(&mut app)
-        .require_leased_agent_authenticated(&leased.id)
+        .require_leased_prompt_account(&leased.id)
         .expect_err("a Claude replica that needs sign-in refuses the prompt");
     assert!(
         error.to_string().contains("is not authenticated"),

@@ -39,6 +39,7 @@ async fn copied_provider_logout_does_not_revoke_source_login() {
     let request = LocalDaemonRequest::LogoutProvider(crate::local::LogoutProviderRequest {
         provider: "codex".into(),
         account_profile: profile.profile_id.clone(),
+        end_everywhere: false,
     });
     let command = KernelCommand::from_local_request("logout", None, None, &request);
     let response = router.dispatch(command, request).await.unwrap();
@@ -107,6 +108,7 @@ async fn copied_provider_logout_removes_the_transferred_vault_login() {
     let request = LocalDaemonRequest::LogoutProvider(crate::local::LogoutProviderRequest {
         provider: "claude".into(),
         account_profile: profile.profile_id.clone(),
+        end_everywhere: false,
     });
     let command = KernelCommand::from_local_request("logout", None, None, &request);
     let response = router.dispatch(command, request).await.unwrap();

@@ -1185,6 +1185,7 @@ pub(crate) async fn execute_logout_provider_request(
             LocalDaemonResponse::ProviderLoggedOut {
                 provider: profile.provider.clone(),
                 account_profile: profile.profile_id.clone(),
+                local_only: true,
             }
         } else {
             logout_provider_response(&registry, &owner_user_id, request)?

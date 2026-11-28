@@ -396,8 +396,11 @@ impl RefusedPrimary {
     /// The dispatch that starts turn B once turn A has settled, run to its end.
     async fn dispatch_then_expect_the_substitute(
         &self,
-        dispatch: crate::app::KernelPromptDispatch,
+        dispatch: crate::runtime::state::owned::NextPromptDispatch,
     ) {
+        let crate::runtime::state::owned::NextPromptDispatch::Submit(dispatch) = dispatch else {
+            panic!("the queued turn must be submitted, not settled as a failed dispatch");
+        };
         self.runtime
             .enqueue_prompt_dispatch_after_liveness(&dispatch, &self.runtime.owned)
             .await
