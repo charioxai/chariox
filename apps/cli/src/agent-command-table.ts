@@ -75,7 +75,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     summary: "acquire a machine of CLASS (and REGION when the class is offered in several); prints the allocation with its state. Reuse --request-id to retry after a lost answer or a refusal: it returns the machine the first try got and never acquires twice; use a new one only when the answer says the old one was closed. When the person asked to approve agent acquisitions, their card is raised and this waits for the answer",
     note: "Charges continue until the machine is deleted: run machine release when finished.",
   },
-  { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "the allocation's state and its verified kernel target; release it before it is no longer needed to stop charges" },
+  { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["[ALLOCATION_REF]"], summary: "the allocation's state and its verified kernel target; without ALLOCATION_REF, every live allocation of the owner (class, region, state, created, hard stop); release what is no longer needed to stop charges" },
   { name: "machine release", brief: "Release an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "delete an acquired machine; read machine status until its state is deleted" },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
@@ -277,7 +277,8 @@ export function parseArguments(command: string, argv: readonly string[]): { flag
     if (values.has(flag.name)) throw new CommandFailure("usage", usage(spec))
     values.set(flag.name, value)
   }
-  if (positionals.length !== (spec.args?.length ?? 0)) throw new CommandFailure("usage", usage(spec))
+  const required = spec.args?.filter(arg => !arg.startsWith("[")).length ?? 0
+  if (positionals.length < required || positionals.length > (spec.args?.length ?? 0)) throw new CommandFailure("usage", usage(spec))
   return { flags: values, repeated, positionals }
 }
 

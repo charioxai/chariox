@@ -59,7 +59,7 @@ test("the parser accepts every flag the table lists and refuses anything else", 
     }
     assert.throws(() => parseArguments(spec.name, [...positionals, "--passkey", "never"]), (error: unknown) => error instanceof CommandFailure && error.code === "usage")
     assert.throws(() => parseArguments(spec.name, [...positionals, "stray"]), CommandFailure)
-    if (positionals.length > 0) assert.throws(() => parseArguments(spec.name, positionals.slice(1)), CommandFailure, "a missing argument is a usage error")
+    if ((spec.args ?? []).some(name => !name.startsWith("["))) assert.throws(() => parseArguments(spec.name, positionals.slice(1)), CommandFailure, "a missing argument is a usage error")
   }
 })
 

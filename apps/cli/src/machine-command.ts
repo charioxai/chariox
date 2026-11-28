@@ -63,7 +63,7 @@ async function acquire(argv: string[]): Promise<void> {
 
 async function status(argv: string[]): Promise<void> {
   const { flags, positionals: [allocationRef] } = parseArguments("machine status", argv)
-  await acquisition(flags, REQUEST_SECONDS, { action: "status", allocation_ref: allocationRef })
+  await acquisition(flags, REQUEST_SECONDS, { action: "status", ...(allocationRef === undefined ? {} : { allocation_ref: allocationRef }) })
 }
 
 async function release(argv: string[]): Promise<void> {

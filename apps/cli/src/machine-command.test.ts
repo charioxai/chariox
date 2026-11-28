@@ -91,3 +91,10 @@ test("machine needs a known verb and a class", async () => {
   assert.equal(noClass.exit, 2)
   assert.deepEqual(noClass.requests, [])
 })
+
+test("machine status without an allocation ref asks for the owner's allocations with no allocation_ref and prints them", async () => {
+  const listed = { kind: "machines", machines: [{ allocation_ref: "alloc-1", name: "Cloud 1", state: "ready", revision: 1, since: "2026-11-26T00:00:00Z", kernel_id: null, machine_id: null, available_actions: ["delete"], class_id: "agent-small", region: "fsn1", created_at: "2026-11-26T00:00:00Z" }], saved_states: [] }
+  const result = await run(["machine", "status"], answer(listed))
+  assert.deepEqual(result.requests, [{ MachineAcquisition: { action: "status" } }])
+  assert.equal(JSON.parse(result.out).machines[0].class_id, "agent-small")
+})

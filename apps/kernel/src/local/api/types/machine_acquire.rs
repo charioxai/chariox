@@ -23,8 +23,10 @@ pub enum MachineAcquisitionRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
     },
+    /// One allocation's state; without `allocation_ref`, every allocation of the owner that is not deleted.
     Status {
-        allocation_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allocation_ref: Option<String>,
     },
     Release {
         allocation_ref: String,
