@@ -351,7 +351,6 @@ pub enum LocalDaemonRequest {
     RunSessionProcessRemotely(RunSessionProcessRemotelyRequest),
     ListProviderProcesses(ListProviderProcessesRequest),
     TeardownProviderProcesses(TeardownProviderProcessesRequest),
-    GetSessionUsage(GetSessionUsageRequest),
     GetSessionHistoryOutline(GetSessionHistoryOutlineRequest),
     GetSessionHistoryBlobContent(GetSessionHistoryBlobContentRequest),
     GetSessionHistoryBlobContents(GetSessionHistoryBlobContentsRequest),

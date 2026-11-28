@@ -288,8 +288,6 @@ fn token_usage_notification_is_projected() {
             turn_id: "turn-1".to_string(),
             counters: None,
             usage: ProviderRunTokenUsage {
-                accounting: None,
-                turn_accounting: None,
                 total_tokens: Some(42_100),
                 last_tokens: Some(8_900),
                 context_tokens: Some(8_900),
@@ -311,8 +309,6 @@ fn token_usage_notification_is_projected() {
     assert_eq!(
         resolved_usage,
         Some(ProviderRunTokenUsage {
-            accounting: None,
-            turn_accounting: None,
             total_tokens: Some(42_100),
             last_tokens: Some(8_900),
             context_tokens: Some(8_900),

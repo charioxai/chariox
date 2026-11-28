@@ -900,8 +900,7 @@ impl CommandRouter {
                 )
                 .await
             }),
-            request @ (LocalDaemonRequest::GetSessionUsage(_)
-            | LocalDaemonRequest::GetSessionHistoryOutline(_)
+            request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
             | LocalDaemonRequest::PeekAgentTranscript(_)

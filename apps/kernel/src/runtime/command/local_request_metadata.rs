@@ -554,9 +554,6 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
-        LocalDaemonRequest::GetSessionUsage(request) => {
-            LocalRequestMetadata::new("session.usage", Background).session(&request.session_id)
-        }
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
             LocalRequestMetadata::new("session.history.outline", Background)
                 .session(&request.session_id)
@@ -1293,7 +1290,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
-        | LocalDaemonRequest::GetSessionUsage(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContents(_)

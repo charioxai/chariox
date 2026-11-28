@@ -110,15 +110,6 @@ pub(crate) async fn execute_history_request(
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
-        LocalDaemonRequest::GetSessionUsage(request) => {
-            runtime_state.session_snapshot(&request.session_id).await?;
-            Ok(LocalDaemonResponse::SessionUsage {
-                report: crate::usage_accounting::report::load(
-                    &operational_history_store,
-                    &request.session_id,
-                )?,
-            })
-        }
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
             // MP-08 / MP-10: new attachments are registered before this read.
             // Fence earlier asynchronous publication; subsequent live rows are
