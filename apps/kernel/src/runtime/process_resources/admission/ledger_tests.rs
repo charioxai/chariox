@@ -2257,14 +2257,15 @@ fn unplaced_writer_rate_excludes_observed_stdout_growth() {
         assert_eq!(unplaced.len(), 1);
         assert_eq!(unplaced[0].rate, 300 * MIB);
         assert_eq!(unplaced[0].volume, 1);
-        // A closed stream's earlier bytes stay credited for this window.
+        // Preserve the known residual, but do not count the closing
+        // interval's unmeasured final writes as unplaced.
         {
             let mut observation = current.lock().unwrap();
             observation.samples = vec![write_sample(1, 3500)];
             observation.commands[0].writes = 2500 * MIB;
             observation.disk_writes.remove(&1);
         }
-        assert_eq!(unplaced_writers(members, &watched)[0].rate, 440 * MIB);
+        assert_eq!(unplaced_writers(members, &watched)[0].rate, 240 * MIB);
         // A protection/settling gap supplies no current delta. Nor may
         // the residual exceed what the sampler says the command writes now.
         {
@@ -2454,6 +2455,36 @@ fn r3_stable_stdout_and_rotating_stderr_do_not_erase_a_generators_valid_residual
     assert!(
         stopped,
         "stderr rotation erased the sustained scratch filler's valid write deltas"
+    );
+}
+
+#[test]
+fn later_stream_growth_corrects_an_earlier_apparent_residual_in_the_same_window() {
+    let (logger, mut usage, mut log) = stream_writer(1, 2, 500 * MIB);
+    usage.writes = 0;
+    log.written = 0;
+    log.rate = 0;
+    let current = owner("agent", true, vec![usage], vec![(1, logger)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
+    let members = std::slice::from_ref(&current);
+    for (at, written, streamed) in [
+        (1000, 0, 0),
+        (2000, 1000 * MIB, 0),
+        (3000, 1000 * MIB, 1000 * MIB),
+    ] {
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            observation.disk_writes.get_mut(&1).unwrap()[0].written = streamed;
+        }
+        // Advance the measurements before inspecting the complete window.
+        drop(unplaced_writers(members, &watched));
+    }
+    assert!(
+        unplaced_writers(members, &watched).is_empty(),
+        "all command bytes were accounted for by the stable stream"
     );
 }
 

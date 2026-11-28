@@ -1957,6 +1957,8 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
 struct StreamWrites {
     process_id: String,
     outputs: BTreeMap<u64, (BTreeSet<u64>, u64)>,
+    previous: Option<(u64, u64)>,
+    /// Command and stream bytes from intervals with measurable destinations.
     samples: VecDeque<(u64, u64, u64)>,
 }
 
@@ -1973,49 +1975,49 @@ impl StreamWrites {
                 ..Self::default()
             };
         }
-        if !outputs.is_empty() {
-            let observed = outputs
-                .iter()
-                .map(|output| (output.id, (output.open.clone(), output.written)))
-                .collect::<BTreeMap<_, _>>();
-            let continuous = observed.len() == self.outputs.len()
-                && observed.iter().all(|(id, (open, written))| {
-                    self.outputs.get(id).is_some_and(|(before_open, before)| {
-                        open == before_open && written >= before
-                    })
-                });
-            if !continuous {
-                // A new or rebaselined descriptor supplies no aligned delta yet.
-                self.samples.clear();
-            }
-            self.outputs = observed;
-        }
-        // If the streams close, retain their last count: those bytes still
-        // belong to them until they leave the measurement window.
-        let streamed = self
-            .outputs
-            .values()
-            .fold(0u64, |sum, (_, written)| sum.saturating_add(*written));
         let at = sample.sampled_at_ms;
         let window = FREE_WINDOW.as_millis() as u64;
-        if self
-            .samples
-            .back()
-            .is_some_and(|&(before_at, before, stream)| {
-                at < before_at
-                    || at.saturating_sub(before_at) > window
-                    || writes < before
-                    || (at == before_at && (writes != before || streamed != stream))
-            })
-        {
+        if self.previous.is_some_and(|(before_at, before)| {
+            at < before_at || at.saturating_sub(before_at) > window || writes < before
+        }) {
+            self.previous = None;
             self.samples.clear();
         }
+        let observed = outputs
+            .iter()
+            .map(|output| (output.id, (output.open.clone(), output.written)))
+            .collect::<BTreeMap<_, _>>();
+        let continuous = observed.len() == self.outputs.len()
+            && observed.iter().all(|(id, (open, written))| {
+                self.outputs
+                    .get(id)
+                    .is_some_and(|(before_open, before)| open == before_open && written >= before)
+            });
+        let (mut known_writes, mut known_streamed) = self
+            .samples
+            .back()
+            .map_or((0, 0), |&(_, command, stream)| (command, stream));
+        if let Some((_, before)) = self
+            .previous
+            .filter(|(before_at, _)| continuous && at > *before_at)
+        {
+            known_writes = known_writes.saturating_add(writes - before);
+            let streamed = observed.iter().fold(0u64, |sum, (id, (_, written))| {
+                sum.saturating_add(written - self.outputs[id].1)
+            });
+            known_streamed = known_streamed.saturating_add(streamed);
+        }
+        // A changed or closed stream may have received this interval's
+        // final writes after its last sighting. Exclude that interval,
+        // not the earlier deltas that stayed measurable.
+        self.outputs = observed;
+        self.previous = Some((at, writes));
         if self
             .samples
             .back()
             .is_none_or(|&(before_at, _, _)| at > before_at)
         {
-            self.samples.push_back((at, writes, streamed));
+            self.samples.push_back((at, known_writes, known_streamed));
         }
         // Match the command sampler: keep one point at or before the start,
         // and count a young command's time before its baseline as idle.
@@ -2028,9 +2030,11 @@ impl StreamWrites {
             self.samples.pop_front();
         }
         let &(from, before, stream_before) = self.samples.front().unwrap();
-        let unplaced = writes
+        // Subtract after summing the whole window: later observed growth
+        // can correct an earlier apparent residual on the same stream.
+        let unplaced = known_writes
             .saturating_sub(before)
-            .saturating_sub(streamed.saturating_sub(stream_before));
+            .saturating_sub(known_streamed.saturating_sub(stream_before));
         unplaced.saturating_mul(1000) / at.saturating_sub(from).max(window)
     }
 }
