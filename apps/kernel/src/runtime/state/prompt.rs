@@ -637,6 +637,7 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
             && provider_run.turn_substitute().is_none()
+            && !self.run_refused_for_substitute(&target_agent, &provider_run)
             && started_next.inbox_wakes().is_empty()
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(

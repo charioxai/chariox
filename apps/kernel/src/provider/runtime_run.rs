@@ -578,6 +578,25 @@ impl RuntimeProviderRun {
         self.settings_stale = true;
     }
 
+    /// Owner admission may replace a draft id before the first dispatch.
+    pub(crate) fn bind_turn_substitute_to_admitted_prompt(
+        &mut self,
+        requested_prompt_id: &str,
+        admitted_prompt_id: &str,
+    ) -> Result<bool, crate::error::DaemonError> {
+        let Some(turn) = self.turn_substitute.as_mut() else {
+            return Ok(false);
+        };
+        if turn.prompt_id != requested_prompt_id {
+            return Err(crate::error::DaemonError::InternalInvariant {
+                operation: "bind admitted substitute turn",
+                message: "The substitute turn does not match the prompt admission".into(),
+            });
+        }
+        turn.prompt_id = admitted_prompt_id.to_string();
+        Ok(true)
+    }
+
     pub(crate) fn turn_substitute(&self) -> Option<&super::TurnSubstitute> {
         self.turn_substitute.as_ref()
     }

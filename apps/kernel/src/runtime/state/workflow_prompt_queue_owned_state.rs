@@ -1214,30 +1214,64 @@ impl KernelRuntimeOwnedState {
             .cloned())
     }
 
-    /// Shows why a retried gated entry waits; the retry itself stays with the
-    /// durable entry intent.
-    fn workflow_hold_refused_entry(
+    /// Shows why a retried entry waits, on which account and until when; the
+    /// retry itself stays with the durable entry intent. The Room hears of it
+    /// once, when the wait first holds or changes, not on every retry.
+    pub(super) fn workflow_hold_refused_entry(
         &self,
         session_id: &str,
-        workflow_run: &crate::session::WorkflowRun,
+        workflow_run_id: &str,
+        node_run_id: &str,
+        agent_id: &str,
         reason: crate::session::WorkflowNodeWaitingReason,
-    ) {
-        let Some(node_run) = workflow_run.node_runs().first() else {
-            return;
+        account_name: &str,
+    ) -> bool {
+        let wait = crate::session::WorkflowNodeWait {
+            reason,
+            account: Some(account_name.to_string()),
+            resets_at_ms: self.entry_wait_resets_at_ms(agent_id),
         };
         let held = self.session_store.write().hold_workflow_node_run(
             session_id,
-            workflow_run.id(),
-            node_run.id(),
-            reason,
+            workflow_run_id,
+            node_run_id,
+            wait.clone(),
         );
-        if matches!(held, Ok(true))
-            && self
-                .persist_workflow_runtime_session(session_id, "workflow_entry_waiting")
-                .is_err()
+        if !matches!(held, Ok(true)) {
+            return false;
+        }
+        let until = wait
+            .resets_at_ms
+            .map(|at_ms| format!(" until {}", crate::substitute_admission::reset_label(at_ms)))
+            .unwrap_or_default();
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!(
+                "Waiting: no account can run agent `{agent_id}`{until}; the run starts by itself when one can."
+            ),
+        );
+        if self
+            .persist_workflow_runtime_session(session_id, "workflow_entry_waiting")
+            .is_err()
         {
             let _ = self.durable_state_store.fence_writer();
         }
+        true
+    }
+
+    fn entry_wait_resets_at_ms(&self, agent_id: &str) -> Option<u64> {
+        let agent = self.agent_store.get_agent(agent_id).ok()?;
+        let config = self.config_projection.snapshot();
+        crate::substitute_admission::earliest_reset_ms(
+            &self.provider_account_profiles,
+            &config,
+            agent.owner_user_id(),
+            &agent,
+            crate::session::unix_epoch_ms(),
+        )
     }
 
     pub(super) fn workflow_schedule_queued_prompt_run(
@@ -1269,22 +1303,35 @@ impl KernelRuntimeOwnedState {
         {
             Ok(dispatches) => dispatches,
             Err(error) => {
-                let refused = queued_prompt.gate_entry_id().and_then(|entry| {
-                    refused_gated_entry(
-                        &error,
+                let refused = refused_entry(
+                    &error,
+                    queued_prompt.gate_entry_id().and_then(|entry| {
                         self.durable_state_store
                             .gate_entry_deadline(entry)
                             .ok()
-                            .flatten(),
-                        crate::session::unix_epoch_ms(),
-                    )
-                });
+                            .flatten()
+                    }),
+                    crate::session::unix_epoch_ms(),
+                );
                 if valid_agents
-                    && refused != Some(RefusedGatedEntry::Expired)
+                    && refused != Some(RefusedEntry::Expired)
                     && self.workflow_preserve_entry_after_failure(session_id, workflow_run.id())
                 {
-                    if let Some(RefusedGatedEntry::Wait(reason)) = refused {
-                        self.workflow_hold_refused_entry(session_id, &workflow_run, reason);
+                    if let (
+                        Some(RefusedEntry::Wait(reason)),
+                        DaemonError::ProviderProfileRefused { account_name, .. },
+                    ) = (refused, &error)
+                    {
+                        if let Some(node_run) = workflow_run.node_runs().first() {
+                            self.workflow_hold_refused_entry(
+                                session_id,
+                                workflow_run.id(),
+                                node_run.id(),
+                                node_run.agent_id(),
+                                reason,
+                                account_name,
+                            );
+                        }
                     }
                     return Err(error);
                 }
@@ -1687,27 +1734,26 @@ fn workflow_watchdog_failure_is_terminal(error: &DaemonError) -> bool {
 #[cfg(test)]
 pub(in crate::runtime) mod tests;
 
-/// A gated handoff refused for a provider account the user can fix waits for
-/// that fix until the gate entry's own deadline, then fails like an ungated
-/// invoke. Other failures and ungated entries keep their existing handling.
+/// An entry refused for a provider account the user can fix waits for that
+/// fix, whether or not a gate guards it: a gated one until the gate entry's own
+/// deadline, then it fails like an ungated invoke. Other failures keep their
+/// existing handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RefusedGatedEntry {
+enum RefusedEntry {
     Wait(crate::session::WorkflowNodeWaitingReason),
     Expired,
 }
 
-fn refused_gated_entry(
+fn refused_entry(
     error: &DaemonError,
     deadline_ms: Option<u64>,
     now_ms: u64,
-) -> Option<RefusedGatedEntry> {
+) -> Option<RefusedEntry> {
     let DaemonError::ProviderProfileRefused { reason, .. } = error else {
         return None;
     };
-    let deadline_ms = deadline_ms?;
-    Some(if now_ms >= deadline_ms {
-        RefusedGatedEntry::Expired
-    } else {
-        RefusedGatedEntry::Wait((*reason).into())
+    Some(match deadline_ms {
+        Some(deadline_ms) if now_ms >= deadline_ms => RefusedEntry::Expired,
+        _ => RefusedEntry::Wait((*reason).into()),
     })
 }

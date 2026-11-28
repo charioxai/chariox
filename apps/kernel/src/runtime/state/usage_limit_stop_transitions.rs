@@ -117,7 +117,8 @@ pub(super) enum StopEvent<'a> {
         selected: &'a UsageLimitStop,
         now: u64,
     },
-    /// The provider's reset time arrived without a later refusal.
+    /// An early account reset makes an Armed resume due now.
+    /// A provider reset without a later refusal clears an Asking stop without resuming it.
     Reset {
         selected: &'a UsageLimitStop,
         now: u64,
@@ -206,6 +207,11 @@ pub(super) fn transition(
                 },
                 ..held.clone()
             }))
+        }
+        (StopEvent::Reset { selected, now }, Armed { at_ms })
+            if held == *selected && at_ms > now =>
+        {
+            with(Armed { at_ms: *now })
         }
         (StopEvent::Decline { shown }, Asking | Armed { .. }) if held == *shown => with(Declined),
         (StopEvent::ClaimDue { selected, now }, Armed { at_ms })
