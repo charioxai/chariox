@@ -22,6 +22,8 @@ pub(crate) struct ClaudeRuntimeBinding {
 }
 
 pub struct ClaudeRuntimeState {
+    // Keep this generation's actual run available after its registry entry retires.
+    pub(super) run_context: crate::provider::RuntimeProviderRun,
     pub(super) program: String,
     pub(super) args: Vec<String>,
     pub(super) env: BTreeMap<String, String>,

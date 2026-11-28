@@ -2484,6 +2484,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "failure-cancellation",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

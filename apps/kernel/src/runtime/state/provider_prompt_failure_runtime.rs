@@ -303,6 +303,7 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 Some(active_prompt.id()),
                 provider_termination.clone(),
+                failure.clone(),
             )?;
             let Some(completion) = completion else {
                 return Ok(false);

@@ -141,6 +141,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     })?;
     let mut binding = ClaudeRuntimeBinding {
         state: ClaudeRuntimeState {
+            run_context: run.clone(),
             program,
             args,
             env,
@@ -257,6 +258,7 @@ pub(crate) fn submit_claude_prompt(
     state: &mut ClaudeRuntimeState,
     envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
+    state.run_context = run.clone();
     if let Some(adopted) = state.adopted_turn.take() {
         // The process already runs this prompt's turn: a hot reload handed it
         // over. Continue reading it instead of sending the prompt again.
@@ -325,14 +327,15 @@ pub(crate) fn abort_claude_turn(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
 ) -> Result<(), DaemonError> {
+    state.run_context = run.clone();
     let message = json!({
         "type": "control_request",
         "request_id": format!("chariox-claude-interrupt-{}", run.id()),
         "request": { "subtype": "interrupt" }
     });
     let _ = write_json_line(&mut state.stdin, &message);
-    stop_child(&mut state.child);
-    let output = drain_stopped_claude_events(run.id(), state)?;
+    state.child.stop();
+    let output = drain_stopped_claude_events(run, state)?;
     state.pending_cancelled_output.push(output);
     clear_active_claude_turn(state);
     state.cancelled_turn_pending_settlement = true;
@@ -343,6 +346,7 @@ pub(crate) fn drain_claude_events(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
 ) -> Result<ProviderPromptSignalBatch, DaemonError> {
+    state.run_context = run.clone();
     if !state.pending_cancelled_output.is_empty() {
         return Ok(state.pending_cancelled_output.remove(0));
     }
@@ -961,6 +965,12 @@ mod tests {
         let output = super::process::ClaudeOutput::detached();
         (
             ClaudeRuntimeState {
+                run_context: RuntimeProviderRun::from_control_capability_inference(
+                    "run-1",
+                    "session-1".into(),
+                    None,
+                    "claude".into(),
+                ),
                 program: "/bin/sh".to_string(),
                 args: vec!["-c".to_string(), "cat >/dev/null".to_string()],
                 env: Default::default(),
@@ -3161,7 +3171,7 @@ mod background_continuation;
 mod cold_restart;
 
 pub(crate) fn drain_stopped_claude_events(
-    provider_run_id: &str,
+    run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
 ) -> Result<ProviderPromptSignalBatch, DaemonError> {
     let mut batch = ProviderPromptSignalBatch::default();
@@ -3170,10 +3180,10 @@ pub(crate) fn drain_stopped_claude_events(
     while let Ok(message) = state.output.receiver.recv() {
         match message {
             ClaudeRuntimeMessage::Stdout(value) => {
-                handle_claude_tool_uses(provider_run_id, state, &value, &mut batch)?;
+                handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
                 // The child has exited; feedback cannot be written to it.
 
-                apply_claude_message(provider_run_id, state, value, &mut batch);
+                apply_claude_message(run.id(), state, value, &mut batch);
             }
             ClaudeRuntimeMessage::StdoutParseError(error) => {
                 batch
@@ -3185,7 +3195,7 @@ pub(crate) fn drain_stopped_claude_events(
             }
         }
     }
-    apply_claude_usage_capture(state, &mut batch);
+    apply_claude_usage_capture(run, state, &mut batch);
     Ok(batch)
 }
 pub(crate) fn take_cancelled_claude_output(
@@ -3205,7 +3215,14 @@ pub(crate) fn drain_retired_claude_output(
     provider_run_id: &str,
     state: &mut ClaudeRuntimeState,
 ) -> Result<Vec<ProviderPromptSignalBatch>, DaemonError> {
+    if state.run_context.id() != provider_run_id {
+        return Err(DaemonError::LocalTransport {
+            operation: "claude_retired_run_context",
+            message: "the retired Claude receiver belongs to a different provider run".to_string(),
+        });
+    }
+    let run = state.run_context.clone();
     let mut output = take_cancelled_claude_output(state);
-    output.push(drain_stopped_claude_events(provider_run_id, state)?);
+    output.push(drain_stopped_claude_events(&run, state)?);
     Ok(output)
 }
