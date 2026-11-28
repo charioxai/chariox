@@ -2819,7 +2819,7 @@ mod room_terminal_peer_shapes {
         let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&response).unwrap(), wire);
         let RelayPeerResponse::RoomTerminal {
-            result: RoomTerminalResult::Listed { terminals },
+            result: RoomTerminalResult::Listed { terminals, .. },
         } = response
         else {
             panic!("a list answers a list");
@@ -2835,6 +2835,27 @@ mod room_terminal_peer_shapes {
             .unwrap()
             .remove("scope");
         assert!(serde_json::from_value::<RelayPeerResponse>(old).is_err());
+    }
+
+    /// A Room-wide list names the machines it could not ask; an empty list stays off the wire.
+    #[test]
+    fn a_terminal_list_names_the_machines_it_could_not_ask() {
+        let wire = serde_json::json!({"kind": "room_terminal", "result": {
+            "result": "listed", "terminals": [],
+            "unavailable": [{"host_agent": "agent-2", "message": "worker kernel `k` is too old to list its terminals, which may still be running there; update it"}]
+        }});
+        let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
+        let RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Listed { unavailable, .. },
+        } = &response
+        else {
+            panic!("a list answers with terminals: {response:?}");
+        };
+        assert_eq!(unavailable[0].host_agent, "agent-2");
+        assert_eq!(serde_json::to_value(&response).unwrap(), wire);
+        let empty = serde_json::json!({"kind": "room_terminal", "result": {"result": "listed", "terminals": []}});
+        let response: RelayPeerResponse = serde_json::from_value(empty.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&response).unwrap(), empty);
     }
 
     #[test]
