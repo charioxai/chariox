@@ -19,6 +19,8 @@ pub(super) struct VolumeWrites {
     pub open: BTreeSet<u64>,
     /// Observed cumulative growth for each currently open inode.
     pub written_by_inode: BTreeMap<u64, u64>,
+    /// Cumulative forward movement of the sampled writable descriptor.
+    pub position_written_by_inode: BTreeMap<u64, u64>,
     /// Its output goes here: it holds a writable file open here other than
     /// its standard streams, or did a moment ago. A log its streams go to
     /// does not say where a copy writes.

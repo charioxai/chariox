@@ -94,6 +94,7 @@ fn owner(
                         files: [u64::from(command.pid)].into(),
                         open: [u64::from(command.pid)].into(),
                         written_by_inode: Default::default(),
+                        position_written_by_inode: Default::default(),
                         receiving: true,
                     }],
                 )
@@ -1554,6 +1555,7 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                         files: [u64::from(pid)].into(),
                         open: [u64::from(pid)].into(),
                         written_by_inode: Default::default(),
+                        position_written_by_inode: Default::default(),
                         receiving: true,
                     }],
                 );
@@ -1814,6 +1816,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [1].into(),
                 open: [1].into(),
                 written_by_inode: Default::default(),
+                position_written_by_inode: Default::default(),
                 receiving: true,
             }],
         ),
@@ -1827,6 +1830,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [2].into(),
                 open: [2].into(),
                 written_by_inode: Default::default(),
+                position_written_by_inode: Default::default(),
                 receiving: true,
             }],
         ),
@@ -1879,6 +1883,7 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
             files: [1].into(),
             open: [1].into(),
             written_by_inode: Default::default(),
+            position_written_by_inode: Default::default(),
             receiving: true,
             path: output.into(),
             written: 6 * GIB,
@@ -1961,6 +1966,7 @@ fn between_files() -> Vec<disk_use::VolumeWrites> {
         files: Default::default(),
         open: Default::default(),
         written_by_inode: Default::default(),
+        position_written_by_inode: Default::default(),
         receiving: true,
     }]
 }
@@ -2130,6 +2136,7 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [11].into(),
             written_by_inode: Default::default(),
+            position_written_by_inode: Default::default(),
             receiving: true,
         };
         let log = disk_use::VolumeWrites {
@@ -2140,6 +2147,7 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [12].into(),
             written_by_inode: Default::default(),
+            position_written_by_inode: Default::default(),
             receiving: false,
         };
         observation.disk_writes.insert(1, vec![idle, log]);
@@ -2180,6 +2188,7 @@ fn stream_writer(
         files: [u64::from(pid)].into(),
         open: [u64::from(pid)].into(),
         written_by_inode: [(u64::from(pid), 3 * GIB)].into(),
+        position_written_by_inode: [(u64::from(pid), 3 * GIB)].into(),
         receiving: false,
     };
     (entry, command, output)
@@ -2248,6 +2257,7 @@ fn unplaced_writer_rate_excludes_observed_stdout_growth() {
         log.written_by_inode
             .values_mut()
             .for_each(|bytes| *bytes = 0);
+        log.position_written_by_inode = log.written_by_inode.clone();
         let current = owner("agent", true, vec![usage], vec![(1, generator)]);
         {
             let mut observation = current.lock().unwrap();
@@ -2264,6 +2274,8 @@ fn unplaced_writer_rate_excludes_observed_stdout_growth() {
             let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
             output.written = 1400 * MIB;
             output.written_by_inode = [(1, 1400 * MIB)].into();
+            let positions = output.written_by_inode.clone();
+            output.position_written_by_inode = positions;
             output.rate = latest_rate;
         }
         let unplaced = unplaced_writers(members, &watched);
@@ -2309,6 +2321,7 @@ fn a_bursty_stdout_logger_is_not_charged_to_another_volume_during_its_quiet_inte
     log.written_by_inode
         .values_mut()
         .for_each(|bytes| *bytes = 0);
+    log.position_written_by_inode = log.written_by_inode.clone();
     let current = owner("agent", true, vec![usage], vec![(1, logger)]);
     current.lock().unwrap().disk_writes.insert(1, vec![log]);
     let volume = stream_volumes();
@@ -2323,6 +2336,8 @@ fn a_bursty_stdout_logger_is_not_charged_to_another_volume_during_its_quiet_inte
             let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
             output.written = written;
             output.written_by_inode = [(1, written)].into();
+            let positions = output.written_by_inode.clone();
+            output.position_written_by_inode = positions;
             output.rate = rate;
         }
         ledger.pass(
@@ -2382,6 +2397,7 @@ fn r3_a_stream_closing_after_a_final_burst_does_not_make_its_logger_the_filler()
     log.written_by_inode
         .values_mut()
         .for_each(|bytes| *bytes = 0);
+    log.position_written_by_inode = log.written_by_inode.clone();
     log.rate = 0;
     log.files.clear();
     let current = owner("agent", true, vec![usage], vec![(1, logger)]);
@@ -2433,6 +2449,7 @@ fn r3_stable_stdout_and_rotating_stderr_do_not_erase_a_generators_valid_residual
     log.written_by_inode
         .values_mut()
         .for_each(|bytes| *bytes = 0);
+    log.position_written_by_inode = log.written_by_inode.clone();
     log.rate = 0;
     log.files.clear();
     let current = owner("agent", true, vec![usage], vec![(1, generator)]);
@@ -2452,6 +2469,8 @@ fn r3_stable_stdout_and_rotating_stderr_do_not_erase_a_generators_valid_residual
             output.open = [11, stderr].into();
             output.written = (n % 2) * 4096;
             output.written_by_inode = [(11, 0), (stderr, output.written)].into();
+            let positions = output.written_by_inode.clone();
+            output.position_written_by_inode = positions;
             output.rate = if n % 2 == 1 { 16384 } else { 0 };
             output.files = if n % 2 == 1 {
                 [stderr].into()
@@ -2490,6 +2509,7 @@ fn later_stream_growth_corrects_an_earlier_apparent_residual_in_the_same_window(
     log.written_by_inode
         .values_mut()
         .for_each(|bytes| *bytes = 0);
+    log.position_written_by_inode = log.written_by_inode.clone();
     log.rate = 0;
     let current = owner("agent", true, vec![usage], vec![(1, logger)]);
     current.lock().unwrap().disk_writes.insert(1, vec![log]);
@@ -2507,9 +2527,15 @@ fn later_stream_growth_corrects_an_earlier_apparent_residual_in_the_same_window(
             observation.disk_writes.get_mut(&1).unwrap()[0].written = streamed;
             observation.disk_writes.get_mut(&1).unwrap()[0].written_by_inode =
                 [(1, streamed)].into();
+            let positions = observation.disk_writes.get_mut(&1).unwrap()[0]
+                .written_by_inode
+                .clone();
+            observation.disk_writes.get_mut(&1).unwrap()[0].position_written_by_inode = positions;
         }
+        current.lock().unwrap().disk_writes.get_mut(&1).unwrap()[0].position_written_by_inode =
+            [(1, written)].into();
         // Advance the measurements before inspecting the complete window.
-        drop(unplaced_writers(members, &watched));
+        assert!(unplaced_writers(members, &watched).is_empty());
     }
     assert!(
         unplaced_writers(members, &watched).is_empty(),
@@ -2526,6 +2552,8 @@ fn r4_unchanged_stdout_growth_cancels_residual_when_stderr_rotates() {
     log.files.clear();
     log.open = [11, 12].into();
     log.written_by_inode = [(11, 0), (12, 2000 * MIB)].into();
+    let positions = log.written_by_inode.clone();
+    log.position_written_by_inode = positions;
     let current = owner("agent", true, vec![usage], vec![(1, logger)]);
     current.lock().unwrap().disk_writes.insert(1, vec![log]);
     let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
@@ -2549,8 +2577,16 @@ fn r4_unchanged_stdout_growth_cancels_residual_when_stderr_rotates() {
             } else {
                 [(11, 1000 * MIB), (13, 0)].into()
             };
+            let positions = output.written_by_inode.clone();
+            output.position_written_by_inode = positions;
         }
-        drop(unplaced_writers(members, &watched));
+        current.lock().unwrap().disk_writes.get_mut(&1).unwrap()[0].position_written_by_inode =
+            if stderr == 12 {
+                [(11, written - 2000 * MIB), (12, 2000 * MIB)].into()
+            } else {
+                [(11, 1000 * MIB), (13, 0)].into()
+            };
+        assert!(unplaced_writers(members, &watched).is_empty());
     }
     assert!(
         unplaced_writers(members, &watched).is_empty(),
@@ -2566,6 +2602,7 @@ fn r4_a_repeated_timestamp_keeps_the_first_command_counter_baseline() {
     log.written_by_inode
         .values_mut()
         .for_each(|bytes| *bytes = 0);
+    log.position_written_by_inode = log.written_by_inode.clone();
     log.rate = 0;
     log.files.clear();
     let current = owner("agent", true, vec![usage], vec![(1, generator)]);
@@ -2645,6 +2682,8 @@ fn r5_new_stdout_bytes_in_an_excluded_interval_do_not_erase_prior_filler_writes(
     log.files.clear();
     log.open = [11, 12].into();
     log.written_by_inode = [(11, 0), (12, 0)].into();
+    let positions = log.written_by_inode.clone();
+    log.position_written_by_inode = positions;
     let current = owner("agent", true, vec![usage], vec![(1, generator)]);
     current.lock().unwrap().disk_writes.insert(1, vec![log]);
     let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
@@ -2662,6 +2701,8 @@ fn r5_new_stdout_bytes_in_an_excluded_interval_do_not_erase_prior_filler_writes(
             output.open = [11, stderr].into();
             output.written = streamed;
             output.written_by_inode = [(11, streamed), (stderr, 0)].into();
+            let positions = output.written_by_inode.clone();
+            output.position_written_by_inode = positions;
         }
         drop(unplaced_writers(members, &watched));
     }
@@ -2700,6 +2741,8 @@ fn r5_a_close_and_reopen_on_a_repeated_sample_does_not_make_the_logger_the_fille
                 output.open = [inode].into();
                 output.files.clear();
                 output.written_by_inode = [(inode, written)].into();
+                let positions = output.written_by_inode.clone();
+                output.position_written_by_inode = positions;
                 output.receiving = false;
                 Some(vec![output])
             })
@@ -2795,6 +2838,8 @@ fn r6_delayed_stdout_growth_and_a_final_stderr_burst_stop_only_the_scratch_fille
     log.files.clear();
     log.open = [11, 12].into();
     log.written_by_inode = [(11, 0), (12, 2000 * MIB)].into();
+    let positions = log.written_by_inode.clone();
+    log.position_written_by_inode = positions;
     let current = owner("agent", true, vec![usage], vec![(1, logger)]);
     current.lock().unwrap().disk_writes.insert(1, vec![log]);
     let free = Arc::new(AtomicU64::new(10 * GIB));
@@ -2805,6 +2850,8 @@ fn r6_delayed_stdout_growth_and_a_final_stderr_burst_stop_only_the_scratch_fille
             let mut observation = current.lock().unwrap();
             observation.samples = vec![write_sample(1, at)];
             observation.commands[0].writes = written;
+            observation.disk_writes.get_mut(&1).unwrap()[0].position_written_by_inode =
+                [(11, written - 2000 * MIB), (12, 2000 * MIB)].into();
         }
         ledger.pass(
             std::slice::from_ref(&current),
@@ -2823,6 +2870,8 @@ fn r6_delayed_stdout_growth_and_a_final_stderr_burst_stop_only_the_scratch_fille
         output.open = [11].into();
         output.written = 1000 * MIB;
         output.written_by_inode = [(11, 1000 * MIB)].into();
+        let positions = output.written_by_inode.clone();
+        output.position_written_by_inode = positions;
         output.rate = 1000 * MIB;
         output.files = [11].into();
         observation.commands.push(filler_use);
@@ -2879,6 +2928,12 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
                     .retain(|inode, _| *inode == stdout_inode || *inode == stderr_inode);
                 for written in output.written_by_inode.values_mut() {
                     *written *= 500;
+                }
+                output
+                    .position_written_by_inode
+                    .retain(|inode, _| *inode == stdout_inode || *inode == stderr_inode);
+                for position in output.position_written_by_inode.values_mut() {
+                    *position *= 500;
                 }
                 output.written = output.written_by_inode.values().sum();
                 output.rate = 0;
@@ -3325,6 +3380,7 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
             files: [9].into(),
             open: [9].into(),
             written_by_inode: Default::default(),
+            position_written_by_inode: Default::default(),
             receiving: true,
         });
     }
@@ -3529,6 +3585,7 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         files: Default::default(),
         open: Default::default(),
         written_by_inode: Default::default(),
+        position_written_by_inode: Default::default(),
         receiving: true,
     };
     assert_eq!(
