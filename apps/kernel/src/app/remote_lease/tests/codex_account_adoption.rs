@@ -182,7 +182,10 @@ async fn assert_codex_copy_admission(receiving: ReceivingAccount) {
         run.endpoint_mode(),
         crate::provider::AgentEndpointMode::Managed
     );
-    assert!(run.pty_program().is_some());
+    assert!(
+        run.pty_program().is_some_and(|program| !program.is_empty()),
+        "the confined native launch must name its outer program"
+    );
     let executable_path = executable.display().to_string();
     assert!(
         run.pty_args()
@@ -190,7 +193,11 @@ async fn assert_codex_copy_admission(receiving: ReceivingAccount) {
             .any(|arguments| { arguments[0] == executable_path && arguments[1] == "app-server" }),
         "the confined native launch must invoke the selected Codex executable as app-server"
     );
-    assert!(run.structured_endpoint().is_some());
+    assert!(
+        run.structured_endpoint()
+            .is_some_and(|endpoint| !endpoint.is_empty()),
+        "the native launch plan must name its endpoint"
+    );
     assert!(
         process_delivery.observed_exactly("pty_spawn"),
         "real Codex launch must reach the process delivery boundary"
