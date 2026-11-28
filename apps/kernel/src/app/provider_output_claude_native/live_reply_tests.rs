@@ -824,18 +824,21 @@ fn completed_redraw_matching_preserves_literal_code_symbols_after_markup() {
         "Result\n\nx = 1;\ny = 2;\n\nDone.",
         "# Result\n\n```rust\nx = 1;\ny = 2;\n```\n\n**Done.**",
     ] {
-        assert!(rendered_prefix("Result\nx = 1;\ny = 2;\nDone.", markdown));
-        assert!(!rendered_prefix(
+        assert!(rendered_text_prefix(
+            "Result\nx = 1;\ny = 2;\nDone.",
+            markdown
+        ));
+        assert!(!rendered_text_prefix(
             "Result\nx += 1;\ny -= 2;\nDone.",
             markdown
         ));
     }
     for code in ["x *= 1;", "x **= 1;", "x -= 1;", "x_1 = 1;", "x[1] = 1;"] {
-        assert!(rendered_prefix(
+        assert!(rendered_text_prefix(
             &format!("Result\n{code}"),
             &format!("Result\n\n`{code}`")
         ));
-        assert!(!rendered_prefix(
+        assert!(!rendered_text_prefix(
             "Result\nx = 1;",
             &format!("Result\n\n`{code}`")
         ));
@@ -845,18 +848,77 @@ fn completed_redraw_matching_preserves_literal_code_symbols_after_markup() {
 #[test]
 fn completed_redraw_matching_accepts_rendered_lists_with_and_without_markers() {
     let numbered = "## Plan\n\n1. **Read** the file.\n2. Then `write()` it.";
-    assert!(rendered_prefix(
+    assert!(rendered_text_prefix(
         "Plan\nRead the file.\nThen write() it.",
         numbered
     ));
-    assert!(rendered_prefix(
+    assert!(rendered_text_prefix(
         "Plan\n1. Read the file.\n2. Then write() it.",
         numbered
     ));
     for marker in ["•", "-", "*"] {
-        assert!(rendered_prefix(
+        assert!(rendered_text_prefix(
             &format!("Plan\n{marker} Read the file."),
             "# Plan\n\n- **Read** the file."
         ));
     }
+}
+
+#[test]
+fn completed_code_redraws_keep_literal_spaces_and_allow_only_full_row_wraps() {
+    let markdown = "Result\n\n```sh\necho \"ab\"\n```\n\nDone.";
+    assert!(rendered_text_prefix(
+        "Result\n\necho \"ab\"\n\nDone.",
+        markdown
+    ));
+    assert!(!rendered_text_prefix(
+        "Result\n\necho \"a b\"\n\nDone.",
+        markdown
+    ));
+    assert!(rendered_text_prefix(
+        "Result\n\necho \"a\rb\"\n\nDone.",
+        markdown
+    ));
+    assert!(!rendered_text_prefix(
+        "Result\n\necho \"a\nb\"\n\nDone.",
+        markdown
+    ));
+    let two_spaces = "Result\n\n`echo \"a  b\"`";
+    assert!(!rendered_text_prefix("Result\necho \"a b\"", two_spaces));
+    assert!(!rendered_text_prefix(
+        "Result\necho \"a  b\"",
+        "Result\n\n`echo \"a b\"`"
+    ));
+    assert!(!rendered_text_prefix(
+        "Result\necho \"a b\"",
+        "Result\n\necho \"ab\""
+    ));
+}
+
+#[test]
+fn code_redraw_matching_keeps_a_printed_space_at_a_full_terminal_row_boundary() {
+    let prefix = format!("echo \"{}", "a".repeat(111));
+    let bytes = draw(&[
+        "● Result",
+        "",
+        &format!("  {prefix} "),
+        "  b\"",
+        "",
+        "  Done.",
+        "",
+        "✻ Working (4s)",
+    ]);
+    let mut parser = vt100::Parser::new(SCREEN_ROWS, SCREEN_COLS, 0);
+    parser.process(&bytes);
+    let (_, rows) = reply_rows(&screen_rows(parser.screen()), false);
+    let code = format!("Result\n\n```sh\n{prefix} b\"\n```\n\nDone.");
+    assert!(
+        rendered_prefix(&rows, &code),
+        "the printed space belongs to the code even when the row ends there"
+    );
+    let other = format!("Result\n\n```sh\n{prefix}b\"\n```\n\nDone.");
+    assert!(
+        !rendered_prefix(&rows, &other),
+        "a row boundary cannot erase the literal space"
+    );
 }

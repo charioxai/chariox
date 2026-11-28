@@ -177,6 +177,8 @@ struct Row {
     text: String,
     /// Columns used, the indent included.
     width: usize,
+    /// Printed whitespace, excluding the unoccupied cells at the end of the terminal row.
+    trailing: String,
 }
 
 /// A number no earlier reader had, in this process or before a restart: the wall clock at the first reader, then one more
@@ -568,27 +570,92 @@ fn grown_from(rows: &[Row], taken: &[String], text: &str) -> bool {
             .iter()
             .zip(taken)
             .all(|(row, taken)| row.text == *taken)
-        && rendered_prefix(&drawn_text(rows), text)
+        && rendered_prefix(rows, text)
 }
 
 /// Markdown syntax is omitted by the terminal, but punctuation inside its text and code is not.
 /// Only whitespace may change when the terminal wraps rows; a changed operator starts another block.
-fn rendered_prefix(mut drawn: &str, markdown: &str) -> bool {
+fn rendered_prefix(rows: &[Row], markdown: &str) -> bool {
+    let mut drawn = String::new();
+    for (index, row) in rows.iter().enumerate() {
+        drawn.push_str(&row.text);
+        drawn.push_str(&row.trailing);
+        if index + 1 < rows.len() {
+            // A full terminal row may continue one logical code line. Keep that boundary
+            // distinct from a short row's newline, without discarding code's spaces.
+            drawn.push(if row.width >= usize::from(SCREEN_COLS) {
+                '\r'
+            } else {
+                '\n'
+            });
+        }
+    }
+    rendered_text_prefix(&drawn, markdown)
+}
+
+fn rendered_text_prefix(mut drawn: &str, markdown: &str) -> bool {
     use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+
+    fn take(drawn: &mut &str, character: char, code: bool) -> bool {
+        if drawn.is_empty() {
+            return true;
+        }
+        if character == '\n' && code {
+            if let Some(tail) = drawn.strip_prefix(['\n', '\r']) {
+                *drawn = tail;
+                return true;
+            }
+            return false;
+        }
+        // Prose wrapping can replace a word separator; code wrapping only inserts a
+        // boundary at a full row. Neither permits a space inside a row to disappear.
+        if !code && character.is_whitespace() {
+            if let Some(first) = drawn.chars().next().filter(|c| c.is_whitespace()) {
+                *drawn = &drawn[first.len_utf8()..];
+                return true;
+            }
+            return false;
+        }
+        *drawn = drawn.trim_start_matches('\r');
+        if drawn.is_empty() {
+            return true;
+        }
+        if let Some(tail) = drawn.strip_prefix(character) {
+            *drawn = tail;
+            true
+        } else {
+            false
+        }
+    }
 
     if drawn.trim().is_empty() {
         return false;
     }
     let mut lists = Vec::new();
+    let mut code_block = false;
+    let mut boundary = true;
     for event in Parser::new(markdown) {
         match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                code_block = true;
+                boundary = true;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                code_block = false;
+                boundary = true;
+            }
+            Event::Start(Tag::Paragraph | Tag::Heading { .. } | Tag::BlockQuote(_)) => {
+                boundary = true
+            }
+            Event::End(
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::BlockQuote(_),
+            ) => boundary = true,
             Event::Start(Tag::List(first)) => lists.push(first),
             Event::End(TagEnd::List(_)) => {
                 lists.pop();
+                boundary = true;
             }
             Event::Start(Tag::Item) => {
-                // Claude may show the list marker or leave it to indentation. Only a marker
-                // followed by whitespace is optional; literal operators in text/code never are.
                 drawn = drawn.trim_start();
                 let markers = match lists.last_mut() {
                     Some(Some(number)) => {
@@ -600,23 +667,49 @@ fn rendered_prefix(mut drawn: &str, markdown: &str) -> bool {
                 };
                 for marker in markers {
                     if let Some(tail) = drawn.strip_prefix(&marker) {
-                        if tail.starts_with(char::is_whitespace) {
-                            drawn = tail;
+                        if let Some(space) = tail.chars().next().filter(|c| c.is_whitespace()) {
+                            drawn = &tail[space.len_utf8()..];
                             break;
                         }
                     }
                 }
+                boundary = true;
             }
-            Event::Text(text) | Event::Code(text) => {
-                for character in text.chars().filter(|c| !c.is_whitespace()) {
-                    drawn = drawn.trim_start();
+            Event::SoftBreak | Event::HardBreak => {
+                if !take(&mut drawn, ' ', false) {
+                    return false;
+                }
+            }
+            Event::Text(text) => {
+                if boundary {
+                    drawn = if code_block {
+                        drawn.trim_start_matches(['\n', '\r'])
+                    } else {
+                        drawn.trim_start()
+                    };
+                    boundary = false;
+                }
+                for character in text.chars() {
                     if drawn.is_empty() {
                         return true;
                     }
-                    let Some(tail) = drawn.strip_prefix(character) else {
+                    if !take(&mut drawn, character, code_block) {
                         return false;
-                    };
-                    drawn = tail;
+                    }
+                }
+            }
+            Event::Code(text) => {
+                if boundary {
+                    drawn = drawn.trim_start_matches(['\n', '\r']);
+                    boundary = false;
+                }
+                for character in text.chars() {
+                    if drawn.is_empty() {
+                        return true;
+                    }
+                    if !take(&mut drawn, character, true) {
+                        return false;
+                    }
                 }
             }
             _ => {}
@@ -643,6 +736,7 @@ fn screen_rows(screen: &vt100::Screen) -> Vec<Row> {
         .map(|row| {
             let mut text = String::new();
             let mut width = 0;
+            let mut printed_end = 0;
             for col in 0..cols {
                 let Some(cell) = screen.cell(row, col) else {
                     continue;
@@ -655,9 +749,11 @@ fn screen_rows(screen: &vt100::Screen) -> Vec<Row> {
                     continue;
                 }
                 text.push_str(cell.contents());
+                printed_end = text.len();
                 width = usize::from(col) + if cell.is_wide() { 2 } else { 1 };
             }
             Row {
+                trailing: text[text.trim_end().len()..printed_end].to_string(),
                 text: text.trim_end().to_string(),
                 width,
             }
@@ -715,8 +811,17 @@ fn reply_rows(rows: &[Row], scrolled_reply: bool) -> (bool, Vec<Row>) {
                 .unwrap_or(&row.text)
                 .to_string()
         };
+        let trailing = if row.text.is_empty() {
+            row.trailing
+                .strip_prefix(INDENT)
+                .unwrap_or(&row.trailing)
+                .to_string()
+        } else {
+            row.trailing.clone()
+        };
         reply.push(Row {
             text,
+            trailing,
             ..row.clone()
         });
     }
