@@ -1958,6 +1958,8 @@ struct StreamWrites {
     process_id: String,
     outputs: BTreeMap<(u64, u64), u64>,
     previous: Option<(u64, u64)>,
+    streams_changed: bool,
+    pending_streamed: u64,
     /// Command and stream bytes from intervals with measurable destinations.
     samples: VecDeque<(u64, u64, u64)>,
 }
@@ -1977,17 +1979,6 @@ impl StreamWrites {
         }
         let at = sample.sampled_at_ms;
         let window = FREE_WINDOW.as_millis() as u64;
-        // A newer I/O read on a cached process-table timestamp belongs to
-        // the next interval, just as it does in the command/file samplers.
-        if self.previous.is_some_and(|(before_at, _)| at == before_at) {
-            return self.rate_at(at);
-        }
-        if self.previous.is_some_and(|(before_at, before)| {
-            at < before_at || at.saturating_sub(before_at) > window || writes < before
-        }) {
-            self.previous = None;
-            self.samples.clear();
-        }
         let observed = outputs
             .iter()
             .flat_map(|output| {
@@ -2003,30 +1994,55 @@ impl StreamWrites {
                     .get(key)
                     .is_some_and(|before| written >= before)
             });
+        let streamed = observed.iter().fold(0u64, |sum, (key, written)| {
+            sum.saturating_add(
+                self.outputs
+                    .get(key)
+                    .map_or(0, |before| written.saturating_sub(*before)),
+            )
+        });
+        // A newer I/O read on a cached process-table timestamp belongs to
+        // the next interval, just as it does in the command/file samplers.
+        if self.previous.is_some_and(|(before_at, _)| at == before_at) {
+            self.streams_changed |= !continuous;
+            self.pending_streamed = self.pending_streamed.saturating_add(streamed);
+            // The file sampler rescans even on a cached table timestamp.
+            // Follow its inode baselines while keeping the first command count.
+            self.outputs = observed;
+            return self.rate_at(at);
+        }
+        if self.previous.is_some_and(|(before_at, before)| {
+            at < before_at || at.saturating_sub(before_at) > window || writes < before
+        }) {
+            self.previous = None;
+            self.samples.clear();
+            self.pending_streamed = 0;
+            self.streams_changed = false;
+        }
         let (mut known_writes, mut known_streamed) = self
             .samples
             .back()
             .map_or((0, 0), |&(_, command, stream)| (command, stream));
         if let Some((_, before)) = self.previous {
-            if continuous {
-                known_writes = known_writes.saturating_add(writes - before);
+            let command = writes - before;
+            let streamed = streamed.saturating_add(self.pending_streamed);
+            if continuous && !self.streams_changed {
+                known_writes = known_writes.saturating_add(command);
+                known_streamed = known_streamed.saturating_add(streamed);
+            } else {
+                // The excluded command delta can cover new writes on a
+                // stable stream. Only growth beyond those bytes can correct
+                // an earlier credited residual.
+                known_streamed = known_streamed.saturating_add(streamed.saturating_sub(command));
             }
-            // Growth on a stable inode remains measured even if a different
-            // descriptor changes. It can cancel an earlier apparent residual.
-            let streamed = observed.iter().fold(0u64, |sum, (key, written)| {
-                sum.saturating_add(
-                    self.outputs
-                        .get(key)
-                        .map_or(0, |before| written.saturating_sub(*before)),
-                )
-            });
-            known_streamed = known_streamed.saturating_add(streamed);
         }
         // A changed or closed stream may have received this interval's
         // final writes after its last sighting. Exclude its command delta,
         // not measured stream growth or the earlier valid intervals.
         self.outputs = observed;
         self.previous = Some((at, writes));
+        self.streams_changed = false;
+        self.pending_streamed = 0;
         if self
             .samples
             .back()
