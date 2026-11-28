@@ -1716,7 +1716,7 @@ async fn assert_remote_room_terminal(
         .await,
         RoomTerminalResult::Snapshot { .. }
     ));
-    let RoomTerminalResult::Listed { terminals } =
+    let RoomTerminalResult::Listed { terminals, .. } =
         call(None, None, RoomTerminalOperation::List).await
     else {
         panic!("a list answers with terminals");
@@ -1735,7 +1735,7 @@ async fn assert_remote_room_terminal(
     );
     assert!(matches!(
         call(None, agent, RoomTerminalOperation::List).await,
-        RoomTerminalResult::Listed { terminals } if terminals.len() == 1
+        RoomTerminalResult::Listed { terminals, .. } if terminals.len() == 1
     ));
     assert!(matches!(
         call(

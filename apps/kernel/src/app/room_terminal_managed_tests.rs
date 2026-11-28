@@ -328,7 +328,7 @@ async fn a_terminal_opened_while_the_room_is_deleted_does_not_survive_it() {
     for opener in openers {
         opener.await.expect("opener joins");
     }
-    let RoomTerminalResult::Listed { terminals } = fixture
+    let RoomTerminalResult::Listed { terminals, .. } = fixture
         .runtime
         .run_room_terminal_operation(
             &fixture.session_id,
@@ -607,7 +607,7 @@ mod kernel_terminal_access {
         // The path an agent's terminal list and a Room client take: the Room's own list.
         let in_room = fixture.terminal(RoomTerminalOperation::List).await.unwrap();
         assert!(
-            matches!(in_room, RoomTerminalResult::Listed { terminals } if terminals.is_empty())
+            matches!(in_room, RoomTerminalResult::Listed { terminals, .. } if terminals.is_empty())
         );
         // Nor can a Room reach it by id.
         let by_id = fixture
@@ -680,7 +680,7 @@ mod kernel_terminal_access {
             .await
             .unwrap_err();
         let LocalDaemonResponse::RoomTerminal {
-            result: RoomTerminalResult::Listed { terminals },
+            result: RoomTerminalResult::Listed { terminals, .. },
         } = runtime
             .kernel_terminal_for_client(&owner(), list())
             .await

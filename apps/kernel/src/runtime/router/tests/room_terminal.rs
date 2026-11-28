@@ -123,7 +123,7 @@ async fn list(router: &CommandRouter, session_id: &str) -> Vec<RoomTerminalSumma
     .await
     .expect("list")
     {
-        RoomTerminalResult::Listed { terminals } => terminals,
+        RoomTerminalResult::Listed { terminals, .. } => terminals,
         other => panic!("unexpected result: {other:?}"),
     }
 }

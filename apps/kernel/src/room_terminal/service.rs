@@ -1011,6 +1011,21 @@ impl RoomTerminalService {
         self.inner.managed.report(|| self.has_running_work());
     }
 
+    /// The process id of a running terminal's shell and the program it runs (a path), if it has one.
+    pub fn shell_process(
+        &self,
+        scope: impl Into<TerminalScope>,
+        terminal_id: &str,
+    ) -> Option<(u32, String)> {
+        let owner = self.find(&scope.into(), terminal_id).ok()?;
+        let state = owner.lock_open().ok()?;
+        let pid = state
+            .terminal
+            .shell_pid
+            .and_then(|pid| u32::try_from(pid).ok())?;
+        Some((pid, state.terminal.record.program.clone()))
+    }
+
     fn find(
         &self,
         scope: &TerminalScope,

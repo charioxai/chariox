@@ -162,6 +162,7 @@ mod provider_tool_background_lifecycle;
 mod provider_tool_images;
 mod remote_agent_binding_worktree;
 mod room_pin;
+mod room_terminal_list;
 mod runtime_mcp_paging;
 mod session_outline_tool_images;
 mod usage_snapshot;

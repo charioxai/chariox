@@ -324,7 +324,7 @@ pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
     KernelTerminalRequest, ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
-    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
+    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult, UnavailableTerminals,
 };
 pub use api::{
     CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest, FileTransferConflict,
