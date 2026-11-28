@@ -104,13 +104,22 @@ async fn leased_worker_popup_keeps_both_shapes() {
         )
         .await
         .expect_err("a leased popup must not grant user-domain browser control");
-    assert!(
-        browser_refusal.to_string().contains("MP-08: leased or remote agents"),
-        "refuse on the existing authority boundary, not an invented resolved view: {browser_refusal}"
-    );
-    for runtime in [fixture.home.runtime_state(), worker.router.runtime_state()] {
+    assert!(worker
+        .router
+        .provider_run_projection
+        .is_leased_provider_run(run.id()));
+    assert!(matches!(
+        browser_refusal,
+        crate::error::DaemonError::UserDomainRefused {
+            reason: crate::error::UserDomainRefusalReason::NotGranted
+        }
+    ));
+    for (runtime, session_id) in [
+        (fixture.home.runtime_state(), room.as_str()),
+        (worker.router.runtime_state(), run.session_id()),
+    ] {
         assert!(runtime
-            .session_snapshot(&room)
+            .session_snapshot(session_id)
             .await
             .unwrap()
             .active_interactions()
