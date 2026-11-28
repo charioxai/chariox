@@ -337,6 +337,9 @@ pub(crate) async fn execute_set_credential_secret_request(
             .await?;
     }
     service.set_vault_secret(&request.key, &request.value)?;
+    if !request.value.is_empty() {
+        runtime_state.refill_environment_secrets_at_vault_key(&request.key);
+    }
     Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
 }
 

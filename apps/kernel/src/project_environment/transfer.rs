@@ -2,6 +2,7 @@
 //! comes first when the source's revision is newer, then each Secret value and File one at a time,
 //! so every row has its own result and Stop keeps what already landed.
 use super::operations::OperationHandle;
+use super::{SecretLink, SecretLinks};
 use super::{
     environment_error, project_environment_vault_service, relative_project_path, ExtensionEntry,
     FilePresence, ProjectEnvironmentRecord, ProjectEnvironmentStore, Registration,
@@ -34,6 +35,9 @@ pub(crate) struct SourceSnapshot {
     pub record: Option<ProjectEnvironmentRecord>,
     /// Secret names the source's Vault has a value for.
     pub secrets: Vec<String>,
+    /// Secret names that something stands behind on the source (a Vault entry, or the kernel it copied
+    /// them from): a copy made from it follows it at each Update.
+    pub linked: Vec<String>,
     /// Files that exist in the source's checkout.
     pub files: Vec<String>,
     /// MCP servers and skills the source has registered, of those the record lists as registrations.
@@ -112,6 +116,9 @@ pub(crate) struct ImportTarget<'a> {
     pub store: &'a ProjectEnvironmentStore,
     pub vault: &'a dyn CredentialVaultStore,
     pub registrations: &'a dyn RegistrationHost,
+    /// The links of this kernel's Secrets, and the kernel the entries come from.
+    pub links: &'a SecretLinks,
+    pub source_kernel: &'a str,
     /// Called with the record after a newer one was adopted, so the Files rules follow it.
     pub on_record: &'a (dyn Fn(&ProjectEnvironmentRecord) + Send + Sync),
 }
@@ -121,6 +128,20 @@ fn secret_here(target: &ImportTarget<'_>, name: &str) -> Result<bool, DaemonErro
         .vault
         .find_secret(&project_environment_vault_service(target.project_id), name)?
         .is_some())
+}
+
+/// The link a copy from this source holds.
+fn from_source(target: &ImportTarget<'_>) -> SecretLink {
+    SecretLink::Peer(target.source_kernel.to_owned())
+}
+
+/// A Secret held here that was copied from this source while it was linked there, so the Update brings
+/// its current value. A value typed here has no such link and is never replaced.
+fn follows_source(target: &ImportTarget<'_>, name: &str) -> bool {
+    target
+        .links
+        .get(target.project_id, name)
+        .is_ok_and(|link| link == Some(from_source(target)))
 }
 
 fn file_here(target: &ImportTarget<'_>, path: &str) -> bool {
@@ -250,7 +271,7 @@ fn plan(
         None => {
             for name in &record.secrets {
                 // A locked Vault cannot tell, so the row is tried and says why it failed.
-                if !secret_here(target, name).unwrap_or(false) {
+                if !secret_here(target, name).unwrap_or(false) || follows_source(target, name) {
                     entries.push((entry(EnvironmentEntryKind::Secret, name), None));
                 }
             }
@@ -382,6 +403,19 @@ pub(crate) async fn run_import<S: EnvironmentSource>(
             }
         },
     };
+    // A copy whose source no longer links it (the entry was deleted, or a value was typed there) keeps
+    // its value as a normal Secret.
+    for name in &record.secrets {
+        if !snapshot.linked.contains(name) && follows_source(&target, name) {
+            if let Err(error) = target
+                .links
+                .unlink_if(target.project_id, name, &from_source(&target))
+            {
+                handle.finish(EnvironmentOperationState::Failed, Some(error.to_string()));
+                return;
+            }
+        }
+    }
     let planned = plan(&record, requested.as_deref(), &target);
     handle.update(|view| {
         view.entries = planned.iter().map(|(entry, _)| entry.clone()).collect();
@@ -476,7 +510,9 @@ async fn import_entry<S: EnvironmentSource>(
             if !snapshot.secrets.contains(&entry.name) {
                 return Err(missing_at_source());
             }
-            if secret_here(target, &entry.name).map_err(vault_failure)? {
+            let service = project_environment_vault_service(target.project_id);
+            let refresh = secret_here(target, &entry.name).map_err(vault_failure)?;
+            if refresh && !follows_source(target, &entry.name) {
                 return Err(ImportFailure::Entry("Already in the Vault".into()));
             }
             let value = source
@@ -484,15 +520,37 @@ async fn import_entry<S: EnvironmentSource>(
                 .await
                 .map_err(ImportFailure::from)?
                 .ok_or_else(missing_at_source)?;
-            // A value saved while the pull was pending wins over the imported one.
-            let stored = target
-                .vault
-                .set_secret_if_absent(
-                    &project_environment_vault_service(target.project_id),
+            // A value saved while the pull was pending wins over the imported one: it ended the link,
+            // or it is there before the first copy.
+            let link = snapshot
+                .linked
+                .contains(&entry.name)
+                .then(|| from_source(target));
+            let stored = if refresh {
+                target.links.write_if_linked(
+                    target.project_id,
                     &entry.name,
-                    &value,
+                    &from_source(target),
+                    || {
+                        if target.vault.find_secret(&service, &entry.name)?.as_deref()
+                            == Some(value.as_str())
+                        {
+                            return Ok(());
+                        }
+                        target.vault.set_secret(&service, &entry.name, &value)
+                    },
                 )
-                .map_err(vault_failure)?;
+            } else {
+                target
+                    .links
+                    .write_linked(target.project_id, &entry.name, link, || {
+                        target
+                            .vault
+                            .set_secret_if_absent(&service, &entry.name, &value)
+                    })
+            };
+            // A locked Vault keeps its own reason; a links file that cannot be saved reads as a Vault write.
+            let stored = stored.map_err(vault_failure)?;
             if stored {
                 Ok(())
             } else {
@@ -616,6 +674,7 @@ pub(crate) fn source_holdings(
     vault: &dyn CredentialVaultStore,
     registrations: &dyn RegistrationHost,
     checkout: &Path,
+    links: &SecretLinks,
     label: String,
 ) -> Result<SourceSnapshot, DaemonError> {
     let record = store.load(project_id)?;
@@ -624,6 +683,7 @@ pub(crate) fn source_holdings(
             label,
             record: None,
             secrets: Vec::new(),
+            linked: Vec::new(),
             files: Vec::new(),
             mcps: Vec::new(),
             skills: Vec::new(),
@@ -662,10 +722,16 @@ pub(crate) fn source_holdings(
         })
         .cloned()
         .collect();
+    let linked = links
+        .linked_names(project_id)?
+        .into_iter()
+        .filter(|name| secrets.contains(name))
+        .collect();
     Ok(SourceSnapshot {
         label,
         record,
         secrets,
+        linked,
         files,
         mcps,
         skills,
@@ -733,6 +799,8 @@ mod tests {
         /// Files come from this checkout, and each is replaced by different bytes of the same size
         /// once its first slice was read.
         replaced_checkout: Option<std::path::PathBuf>,
+        /// A pulled Secret reads `<value>-<name>`.
+        value: String,
     }
 
     /// The registrations of the kernel under test, in memory.
@@ -874,7 +942,7 @@ mod tests {
             if self.offline_after_read {
                 return Err(SourceError::Offline);
             }
-            Ok(Some(Zeroizing::new(format!("synthetic-{name}"))))
+            Ok(Some(Zeroizing::new(format!("{}-{name}", self.value))))
         }
         async fn pull_registration(
             &self,
@@ -935,6 +1003,7 @@ mod tests {
                 label: "A".into(),
                 record,
                 secrets: secrets.iter().map(|name| name.to_string()).collect(),
+                linked: Vec::new(),
                 files: files.iter().map(|name| name.to_string()).collect(),
                 mcps: Vec::new(),
                 skills: Vec::new(),
@@ -950,6 +1019,7 @@ mod tests {
             in_flight: Default::default(),
             most_in_flight: Default::default(),
             replaced_checkout: None,
+            value: "synthetic".into(),
         }
     }
 
@@ -971,6 +1041,7 @@ mod tests {
         store: ProjectEnvironmentStore,
         vault: MemoryVault,
         registrations: MemoryRegistrations,
+        links: SecretLinks,
         operations: Arc<EnvironmentOperations>,
         adopted: Mutex<Vec<u64>>,
     }
@@ -991,6 +1062,7 @@ mod tests {
                 ),
                 vault: MemoryVault::default(),
                 registrations: MemoryRegistrations::default(),
+                links: SecretLinks::new(&root.join("state")),
                 adopted: Mutex::default(),
                 checkout,
                 root,
@@ -1048,6 +1120,8 @@ mod tests {
                     store: &self.store,
                     vault: &self.vault,
                     registrations,
+                    links: &self.links,
+                    source_kernel: "kernel-a",
                     on_record: &on_record,
                 },
                 requested,
@@ -1454,6 +1528,7 @@ mod tests {
             &LockedVault,
             &rig.registrations,
             &rig.checkout,
+            &rig.links,
             "A".into(),
         )
         .unwrap();
@@ -1480,6 +1555,8 @@ mod tests {
                 store: &rig.store,
                 vault: &LockedVault,
                 registrations: &rig.registrations,
+                links: &rig.links,
+                source_kernel: "kernel-a",
                 on_record: &on_record,
             },
             None,
@@ -1807,5 +1884,143 @@ mod tests {
             vec!["free".to_string(), "late".into()],
             "the refused and the failed entries leave no skill behind"
         );
+    }
+
+    /// A source whose Secrets are `<value>-<name>`, with `linked` linked there.
+    fn linked_source(value: &str, secrets: &[&str], linked: &[&str]) -> FakeSource {
+        let mut from = source(Some(record(1, secrets, &[])), secrets, &[]);
+        from.value = value.into();
+        if let Ok(snapshot) = &mut from.snapshot {
+            snapshot.linked = linked.iter().map(|name| name.to_string()).collect();
+        }
+        from
+    }
+
+    fn secret(rig: &Rig, name: &str) -> Option<String> {
+        rig.vault
+            .find_secret(&project_environment_vault_service("p"), name)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_copy_of_a_linked_secret_follows_its_source_at_each_update_and_a_typed_value_is_kept() {
+        let rig = Rig::new();
+        let first = rig
+            .import("r1", &linked_source("v1", &["LINKED", "PLAIN"], &["LINKED"]), None)
+            .await;
+        assert_eq!(first.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(secret(&rig, "LINKED").as_deref(), Some("v1-LINKED"));
+        assert_eq!(rig.links.linked_names("p").unwrap(), vec!["LINKED".to_owned()]);
+
+        // The entry behind LINKED was rotated on the source: the next Update brings the new value.
+        // PLAIN is not linked there, so the copy here stays as it is and is not even asked for.
+        let rotated = linked_source("v2", &["LINKED", "PLAIN"], &["LINKED"]);
+        let second = rig.import("r2", &rotated, None).await;
+        assert_eq!(
+            states(&second),
+            vec![(
+                "LINKED".into(),
+                EnvironmentOperationEntryState::Imported,
+                None
+            )]
+        );
+        assert_eq!(secret(&rig, "LINKED").as_deref(), Some("v2-LINKED"));
+        assert_eq!(secret(&rig, "PLAIN").as_deref(), Some("v1-PLAIN"));
+        assert_eq!(*rotated.pulls.lock().unwrap(), vec!["LINKED".to_string()]);
+        assert!(!serde_json::to_string(&second).unwrap().contains("v2-LINKED"));
+
+        // The owner types a value here: that ends the link, and no later Update replaces it.
+        rig.links
+            .write_linked("p", "LINKED", None, || {
+                rig.vault
+                    .set_secret(&project_environment_vault_service("p"), "LINKED", "typed-here")
+                    .map(|()| true)
+            })
+            .unwrap();
+        let third = rig
+            .import("r3", &linked_source("v3", &["LINKED", "PLAIN"], &["LINKED"]), None)
+            .await;
+        assert!(third.entries.is_empty());
+        assert_eq!(secret(&rig, "LINKED").as_deref(), Some("typed-here"));
+        // Named on its own it is refused like any Secret already here.
+        let named = rig
+            .import(
+                "r4",
+                &linked_source("v4", &["LINKED"], &["LINKED"]),
+                Some(vec![EnvironmentEntryRef {
+                    kind: EnvironmentEntryKind::Secret,
+                    name: "LINKED".into(),
+                }]),
+            )
+            .await;
+        assert_eq!(
+            named.entries[0].reason.as_deref(),
+            Some("Already in the Vault")
+        );
+        assert_eq!(secret(&rig, "LINKED").as_deref(), Some("typed-here"));
+    }
+
+    #[tokio::test]
+    async fn a_copy_whose_source_no_longer_links_it_keeps_its_value_as_a_normal_secret() {
+        let rig = Rig::new();
+        rig.import("d1", &linked_source("v1", &["KEY"], &["KEY"]), None)
+            .await;
+        // The entry was deleted on the source: its Secret there is a normal one now.
+        let gone = linked_source("v2", &["KEY"], &[]);
+        let after = rig.import("d2", &gone, None).await;
+        assert!(after.entries.is_empty());
+        assert!(gone.pulls.lock().unwrap().is_empty());
+        assert_eq!(secret(&rig, "KEY").as_deref(), Some("v1-KEY"));
+        assert!(rig.links.linked_names("p").unwrap().is_empty());
+        // Linked again on the source later, the copy here is no longer one of its copies.
+        let relinked = rig
+            .import("d3", &linked_source("v3", &["KEY"], &["KEY"]), None)
+            .await;
+        assert!(relinked.entries.is_empty());
+        assert_eq!(secret(&rig, "KEY").as_deref(), Some("v1-KEY"));
+    }
+
+    #[tokio::test]
+    async fn a_copy_from_another_kernel_is_not_replaced_by_this_source() {
+        let rig = Rig::new();
+        rig.links
+            .write_linked("p", "KEY", Some(SecretLink::Peer("kernel-b".into())), || {
+                rig.vault
+                    .set_secret(&project_environment_vault_service("p"), "KEY", "from-b")
+                    .map(|()| true)
+            })
+            .unwrap();
+        let view = rig
+            .import("o1", &linked_source("v1", &["KEY"], &["KEY"]), None)
+            .await;
+        assert!(view.entries.is_empty());
+        assert_eq!(secret(&rig, "KEY").as_deref(), Some("from-b"));
+    }
+
+    #[test]
+    fn the_source_names_its_linked_secrets_that_it_holds() {
+        let rig = Rig::new();
+        rig.store
+            .save("p", 0, record(1, &["LINKED", "PLAIN", "EMPTY"], &[]))
+            .unwrap();
+        let service = project_environment_vault_service("p");
+        rig.vault.set_secret(&service, "LINKED", "x").unwrap();
+        rig.vault.set_secret(&service, "PLAIN", "y").unwrap();
+        for name in ["LINKED", "EMPTY"] {
+            rig.links
+                .write_linked("p", name, Some(SecretLink::Entry("cap".into())), || Ok(true))
+                .unwrap();
+        }
+        let held = source_holdings(
+            &rig.store,
+            "p",
+            &rig.vault,
+            &rig.registrations,
+            &rig.checkout,
+            &rig.links,
+            "A".into(),
+        )
+        .unwrap();
+        assert_eq!(held.linked, vec!["LINKED".to_owned()]);
     }
 }
