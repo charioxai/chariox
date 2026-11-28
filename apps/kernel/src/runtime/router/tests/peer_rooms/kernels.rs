@@ -684,7 +684,8 @@ fn receipt_unconfirmed_inline_message_waits_for_peer_provider_acceptance() {
             delivery,
             Some(crate::transport::relay_peer_agents::AgentMessageDelivery::Queued)
         );
-        rooms.wait_for_message_state(sequence, "accepted").await;
+        // Inline text settles on the actual provider receipt in the same transaction.
+        rooms.wait_for_message_state(sequence, "acknowledged").await;
         let RelayPeerResponse::PeerAgentAccepted {
             delivery,
             duplicate,

@@ -630,7 +630,8 @@ fn receipt_unconfirmed_inline_message_waits_for_local_provider_acceptance() {
         let resent = send_to(&rooms, "peer", key.clone()).await;
         assert_eq!(resent["sequence"], sequence);
         assert_eq!(resent["status"], "queued");
-        rooms.wait_for_message_state(sequence, "accepted").await;
+        // Inline text settles on the actual provider receipt in the same transaction.
+        rooms.wait_for_message_state(sequence, "acknowledged").await;
         let accepted = send_to(&rooms, "peer", key).await;
         assert_eq!(accepted["sequence"], sequence);
         assert!(matches!(

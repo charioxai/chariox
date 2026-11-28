@@ -163,16 +163,22 @@ impl Rooms {
     }
 
     async fn wait_for_message_state(&self, sequence: u64, state: &str) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
+                // Router fixtures have no daemon loop to reap the provider's real result.
+                self.app.lock().await.reap_structured_prompt_jobs();
                 if self.inline_message_row(sequence).await.0.state == state {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
-        .await
-        .expect("provider acceptance settles the same message");
+        .await;
+        assert!(
+            settled.is_ok(),
+            "message {sequence} expected {state}, actual {:?}",
+            self.inline_message_row(sequence).await.0
+        );
     }
 
     async fn send(&self, args: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
