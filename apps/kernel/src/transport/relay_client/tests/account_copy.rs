@@ -286,6 +286,12 @@ fn account_copy_same_kernel_links_share_the_source_credential() {
 }
 
 #[test]
+fn account_copy_repaired_background_failure_retries_the_same_operation() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::RecoverableRetry);
+}
+
+#[test]
 fn account_copy_verification_allows_unrelated_profile_operations() {
     crate::test_support::isolated_env_test!();
     run_account_copy_drill(CopyScenario::RegistryAccess);
@@ -322,6 +328,7 @@ enum CopyScenario {
     RentedReceiver,
     Recipient,
     Serial,
+    RecoverableRetry,
     RegistryAccess,
     ChangedProfile,
     Bidirectional,
@@ -1229,6 +1236,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             )
         };
         assert_eq!(notices(read_vault().await.unwrap()).len(), 1);
+        let saved_cli = fake.with_extension("saved");
+        if scenario == CopyScenario::RecoverableRetry {
+            std::fs::rename(&fake, &saved_cli).unwrap();
+        }
         source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
             "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
         }})).await.unwrap();
@@ -1257,19 +1268,53 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 })
                 .unwrap_or_default()
         };
-        tokio::time::timeout(Duration::from_secs(12), async {
-            loop {
-                let copy = progress(read_progress().await.unwrap(), "copy-3");
-                if copy["status"] == "installed" {
-                    assert_eq!(copy["receipt"]["account_profile"], target_id);
-                    break;
+        if scenario == CopyScenario::RecoverableRetry {
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-3");
+                    if copy["status"] == "failed" {
+                        assert_eq!(copy["code"], "provider_account_copy_cli_missing");
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await;
                 }
-                assert_ne!(copy["status"], "failed", "{copy}");
-                sleep(Duration::from_millis(100)).await;
-            }
-        })
-        .await
-        .expect("source must resume the copy after target unlock");
+            })
+            .await
+            .expect("the resumed copy must report the missing receiving CLI");
+            let mut changed = request.clone();
+            changed["CopyProviderAccountToKernel"]["replace"] = false.into();
+            assert_code(
+                source_request(&source_router, changed).await,
+                "provider_account_copy_conflict",
+                canary,
+            );
+            std::fs::rename(&saved_cli, &fake).unwrap();
+            let installed = source_request(&source_router, request.clone())
+                .await
+                .expect("repair must let the SAME operation retry reach the receiving kernel");
+            let receipt = &installed["ProviderAccountCopied"]["receipt"];
+            assert_eq!(receipt["operation_id"], "copy-3");
+            assert_eq!(receipt["account_profile"], target_id);
+            assert_eq!(
+                source_request(&source_router, request.clone()).await.unwrap(),
+                installed,
+                "an installed retry must replay the same receipt"
+            );
+        } else {
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-3");
+                    if copy["status"] == "installed" {
+                        assert_eq!(copy["receipt"]["account_profile"], target_id);
+                        break;
+                    }
+                    assert_ne!(copy["status"], "failed", "{copy}");
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("source must resume the copy after target unlock");
+        }
         assert!(notices(read_vault().await.unwrap()).is_empty());
         assert!(source_request(&source_router, request.clone())
             .await
@@ -1277,7 +1322,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             .get("ProviderAccountCopied")
             .is_some());
 
-        if scenario == CopyScenario::Serial {
+        if matches!(
+            scenario,
+            CopyScenario::Serial | CopyScenario::RecoverableRetry
+        ) {
             let mut cancel_copy = request.clone();
             cancel_copy["CopyProviderAccountToKernel"]["operation_id"] = "copy-cancelled".into();
             crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
