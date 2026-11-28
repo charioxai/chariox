@@ -11,8 +11,8 @@ use super::placement::{ExecPlacement, PlacementFuture};
 use super::{error, ExecOutput, LaunchIntent};
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonRequest, LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest,
-    RoomTerminalResult,
+    LocalDaemonRequest, LocalDaemonResponse, RunCommandOperation, RunCommandRequest,
+    RunCommandResult,
 };
 use crate::runtime::kernel_gateway::{forward_with_retry, GatewayError};
 
@@ -91,12 +91,13 @@ impl GatewayExecPlacement {
         &self,
         command_id: String,
         acting_agent: Option<String>,
-        operation: RoomTerminalOperation,
-    ) -> Result<RoomTerminalResult, DaemonError> {
-        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
-            session_id: self.target_session_id.clone(),
+        operation: RunCommandOperation,
+    ) -> Result<RunCommandResult, DaemonError> {
+        let request = LocalDaemonRequest::RunCommand(RunCommandRequest {
+            target: crate::local::CommandTarget::RoomWorkspace {
+                session_id: self.target_session_id.clone(),
+            },
             acting_agent,
-            host_agent: None,
             operation,
         });
         let (grant, sent) = (&*self.grant, &request);
@@ -104,7 +105,7 @@ impl GatewayExecPlacement {
             .await
             .map_err(|failure| error(failure.code(), failure.transport_error().message))?;
         match serde_json::from_value(answer) {
-            Ok(LocalDaemonResponse::RoomTerminal { result }) => Ok(result),
+            Ok(LocalDaemonResponse::RunCommand { result }) => Ok(result),
             _ => Err(error(
                 "exec_target_unreadable",
                 "the other kernel answered with something that is not a Room exec result",
@@ -221,11 +222,13 @@ impl ExecPlacement for GatewayExecPlacement {
     ) -> PlacementFuture<'a, String> {
         Box::pin(async move {
             let command_id = format!("place:{}:open", intent.exec_id);
-            let operation = RoomTerminalOperation::ExecOpen {
+            let operation = RunCommandOperation::ExecOpen {
                 command: intent.command.clone(),
+                directory: None,
+                timeout_ms: intent.timeout_ms,
             };
             match self.call(command_id, attributed_agent, operation).await? {
-                RoomTerminalResult::ExecOpened { exec_id } => Ok(exec_id),
+                RunCommandResult::ExecOpened { exec_id } => Ok(exec_id),
                 _ => Err(unexpected()),
             }
         })
@@ -238,14 +241,14 @@ impl ExecPlacement for GatewayExecPlacement {
         data_base64: &'a str,
     ) -> PlacementFuture<'a, u64> {
         Box::pin(async move {
-            let operation = RoomTerminalOperation::ExecWrite {
+            let operation = RunCommandOperation::ExecWrite {
                 exec_id: exec_id.to_owned(),
                 offset,
                 data_base64: data_base64.to_owned(),
             };
             let command_id = format!("place:{exec_id}:write:{offset}");
             match self.call(command_id, None, operation).await? {
-                RoomTerminalResult::ExecInput { next_offset } => Ok(next_offset),
+                RunCommandResult::ExecInput { next_offset } => Ok(next_offset),
                 _ => Err(unexpected()),
             }
         })
@@ -253,13 +256,13 @@ impl ExecPlacement for GatewayExecPlacement {
 
     fn close_stdin<'a>(&'a self, exec_id: &'a str, offset: u64) -> PlacementFuture<'a, u64> {
         Box::pin(async move {
-            let operation = RoomTerminalOperation::ExecStdinClose {
+            let operation = RunCommandOperation::ExecStdinClose {
                 exec_id: exec_id.to_owned(),
                 offset,
             };
             let command_id = format!("place:{exec_id}:stdin-close:{offset}");
             match self.call(command_id, None, operation).await? {
-                RoomTerminalResult::ExecInput { next_offset } => Ok(next_offset),
+                RunCommandResult::ExecInput { next_offset } => Ok(next_offset),
                 _ => Err(unexpected()),
             }
         })
@@ -272,14 +275,14 @@ impl ExecPlacement for GatewayExecPlacement {
         wait: Duration,
     ) -> PlacementFuture<'a, ExecOutput> {
         Box::pin(async move {
-            let operation = RoomTerminalOperation::ExecRead {
+            let operation = RunCommandOperation::ExecRead {
                 exec_id: exec_id.to_owned(),
                 after_cursor,
                 wait_ms: u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
             };
             let command_id = format!("place:{exec_id}:read:{after_cursor}");
             match self.call(command_id, None, operation).await? {
-                RoomTerminalResult::ExecOutput { output } => Ok(output),
+                RunCommandResult::ExecOutput { output } => Ok(output),
                 _ => Err(unexpected()),
             }
         })
@@ -287,12 +290,12 @@ impl ExecPlacement for GatewayExecPlacement {
 
     fn cancel<'a>(&'a self, exec_id: &'a str) -> PlacementFuture<'a, ()> {
         Box::pin(async move {
-            let operation = RoomTerminalOperation::ExecCancel {
+            let operation = RunCommandOperation::ExecCancel {
                 exec_id: exec_id.to_owned(),
             };
             let command_id = format!("place:{exec_id}:cancel");
             match self.call(command_id, None, operation).await? {
-                RoomTerminalResult::ExecCancelled => Ok(()),
+                RunCommandResult::ExecCancelled => Ok(()),
                 _ => Err(unexpected()),
             }
         })

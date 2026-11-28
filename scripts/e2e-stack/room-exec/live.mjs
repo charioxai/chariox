@@ -52,7 +52,7 @@ function cli(argv) {
 }
 
 function command(argv, extra = []) {
-  return cli(['exec', '--socket', fixture.envs.A.CHARIOX_DAEMON_SOCKET,
+  return cli(['exec', '--timeout', '600', '--socket', fixture.envs.A.CHARIOX_DAEMON_SOCKET,
     '--kernel', fixture.target, ...extra, '--', ...argv])
 }
 

@@ -192,6 +192,7 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         }
         RelayPeerRequest::ResizeLeasedProviderTerminal { .. } => "resize_leased_provider_terminal",
         RelayPeerRequest::RoomTerminal { .. } => "room_terminal",
+        RelayPeerRequest::RunAgentCommand { .. } => "run_agent_command",
         RelayPeerRequest::SubmitLeasedPrompt { .. } => "submit_leased_prompt",
         RelayPeerRequest::UpdateLeasedSudo { .. } => "update_leased_sudo",
         RelayPeerRequest::GetLeasedPromptReceipt { .. } => "get_leased_prompt_receipt",

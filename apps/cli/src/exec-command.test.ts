@@ -11,8 +11,7 @@ function sink(chunks: Buffer[]): Writable {
 }
 
 const options = { session: "room", command: ["/bin/cat"] }
-function result(value: object) { return { RoomTerminal: { result: value } } }
-function capabilities() { return { RelayStatus: { status: { capabilities: ["room_exec_v1"] } } } }
+function result(value: object) { return { RunCommand: { result: value } } }
 
 for (const stream of ["stdout", "stderr"] as const) test(`exec renews its lease while a finished page blocks on ${stream}`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] })
@@ -29,8 +28,7 @@ for (const stream of ["stdout", "stderr"] as const) test(`exec renews its lease 
     { cursor: 2, stream, data_base64: "AP8NCg==" },
   ], next_cursor: 2, outcome: { kind: "exited", code: 23 } }
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
     if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
     if (["exec_read", "exec_close"].includes(String(op.operation))) {
       if (Date.now() - lastRead >= 300_000) throw new CommandFailure("exec_not_found", "reader lease expired")
@@ -73,8 +71,7 @@ test("exec reports a lease renewal failure while local output remains blocked", 
   let release: (() => void) | undefined
   const blocked = new Writable({ write(_chunk, _encoding, done) { release = done } })
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
     if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
     if (op.operation === "exec_read") {
       if (op.wait_ms === 0) throw new CommandFailure("kernel_connection_lost", "lost during lease renewal")
@@ -101,8 +98,7 @@ test("exec settles a pending lease renewal before acknowledging the next page", 
   let reads = 0
   const blocked = new Writable({ write(_chunk, _encoding, done) { releaseWrite = done } })
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
     if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
     if (op.operation === "exec_read") {
       if (op.wait_ms === 0) {
@@ -136,8 +132,7 @@ test("exec drains early binary output while its input remains open", async () =>
   let accepted = 0, reads = 0, closed = false
   const pending: (() => void)[] = []
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const operation = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    const operation = (body.RunCommand as { operation: Record<string, unknown> }).operation
     switch (operation.operation) {
       case "exec_open": return result({ result: "exec_opened", exec_id: "exec-1" })
       case "exec_write": {
@@ -179,8 +174,7 @@ test("exec exits and releases an idle stdin even when the program ignores input"
   const input = new PassThrough()
   const calls: string[] = []
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const op = (body.RunCommand as { operation: { operation: string } }).operation.operation
     calls.push(op)
     return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
       : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "signaled", signal: 15 } } }
@@ -191,20 +185,10 @@ test("exec exits and releases an idle stdin even when the program ignores input"
   assert.deepEqual(calls, ["exec_open", "exec_read", "exec_close"])
 })
 
-test("exec refuses an older kernel before creating a temporary Room", async () => {
-  const calls: string[] = []
-  await assert.rejects(runExec({ workspace: "/work", command: ["cat"] }, async body => {
-    calls.push(Object.keys(body)[0]!)
-    return { RelayStatus: { status: { capabilities: ["room_terminal_v1"] } } }
-  }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), /update it/)
-  assert.deepEqual(calls, ["RelayStatus"])
-})
-
 test("exec retries only a busy input offset while the output consumer continues", async () => {
   let attempted = false, busy = true, closed = false
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const operation = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    const operation = (body.RunCommand as { operation: Record<string, unknown> }).operation
     if (operation.operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
     if (operation.operation === "exec_write") {
       assert.equal(operation.offset, 0); attempted = true
@@ -228,8 +212,7 @@ for (const [signal, exit] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) test(
   let writing: (() => void) | undefined
   const blocked = new Writable({ write(_chunk, _encoding, done) { writing = done } })
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const op = (body.RunCommand as { operation: { operation: string } }).operation.operation
     calls.push(op)
     return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
       : op === "exec_read" ? { result: "exec_output", output: { chunks: [{ cursor: 1, stream: "stdout", data_base64: "YQ==" }], next_cursor: 1, outcome: null } }
@@ -248,8 +231,7 @@ test("exec keeps resume details when cancellation loses its connection", async (
   let writing: (() => void) | undefined
   const blocked = new Writable({ write(_chunk, _encoding, done) { writing = done } })
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const op = (body.RunCommand as { operation: { operation: string } }).operation.operation
     if (op === "exec_cancel") throw new CommandFailure("kernel_connection_lost", "lost cancellation")
     return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
       : { result: "exec_output", output: { chunks: [{ cursor: 1, stream: "stdout", data_base64: "YQ==" }], next_cursor: 1, outcome: null } })
@@ -269,8 +251,7 @@ test("exec handles a pipe error arriving after interrupted stdout", async () => 
   let writing: ((error: Error) => void) | undefined
   const blocked = new Writable({ write(_chunk, _encoding, done) { writing = done } })
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const op = (body.RunCommand as { operation: { operation: string } }).operation.operation
     return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
       : op === "exec_read" ? { result: "exec_output", output: { chunks: [{ cursor: 1, stream: "stdout", data_base64: "YQ==" }], next_cursor: 1, outcome: null } }
         : { result: op === "exec_cancel" ? "exec_cancelled" : "exec_closed" })
@@ -290,60 +271,61 @@ for (const [operation, code, expected, exit] of [
   ["connect kernel websocket", "connection_closed", "kernel_unreachable", 4],
 ] as const) test(`exec normalizes real LocalIpcError ${operation}/${code} with resume details`, async () => {
   await assert.rejects(runExec(options, async body => {
-    if ("RelayStatus" in body) return capabilities()
     throw new LocalIpcError(operation, "transport lost", code)
   }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
     assert.ok(error instanceof CommandFailure)
     assert.equal(error.code, expected)
     assert.equal(exitCodeFor(error.code), exit)
-    assert.equal(error.details?.session_id, "room")
+    assert.deepEqual(error.details?.target, { kind: "room_workspace", session_id: "room" })
     return true
   })
 })
 
-for (const code of ["terminal_refused", "kernel_access_ended", "kernel_access_denied", "exec_spawn_failed", "future_open_refusal"]) {
-  test(`exec removes its temporary Room after definite ${code}`, async () => {
+for (const code of ["kernel_access_ended", "exec_access_denied", "exec_spawn_failed", "future_open_refusal"]) {
+  test(`exec preserves a definite ${code} refusal without allocating a Room`, async () => {
     const calls: string[] = []
     await assert.rejects(runExec({ workspace: "/work", command: ["cat"] }, async body => {
       calls.push(Object.keys(body)[0]!)
-      if ("RelayStatus" in body) return capabilities()
-      if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
-      if ("EndSession" in body) return {}
       throw new LocalIpcError("handle kernel response", "open refused", code)
-    }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
+    }, { stdin: undefined, stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
       assert.ok(error instanceof CommandFailure)
       assert.equal(error.code, code)
       assert.equal(error.details?.next_step, undefined)
       return true
     })
-    assert.equal(calls.at(-1), "EndSession")
+    assert.deepEqual(calls, ["RunCommand"])
   })
 }
 
-test("exec cleanup failure preserves a command exit and reports the retained Room", async () => {
-  const warnings: Buffer[] = []
-  const code = await runExec({ workspace: "/work", command: ["false"] }, async body => {
-    if ("RelayStatus" in body) return capabilities()
-    if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
-    if ("EndSession" in body) throw new Error("cleanup lost")
-    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
-    return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
-      : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "exited", code: 23 } } }
-        : { result: "exec_closed" })
-  }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink(warnings) })
-  assert.equal(code, 23)
-  assert.match(Buffer.concat(warnings).toString(), /temp-room/)
+test("exec opens the kernel target in the workspace directory and closes empty stdin", async () => {
+  let eof = false
+  const outcome = { kind: "timed_out", timeout_ms: 1000, exit: { kind: "signaled", signal: 9 } }
+  await assert.rejects(runExec({ workspace: "/work", command: ["cat"], timeoutSeconds: 1 }, async body => {
+    const request = body.RunCommand as import("@chariox/kernel-client/kernel-types").RunCommandRequest
+    assert.deepEqual(request.target, { kind: "kernel" })
+    if (request.operation.operation === "exec_open") {
+      assert.deepEqual(request.operation, { operation: "exec_open", command: ["cat"], directory: "/work", timeout_ms: 1000 })
+      return result({ result: "exec_opened", exec_id: "exec-1" })
+    }
+    if (request.operation.operation === "exec_stdin_close") {
+      eof = true
+      assert.equal(request.operation.offset, 0)
+      return result({ result: "exec_input", next_offset: 0 })
+    }
+    if (request.operation.operation === "exec_read") {
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(eof, true)
+      return result({ result: "exec_output", output: { chunks: [], next_cursor: 0, outcome } })
+    }
+    return result({ result: "exec_closed" })
+  }, { stdin: undefined, stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
+    assert.ok(error instanceof CommandFailure)
+    assert.equal(error.code, "exec_timed_out")
+    assert.deepEqual(error.details?.outcome, outcome)
+    assert.match(error.message, /didn't finish in 1 s and was stopped \(signal 9\)/)
+    return true
+  })
 })
-
-test("exec cleanup failure preserves the original open refusal", async () => {
-  await assert.rejects(runExec({ workspace: "/work", command: ["cat"] }, async body => {
-    if ("RelayStatus" in body) return capabilities()
-    if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
-    if ("EndSession" in body) throw new Error("cleanup lost")
-    throw new LocalIpcError("handle kernel response", "open refused", "terminal_refused")
-  }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => error instanceof CommandFailure && error.code === "terminal_refused")
-})
-
 
 test("exec preserves the interrupt exit when canceled pipes report incomplete output", async () => {
   const signals = new EventEmitter() as NodeJS.Process
@@ -351,8 +333,7 @@ test("exec preserves the interrupt exit when canceled pipes report incomplete ou
   let cancelled!: () => void
   const done = new Promise<void>(resolve => { cancelled = resolve })
   const code = runExec(options, async body => {
-    if ("RelayStatus" in body) return capabilities()
-    const operation = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const operation = (body.RunCommand as { operation: { operation: string } }).operation.operation
     if (operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
     if (operation === "exec_cancel") { cancelled(); return result({ result: "exec_cancelled" }) }
     if (operation === "exec_read") {
@@ -369,28 +350,23 @@ test("exec preserves the interrupt exit when canceled pipes report incomplete ou
 for (const [code, probedLoss] of [
   ["kernel_request_timeout", false], ["kernel_connection_lost", false],
   ["kernel_outcome_unknown", false], ["kernel_access_ended", true],
-] as const) test(`uncertain open retains its Room after ${code} (probe=${probedLoss})`, async () => {
-  let ended = false
+] as const) test(`uncertain open identifies its target after ${code} (probe=${probedLoss})`, async () => {
   await assert.rejects(runExec({ workspace: "/work", command: ["cat"] }, async body => {
-    if ("RelayStatus" in body) return capabilities()
-    if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
-    if ("EndSession" in body) { ended = true; return {} }
+    assert.deepEqual(Object.keys(body), ["RunCommand"])
     throw probedLoss ? new CommandFailure(code, "grant ended after an uncertain write")
       : new LocalIpcError("handle kernel response", "gateway outcome is unknown", code)
   }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
     assert.ok(error instanceof CommandFailure)
-    assert.match(String(error.details?.next_step), /retained Room/)
+    assert.match(String(error.details?.next_step), /exec_list/)
     return true
   })
-  assert.equal(ended, false)
 })
 
 
 test("exec reports a typed memory stop after collecting the command", async () => {
   const calls: string[] = []
   const send = async (body: Record<string, unknown>) => {
-    if ("RelayStatus" in body) return capabilities()
-    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const op = (body.RunCommand as { operation: { operation: string } }).operation.operation
     calls.push(op)
     return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
       : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "memory_limit", limit_bytes: 100663296 } } }

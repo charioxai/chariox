@@ -126,6 +126,7 @@ impl RoomExecService {
         let exec = intent.exec_id.clone();
         let running = streams.is_some();
         let record = Arc::new(Record {
+            scope: intent.session_id.clone(),
             intent,
             launch_command: Vec::new(),
             job: true,

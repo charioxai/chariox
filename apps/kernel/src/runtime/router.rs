@@ -156,10 +156,10 @@ mod tests {
         ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         PumpTerminalOutputRequest, ReadMetaagentEventRequest, RelayStatusRequest,
         RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
-        ResolveWorkflowRequest, RunShellCapabilityRequest, SearchMetaagentCommandsRequest,
-        SpawnAgentRequest, SteerQueuedPromptRequest, SubmitPromptRequest,
-        TeardownProviderProcessesRequest, UpdateSessionConfigRequest, WorkflowDesignEdge,
-        WorkflowDesignEndpoint, WorkflowDesignNode, WorkflowDesignNodePatch, WorkflowDesignOp,
+        ResolveWorkflowRequest, SearchMetaagentCommandsRequest, SpawnAgentRequest,
+        SteerQueuedPromptRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
+        UpdateSessionConfigRequest, WorkflowDesignEdge, WorkflowDesignEndpoint, WorkflowDesignNode,
+        WorkflowDesignNodePatch, WorkflowDesignOp,
     };
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo,

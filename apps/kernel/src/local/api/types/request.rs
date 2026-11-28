@@ -404,7 +404,7 @@ pub enum LocalDaemonRequest {
     PumpTerminalOutput(PumpTerminalOutputRequest),
     AppendNativeProviderOutput(AppendNativeProviderOutputRequest),
     AppendNativeProviderOutputBatch(AppendNativeProviderOutputBatchRequest),
-    RunShellCommand(RunShellCapabilityRequest),
+    RunCommand(RunCommandRequest),
     ReadDirectoryTree(ReadDirectoryTreeCapabilityRequest),
     ReadFile(ReadFileCapabilityRequest),
     EditFile(EditFileCapabilityRequest),

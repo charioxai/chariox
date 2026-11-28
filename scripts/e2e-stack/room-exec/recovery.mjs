@@ -35,10 +35,10 @@ async function request(operation) {
   const stdout = [], stderr = []
   child.stdout.on('data', bytes => stdout.push(bytes))
   child.stderr.on('data', bytes => stderr.push(bytes))
-  child.stdin.end(JSON.stringify({ RoomTerminal: { session_id: session, operation } }))
+  child.stdin.end(JSON.stringify({ RunCommand: { target: { kind: 'room_workspace', session_id: session }, operation } }))
   const status = await child.done
   assert.equal(status.code, 0, Buffer.concat(stderr).toString())
-  return JSON.parse(Buffer.concat(stdout).toString()).RoomTerminal.result
+  return JSON.parse(Buffer.concat(stdout).toString()).RunCommand.result
 }
 async function exists(pid) {
   assert.ok(Number.isSafeInteger(pid) && pid > 1)

@@ -20,7 +20,7 @@ impl JobTargets {
             )
         })?;
         validate_machine_target(target, presence)?;
-        if !["kernel_gateway_v1", "room_terminal_v1", "room_exec_v1"]
+        if !["kernel_gateway_v1", "run_command_v1"]
             .into_iter()
             .all(|capability| {
                 presence
@@ -75,7 +75,7 @@ mod tests {
             capabilities: vec![
                 "kernel_gateway_v1".into(),
                 "room_terminal_v1".into(),
-                "room_exec_v1".into(),
+                "run_command_v1".into(),
             ],
             accepting_remote_leases: false,
             leased_agent_count: 0,

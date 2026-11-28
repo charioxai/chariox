@@ -58,13 +58,6 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
       case "GetSessionState": return { SessionState: { agent_activity: {} } }
       case "PollRuntimeNotices": return { RuntimeNotices: { notices: [] } }
       case "PumpTerminalOutput": return { TerminalOutput: { records: [] } }
-      case "RunShellCommand": {
-        // The former local --server-in-kernel path starts a bare server.
-        const command = (payload.args as string[])[1] ?? ""
-        const listen = command.match(/--listen '(ws:\/\/[^']+)'/)?.[1]
-        if (listen) await server(false, Number(new URL(listen).port))
-        return { ShellCommandCompleted: { result: { exit_code: 0, stdout: "fixture-pid", stderr: "" } } }
-      }
       default: throw new Error(`unexpected kernel request ${kind}`)
     }
   })

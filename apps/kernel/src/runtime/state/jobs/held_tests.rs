@@ -486,8 +486,8 @@ impl crate::room_exec::gateway_placement::GrantedSend for Machine {
             if cleanup && fault == Fault::CleanupDown {
                 return Err(outage());
             }
-            let removal = matches!(request, LocalDaemonRequest::RoomTerminal(room)
-                if matches!(&room.operation, crate::local::RoomTerminalOperation::ExecOpen { command } if command.first().map(String::as_str) == Some("/bin/rm")));
+            let removal = matches!(request, LocalDaemonRequest::RunCommand(room)
+                if matches!(&room.operation, crate::local::RunCommandOperation::ExecOpen { command, .. } if command.first().map(String::as_str) == Some("/bin/rm")));
             let reply = if crate::runtime::kernel_gateway::ledger::is_repeatable(request) {
                 self.kernel.send(id, request).await
             } else {

@@ -3,9 +3,10 @@ use std::time::Duration;
 use crate::support::kernel_websocket::*;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{
-    AttachToSessionRequest, GetProviderCatalogRequest, GetSessionHistoryOutlineRequest,
-    GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
-    LocalDaemonRequest, RunShellCapabilityRequest, SubmitPromptRequest,
+    AttachToSessionRequest, CommandTarget, GetProviderCatalogRequest,
+    GetSessionHistoryOutlineRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+    ListProviderProcessesRequest, LocalDaemonRequest, RunCommandOperation as Op, RunCommandRequest,
+    SubmitPromptRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
 use chariox_kernel::{DaemonApp, DaemonConfig};
@@ -685,18 +686,36 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
         let provider_run_id = provider_run_id_from_launch_response(&provider_response);
         wait_for_provider_run_state(&mut socket, &provider_run_id, "Running").await;
 
+        let command = |operation| {
+            LocalDaemonRequest::RunCommand(RunCommandRequest {
+                target: CommandTarget::RoomWorkspace {
+                    session_id: session_id.clone(),
+                },
+                acting_agent: None,
+                operation,
+            })
+        };
+        let opened = send_request(
+            &mut socket,
+            "open-command",
+            command(Op::ExecOpen {
+                command: vec!["sh".into(), "-c".into(), "sleep 2".into()],
+                directory: None,
+                timeout_ms: Some(3_000),
+            }),
+        )
+        .await;
+        let exec_id = response_variant(&opened, "RunCommand")["result"]["exec_id"]
+            .as_str()
+            .expect("expected a command ID")
+            .to_string();
         send_frame(
             &mut socket,
             json!({
                 "type": "request",
                 "request_id": "slow-shell",
-                "request": LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
-                    session_id: session_id.clone(),
-                    attachment_id: attachment_id.clone(),
-                    command: "sh".to_string(),
-                    args: vec!["-c".to_string(), "sleep 2".to_string()],
-                    working_directory: None,
-                    timeout_ms: Some(3_000),
+                "request": command(Op::ExecRead {
+                    exec_id: exec_id.clone(), after_cursor: 0, wait_ms: 1_000,
                 }),
             }),
         )
@@ -738,9 +757,15 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
             wait_for_response_with_timeout(&mut socket, "slow-shell", Duration::from_secs(10))
                 .await;
         assert!(
-            response_variant(&shell_response, "ShellCommandCompleted")["result"].is_object(),
-            "shell capability should still complete: {shell_response}"
+            response_variant(&shell_response, "RunCommand")["result"]["result"] == "exec_output",
+            "command read should still complete: {shell_response}"
         );
+        send_request(
+            &mut socket,
+            "close-command",
+            command(Op::ExecClose { exec_id }),
+        )
+        .await;
 
         let _ = shutdown_tx.send(());
         server

@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
+    CommandTarget, LocalDaemonResponse, RunCommandOperation, RunCommandRequest, RunCommandResult,
 };
 use crate::room_exec::gateway_placement::OriginGrant;
 use crate::room_exec::{destinations, offer_placement, ExecState};
@@ -16,14 +16,14 @@ use crate::runtime::command::KernelCaller;
 const OFFER_WAIT: Duration = Duration::from_secs(2);
 
 impl CommandRouter {
-    pub(super) async fn room_terminal(
+    pub(super) async fn run_command(
         &self,
         caller: &KernelCaller,
-        request: RoomTerminalRequest,
+        request: RunCommandRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let state = &self.runtime_state;
-        match &request.operation {
-            RoomTerminalOperation::ExecPlace { kernel, .. } => {
+        match (&request.operation, &request.target) {
+            (RunCommandOperation::ExecPlace { kernel, .. }, _) => {
                 let placer = state.authorize_exec_place(caller, &request)?;
                 let grant = Arc::new(OriginGrant::new(self.clone(), placer.origin, kernel));
                 let result = state
@@ -34,16 +34,16 @@ impl CommandRouter {
                         grant,
                     )
                     .await?;
-                Ok(LocalDaemonResponse::RoomTerminal { result })
+                Ok(LocalDaemonResponse::RunCommand { result })
             }
-            RoomTerminalOperation::ExecList => {
-                let session_id = request.session_id.clone();
-                let mut response = state.room_terminal_for_client(caller, request).await?;
+            (RunCommandOperation::ExecList, CommandTarget::RoomWorkspace { session_id }) => {
+                let session_id = session_id.clone();
+                let mut response = state.run_command_for_client(caller, request).await?;
                 self.offer_placement(caller, &session_id, &mut response)
                     .await;
                 Ok(response)
             }
-            _ => state.room_terminal_for_client(caller, request).await,
+            _ => state.run_command_for_client(caller, request).await,
         }
     }
 
@@ -55,8 +55,8 @@ impl CommandRouter {
         session_id: &str,
         response: &mut LocalDaemonResponse,
     ) {
-        let LocalDaemonResponse::RoomTerminal {
-            result: RoomTerminalResult::ExecListed { execs },
+        let LocalDaemonResponse::RunCommand {
+            result: RunCommandResult::ExecListed { execs },
         } = response
         else {
             return;
@@ -67,11 +67,12 @@ impl CommandRouter {
         {
             return;
         }
-        let asking = RoomTerminalRequest {
-            session_id: session_id.to_owned(),
+        let asking = RunCommandRequest {
+            target: crate::local::CommandTarget::RoomWorkspace {
+                session_id: session_id.to_owned(),
+            },
             acting_agent: None,
-            host_agent: None,
-            operation: RoomTerminalOperation::ExecPlace {
+            operation: RunCommandOperation::ExecPlace {
                 exec_id: String::new(),
                 kernel: String::new(),
                 directory: None,

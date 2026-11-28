@@ -205,8 +205,13 @@ impl CommandRouter {
             LocalDaemonRequest::LaunchProviderRuns(request) => boxed_handler(|| async move {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }),
-            LocalDaemonRequest::RoomTerminal(request) => {
-                boxed_handler(|| async move { self.room_terminal(&command.caller, request).await })
+            LocalDaemonRequest::RoomTerminal(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .room_terminal_for_client(&command.caller, request)
+                    .await
+            }),
+            LocalDaemonRequest::RunCommand(request) => {
+                boxed_handler(|| async move { self.run_command(&command.caller, request).await })
             }
             LocalDaemonRequest::KernelTerminal(request) => boxed_handler(|| async move {
                 self.runtime_state
@@ -944,8 +949,7 @@ impl CommandRouter {
                     .await
                 })
             }
-            request @ (LocalDaemonRequest::RunShellCommand(_)
-            | LocalDaemonRequest::ReadDirectoryTree(_)
+            request @ (LocalDaemonRequest::ReadDirectoryTree(_)
             | LocalDaemonRequest::ReadFile(_)
             | LocalDaemonRequest::EditFile(_)
             | LocalDaemonRequest::InspectGit(_)

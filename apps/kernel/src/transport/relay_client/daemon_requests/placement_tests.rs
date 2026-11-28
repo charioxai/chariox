@@ -11,9 +11,7 @@ use std::time::Duration;
 use base64::Engine as _;
 
 use super::*;
-use crate::local::{
-    LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
-};
+use crate::local::{LocalDaemonResponse, RunCommandOperation, RunCommandRequest, RunCommandResult};
 use crate::room_exec::gateway_placement::{GatewayExecPlacement, GrantedSend, OriginGrant};
 use crate::room_exec::queue_tests::{limited, queued, TempDir};
 use crate::room_exec::{ExecOutcome, ExecState, ExecStream, Placement, Requester, RoomExecService};
@@ -138,33 +136,34 @@ impl SecondKernel {
         }
     }
 
-    async fn terminal(
+    async fn command(
         &self,
         acting_agent: Option<&str>,
-        operation: RoomTerminalOperation,
-    ) -> Result<RoomTerminalResult, GatewayError> {
-        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
-            session_id: self.session_id.clone(),
+        operation: RunCommandOperation,
+    ) -> Result<RunCommandResult, GatewayError> {
+        let request = LocalDaemonRequest::RunCommand(RunCommandRequest {
+            target: crate::local::CommandTarget::RoomWorkspace {
+                session_id: self.session_id.clone(),
+            },
             acting_agent: acting_agent.map(str::to_owned),
-            host_agent: None,
             operation,
         });
         let answer = self
             .dispatch(format!("probe:{}", rand::random::<u64>()), &request)
             .await?;
         match serde_json::from_value(answer).unwrap() {
-            LocalDaemonResponse::RoomTerminal { result } => Ok(result),
+            LocalDaemonResponse::RunCommand { result } => Ok(result),
             other => panic!("not a Room terminal answer: {other:?}"),
         }
     }
 
     async fn execs(&self) -> Vec<crate::room_exec::ExecSummary> {
         match self
-            .terminal(None, RoomTerminalOperation::ExecList)
+            .command(None, RunCommandOperation::ExecList)
             .await
             .unwrap()
         {
-            RoomTerminalResult::ExecListed { execs } => execs,
+            RunCommandResult::ExecListed { execs } => execs,
             other => panic!("{other:?}"),
         }
     }
@@ -414,10 +413,12 @@ async fn only_the_verified_origin_name_can_label_a_process() {
     let second = SecondKernel::new(&[]);
     for claimed in ["kernel-z/agent-9", "agent-1", "kernel-a/"] {
         let refused = second
-            .terminal(
+            .command(
                 Some(claimed),
-                RoomTerminalOperation::ExecOpen {
+                RunCommandOperation::ExecOpen {
                     command: vec!["/bin/true".into()],
+                    directory: None,
+                    timeout_ms: None,
                 },
             )
             .await

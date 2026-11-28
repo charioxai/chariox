@@ -7,7 +7,7 @@ use crate::agent::AgentInstance;
 use crate::attachment::{ClientCapabilityLevel, RuntimeAttachment};
 use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
-    ReadFileResult, RunShellCommandResult, StoredTransferArtifact,
+    ReadFileResult, StoredTransferArtifact,
 };
 use crate::config::{CharioxUserConfig, UserCredentialConfig};
 use crate::connector::{

@@ -24,7 +24,7 @@ pub(crate) async fn forward_audited(
     let started = std::time::Instant::now();
     let gateway = router.kernel_gateway();
     if matches!(request, LocalDaemonRequest::RequestKernelSudo(_))
-        || matches!(request, LocalDaemonRequest::RoomTerminal(terminal) if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecOpen { .. }))
+        || matches!(request, LocalDaemonRequest::RunCommand(command) if matches!(command.operation, crate::local::RunCommandOperation::ExecOpen { .. }))
     {
         gateway.watch_requester_grant(kernel, origin);
     }

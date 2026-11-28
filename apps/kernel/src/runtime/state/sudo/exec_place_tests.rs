@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: who may run a held launch on another kernel.
 use super::tests::{fixture, running};
 use crate::error::DaemonError;
-use crate::local::{RoomTerminalOperation, RoomTerminalRequest};
+use crate::local::{CommandTarget, RunCommandOperation, RunCommandRequest};
 use crate::room_exec::Requester;
 use crate::runtime::command::{KernelCaller, KernelCommandSource};
 
@@ -9,12 +9,19 @@ fn place(
     session_id: &str,
     acting_agent: Option<&str>,
     host_agent: Option<&str>,
-) -> RoomTerminalRequest {
-    RoomTerminalRequest {
-        session_id: session_id.into(),
+) -> RunCommandRequest {
+    RunCommandRequest {
+        target: match host_agent {
+            Some(agent_id) => CommandTarget::AgentSlice {
+                session_id: session_id.into(),
+                agent_id: agent_id.into(),
+            },
+            None => CommandTarget::RoomWorkspace {
+                session_id: session_id.into(),
+            },
+        },
         acting_agent: acting_agent.map(str::to_owned),
-        host_agent: host_agent.map(str::to_owned),
-        operation: RoomTerminalOperation::ExecPlace {
+        operation: RunCommandOperation::ExecPlace {
             exec_id: "exec-1".into(),
             kernel: "kernel-b".into(),
             directory: None,
@@ -72,8 +79,8 @@ async fn a_person_and_the_launching_agent_are_authorized_and_nobody_else() {
     f.state
         .authorize_gateway_request(
             &placer.origin.grant_id,
-            &crate::local::LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
-                operation: RoomTerminalOperation::ExecList,
+            &crate::local::LocalDaemonRequest::RunCommand(RunCommandRequest {
+                operation: RunCommandOperation::ExecList,
                 ..place(&session, None, None)
             }),
         )
@@ -136,7 +143,7 @@ async fn a_person_and_the_launching_agent_are_authorized_and_nobody_else() {
 async fn a_gateway_cannot_ask_this_kernel_to_place_a_launch() {
     let f = fixture();
     let request =
-        crate::local::LocalDaemonRequest::RoomTerminal(place(&f.request.session_id, None, None));
+        crate::local::LocalDaemonRequest::RunCommand(place(&f.request.session_id, None, None));
     let from_gateway = crate::local::OnBehalfOf {
         origin_kernel: "kernel-a-id".into(),
         origin_name: Some("kernel-a".into()),

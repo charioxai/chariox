@@ -6710,19 +6710,25 @@ Older history without `size_bytes` remains readable. The protocol fixtures and
 shape/hash tests cover both changes under this shared pair.
 
 
-### Binary Room exec (local 995 / peer 434)
+### Run a command
 
-MP-08 / MP-09 / MP-10 / MP-11: `RoomTerminal` also carries non-PTY commands.
-The existing Room owner, external-grant and worker-lease checks apply unchanged;
-a caller unable to open that Room's terminal cannot exec there. `room_exec_v1`
-advertises this additive contract. The relay still carries opaque encrypted
-requests and responses, using its existing bounded framing and flow control.
+`RunCommand` carries pipe operations on an explicit target. `kernel` runs on the
+selected kernel with no Room or attachment. `room_workspace { session_id }`
+runs in the Room's workspace. `agent_slice { session_id, agent_id }` runs where
+the Room agent runs, including on a leased worker. The owner or a grant covering
+the target authorizes each operation. `run_command_v1` advertises this contract.
+The relay carries opaque encrypted requests and responses.
 
-- `exec_open { command: [program, ...args] }` validates the original argv and
-  canonical Room directory, then allocates `exec_opened { exec_id }` before
-  spawning a user program. Its immutable intent contains only the launch ID,
-  Room/owner/acting-agent identity, argv and cwd. It contains no resolved Vault
-  values, inherited environment, provider account configuration or descriptors.
+- `exec_open { command: [program, ...args], directory?, timeout_ms? }` validates
+  argv and the working directory and allocates `exec_opened { exec_id }` before
+  spawning. The kernel target defaults to the kernel user's home. A Room or
+  agent target confines a supplied directory to its workspace. The launch
+  intent carries no resolved Vault values, environment or descriptors.
+- A time limit is enforced by the kernel running the process. It reports
+  `timed_out { timeout_ms, exit }` after stopping and reaping the command.
+  `exit` is `not_started` for a launch that expired before spawning, or the
+  observed `exited { code }` or `signaled { signal }` state.
+  Output continues through the same independent pipes.
 - MP-08 / MP-09 / MP-10 / MP-11: resource admission holds a binary launch before
   spawn when its predicted memory or disk need does not fit. Concurrent binary
   decisions reserve capacity in the existing resource pool. `exec_list` returns
@@ -6747,7 +6753,7 @@ requests and responses, using its existing bounded framing and flow control.
   refused `exec_not_queued`; the launch then keeps running where it is. The caller
   is the owner's person (under the owner's own gateway grant, `owner:<user>`) or
   the agent that started the launch (under its own live reach, so ending the run
-  ends the placement); another agent, a stranger, a worker host (`host_agent`) and a
+  ends the placement); another agent, a stranger, an agent slice target and a
   request that arrives through a gateway are refused (`exec_not_yours`,
   `exec_place_not_here`, ownership errors). `kernel` is a name `chariox kernels`
   lists; an unknown, ambiguous, offline, unpaired or too old kernel is refused with
@@ -6766,7 +6772,7 @@ requests and responses, using its existing bounded framing and flow control.
   the owner's other online, gateway-ready kernels, for a caller that may place that
   launch (the owner's person, or the agent that started it). Absent otherwise,
   and when the kernel list cannot be had; clients offer placement only from it.
-- `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
+- `exec_list {}` returns `exec_listed { execs }` for the selected target. Each entry
   has `exec_id`, tagged `state`, `age_ms`, `buffered_bytes`, `command` and `owner`.
   It uses the same Room authority and worker forwarding as all exec operations.
 - `exec_write { exec_id, offset, data_base64 }` accepts at most 256 KiB at the

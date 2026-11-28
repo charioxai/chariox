@@ -1,8 +1,8 @@
 use crate::support::kernel_websocket::*;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{
-    AttachToSessionRequest, GetDaemonHealthRequest, GetSessionStateRequest, LocalDaemonRequest,
-    RunShellCapabilityRequest,
+    AttachToSessionRequest, CommandTarget, GetDaemonHealthRequest, GetSessionStateRequest,
+    LocalDaemonRequest, RunCommandOperation as Op, RunCommandRequest,
 };
 use chariox_kernel::runtime_transport::{
     run_kernel_websocket_server_on_listener, CONNECTION_INBOUND_REQUEST_LIMIT,
@@ -425,35 +425,37 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
             .expect("session id should be present")
             .to_string();
 
-        let attach_response = send_request(
+        let command = |operation| {
+            LocalDaemonRequest::RunCommand(RunCommandRequest {
+                target: CommandTarget::RoomWorkspace {
+                    session_id: session_id.clone(),
+                },
+                acting_agent: None,
+                operation,
+            })
+        };
+        let opened = send_request(
             &mut socket,
-            "attach-session",
-            LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
-                session_id: session_id.clone(),
-                client_id: "ws-inbound-limit-client".to_string(),
-                capability_level: ClientCapabilityLevel::FullTerminal,
+            "open-command",
+            command(Op::ExecOpen {
+                command: vec!["sh".into(), "-c".into(), "sleep 4".into()],
+                directory: None,
+                timeout_ms: Some(5_000),
             }),
         )
         .await;
-        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
-            ["id"]
+        let exec_id = response_variant(&opened, "RunCommand")["result"]["exec_id"]
             .as_str()
-            .expect("attachment id should be present")
+            .expect("expected a command ID")
             .to_string();
-
         for index in 0..=CONNECTION_INBOUND_REQUEST_LIMIT {
             send_frame(
                 &mut socket,
                 json!({
                     "type": "request",
                     "request_id": format!("slow-shell-{index}"),
-                    "request": LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
-                        session_id: session_id.clone(),
-                        attachment_id: attachment_id.clone(),
-                        command: "sh".to_string(),
-                        args: vec!["-c".to_string(), "sleep 1".to_string()],
-                        working_directory: None,
-                        timeout_ms: Some(3_000),
+                    "request": command(Op::ExecRead {
+                        exec_id: exec_id.clone(), after_cursor: 0, wait_ms: 1_000,
                     }),
                 }),
             )
