@@ -80,11 +80,23 @@ pub enum RoomTerminalOperation {
     },
 }
 
+/// A machine a Room-wide terminal list could not ask: the agent that runs there and what to do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnavailableTerminals {
+    pub host_agent: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum RoomTerminalResult {
     Opened { terminal: RoomTerminalSummary },
-    Listed { terminals: Vec<RoomTerminalSummary> },
+    Listed {
+        terminals: Vec<RoomTerminalSummary>,
+        /// Machines of the Room's agents that were not asked, with what to do about each.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unavailable: Vec<UnavailableTerminals>,
+    },
     Snapshot { snapshot: RoomTerminalSnapshot },
     Input { input: RoomTerminalInputResult },
     Resized { terminal: RoomTerminalSummary },
@@ -101,7 +113,7 @@ impl RoomTerminalResult {
             |terminal: &mut RoomTerminalSummary| terminal.host_agent = Some(agent_id.to_string());
         match &mut self {
             Self::Opened { terminal } | Self::Resized { terminal } => host(terminal),
-            Self::Listed { terminals } => terminals.iter_mut().for_each(host),
+            Self::Listed { terminals, .. } => terminals.iter_mut().for_each(host),
             Self::Snapshot { snapshot } => host(&mut snapshot.terminal),
             Self::Output { output } => host(&mut output.terminal),
             Self::Waited { waited } => host(&mut waited.terminal),
