@@ -3548,7 +3548,15 @@ async fn a02_r6_interrupted_delivery_retries_without_an_owner_interaction() {
         })
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
+    eprintln!(
+        "SWEEP689-DEBUG after pass: row={:?}",
+        store.agent_inbox(session.id(), agent.id(), 0).unwrap()
+    );
     runtime.task_work_settled().await;
+    eprintln!(
+        "SWEEP689-DEBUG after settled: row={:?}",
+        store.agent_inbox(session.id(), agent.id(), 0).unwrap()
+    );
     let retry = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
     assert_eq!(retry.len(), 1, "recovery must retain the same inbox event");
     assert_eq!(retry[0].sequence, e.sequence);

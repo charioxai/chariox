@@ -1555,9 +1555,9 @@ impl KernelRuntimeState {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
         step.enter("the wake dead-man check");
-        if let Err(error) = self.sweep_agent_wakes(now).await {
-            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
-        }
+        // The check runs apart from the pass: a source or a store that does not answer degrades
+        // wake delivery checks, reported once, and never holds this pass.
+        self.spawn_wake_deadman_check(now);
         step.enter("peer follow settlement");
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
@@ -1609,25 +1609,91 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         let mut patience = super::task_work_flight::SWEEP_PATIENCE;
-        for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
+        let mut tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
+        // Live work first: the task with the freshest progress is the newest turn's, and a
+        // restored backlog (20A7 11-27: 2466 old tasks of 612 agents) never asks before it.
+        tasks.sort_by(|a, b| b.last_progress_at_ms.cmp(&a.last_progress_at_ms));
+        // A pass that always restarts at the newest task starves the oldest under sustained
+        // arrivals (review, 11-28), so the last wait of the budget is reserved for a walk
+        // from the oldest end: a finished task that still owes its outcome is reconciled
+        // even while newer work keeps arriving.
+        let mut asked = std::collections::BTreeSet::new();
+        for task in &tasks {
+            // Do not mark a task as offered until this walk can actually ask it:
+            // the oldest walk must still reach the task at the cutoff.
+            if patience <= super::task_work_flight::SWEEP_OLDEST_RESERVE {
+                break;
+            }
+            let monitor = &self.owned.agent_wakes;
+            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
+                continue;
+            }
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let key = format!("sweep-task:{}", task.task_id);
             let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
+            // The settlement runs apart from the pass: it takes its own copy of the task,
+            // not a borrow of this pass's list.
+            let owned = task.clone();
             match self
                 .sweep_task_within(key, &mut patience, move |state| async move {
-                    state.sweep_task(task, now).await
+                    state.sweep_task(owned, now).await
                 })
                 .await
             {
                 super::task_work_flight::TaskStep::Done(Err(error)) => return Err(error),
-                super::task_work_flight::TaskStep::Done(Ok(ended)) => blocked.extend(ended),
+                super::task_work_flight::TaskStep::Done(Ok(ended)) => {
+                    monitor.task_settled(&task_id);
+                    blocked.extend(ended);
+                }
                 super::task_work_flight::TaskStep::Busy => {}
                 super::task_work_flight::TaskStep::TimedOut => {
+                    let backoff = monitor.task_did_not_settle(&task_id, now);
                     crate::logging::warn_with_fields(
                         "runtime.agent_lifecycle",
-                        "supervision sweep moved on from a task that did not settle in time; the next sweep asks again",
+                        "supervision sweep moved on from a task that did not settle in time; it is not asked again until its backoff expires",
                         serde_json::json!({"task_id": task_id, "agent_id": agent_id,
-                            "step": step.current().map(|(name, _)| name)}),
+                            "step": step.current().map(|(name, _)| name),
+                            "ask_backoff_s": backoff / 1000}),
+                    );
+                }
+            }
+        }
+        // The oldest walk: the reserved budget reaches the tasks the newest walk never
+        // offered a place to, oldest first, until the pass's patience is spent.
+        for task in tasks.iter().rev() {
+            if patience.is_zero() {
+                break;
+            }
+            let monitor = &self.owned.agent_wakes;
+            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
+                continue;
+            }
+            step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
+            let key = format!("sweep-task:{}", task.task_id);
+            let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
+            // The settlement runs apart from the pass: it takes its own copy of the task,
+            // not a borrow of this pass's list.
+            let owned = task.clone();
+            match self
+                .sweep_task_within(key, &mut patience, move |state| async move {
+                    state.sweep_task(owned, now).await
+                })
+                .await
+            {
+                super::task_work_flight::TaskStep::Done(Err(error)) => return Err(error),
+                super::task_work_flight::TaskStep::Done(Ok(ended)) => {
+                    monitor.task_settled(&task_id);
+                    blocked.extend(ended);
+                }
+                super::task_work_flight::TaskStep::Busy => {}
+                super::task_work_flight::TaskStep::TimedOut => {
+                    let backoff = monitor.task_did_not_settle(&task_id, now);
+                    crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "supervision sweep moved on from a task that did not settle in time; it is not asked again until its backoff expires",
+                        serde_json::json!({"task_id": task_id, "agent_id": agent_id,
+                            "step": step.current().map(|(name, _)| name),
+                            "ask_backoff_s": backoff / 1000}),
                     );
                 }
             }
