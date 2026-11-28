@@ -804,7 +804,13 @@ mod process_identity_tests {
         registry.insert_claude_runtime(run.id().into(), old.state);
         registry.clear_runtime(run.id(), false);
         let fresh = crate::provider::initialize_claude_runtime(&run).unwrap();
-        let fresh_pid = fresh.state.owned_process().id();
+        let fresh_identity = fresh
+            .state
+            .process_identity_slot()
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
         registry.insert_claude_runtime(run.id().into(), fresh.state);
         assert_eq!(registry.claude_owned_processes(run.id()).len(), 2);
         drop(release);
@@ -817,8 +823,8 @@ mod process_identity_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(
-            registry.claude_owned_process(run.id()).unwrap().id(),
-            fresh_pid
+            registry.claude_process_identities(),
+            vec![(run.id().to_string(), fresh_identity)]
         );
         assert!(registry.state_bound(run.id()));
         registry.clear_runtime(run.id(), false);
