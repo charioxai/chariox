@@ -10,6 +10,10 @@ private struct TreeReadClient: KernelClientProtocol {
     let tree: RuntimeAgentTree
     let log: TreeReadLog
     func send(_ request: LocalDaemonRequest, to endpoint: URL) async throws -> LocalDaemonResponse {
+        let frame = try KernelProtocolCodec.encodeRequestFrame(KernelRequestFrame(request: request))
+        let object = try #require(JSONSerialization.jsonObject(with: frame) as? [String: Any])
+        let payload = try #require(object["request"] as? [String: Any])
+        _ = try #require(payload["ListDescendants"] as? [String: String])
         await log.append(request)
         return .agentTree(tree)
     }
@@ -17,10 +21,10 @@ private struct TreeReadClient: KernelClientProtocol {
         AsyncThrowingStream { $0.finish() }
     }
 }
-private func treeFixture(revision: UInt64 = 1, root: String = "parent") throws -> RuntimeAgentTree {
+private func treeFixture(revision: UInt64 = 1, root: String = "parent", state: String = "time_limit_ended") throws -> RuntimeAgentTree {
     try JSONDecoder().decode(RuntimeAgentTree.self, from: JSONSerialization.data(withJSONObject: [
         "root": root, "rev": revision,
-        "nodes": [["agent_id": "child", "parent_agent_id": "parent", "alias": "Child", "depth": 1, "state": "time_limit_ended"]],
+        "nodes": [["agent_id": "child", "parent_agent_id": "parent", "alias": "Child", "depth": 1, "state": state]],
     ]))
 }
 private func feedFrame(room: String, interactions: [[String: Any]], eventID: Int64) throws -> KernelEventFrame {
@@ -83,7 +87,7 @@ private func replyQuestion() -> [String: Any] { [
     let encoded = try KernelProtocolCodec.encodeRequestFrame(KernelRequestFrame(requestID: "tree", request: request))
     let frame = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
     let payload = try #require(frame["request"] as? [String: Any])
-    #expect((payload["GetAgentTree"] as? [String: String]) == ["session_id": "room", "agent_id": "parent"])
+    #expect((payload["ListDescendants"] as? [String: String]) == ["session_id": "room", "agent_id": "parent"])
     model.handle(eventFrame: try feedFrame(room: "room", interactions: [], eventID: 21))
     #expect(model.selectedSession?.activeInteractions.isEmpty == true)
 }
@@ -98,9 +102,96 @@ private func replyQuestion() -> [String: Any] { [
     model.activeAttachment = RuntimeAttachment(id: "attachment", sessionID: session.id)
     model.agentTrees[parent.id] = try treeFixture(revision: 3)
     model.agentTreeAttachments[parent.id] = "attachment"
+    model.agentTreeStreamGenerations[parent.id] = 0
     await model.refreshAgentTree(sessionID: session.id, rootAgentID: parent.id)
     #expect(model.agentTrees[parent.id]?.rev == 3)
     #expect(model.descendantNodes(in: session).first?.id == "child")
+}
+
+@Test func treeReadUsesTheSharedKernelRequestFixture() throws {
+    let encoded = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(requestID: "tree", request: .getAgentTree(sessionID: "room", agentID: "root"))
+    )
+    let frame = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    let actual = try #require(frame["request"] as? NSDictionary)
+    var repository = URL(fileURLWithPath: #filePath)
+    for _ in 0..<6 { repository.deleteLastPathComponent() }
+    let fixture = try Data(contentsOf: repository.appendingPathComponent("fixtures/ios-list-descendants-request.json"))
+    let expected = try #require(JSONSerialization.jsonObject(with: fixture) as? NSDictionary)
+    #expect(actual == expected)
+}
+
+private actor ControlledTreeClient: KernelClientProtocol {
+    private var reads: [CheckedContinuation<LocalDaemonResponse, Error>?] = []
+
+    func send(_ request: LocalDaemonRequest, to endpoint: URL) async throws -> LocalDaemonResponse {
+        guard case .getAgentTree = request else {
+            throw KernelClientError.unexpectedResponse("Expected a tree read")
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            reads.append(continuation)
+        }
+    }
+    func waitForReads(_ count: Int) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while reads.count < count {
+            guard ContinuousClock.now < deadline else {
+                throw KernelClientError.unexpectedResponse("Tree read was not requested")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+    func finishRead(_ index: Int, tree: RuntimeAgentTree) {
+        reads[index]?.resume(returning: .agentTree(tree))
+        reads[index] = nil
+    }
+    func cancelReads() {
+        for continuation in reads { continuation?.resume(throwing: CancellationError()) }
+        reads = []
+    }
+    nonisolated func events(sessionID: String, attachmentID: String, endpoint: URL, resumeFromEventID: Int64?) -> AsyncThrowingStream<KernelEventFrame, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
+
+@MainActor
+@Test(arguments: [true, false])
+func sameAttachmentReconnectRefreshesTreeAndRejectsTheOldInFlightRead(resumed: Bool) async throws {
+    let client = ControlledTreeClient()
+    defer { Task { await client.cancelReads() } }
+    let model = CharioxAppModel(client: client)
+    let parent = AgentInstance.fixture(id: "parent", agentRef: "1", alias: "Parent", state: "Idle")
+    let session = RuntimeSession.fixture(id: "room", lastUsedAtMs: 2, agents: [parent])
+    model.selectSession(session)
+    model.activeAttachment = RuntimeAttachment(id: "attachment", sessionID: session.id)
+    model.subscribedSessionID = session.id
+    model.agentTrees[parent.id] = try treeFixture(revision: 99, state: "running")
+    model.agentTreeAttachments[parent.id] = "attachment"
+    model.agentTreeStreamGenerations[parent.id] = 0
+    let oldRead = Task { await model.refreshAgentTree(sessionID: session.id, rootAgentID: parent.id) }
+    try await client.waitForReads(1)
+    model.eventStreamState = .disconnected
+    model.invalidateAgentTreeReads()
+    // A heartbeat can precede the initial projection. It must not hide the baseline.
+    model.handle(eventFrame: KernelEventFrame(type: "event", eventID: 29, event: .heartbeat(sessionID: "room")))
+    let event: KernelEvent = resumed
+        ? .transportResumed(sessionID: "room", resumedFromEventID: 29)
+        : .sessionSnapshot(session)
+    model.handle(eventFrame: KernelEventFrame(type: "event", eventID: 30, event: event))
+    try await client.waitForReads(2)
+    #expect(model.agentTrees[parent.id]?.rev == 99, "keep known data while reconnect reads")
+    await client.finishRead(1, tree: try treeFixture(revision: 2))
+    let deadline = ContinuousClock.now + .seconds(5)
+    while model.agentTrees[parent.id]?.rev != 2 && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.agentTrees[parent.id]?.rev == 2)
+    #expect(model.descendantNodes(in: session).first?.statusText == "Time limit ended")
+    await client.finishRead(0, tree: try treeFixture(revision: 100, state: "running"))
+    await oldRead.value
+    #expect(model.agentTrees[parent.id]?.rev == 2, "the retired stream cannot restore stale child state")
+    #expect(model.descendantNodes(in: session).first?.statusText == "Time limit ended")
+    #expect(model.activeAttachment?.id == "attachment")
 }
 
 @MainActor

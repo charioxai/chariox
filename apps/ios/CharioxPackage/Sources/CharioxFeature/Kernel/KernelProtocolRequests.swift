@@ -77,7 +77,7 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                 forKey: DynamicCodingKey("DetachFromSession")
             )
         case let .getAgentTree(sessionID, agentID):
-            try container.encode(GetAgentTreePayload(sessionID: sessionID, agentID: agentID), forKey: DynamicCodingKey("GetAgentTree"))
+            try container.encode(GetAgentTreePayload(sessionID: sessionID, agentID: agentID), forKey: DynamicCodingKey("ListDescendants"))
         case let .getSessionState(sessionID):
             try container.encode(
                 GetSessionStatePayload(sessionID: sessionID),

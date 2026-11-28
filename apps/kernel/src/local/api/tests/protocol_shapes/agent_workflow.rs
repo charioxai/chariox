@@ -283,14 +283,19 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let request: crate::local::LocalDaemonRequest = serde_json::from_value(
-        serde_json::json!({"ListDescendants":{"session_id":"room","agent_id":"root"}}),
-    )
+    let request: crate::local::LocalDaemonRequest = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/ios-list-descendants-request.json"
+    )))
     .unwrap();
     assert!(matches!(
         request,
-        crate::local::LocalDaemonRequest::ListDescendants(r) if r.agent_id == "root"
+        crate::local::LocalDaemonRequest::ListDescendants(r) if r.agent_id == "root" && r.session_id == "room"
     ));
+    assert!(serde_json::from_value::<crate::local::LocalDaemonRequest>(
+        serde_json::json!({"GetAgentTree":{"session_id":"room","agent_id":"root"}})
+    )
+    .is_err());
     let tree = crate::local::AgentTree {
         root: "root".into(),
         rev: 7,

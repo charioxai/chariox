@@ -58,6 +58,7 @@ extension CharioxAppModel {
       guard let self else { return }
       var nextResumeFromEventID = resumeFromEventID
       while !Task.isCancelled {
+        invalidateAgentTreeReads()
         eventStreamState = .connecting
         let currentStream = client.events(
           sessionID: sessionID,
@@ -161,6 +162,9 @@ extension CharioxAppModel {
     case .sessionSnapshot(let session):
       upsert(session)
       selectedSessionID = session.id
+      if session.id == subscribedSessionID, agentTreeBaselinePending {
+        refreshAgentTreesAfterReconnect(sessionID: session.id)
+      }
       eventStreamState = .live
       statusMessage = "Session snapshot received."
     case .heartbeat(let sessionID):
@@ -175,6 +179,7 @@ extension CharioxAppModel {
       }
     case .transportResumed(let sessionID, _):
       if sessionID == subscribedSessionID {
+        refreshAgentTreesAfterReconnect(sessionID: sessionID)
         eventStreamState = .live
         lastHeartbeatAt = Date()
         statusMessage = "Kernel event stream resumed."

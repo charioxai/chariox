@@ -16,6 +16,10 @@ public final class CharioxAppModel {
   public internal(set) var agentTrees: [String: RuntimeAgentTree] = [:]
   public internal(set) var agentTreeErrors: [String: String] = [:]
   @ObservationIgnored var agentTreeAttachments: [String: String] = [:]
+  @ObservationIgnored var agentTreeStreamGenerations: [String: UInt64] = [:]
+  @ObservationIgnored var agentTreeReadTokens: [String: UUID] = [:]
+  @ObservationIgnored var agentTreeStreamGeneration: UInt64 = 0
+  @ObservationIgnored var agentTreeBaselinePending = true
   public internal(set) var selectedSessionID: String?
   public internal(set) var activeAttachment: RuntimeAttachment?
   public internal(set) var subscribedSessionID: String?
