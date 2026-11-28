@@ -72,6 +72,8 @@ pub(crate) struct CommandRouter {
     _native_interaction_bridge: Option<Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
     app: Arc<Mutex<DaemonApp>>,
     runtime_state: KernelRuntimeState,
+    /// Tools each lean provider run has loaded through `chariox.tools.find`.
+    lean_loads: crate::transport::mcp_server::LeanLoads,
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
     workflow_runtime: WorkflowRuntime,

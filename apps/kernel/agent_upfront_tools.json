@@ -2,17 +2,15 @@
   "claude": {
     "agent": ["chariox.agents.run", "chariox.events.ack", "chariox.events.inbox", "chariox.permission_prompt"],
     "sub_agent": ["chariox.events.ack", "chariox.events.blocked", "chariox.events.inbox", "chariox.permission_prompt"],
-    "workflow_turn": [
-      "ack_workflow_turn",
-      "validate_workflow_handoff",
-      "validate_and_submit_workflow_run_output",
-      "validate_and_submit_intermediate_workflow_run_output",
-      "read_workflow_turn_context",
-      "workflow_console_read",
-      "workflow_console_write",
-      "workflow_console_clear"
-    ]
+    "workflow_turn": ["ack_workflow_turn", "validate_workflow_handoff", "validate_and_submit_workflow_run_output", "validate_and_submit_intermediate_workflow_run_output", "read_workflow_turn_context", "workflow_console_read", "workflow_console_write", "workflow_console_clear"]
   },
-  "codex": { "agent": "*", "sub_agent": "*" },
-  "opencode": { "agent": "*", "sub_agent": "*" }
+  "codex": {
+    "agent": "deferred-by-provider",
+    "sub_agent": "deferred-by-provider"
+  },
+  "opencode": {
+    "agent": ["chariox.agents.run", "chariox.events.ack", "chariox.events.inbox", "chariox.tools.find"],
+    "sub_agent": ["chariox.events.ack", "chariox.events.blocked", "chariox.events.inbox", "chariox.tools.find"],
+    "workflow_turn": ["ack_workflow_turn", "validate_workflow_handoff", "validate_and_submit_workflow_run_output", "validate_and_submit_intermediate_workflow_run_output", "read_workflow_turn_context", "workflow_console_read", "workflow_console_write", "workflow_console_clear"]
+  }
 }

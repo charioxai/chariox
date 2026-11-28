@@ -383,6 +383,7 @@ pub(super) fn compose_command_router(
         _native_interaction_bridge: native_interaction_bridge,
         app,
         runtime_state,
+        lean_loads: Default::default(),
         agent_runtime,
         session_runtime,
         workflow_runtime,
