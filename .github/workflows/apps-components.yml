@@ -130,6 +130,16 @@ jobs:
           apps/kernel/slice-linux-docker/chromium-sandbox.test.mjs
           apps/kernel/slice-linux-docker/provision-desktop-audio.test.mjs
           apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.test.mjs
+      - name: Add swap for the kernel test build
+        if: runner.os == 'Linux'
+        # Match the main CI's memory preparation for the same large libtest build.
+        # The selected App assertions and their job deadline stay unchanged.
+        run: |
+          sudo fallocate -l 24G /mnt/chariox-swap
+          sudo chmod 600 /mnt/chariox-swap
+          sudo mkswap /mnt/chariox-swap
+          sudo swapon /mnt/chariox-swap
+          free -h
       - name: Test kernel App routing and durable writer
         env:
           RUST_MIN_STACK: '16777216'
