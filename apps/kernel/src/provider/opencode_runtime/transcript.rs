@@ -9,6 +9,10 @@ pub(super) struct ToolTranscriptUpdate {
     pub(super) tool: String,
     pub(super) status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) started_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) finished_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) description: Option<String>,
@@ -76,10 +80,13 @@ pub(super) fn render_tool_transcript_update(
         .home_proxy_tool(tool_name)
         .is_some();
 
+    let time = part.state.as_ref().and_then(|state| state.time.as_ref());
     serde_json::to_string(&ToolTranscriptUpdate {
         id: part.id.clone(),
         tool: tool_name.to_string(),
         status: status.to_string(),
+        started_at_ms: time.and_then(|time| time.start),
+        finished_at_ms: time.and_then(|time| time.end),
         title,
         description,
         text: rendered_text,
