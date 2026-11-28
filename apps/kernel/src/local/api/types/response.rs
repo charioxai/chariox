@@ -416,13 +416,7 @@ pub enum LocalDaemonResponse {
     ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
-    ProviderLoggedOut {
-        provider: String,
-        account_profile: String,
-        /// The login is shared with other machines, so only this machine's copy was removed.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        local_only: bool,
-    },
+    ProviderLoggedOut { provider: String, account_profile: String, },
     ProviderAccountProfilesListed {
         profiles: Vec<crate::account_profile::ProviderAccountProfile>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
