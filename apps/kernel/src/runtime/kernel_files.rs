@@ -29,6 +29,8 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
+#[cfg(test)]
+mod test_write_pause;
 mod upload_attempts;
 
 pub(super) fn fail(code: &str, message: impl Into<String>) -> DaemonError {
@@ -604,6 +606,8 @@ pub(crate) fn write_at(
     }
     wait_for_turn(&partial, path, chunk.offset, chunk.upload_id)?;
     let mut file = open_staging(&partial, path, chunk.offset, chunk.upload_id)?;
+    #[cfg(test)]
+    test_write_pause::after_admission(&partial, chunk.upload_id);
     file.write_all(chunk.data)
         .map_err(|e| io_failure(path, &e))?;
     file.flush().map_err(|e| io_failure(path, &e))?;
@@ -1040,6 +1044,94 @@ mod tests {
                 b"abcdef"
             );
         }
+    }
+
+    #[test]
+    fn a_resumed_attempt_cannot_publish_bytes_from_an_already_admitted_old_chunk() {
+        let dir = scratch();
+        let target = dir.join("admitted-resume.bin");
+        let first = chunk(&target, 0, b"abc", 9, None);
+        write(&first).unwrap();
+        let original_id = first.upload_id;
+        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
+            path: target.display().to_string(),
+            with_sha256: false,
+        })
+        .unwrap() else {
+            panic!("a stat response")
+        };
+        let mut original = chunk(&target, 3, b"OLD", 9, None);
+        original.upload_id = original_id;
+        let mut resumed = chunk(&target, 3, b"defghi", 9, None);
+        resumed.upload_id = stat.partial_upload_id.unwrap();
+        let (original_result, resumed_result) = std::thread::scope(|scope| {
+            let pause = test_write_pause::pause(&partial_of(&target), original_id);
+            let original = scope.spawn(move || write(&original));
+            pause.wait_until_admitted();
+            let (done, completed) = std::sync::mpsc::channel();
+            let resumed = scope.spawn(move || {
+                let result = write(&resumed);
+                let _ = done.send(());
+                result
+            });
+            // Before the fix the resumed writer can finish while the old one is admitted.
+            // The fixed writer waits for that admission to finish before checking its offset.
+            let _ = completed.recv_timeout(Duration::from_secs(3));
+            drop(pause);
+            (original.join().unwrap(), resumed.join().unwrap())
+        });
+        if !target.exists() {
+            let mut last = chunk(&target, 6, b"ghi", 9, None);
+            last.upload_id = original_id;
+            write(&last).unwrap();
+        }
+        let bytes = std::fs::read(&target).unwrap();
+        assert_eq!(
+            bytes.len(),
+            9,
+            "a resumed upload must not install an old admitted append"
+        );
+        assert_eq!(bytes, b"abcOLDghi");
+        assert!(
+            original_result.is_ok(),
+            "the admitted original chunk finishes first"
+        );
+        assert_eq!(code(resumed_result.unwrap_err()), "file_offset_mismatch");
+    }
+
+    #[test]
+    fn a_fresh_windowed_upload_waits_for_its_opener_to_replace_stale_untrusted_staging() {
+        let dir = scratch();
+        let target = dir.join("stale-link.bin");
+        let partial = partial_of(&target);
+        let untouched = dir.join("absent-target");
+        std::os::unix::fs::symlink(&untouched, &partial).unwrap();
+        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
+            path: target.display().to_string(),
+            with_sha256: false,
+        })
+        .unwrap() else {
+            panic!("a stat response")
+        };
+        assert_eq!(stat.partial_size, None);
+        assert_eq!(stat.partial_upload_id, None);
+        let mut first = chunk(&target, 0, b"abc", 6, None);
+        first.upload_id = uuid::Uuid::new_v4();
+        let mut later = chunk(&target, 3, b"def", 6, None);
+        later.upload_id = first.upload_id;
+        let opener = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        let result = write(&later);
+        let opened = opener.join().unwrap();
+        assert_eq!(written(opened.unwrap()).0, 3);
+        assert!(written(result.expect("a fresh attempt waits for its own private opener")).1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+        assert!(
+            !untouched.exists(),
+            "the stale symlink's target is never written"
+        );
     }
 
     // EA2-07: an upload resumes at the offset the target reports, and the file
