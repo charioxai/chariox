@@ -52,6 +52,8 @@ test("put sends 64 KiB chunks in order on one connection, each carrying the tota
     assert.deepEqual(store.files.get("/srv/big.bin"), content)
     const writes = requestsOf(kernel, "WriteKernelFile")
     assert.deepEqual(writes.map(write => write.offset), [0, CHUNK, 2 * CHUNK])
+    assert.match(String(writes[0]!.upload_id), /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/)
+    assert.equal(new Set(writes.map(write => write.upload_id)).size, 1, "one attempt owns the full concurrent window")
     for (const write of writes) assert.deepEqual([write.total_size, write.sha256, write.overwrite], [content.length, sha256(content), false])
     const printed = JSON.parse(result.stdout)
     assert.deepEqual([printed.path, printed.size, printed.sha256, printed.bytes_sent_or_received, printed.resumed_from], ["/srv/big.bin", content.length, sha256(content), content.length, 0])
@@ -70,6 +72,7 @@ test("put continues at the partial size the target reports and starts over when 
     assert.deepEqual(requestsOf(kernel, "WriteKernelFile").map(write => write.offset), [CHUNK + 7, 2 * CHUNK + 7])
     assert.deepEqual(store.files.get("/srv/f.bin"), content)
     assert.equal(JSON.parse(resumed.stdout).resumed_from, CHUNK + 7)
+    assert.ok(requestsOf(kernel, "WriteKernelFile").every(write => write.upload_id === "00000000-0000-0000-0000-000000000001"), "resume carries the stat identity on every chunk")
     assert.equal(JSON.parse(resumed.stdout).bytes_sent_or_received, content.length - CHUNK - 7)
 
     const before = kernel.frames.length
@@ -78,6 +81,9 @@ test("put continues at the partial size the target reports and starts over when 
     assert.equal(restarted.exit, 0, restarted.stderr)
     assert.deepEqual(kernel.frames.slice(before).flatMap(frame => "WriteKernelFile" in frame.request ? [(frame.request.WriteKernelFile as { offset: number }).offset] : []), [0, CHUNK, 2 * CHUNK])
     assert.deepEqual(store.files.get("/srv/g.bin"), content)
+    const restartIds = kernel.frames.slice(before).flatMap(frame => "WriteKernelFile" in frame.request ? [(frame.request.WriteKernelFile as { upload_id: string }).upload_id] : [])
+    assert.equal(new Set(restartIds).size, 1)
+    assert.notEqual(restartIds[0], "00000000-0000-0000-0000-000000000001", "a new upload has a fresh attempt identity")
   })
 })
 
@@ -256,7 +262,7 @@ test("stat and ls print the kernel's objects and ask for the sha256 only when to
   await withRig(async ({ kernel, store, socket }) => {
     store.files.set("/srv/a.txt", Buffer.from("hello"))
     const plain = JSON.parse((await chariox(["files", "stat", ...socket, "/srv/a.txt"])).stdout)
-    assert.deepEqual(plain, { path: "/srv/a.txt", exists: true, kind: "file", size: 5, modified_ms: 1, sha256: null, partial_size: null })
+    assert.deepEqual(plain, { path: "/srv/a.txt", exists: true, kind: "file", size: 5, modified_ms: 1, sha256: null, partial_size: null, partial_upload_id: null })
     const hashed = JSON.parse((await chariox(["files", "stat", ...socket, "--sha256", "/srv/a.txt"])).stdout)
     assert.equal(hashed.sha256, sha256(Buffer.from("hello")))
     assert.deepEqual(requestsOf(kernel, "StatKernelFile").map(stat => stat.with_sha256), [false, true])

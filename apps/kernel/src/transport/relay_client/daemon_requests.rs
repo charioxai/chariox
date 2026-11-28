@@ -1389,6 +1389,7 @@ mod tests {
     fn the_largest_machine_file_chunk_fits_one_relayed_request() {
         let request = crate::local::LocalDaemonRequest::WriteKernelFile(
             crate::local::WriteKernelFileRequest {
+                upload_id: uuid::Uuid::nil(),
                 path: "p".repeat(4096),
                 offset: u64::MAX,
                 data_base64: base64::engine::general_purpose::STANDARD.encode(vec![

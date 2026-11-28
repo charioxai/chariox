@@ -127,6 +127,7 @@ pub(crate) fn write_slice(
         &path,
         &staging,
         &StagedChunk {
+            upload_id: None,
             offset: slice.offset,
             total_size: slice.total_size,
             data: slice.bytes,

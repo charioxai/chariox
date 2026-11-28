@@ -317,6 +317,7 @@ impl Remote {
                 .map_err(|e| ledger::error(e.to_string()))?
                 .len();
             let mut offset = 0;
+            let upload_id = uuid::Uuid::new_v4();
             loop {
                 if *cancelled.borrow() {
                     return Err(ledger::error("Job cancelled during workspace upload"));
@@ -330,6 +331,7 @@ impl Remote {
                     .call(
                         &format!("upload:{index}:{offset}"),
                         LocalDaemonRequest::WriteKernelFile(WriteKernelFileRequest {
+                            upload_id,
                             path: format!("{root}/{path}"),
                             offset,
                             data_base64: base64::engine::general_purpose::STANDARD.encode(chunk),
