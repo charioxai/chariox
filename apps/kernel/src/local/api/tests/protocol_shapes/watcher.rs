@@ -8,7 +8,7 @@ fn watcher_1012_449_snapshot_and_hash() {
     let bytes = include_bytes!("watcher-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "011e5428355ea43f947e4d9f3bc79a3be65d8cda1a65276acc2400417a6061b5"
+        "4100316cf221916990e7e0b8cb4eaa25d7a50cf5f5b1d8f12bc00484b51add62"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

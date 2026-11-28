@@ -41,7 +41,7 @@ fn app_standing_contract_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "c254226cf2e3602d675f497306faa065c2e1f63e60560ea9f2d3fa2afc3e7f48"
+        "6916e9ac0d5be5698322bfab12db4b39f909e6e90a1f6d024ae8e3b6de994e06"
     );
     // The closed classes: nothing for a force push, a default branch or a grant; and no field that names a value.
     for forged in [
