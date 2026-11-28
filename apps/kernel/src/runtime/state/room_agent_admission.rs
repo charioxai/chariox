@@ -277,9 +277,13 @@ impl KernelRuntimeState {
                 LocalDaemonRequest::UpdateAgentConfig(r) => r.usage_limit.is_none(),
                 _ => false,
             };
+        // Row 754: an agent reads its own time limit so it can plan and warn its parent; changing
+        // the limit stays with the agents above it (`SetAgentDeadline` refuses the self-edit).
+        let own_deadline_read =
+            target.id() == actor.id() && matches!(request, LocalDaemonRequest::GetAgentDeadline(_));
         // Row 405: an agent above it, or another of the owner's agents the peer check admits
         // (its permission comparison keeps the owner's per-agent settings).
-        if !own_settings && target.id() == actor.id() {
+        if !own_settings && !own_deadline_read && target.id() == actor.id() {
             return Err(denied("only the agents above an agent can control it"));
         }
         // Deleting an agent that is not below the caller: its own Room and owner, never the
@@ -294,7 +298,10 @@ impl KernelRuntimeState {
                 ));
             }
         }
-        if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
+        if !own_settings
+            && !own_deadline_read
+            && !self.owned.agent_store.is_ancestor(actor.id(), &target)
+        {
             self.authorize_peer_control(&actor, &target, super::peer_rooms::PeerControl::Cancel)?;
             if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
                 self.keep_peer_config_within_own(&actor, &target, r)?;

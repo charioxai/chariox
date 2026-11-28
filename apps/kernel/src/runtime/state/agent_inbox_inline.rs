@@ -72,7 +72,7 @@ impl KernelRuntimeState {
             }
             if ledger::needs_answer(event) {
                 block.push_str(" It stays open until you answer or pass the decision.");
-            } else if event.is_loss() {
+            } else if event.needs_handling() {
                 block.push_str(&format!(
                     " It stays open until you settle it: chariox.events.ack with sequence {}, handled true once you dealt with it.",
                     event.sequence

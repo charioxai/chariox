@@ -387,6 +387,8 @@ impl KernelRuntimeState {
                         );
                     } else if self.decision_open(room, event) {
                         skipped.push(serde_json::json!({"sequence": event.sequence, "reason": "needs_answer"}));
+                    } else if !handled && event.kind == "child_time_limit_ended" {
+                        skipped.push(serde_json::json!({"sequence": event.sequence, "reason": "needs_handling"}));
                     } else if matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked")
                     {
                         skipped.push(serde_json::json!({"sequence": event.sequence, "reason": "delivery_unsettled"}));
