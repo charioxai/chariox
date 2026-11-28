@@ -882,6 +882,200 @@ enum AbortProviderExit {
     AlreadyEnded,
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn claude_stream_json_cancellation_settles_its_detached_tool_before_the_turn() {
+    assert_claude_stream_json_cancellation_settles(false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn claude_stream_json_cancellation_settles_while_the_actor_holds_its_state() {
+    assert_claude_stream_json_cancellation_settles(true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn assert_claude_stream_json_cancellation_settles(busy_actor: bool) {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let worktree = crate::test_support::TestWorktree::new("stream-json-stop");
+    let marker = worktree.path().join("tool-alive");
+    let tool_pid_file = worktree.path().join("tool-pid");
+    let root_pid_file = worktree.path().join("root-pid");
+    std::fs::write(&marker, "alive").unwrap();
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stream-stop-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id());
+    let script = r#"import os,sys,time,signal
+if not os.path.exists(sys.argv[1]):
+ open(sys.argv[3],'w').write(str(os.getpid()))
+ pid=os.fork()
+ if pid==0:
+  os.setsid()
+  signal.signal(signal.SIGINT,signal.SIG_IGN)
+  open(sys.argv[1],'w').write(str(os.getpid()))
+  while os.path.exists(sys.argv[2]): time.sleep(.01)
+  os._exit(0)
+for line in sys.stdin: pass
+"#;
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "stream-json-stop-provider",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude:stream-json".into(),
+            pty_target: None,
+            pty_program: Some("python3".into()),
+            pty_args: vec![
+                "-c".into(),
+                script.into(),
+                tool_pid_file.display().to_string(),
+                marker.display().to_string(),
+                root_pid_file.display().to_string(),
+            ],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: Some(worktree.path().to_path_buf()),
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.providers_mut().initialize_runtime(&run).unwrap();
+    let prompt = crate::session::PromptQueueItem::new(
+        "stream-json-stop-prompt",
+        attachment.id(),
+        agent.id(),
+        "run the owned tool",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    struct Cleanup {
+        providers: crate::provider::ProviderProcessServiceStore,
+        run_id: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.marker);
+            self.providers.clear_runtime(&self.run_id);
+        }
+    }
+    let _cleanup = Cleanup {
+        providers: runtime.owned.provider_store.clone(),
+        run_id: run.id().into(),
+        marker: marker.clone(),
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !tool_pid_file.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the real stream-json child must start its detached tool");
+    let tool_pid: u32 = std::fs::read_to_string(&tool_pid_file)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let root_pid: u32 = std::fs::read_to_string(&root_pid_file)
+        .unwrap()
+        .parse()
+        .unwrap();
+    if busy_actor {
+        runtime
+            .owned
+            .provider_store
+            .set_output_poll_delay_for_tests(run.id(), std::time::Duration::from_secs(6));
+        assert!(runtime
+            .owned
+            .provider_store
+            .enqueue_structured_output_poll(run.id())
+            .unwrap());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime
+                .owned
+                .provider_store
+                .structured_runtime_state_bound_for_tests(run.id())
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the actual actor must lease the Claude state before Stop");
+    }
+    runtime.owned.note_prompt_started(run.id());
+    let cancellation = runtime
+        .owned
+        .cancel_local_prompt(session.id(), agent.id(), attachment.id())
+        .unwrap()
+        .unwrap();
+    let dispatch = cancellation.dispatch.unwrap();
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: dispatch.prompt_id.clone(),
+            run: Some(run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    runtime.spawn_prompt_abort(dispatch, runtime.provider_runtime_lanes.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(agent.id())
+            .is_some()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Stop must settle without waiting for a busy provider actor");
+    let running = |pid| {
+        std::fs::read(format!("/proc/{pid}/stat"))
+            .ok()
+            .is_some_and(|bytes| {
+                bytes
+                    .windows(2)
+                    .rposition(|pair| pair == b") ")
+                    .is_some_and(|end| !matches!(bytes.get(end + 2), Some(b'Z' | b'X')))
+            })
+    };
+    let (root_live, tool_live) = (running(root_pid), running(tool_pid));
+    std::fs::remove_file(&marker).unwrap();
+    assert!(!root_live && !tool_live,
+        "stream-json Stop released its turn before physical settlement: root_live={root_live}, tool_live={tool_live}, busy_actor={busy_actor}");
+    let tasks = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    assert_eq!(tasks[0].state, ExecutionState::Cancelled);
+}
+
 async fn assert_unresponsive_abort_settles(
     detached_tool: bool,
     deferred_reap: bool,
