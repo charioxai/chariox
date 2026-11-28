@@ -2265,8 +2265,24 @@ fn unplaced_writer_rate_excludes_observed_stdout_growth() {
             observation.disk_writes.remove(&1);
         }
         assert_eq!(unplaced_writers(members, &watched)[0].rate, 440 * MIB);
-        // A replacement process must not inherit that byte history.
-        current.lock().unwrap().samples[0].process_id = "replacement".into();
+        // A protection/settling gap supplies no current delta. Nor may
+        // the residual exceed what the sampler says the command writes now.
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, 10000)];
+            observation.commands[0].writes = 10000 * MIB;
+            observation.commands[0].write_rate = 12 * MIB;
+        }
+        assert!(unplaced_writers(members, &watched).is_empty());
+        // A replacement process must not inherit that byte history, even
+        // when its counters would make it a runaway under the old identity.
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples[0] = write_sample(1, 11000);
+            observation.samples[0].process_id = "replacement".into();
+            observation.commands[0].writes = 12000 * MIB;
+            observation.commands[0].write_rate = 1000 * MIB;
+        }
         assert!(unplaced_writers(members, &watched).is_empty());
     }
 }

@@ -1997,11 +1997,13 @@ impl StreamWrites {
             .values()
             .fold(0u64, |sum, (_, written)| sum.saturating_add(*written));
         let at = sample.sampled_at_ms;
+        let window = FREE_WINDOW.as_millis() as u64;
         if self
             .samples
             .back()
             .is_some_and(|&(before_at, before, stream)| {
                 at < before_at
+                    || at.saturating_sub(before_at) > window
                     || writes < before
                     || (at == before_at && (writes != before || streamed != stream))
             })
@@ -2015,7 +2017,6 @@ impl StreamWrites {
         {
             self.samples.push_back((at, writes, streamed));
         }
-        let window = FREE_WINDOW.as_millis() as u64;
         // Match the command sampler: keep one point at or before the start,
         // and count a young command's time before its baseline as idle.
         while self.samples.len() > 2
@@ -2077,6 +2078,7 @@ fn unplaced_writers<'a>(
                     .stream_writes
                     .get_or_insert_with(StreamWrites::default)
                     .rate(sample, command.writes, outputs)
+                    .min(command.write_rate)
             };
             if rate < RUNAWAY_WRITE {
                 continue;
