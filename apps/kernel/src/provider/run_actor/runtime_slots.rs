@@ -14,6 +14,8 @@ pub(super) struct ProviderRunRuntimeRegistry {
     claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     claude_processes:
         Arc<Mutex<BTreeMap<String, crate::runtime::kernel_access::process::ProcessIdentitySlot>>>,
+    claude_owned_processes:
+        Arc<Mutex<BTreeMap<String, crate::provider::claude_runtime::ClaudeRuntimeProcess>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -49,6 +51,10 @@ impl ProviderRunRuntimeRegistry {
     }
     pub(super) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
         self.clear_tombstone(&run_id);
+        self.claude_owned_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.clone(), state.owned_process());
         self.claude_processes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -140,12 +146,31 @@ impl ProviderRunRuntimeRegistry {
             .collect()
     }
 
+    pub(super) fn claude_owned_process(
+        &self,
+        run_id: &str,
+    ) -> Option<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.claude_owned_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(run_id)
+            .cloned()
+    }
+
     pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
         self.take_assessment_output(run_id);
+        let owned_process = self
+            .claude_owned_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(run_id);
         self.claude_processes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
+        if let Some(process) = owned_process {
+            process.retire();
+        }
         clear_runtime_state(
             &self.claude_runs,
             &self.codex_runs,

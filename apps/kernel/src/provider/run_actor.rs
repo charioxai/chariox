@@ -180,6 +180,13 @@ impl ProviderRunActorMailbox {
         self.runtime_registry.insert_claude_runtime(run_id, state);
     }
 
+    pub(crate) fn claude_owned_process(
+        &self,
+        run_id: &str,
+    ) -> Option<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.runtime_registry.claude_owned_process(run_id)
+    }
+
     pub(crate) fn insert_codex_runtime(&self, run_id: String, mut state: CodexRuntimeState) {
         state.bind_output_ready(run_id.clone(), self.output_ready_signal.clone());
         self.runtime_registry.insert_codex_runtime(run_id, state);

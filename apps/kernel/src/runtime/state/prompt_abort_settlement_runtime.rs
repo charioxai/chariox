@@ -6,6 +6,90 @@ enum PromptAbortDispatchOutcome {
     Retry,
 }
 impl KernelRuntimeState {
+    async fn drain_received_prompt_abort_output(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) -> Result<(), DaemonError> {
+        let owned = &self.owned;
+        // Stop scheduling another poll, while retaining the identity of the
+        // already-received poll until its exact prompt has been checked.
+        owned
+            .structured_output_records
+            .stop_polling(&dispatch.provider_run_id);
+        for finished in owned
+            .provider_store
+            .drain_finished_structured_output_poll_jobs_for_run(&dispatch.provider_run_id)
+        {
+            let prompt = owned
+                .structured_output_records
+                .take_in_flight_prompt_id(&dispatch.provider_run_id);
+            if prompt.as_deref() != Some(dispatch.prompt_id.as_str()) {
+                continue;
+            }
+            let batch = match finished.result {
+                Ok(Some(batch)) => batch,
+                Ok(None) => continue,
+                Err(error) => {
+                    self.record_prompt_abort_failure(dispatch, &error);
+                    continue;
+                }
+            };
+            if owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_none()
+            {
+                return Ok(());
+            }
+            // Use the normal batch path, including resume persistence and
+            // durable tool history. It can itself observe cancellation completion.
+            let retry = batch.clone();
+            let applied = async {
+                let batch = self.prepare_owned_structured_output_batch(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    batch,
+                )?;
+                Box::pin(
+                    self.apply_prepared_owned_structured_output_batch(
+                        &dispatch.session_id,
+                        &dispatch.provider_run_id,
+                        owned
+                            .attachment_store
+                            .list_session_attachment_ids(&dispatch.session_id),
+                        batch,
+                    ),
+                )
+                .await
+            }
+            .await;
+            if let Err(error) = applied {
+                if crate::durable_state::is_retryable_durable_write_error(&error) {
+                    owned.structured_output_records.mark_poll_enqueued(
+                        &dispatch.provider_run_id,
+                        Some(dispatch.prompt_id.clone()),
+                    );
+                    owned
+                        .provider_store
+                        .schedule_finished_structured_output_poll_retry(
+                            crate::provider::FinishedProviderOutputPollJob {
+                                provider_run_id: dispatch.provider_run_id.clone(),
+                                result: Ok(Some(retry)),
+                                settlement_retry_attempt: finished.settlement_retry_attempt,
+                            },
+                        );
+                }
+                return Err(error);
+            }
+        }
+        owned
+            .structured_output_records
+            .stop_polling(&dispatch.provider_run_id);
+        Ok(())
+    }
     pub(super) async fn wait_for_structured_prompt_abort_settlement(
         &self,
         dispatch: &crate::app::KernelPromptAbortDispatch,
@@ -74,9 +158,11 @@ impl KernelRuntimeState {
                     return;
                 }
                 let run_id = dispatch.provider_run_id.clone();
+                let provider_store = state.owned.provider_store.clone();
                 match state
                     .with_app_side_effect_blocking(move |app| {
-                        app.pty_mut().capture_prompt_abort_processes(&run_id)
+                        app.pty_mut().capture_prompt_abort_processes(&run_id)?;
+                        provider_store.capture_claude_prompt_abort(&run_id)
                     })
                     .await
                 {
@@ -113,9 +199,11 @@ impl KernelRuntimeState {
                         .unwrap_or_default();
                     // Lane admission may have waited while more tools started.
                     let run_id = dispatch.provider_run_id.clone();
+                    let provider_store = state.owned.provider_store.clone();
                     if let Err(error) = state
                         .with_app_side_effect_blocking(move |app| {
-                            app.pty_mut().capture_prompt_abort_processes(&run_id)
+                            app.pty_mut().capture_prompt_abort_processes(&run_id)?;
+                            provider_store.capture_claude_prompt_abort(&run_id)
                         })
                         .await
                     {
@@ -217,6 +305,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        Box::pin(self.drain_received_prompt_abort_output(dispatch)).await?;
         // The protocol ACK can precede tool exit. Retire the owned process group
         // before releasing the turn; its persisted provider identity resumes on the next prompt.
         let finished = {
@@ -237,6 +326,9 @@ impl KernelRuntimeState {
                         }
                         let process_key = app.pty().process_key(&dispatch.provider_run_id).ok()
                             .or_else(|| owned.provider_process_tracking.read().run_processes.get(&dispatch.provider_run_id).cloned());
+                        let claude_retired = owned.provider_store.settle_claude_prompt_abort(
+                            &dispatch.provider_run_id, replace_run,
+                        )?;
                         app.pty_mut().terminate_owned_processes(&dispatch.provider_run_id)?;
                         let (_, removed_key) = crate::app::ProviderLaunchProcessRuntime::new(app)
                             .remove_run(&dispatch.provider_run_id)?;
@@ -249,7 +341,7 @@ impl KernelRuntimeState {
                         owned.remove_provider_process_tracking_for_run(&dispatch.provider_run_id, removed_key);
                         // Borrowed endpoints keep their documented interrupt semantics.
                         // Replace timed-out runs even if launch has not materialized their PTY yet.
-                        if process_key.is_some() || replace_run {
+                        if process_key.is_some() || replace_run || claude_retired == Some(true) {
                             let ended = owned.provider_store.mark_run_ended_provider_only(
                                 &dispatch.session_id, &dispatch.provider_run_id,
                             )?;
@@ -266,6 +358,9 @@ impl KernelRuntimeState {
         if finished != Some(true) {
             return Ok(());
         }
+        // The physical cleanup may have let an actor publish its final batch.
+        // Drain that ready queue even though the run has now been marked Ended.
+        Box::pin(self.drain_received_prompt_abort_output(dispatch)).await?;
         self.flush_provider_history(&dispatch.provider_run_id)
             .await?;
         let Some((agent_id, prompt)) = self.owned.cancelling_prompt_for_abort(
