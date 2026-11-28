@@ -47,16 +47,24 @@ impl KernelRuntimeState {
             // Use the normal batch path, including resume persistence and
             // durable tool history. It can itself observe cancellation completion.
             let retry = batch.clone();
-            let applied = Box::pin(
-                self.apply_owned_structured_output_batch(
+            let applied = async {
+                let batch = self.prepare_owned_structured_output_batch(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
-                    owned
-                        .attachment_store
-                        .list_session_attachment_ids(&dispatch.session_id),
                     batch,
-                ),
-            )
+                )?;
+                Box::pin(
+                    self.apply_prepared_owned_structured_output_batch(
+                        &dispatch.session_id,
+                        &dispatch.provider_run_id,
+                        owned
+                            .attachment_store
+                            .list_session_attachment_ids(&dispatch.session_id),
+                        batch,
+                    ),
+                )
+                .await
+            }
             .await;
             if let Err(error) = applied {
                 if crate::durable_state::is_retryable_durable_write_error(&error) {

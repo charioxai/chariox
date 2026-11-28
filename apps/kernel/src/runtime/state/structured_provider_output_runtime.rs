@@ -496,7 +496,7 @@ impl KernelRuntimeState {
         .await
     }
 
-    fn prepare_owned_structured_output_batch(
+    pub(super) fn prepare_owned_structured_output_batch(
         &self,
         session_id: &str,
         provider_run_id: &str,
@@ -584,7 +584,7 @@ impl KernelRuntimeState {
         Ok(poll_result)
     }
 
-    async fn apply_prepared_owned_structured_output_batch(
+    pub(super) async fn apply_prepared_owned_structured_output_batch(
         &self,
         session_id: &str,
         provider_run_id: &str,
