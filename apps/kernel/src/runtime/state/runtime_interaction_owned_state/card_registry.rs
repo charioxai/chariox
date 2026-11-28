@@ -72,7 +72,10 @@ impl InteractionSurface {
     pub(super) const fn is_visible(self) -> bool {
         !matches!(self, Self::Hidden)
     }
-    pub(super) fn present(self, interaction: RuntimeInteraction) -> RuntimeInteraction {
+    pub(in crate::runtime::state) fn present(
+        self,
+        interaction: RuntimeInteraction,
+    ) -> RuntimeInteraction {
         match self {
             Self::Card(name) => interaction.with_card_type(name),
             Self::PaneStatus => interaction.as_pane_status(),

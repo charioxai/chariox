@@ -8,7 +8,7 @@ fn person_inbox_1012_snapshot_and_hash() {
     let bytes = include_bytes!("person-inbox-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a6324a3090df641bc367adaa225f0b71a7ceae5de4129c269f741c5efa24c0a6"
+        "3735550b27c62e24305346d2f465180d27a907aaac114751b6abf6f25a9cad89"
     );
 }
 

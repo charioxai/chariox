@@ -149,11 +149,7 @@ impl KernelRuntimeState {
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
         // Carry the factory's exact presentation across a lease; the home still validates admission.
-        let interaction = match kind {
-            super::InteractionSurface::Card(name) => interaction.with_card_type(name),
-            super::InteractionSurface::PaneStatus => interaction.as_pane_status(),
-            super::InteractionSurface::Hidden => interaction.hidden(),
-        };
+        let interaction = kind.present(interaction);
         // MP-08 / MP-10 / MP-11: Leased utility reviews and Vault input belong
         // to the home session, using the same bridge as provider-native approval.
         let agent_id = interaction.agent_id().map(str::to_owned);
