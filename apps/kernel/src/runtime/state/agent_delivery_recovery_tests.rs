@@ -843,10 +843,30 @@ async fn a_message_retired_by_the_deadline_sweep_raises_no_person_card() {
         "a time limit is not the person's card"
     );
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-    assert_eq!(session.active_interactions().len(), 1, "one recovery status");
-    assert!(session.active_interactions().iter().all(|item| item.is_pane_status()), "the recovery is only pane status");
+    assert_eq!(
+        session.active_interactions().len(),
+        1,
+        "one recovery status"
+    );
+    assert!(
+        session
+            .active_interactions()
+            .iter()
+            .all(|item| item.is_pane_status()),
+        "the recovery is only pane status"
+    );
     f.runtime.tick_agent_deadlines(now + 1).await.unwrap();
-    assert_eq!(f.runtime.owned.session_store.get_session(&f.room).unwrap().active_interactions().len(), 1, "one status per ended limit");
+    assert_eq!(
+        f.runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1,
+        "one status per ended limit"
+    );
     let notices = f.runtime.agent_notices_for_test(&f.room, &f.child);
     assert!(
         notices
@@ -876,6 +896,16 @@ async fn a_delivery_attempt_refused_by_the_ended_limit_raises_no_person_card() {
         "a time limit is not the person's card"
     );
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-    assert_eq!(session.active_interactions().len(), 1, "one recovery status");
-    assert!(session.active_interactions().iter().all(|item| item.is_pane_status()), "the recovery is only pane status");
+    assert_eq!(
+        session.active_interactions().len(),
+        1,
+        "one recovery status"
+    );
+    assert!(
+        session
+            .active_interactions()
+            .iter()
+            .all(|item| item.is_pane_status()),
+        "the recovery is only pane status"
+    );
 }

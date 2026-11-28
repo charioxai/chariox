@@ -90,18 +90,30 @@ pub struct UnavailableTerminals {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum RoomTerminalResult {
-    Opened { terminal: RoomTerminalSummary },
+    Opened {
+        terminal: RoomTerminalSummary,
+    },
     Listed {
         terminals: Vec<RoomTerminalSummary>,
         /// Machines of the Room's agents that were not asked, with what to do about each.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unavailable: Vec<UnavailableTerminals>,
     },
-    Snapshot { snapshot: RoomTerminalSnapshot },
-    Input { input: RoomTerminalInputResult },
-    Resized { terminal: RoomTerminalSummary },
-    Output { output: RoomTerminalOutput },
-    Waited { waited: RoomTerminalWaitResult },
+    Snapshot {
+        snapshot: RoomTerminalSnapshot,
+    },
+    Input {
+        input: RoomTerminalInputResult,
+    },
+    Resized {
+        terminal: RoomTerminalSummary,
+    },
+    Output {
+        output: RoomTerminalOutput,
+    },
+    Waited {
+        waited: RoomTerminalWaitResult,
+    },
     Closed,
 }
 
