@@ -999,6 +999,45 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"abcdefghi");
     }
 
+    #[test]
+    fn an_upload_through_a_directory_alias_keeps_its_attempt_identity() {
+        for early in [false, true] {
+            let dir = scratch();
+            let real = dir.join("real");
+            std::fs::create_dir(&real).unwrap();
+            let alias = dir.join("alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let target = alias.join("nested/file.bin");
+            if !early {
+                std::fs::create_dir(real.join("nested")).unwrap();
+            }
+            let mut first = chunk(&target, 0, b"abc", 6, None);
+            first.upload_id = uuid::Uuid::new_v4();
+            let mut second = chunk(&target, 3, b"def", 6, None);
+            second.upload_id = first.upload_id;
+            let opener = if early {
+                Some(std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(100));
+                    write(&first)
+                }))
+            } else {
+                assert_eq!(written(write(&first).unwrap()).0, 3);
+                None
+            };
+            let result = write(&second);
+            if let Some(opener) = opener {
+                assert_eq!(written(opener.join().unwrap().unwrap()).0, 3);
+            }
+            assert!(
+                written(result.expect("a directory alias does not change the upload attempt")).1
+            );
+            assert_eq!(
+                std::fs::read(real.join("nested/file.bin")).unwrap(),
+                b"abcdef"
+            );
+        }
+    }
+
     // EA2-07: an upload resumes at the offset the target reports, and the file
     // appears only when it is complete and its hash matches.
     #[test]
