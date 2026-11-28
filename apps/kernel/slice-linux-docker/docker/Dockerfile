@@ -423,6 +423,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-header.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-payment.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-card-frame.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-card-verification.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-recovery.mjs \
