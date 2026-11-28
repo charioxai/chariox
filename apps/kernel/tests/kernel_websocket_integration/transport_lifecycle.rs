@@ -441,6 +441,7 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
                 command: vec!["sh".into(), "-c".into(), "sleep 4".into()],
                 directory: None,
                 timeout_ms: Some(5_000),
+                stdin_file: None,
             }),
         )
         .await;

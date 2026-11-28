@@ -702,6 +702,7 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
                 command: vec!["sh".into(), "-c".into(), "sleep 2".into()],
                 directory: None,
                 timeout_ms: Some(3_000),
+                stdin_file: None,
             }),
         )
         .await;

@@ -9,6 +9,9 @@ import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 
 const CHUNK_BYTES = 256 * 1024
+// Existing kernel reader lease (room_exec/lease.rs) and the retired CLI's read retry cadence.
+const READER_LEASE_MS = 300_000
+const READ_RETRY_MS = 2_000
 
 export type ExecOptions = { session?: string | undefined; workspace?: string | undefined; hostAgent?: string | undefined; timeoutSeconds?: number | undefined; directory?: string | undefined; stdinFile?: string | undefined; command: readonly string[] }
 export type ExecIo = { stdin: Readable | undefined; stdout: Writable; stderr: Writable; signals?: NodeJS.Process }
@@ -39,6 +42,17 @@ function write(stream: Writable, bytes: Buffer, signal: AbortSignal): Promise<vo
       signal.removeEventListener("abort", abort)
       reject(error)
     }
+  })
+}
+
+function recoveryRead<T>(pending: Promise<T>, remaining: number, failure: unknown, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const interrupted = () => { cleanup(); reject(new CommandFailure("exec_interrupted", "command interrupted")) }
+    const timer = setTimeout(() => { cleanup(); reject(failure) }, remaining)
+    const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", interrupted) }
+    signal.addEventListener("abort", interrupted, { once: true })
+    if (signal.aborted) interrupted()
+    pending.then(value => { cleanup(); resolve(value) }, error => { cleanup(); reject(error) })
   })
 }
 
@@ -75,6 +89,33 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
   const stopInput = new AbortController()
   const stopOutput = new AbortController()
   let cancellation: Promise<unknown> | undefined
+  let confirmedReadAt = Date.now()
+  const commandDeadline = confirmedReadAt + Math.ceil((options.timeoutSeconds ?? 30) * 1000)
+  const readOutput = async (waitMs: number) => {
+    let recovering = false
+    let lastFailure: unknown
+    for (;;) {
+      const requestedAt = Date.now()
+      const remaining = Math.min(commandDeadline, confirmedReadAt + READER_LEASE_MS) - requestedAt
+      if (recovering && remaining <= 0) throw lastFailure
+      if (stopped) throw new CommandFailure("exec_interrupted", "command interrupted")
+      try {
+        const pending = request({ operation: "exec_read", exec_id: execId!, after_cursor: cursor, wait_ms: waitMs })
+        const response = recovering ? await recoveryRead(pending, remaining, lastFailure, stopOutput.signal) : await pending
+        confirmedReadAt = Math.max(confirmedReadAt, requestedAt)
+        return response
+      } catch (error) {
+        if (stopped) throw new CommandFailure("exec_interrupted", "command interrupted")
+        if (!["kernel_connection_lost", "kernel_unreachable", "kernel_request_timeout", "kernel_outcome_unknown"].includes(failureOf(error).code)) throw error
+        recovering = true
+        lastFailure = error
+        const remaining = Math.min(commandDeadline, confirmedReadAt + READER_LEASE_MS) - Date.now()
+        if (remaining <= 0) throw error
+        try { await timers.setTimeout(Math.min(READ_RETRY_MS, remaining), undefined, { signal: stopOutput.signal }) }
+        catch { throw new CommandFailure("exec_interrupted", "command interrupted") }
+      }
+    }
+  }
   const interrupt = (signal: number) => {
     interrupted = signal
     stopped = true
@@ -136,7 +177,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     })()
     const reading = (async () => {
       for (;;) {
-        const response = await request({ operation: "exec_read", exec_id: execId, after_cursor: cursor, wait_ms: 1000 })
+        const response = await readOutput(1000)
         if (response.result !== "exec_output") throw new Error("kernel returned no exec output")
         const output = response.output
         const consumed = new AbortController()
@@ -146,7 +187,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
             if (consumed.signal.aborted) return
             // A local consumer may stall beyond the reader lease. Acknowledge
             // only bytes already written, leaving this page available to resume.
-            await request({ operation: "exec_read", exec_id: execId, after_cursor: cursor, wait_ms: 0 })
+            await readOutput(0)
           }
         })()
         try {

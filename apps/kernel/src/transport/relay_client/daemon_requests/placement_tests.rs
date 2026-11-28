@@ -419,6 +419,7 @@ async fn only_the_verified_origin_name_can_label_a_process() {
                     command: vec!["/bin/true".into()],
                     directory: None,
                     timeout_ms: None,
+                    stdin_file: None,
                 },
             )
             .await

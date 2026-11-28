@@ -119,7 +119,16 @@ pub(super) fn start(
                             .stdin_file
                             .as_ref()
                             .map(|path| {
-                                let file = std::fs::File::open(path).map_err(|failure| {
+                                let mut options = std::fs::OpenOptions::new();
+                                options.read(true);
+                                // The checked pathname may change while admission waits.
+                                // Never block on a replacement FIFO before validating its FD.
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::fs::OpenOptionsExt;
+                                    options.custom_flags(libc::O_NONBLOCK);
+                                }
+                                let file = options.open(path).map_err(|failure| {
                                     super::error(
                                         "exec_stdin_unreadable",
                                         format!(

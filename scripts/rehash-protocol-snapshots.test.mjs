@@ -92,7 +92,16 @@ function guardedFixture(t, { pinsText = '{"local":7,"relayPeer":3}', local = 8, 
   const protocol = 'apps/kernel/src/local/api/tests/protocol_shapes/row403.rs'
   const unrelated = sameFile ? protocol : 'apps/kernel/src/runtime/row403_vault.rs'
   const secretPin = 'd'.repeat(64), secretComputed = 'c'.repeat(64)
-  const protocolBody = `${scenario === 'wrapped' ? '' : '#[test]'}\nfn protocol_hash() {\n let wire = serde_json::json!({"local": LOCAL_DAEMON_PROTOCOL_VERSION});\n assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())), "${b}");\n}\n`
+  let protocolBody = `${scenario === 'wrapped' ? '' : '#[test]'}\nfn protocol_hash() {\n let wire = serde_json::json!({"local": LOCAL_DAEMON_PROTOCOL_VERSION});\n assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())), "${b}");\n}\n`
+  if (scenario.startsWith('split')) {
+    protocolBody = readFileSync(new URL('../apps/kernel/src/local/api/tests/protocol_shapes/person_inbox.rs', import.meta.url), 'utf8')
+    const pins = [...protocolBody.matchAll(/"([0-9a-f]{64})"/g)]
+    assert.equal(pins.length, 1, 'the actual Inbox layout must hold one digest expectation')
+    protocolBody = protocolBody.replace(pins[0][1], b)
+    if (scenario === 'split-unrelated') protocolBody = protocolBody.replace('include_bytes!("person-inbox-1012.json")', 'include_bytes!("unrelated-vault.json")')
+    if (scenario === 'split-comment') protocolBody = protocolBody.replace('    assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);', '    // assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);')
+    if (scenario === 'split-no-roundtrip') protocolBody = protocolBody.replaceAll('LocalDaemonRequest', 'serde_json::Value').replaceAll('LocalDaemonResponse', 'serde_json::Value')
+  }
   const unrelatedBody = `#[test]\nfn vault_hash() {\n assert_eq!(format!("{:x}", Sha256::digest(b"unrelated")), "${secretPin}");\n}\n`
   const sources = {
     'apps/kernel/src/local/api/types.rs': `pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = ${local};\n`,
@@ -124,7 +133,7 @@ const nl=${JSON.stringify('\n')};
 const moduleOf=file=>file.slice('apps/kernel/src/'.length,-3).split('/').join('::');
 const mismatch=(file,name,left,right)=>{output+=["thread '"+moduleOf(file)+'::'+name+"' (1) panicked at "+file+':4:2:','  left: "'+left+'"',' right: "'+right+'"',''].join(nl);failures.push(moduleOf(file)+'::'+name)};
 if(pending&&scenario==='wrapped')output+='---- '+moduleOf(protocol)+'::wrapped_protocol stdout ----'+nl;
-if(pending)mismatch(protocol,scenario==='wrapped'?'wrapped_protocol':'protocol_hash',${JSON.stringify(a)},${JSON.stringify(b)});
+if(pending)mismatch(protocol,scenario==='wrapped'?'wrapped_protocol':scenario.startsWith('split')?'person_inbox_1012_snapshot_and_hash':'protocol_hash',${JSON.stringify(a)},${JSON.stringify(b)});
 if((scenario==='mixed-hash'||scenario==='same-file')&&other)mismatch(unrelated,'vault_hash',${JSON.stringify(secretComputed)},${JSON.stringify(secretPin)});
 if(scenario==='mixed-nonhash'){output+='an ordinary unrelated assertion failed'+nl;failures.push(moduleOf(unrelated)+'::ordinary_failure')}
 if(!failures.length)process.exit(0);
@@ -209,5 +218,20 @@ for (const scenario of ['mixed-hash', 'same-file', 'mixed-nonhash']) test(`${sce
   const f = guardedFixture(t, { scenario, sameFile: scenario === 'same-file' })
   const before = f.snapshot(), result = f.run()
   assert.equal(result.status, 1, result.stderr)
+  assert.deepEqual(f.snapshot(), before)
+})
+
+
+test('the actual Inbox digest is owned by its versioned round-trip companion', t => {
+  const f = guardedFixture(t, { scenario: 'split' })
+  const before = f.snapshot(), run = f.run(), after = f.snapshot()
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(after[f.protocol], before[f.protocol].replace(`"${b}"`, `"${a}"`))
+  assert.equal(after[f.unrelated], before[f.unrelated])
+})
+for (const scenario of ['split-unrelated', 'split-comment', 'split-no-roundtrip']) test(`${scenario} does not acquire another fixture's version authority`, t => {
+  const f = guardedFixture(t, { scenario })
+  const before = f.snapshot(), run = f.run()
+  assert.equal(run.status, 1, run.stderr)
   assert.deepEqual(f.snapshot(), before)
 })

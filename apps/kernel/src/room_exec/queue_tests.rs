@@ -81,6 +81,7 @@ async fn command_deadline_expires_while_waiting_for_admission() {
             false,
             0,
             Some(100),
+            None,
         )
         .unwrap();
     let (_, _, outcome) = tests::collect(&service, &id).await;
@@ -236,4 +237,60 @@ async fn job_admission_still_waits_for_managed_memory() {
         launched.is_ok(),
         "releasing managed memory admits the queued job: {observed:?}"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_named_stdin_file_replaced_by_fifo_during_admission_does_not_hold_the_permit() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let directory = TempDir::new();
+    let path = directory.path().join("input.bin");
+    std::fs::write(&path, b"input").unwrap();
+    let service = limited(0, u64::MAX / 2);
+    let id = service
+        .open_launch(
+            "room",
+            "room",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            directory.path(),
+            &["/bin/sh".into(), "-c".into(), "touch started".into()],
+            None,
+            None,
+            false,
+            0,
+            Some(10_000),
+            Some("input.bin"),
+        )
+        .unwrap();
+    queued(&service, &id).await;
+    std::fs::remove_file(&path).unwrap();
+    let named = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(named.as_ptr(), 0o600) }, 0);
+    service.start_now("room", &id).unwrap();
+    let settled = tokio::time::timeout(Duration::from_secs(2), tests::collect(&service, &id)).await;
+    if settled.is_err() {
+        // Drain the old blocking implementation too: a RED must not strand a
+        // spawn_blocking thread in runtime shutdown waiting for a FIFO writer.
+        let writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path);
+        let _ = service.cancel("room", &id);
+        let _ = tokio::time::timeout(Duration::from_secs(2), tests::collect(&service, &id)).await;
+        drop(writer);
+    }
+    let (_, _, outcome) =
+        settled.expect("a substituted FIFO must not block admission or the deadline");
+    assert!(
+        matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("regular file")),
+        "{outcome:?}"
+    );
+    assert!(!directory.path().join("started").exists());
+    assert!(
+        !service.has_running_work(),
+        "the rejected FD releases its permit"
+    );
+    service.close("room", &id).unwrap();
 }

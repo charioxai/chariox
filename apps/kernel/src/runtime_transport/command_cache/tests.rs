@@ -1040,6 +1040,7 @@ fn room_exec_stream_bytes_never_enter_transport_result_caches() {
             command: vec!["cat".into()],
             directory: None,
             timeout_ms: None,
+            stdin_file: None,
         },
     });
     assert!(

@@ -56,6 +56,32 @@ function runTests(modules) {
   return { status: result.status, output: `${result.stdout}\n${result.stderr}` }
 }
 
+// A split digest test inherits a fixture's version only from a registered
+// round-trip test that parses those same bytes and checks their actual local field.
+function versionedFixtureCompanion(source, code, fixturePath) {
+  for (const fn of code.matchAll(/#\[test\]\s*fn\s+\w+\s*\(/g)) {
+    const args = code.indexOf('(', fn.index), argsEnd = closing(code, args)
+    const open = code.indexOf('{', argsEnd + 1), end = closing(code, open)
+    if (open < 0 || end < 0) continue
+    const body = code.slice(open, end)
+    if (!/LocalDaemonRequest/.test(body) || !/LocalDaemonResponse/.test(body)
+        || !/serde_json::from_value/.test(body) || !/serde_json::to_value/.test(body)) continue
+    for (const binding of body.matchAll(/\blet\s+(\w+)\s*=\s*include_bytes!\s*\(/g)) {
+      const start = open + binding.index, call = code.indexOf('(', start), close = closing(code, call)
+      const path = source.slice(call, close + 1).match(/^\(\s*"([^"\n]+\.json)"\s*,?\s*\)$/)?.[1]
+      if (path !== fixturePath) continue
+      const parsed = body.match(new RegExp(`\\blet\\s+(\\w+)\\s*:\\s*serde_json::Value\\s*=\\s*serde_json::from_slice\\(\\s*${binding[1]}\\s*\\)`))
+      if (!parsed) continue
+      for (const assertion of body.matchAll(/\bassert_eq!\s*\(/g)) {
+        const call = code.indexOf('(', open + assertion.index), close = closing(code, call)
+        const raw = source.slice(call, close + 1)
+        if (new RegExp(`^\\(\\s*${parsed[1]}\\[\\s*"local"\\s*\\]\\s*,\\s*(?:crate::local::)?LOCAL_DAEMON_PROTOCOL_VERSION\\s*,?\\s*\\)$`).test(raw)) return true
+      }
+    }
+  }
+  return false
+}
+
 // A version bump may update a protocol serialization expectation, never an arbitrary
 // digest elsewhere in the same module. Inspect the assertion that owns this literal.
 function protocolExpectation(file, source, pinned) {
@@ -73,13 +99,13 @@ function protocolExpectation(file, source, pinned) {
   if (!owner) return null
   const body = code.slice(owner.open, owner.end)
   const versioned = text => /\b(?:LOCAL_DAEMON_PROTOCOL_VERSION|RELAY_PEER_PROTOCOL_VERSION)\b/.test(text)
-  if (!versioned(body)) return null
+  const versionInOwner = versioned(body)
   for (const call of code.slice(owner.open, owner.end).matchAll(/\b(assert_eq|assert_round_trip|assert_hash)\s*!?\s*\(/g)) {
     const start = owner.open + call.index, open = code.indexOf('(', start), end = closing(code, open)
     if (!(at > open && at < end)) continue
     const assertion = code.slice(start, end)
     if (call[1] !== 'assert_eq') {
-      if (/LocalDaemon(?:Request|Response)/.test(code) && /Sha256::digest/.test(code)) return `${modulePath(file)}::${owner.name}`
+      if (versionInOwner && /LocalDaemon(?:Request|Response)/.test(code) && /Sha256::digest/.test(code)) return `${modulePath(file)}::${owner.name}`
       continue
     }
     if (!/Sha256::digest/.test(assertion)) continue
@@ -97,7 +123,8 @@ function protocolExpectation(file, source, pinned) {
     if (to < 0 || to > start) continue
     const initializer = code.slice(from, to)
     if (serialized && versioned(initializer)) return `${modulePath(file)}::${owner.name}`
-    if (/include_(?:str|bytes)!/.test(initializer) && /\.json"/.test(source.slice(from, to))) return `${modulePath(file)}::${owner.name}`
+    const fixture = source.slice(from, to).match(/include_(?:str|bytes)!\s*\(\s*"([^"\n]+\.json)"\s*\)/)?.[1]
+    if (fixture && (versionInOwner || versionedFixtureCompanion(source, code, fixture))) return `${modulePath(file)}::${owner.name}`
   }
   return null
 }

@@ -67,7 +67,7 @@ test("exec parses its flags separately from literal argv", () => {
 })
 
 test("exec reports a lease renewal failure while local output remains blocked", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] })
   let release: (() => void) | undefined
   const blocked = new Writable({ write(_chunk, _encoding, done) { release = done } })
   const send = async (body: Record<string, unknown>) => {
@@ -375,4 +375,98 @@ test("exec reports a typed memory stop after collecting the command", async () =
   await assert.rejects(runExec(options, send, { stdin: new PassThrough(), stdout: sink([]), stderr: sink([]) }),
     (error: unknown) => error instanceof CommandFailure && error.code === "memory_limit" && error.message.includes("100663296 bytes"))
   assert.deepEqual(calls, ["exec_open", "exec_read", "exec_close"])
+})
+
+test("exec recovers an admitted cursor after a brief disconnect without replaying bytes or open", async () => {
+  const bytes: Buffer[] = [], cursors: number[] = []
+  let opens = 0
+  const send = async (body: Record<string, unknown>) => {
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
+    if (op.operation === "exec_open") { opens++; return result({ result: "exec_opened", exec_id: "recover" }) }
+    if (op.operation === "exec_stdin_close") return result({ result: "exec_input", next_offset: 0 })
+    if (op.operation === "exec_close") return result({ result: "exec_closed" })
+    assert.equal(op.operation, "exec_read")
+    cursors.push(Number(op.after_cursor))
+    if (cursors.length === 2) throw new CommandFailure("kernel_connection_lost", "brief disconnect")
+    return result({ result: "exec_output", output: {
+      chunks: [{ cursor: cursors.length === 1 ? 1 : 2, stream: "stdout", data_base64: (cursors.length === 1 ? Buffer.from([0, 255]) : Buffer.from([13, 10])).toString("base64") }],
+      next_cursor: cursors.length === 1 ? 1 : 2,
+      outcome: cursors.length === 1 ? null : { kind: "exited", code: 17 },
+    } })
+  }
+  assert.equal(await runExec({ ...options, timeoutSeconds: 10 }, send, { stdin: Readable.from([]), stdout: sink(bytes), stderr: sink([]) }), 17)
+  assert.equal(opens, 1)
+  assert.deepEqual(cursors, [0, 1, 1])
+  assert.deepEqual(Buffer.concat(bytes), Buffer.from([0, 255, 13, 10]))
+})
+
+test("exec never retries an uncertain open to recover output", async () => {
+  let requests = 0
+  await assert.rejects(runExec({ ...options, timeoutSeconds: 1 }, async () => {
+    requests++
+    throw new CommandFailure("kernel_outcome_unknown", "unknown admission")
+  }, { stdin: undefined, stdout: sink([]), stderr: sink([]) }), (failure: unknown) => failure instanceof CommandFailure && failure.details?.exec_id === null)
+  assert.equal(requests, 1)
+})
+
+test("exec stops output recovery at the remaining command deadline", async () => {
+  let reads = 0
+  const began = Date.now()
+  await assert.rejects(runExec({ ...options, timeoutSeconds: 0.03 }, async body => {
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
+    if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "expires" })
+    if (op.operation === "exec_stdin_close") return result({ result: "exec_input", next_offset: 0 })
+    reads++
+    throw new CommandFailure("kernel_connection_lost", "connection remains down")
+  }, { stdin: undefined, stdout: sink([]), stderr: sink([]) }))
+  assert.equal(reads, 1)
+  assert.ok(Date.now() - began < 1000, "the retry cadence does not extend the original deadline")
+})
+
+test("exec stops output recovery at its last confirmed reader lease", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] })
+  let reads = 0
+  await assert.rejects(runExec({ ...options, timeoutSeconds: 600 }, async body => {
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
+    if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "lease" })
+    if (op.operation === "exec_stdin_close") return result({ result: "exec_input", next_offset: 0 })
+    reads++
+    t.mock.timers.tick(300_001)
+    throw new CommandFailure("kernel_connection_lost", "last response was beyond the lease")
+  }, { stdin: undefined, stdout: sink([]), stderr: sink([]) }))
+  assert.equal(reads, 1, "a long command timeout does not extend the last confirmed lease")
+})
+
+test("exec bounds a stalled reconnect read by the original deadline", async () => {
+  let reads = 0
+  const began = Date.now()
+  await assert.rejects(runExec({ ...options, timeoutSeconds: 2.05 }, async body => {
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
+    if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "stalled" })
+    if (op.operation === "exec_stdin_close") return result({ result: "exec_input", next_offset: 0 })
+    reads++
+    if (reads === 1) throw new CommandFailure("kernel_connection_lost", "brief loss")
+    return new Promise<never>(() => {})
+  }, { stdin: undefined, stdout: sink([]), stderr: sink([]) }))
+  assert.equal(reads, 2)
+  assert.ok(Date.now() - began < 3000, "a reconnect never gets a fresh full timeout")
+})
+
+test("exec can interrupt a pending output reconnect without replaying admission", async () => {
+  const signals = new EventEmitter() as NodeJS.Process
+  const ops: string[] = []
+  const running = runExec({ ...options, timeoutSeconds: 10 }, async body => {
+    const op = (body.RunCommand as { operation: Record<string, unknown> }).operation
+    ops.push(String(op.operation))
+    if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "interrupted-recovery" })
+    if (op.operation === "exec_read") {
+      setImmediate(() => signals.emit("SIGINT"))
+      throw new CommandFailure("kernel_connection_lost", "brief loss")
+    }
+    return result({ result: op.operation === "exec_cancel" ? "exec_cancelled" : "exec_closed" })
+  }, { stdin: undefined, stdout: sink([]), stderr: sink([]), signals })
+  assert.equal(await running, 130)
+  assert.equal(ops.filter(op => op === "exec_open").length, 1)
+  assert.ok(ops.includes("exec_cancel") && ops.includes("exec_close"))
+  assert.equal(signals.listenerCount("SIGINT"), 0)
 })

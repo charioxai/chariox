@@ -514,3 +514,42 @@ test("kernels prints each kernel's protocol and update state exactly as the kern
   assert.equal(kernels[1]!.protocol, null)
   assert.equal(kernels[1]!.update, "update_needed")
 })
+
+test("workspace binary output resumes through a fresh websocket without creating a Room", async () => {
+  const cursors: number[] = []
+  const chunks: Buffer[] = []
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, { response: { GatewayKernelsListed: { kernels: [] } } })
+    assert.ok("RunCommand" in frame.request)
+    const command = frame.request.RunCommand as { target: unknown; operation: Record<string, unknown> }
+    assert.deepEqual(command.target, { kind: "kernel" })
+    const op = command.operation
+    const answer = (result: unknown) => replyWith(socket, frame, { response: { RunCommand: { result } } })
+    if (op.operation === "exec_open") {
+      assert.equal(op.directory, "/workspace")
+      return answer({ result: "exec_opened", exec_id: "socket-recovery" })
+    }
+    if (op.operation === "exec_stdin_close") return answer({ result: "exec_input", next_offset: 0 })
+    if (op.operation === "exec_close") return answer({ result: "exec_closed" })
+    assert.equal(op.operation, "exec_read")
+    cursors.push(Number(op.after_cursor))
+    if (cursors.length === 2) return socket.terminate()
+    const first = cursors.length === 1
+    answer({ result: "exec_output", output: {
+      chunks: [{ cursor: first ? 1 : 2, stream: "stdout", data_base64: (first ? Buffer.from([0, 255]) : Buffer.from([13, 10])).toString("base64") }],
+      next_cursor: first ? 1 : 2, outcome: first ? null : { kind: "exited", code: 23 },
+    } })
+  })
+  const stdout = new Writable({ write(bytes: Buffer, _encoding, done) { chunks.push(Buffer.from(bytes)); done() } })
+  try {
+    assert.equal(await withKernel({ socket: kernel.path, kernel: "b3", timeoutSeconds: 2 }, send => runExec(
+      { workspace: "/workspace", command: ["/bin/cat"], timeoutSeconds: 10 }, send,
+      { stdin: undefined, stdout, stderr: stdout },
+    )), 23)
+    assert.deepEqual(cursors, [0, 1, 1])
+    assert.deepEqual(Buffer.concat(chunks), Buffer.from([0, 255, 13, 10]))
+    assert.equal(kernel.frames.filter(frame => (frame.request.RunCommand as { operation?: { operation?: string } } | undefined)?.operation?.operation === "exec_open").length, 1)
+    assert.ok(kernel.frames.every(frame => !('CreateSession' in frame.request) && !('EndSession' in frame.request)))
+  } finally { await kernel.close() }
+})

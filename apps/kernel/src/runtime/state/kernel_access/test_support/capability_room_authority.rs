@@ -92,6 +92,7 @@ async fn revoked_capability(kind: &str) {
             ],
             directory: None,
             timeout_ms: Some(1000),
+            stdin_file: None,
         }),
         "edit" => LocalDaemonRequest::EditFile(crate::local::EditFileCapabilityRequest {
             session_id: session.id().into(),
