@@ -1007,7 +1007,8 @@ async fn assert_unresponsive_abort_settles(
                     .reconcile_provider_run_exit_for_output(session.id(), run.id())
                     .await
                 {
-                    Ok(_) => break,
+                    Ok(true) => break,
+                    Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
                     Err(DaemonError::PtyCleanup { .. }) => {
                         let current = runtime.owned.session_snapshot(session.id()).unwrap();
                         assert_eq!(
