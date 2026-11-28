@@ -917,8 +917,7 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
-    let root_guard = crate::test_support::TestTempDir::new("claude-native-stop-hook");
-    let root = root_guard.path().to_path_buf();
+    let root = worktree.path().join("native-stop-hook");
     fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("hidden-context.txt");
     let events_file = root.join("events.jsonl");
