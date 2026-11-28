@@ -149,6 +149,12 @@ fn summarize_meta_command_response(
             "type": "AgentFocused",
             "agent": summarize_meta_agent(agent),
         }),
+        LocalDaemonResponse::ProviderAccountCopyOffers { offers } => serde_json::json!({
+            "type": "ProviderAccountCopyOffers", "offers": offers,
+        }),
+        LocalDaemonResponse::ProviderAccountCopied { receipt } => serde_json::json!({
+            "type": "ProviderAccountCopied", "receipt": receipt,
+        }),
         LocalDaemonResponse::AccountKernelsListed { kernels } => serde_json::json!({
             "type": "AccountKernelsListed",
             "kernels": kernels,

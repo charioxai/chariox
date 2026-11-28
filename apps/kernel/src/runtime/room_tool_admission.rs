@@ -212,6 +212,17 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         {
             Ok(())
         }
+        Some("provider")
+            if tokens.get(1).is_some_and(|v| v == "accounts")
+                && tokens.get(2).is_some_and(|v| {
+                    matches!(
+                        v.as_str(),
+                        "copy-offers" | "copy-targets" | "copy-from" | "copy-to"
+                    )
+                }) =>
+        {
+            Ok(())
+        }
         Some("kernel")
             if matches!(tokens, [_, verb] if matches!(verb.as_str(), "status" | "list-local" | "list-account"))
                 || matches!(tokens, [_, verb, _] if verb == "unlink") =>
