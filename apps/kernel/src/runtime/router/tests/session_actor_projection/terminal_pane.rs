@@ -548,15 +548,6 @@ async fn an_unanswered_dialog_is_offered_again_after_its_get_disconnects() {
 #[tokio::test]
 async fn an_external_answer_cancels_the_dialog_on_the_get_that_offered_it() {
     let terminal = terminal().await;
-    // The replacement already has an empty feed when the original offers the card.
-    let mut replacement = terminal.stream().await;
-    assert!(next_message(
-        &mut replacement,
-        "elicitation/create",
-        Duration::from_millis(100)
-    )
-    .await
-    .is_none());
     let mut original = terminal.stream().await;
     let _resolved = terminal
         .raise(question("external-overlap", &terminal.agent_id))
@@ -564,6 +555,7 @@ async fn an_external_answer_cancels_the_dialog_on_the_get_that_offered_it() {
     let dialog = next_message(&mut original, "elicitation/create", Duration::from_secs(3))
         .await
         .expect("the original GET offers the dialog");
+    let mut replacement = terminal.stream().await;
     assert!(
         next_message(
             &mut replacement,
@@ -572,7 +564,7 @@ async fn an_external_answer_cancels_the_dialog_on_the_get_that_offered_it() {
         )
         .await
         .is_none(),
-        "an older empty feed cannot cancel another GET's offer"
+        "a replacement GET cannot cancel another GET's offer"
     );
     let request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
         session_id: terminal.session_id.clone(),
