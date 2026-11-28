@@ -117,3 +117,12 @@ test("setup-token run names protocol411 when the daemon lacks its run field", as
     /Claude setup token capture requires kernel protocol 411 or newer/,
   )
 })
+
+test("waiting account copies require both bound kernels and a finite expiry", async () => {
+  const offer = { source_kernel_id: "source", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "target", provider: "claude", account_profile: "work", label: "Work" }
+  const wait = { operation_id: "operation", source_kernel_id: "source", target_kernel_id: "target", target_label: "Target", expires_at_ms: Date.now() + 600_000 }
+  for (const invalid of [{ ...wait, source_kernel_id: "other" }, { ...wait, target_kernel_id: "other" }, { ...wait, expires_at_ms: Number.NaN }]) {
+    const client = { send: async (request: Record<string, unknown>) => "RelayStatus" in request ? { RelayStatus: { status: { daemon_id: "target" } } } : { ProviderAccountCopyWaiting: { wait: invalid } } } as unknown as LocalIpcClient
+    await assert.rejects(copyProviderAccountFromKernel(client, offer, "operation"))
+  }
+})

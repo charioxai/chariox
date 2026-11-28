@@ -871,3 +871,42 @@ test("session process command opens the live read-only view", async () => {
   await handleProviderSlashCommand({ currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: () => {}, openSessionProcesses: () => { opened = true } }, { kind: "provider", raw: "/processes", value: "session-processes" })
   assert.equal(opened, true)
 })
+
+test("a waiting login copy never selects a profile or claims installation", async () => {
+  const notices: string[] = []
+  const selected: string[] = []
+  let refreshes = 0
+  const wait = { operation_id: "operation", source_kernel_id: "a", target_kernel_id: "b", target_label: "Receiving machine", expires_at_ms: Date.now() + 600_000 }
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude", flashFooter() {}, appendNotice: value => notices.push(value),
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    // The kernel already returns Wait; the pre-fix dependency type accepts only receipts.
+    copyProviderAccountFromKernel: async () => wait as never,
+    getRelayStatus: async () => ({ daemon_id: "b" }),
+    refreshWaitingRoomInventory: async () => { refreshes++ },
+    applyAccountSelection: async profile => { selected.push(profile) },
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
+  assert.deepEqual(selected, [], "a pending copy has no installed profile to select")
+  assert.equal(refreshes, 0, "a pending response does not confirm installation")
+  assert.match(notices.join("\n"), /[Ww]aiting.*Vault.*Receiving machine/)
+  assert.doesNotMatch(notices.join("\n"), /Login copied/)
+})
+
+test("a completed login copy retains selection on the same receiving connection", async () => {
+  const notices: string[] = []
+  const selected: string[] = []
+  let refreshes = 0
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude", flashFooter() {}, appendNotice: value => notices.push(value),
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    copyProviderAccountFromKernel: async () => ({ operation_id: "operation", provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "copied" }),
+    getRelayStatus: async () => ({ daemon_id: "b" }),
+    refreshWaitingRoomInventory: async () => { refreshes++ },
+    applyAccountSelection: async profile => { selected.push(profile) },
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
+  assert.deepEqual(selected, ["copied"])
+  assert.equal(refreshes, 1)
+  assert.match(notices.join("\n"), /Login copied/)
+})
