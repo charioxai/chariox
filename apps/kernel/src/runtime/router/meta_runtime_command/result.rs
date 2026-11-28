@@ -186,7 +186,7 @@ fn summarize_meta_command_response(
                 "usage": account.usage,
             })).collect::<Vec<_>>(),
         }),
-        LocalDaemonResponse::ProviderAccountProfilesListed { profiles } => serde_json::json!({
+        LocalDaemonResponse::ProviderAccountProfilesListed { profiles, .. } => serde_json::json!({
             "type": "ProviderAccountProfilesListed",
             "profiles": profiles.iter().map(|profile| serde_json::json!({
                 "provider": profile.provider,

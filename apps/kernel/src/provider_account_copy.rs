@@ -1,4 +1,4 @@
-//! MP-08/MP-09/MP-10/MP-11: explicit, independent copies of Vault-backed accounts.
+//! Explicit, independent copies of provider accounts.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -6,7 +6,6 @@ use zeroize::Zeroize;
 pub const PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY: &str = "provider_account_copy_pull_v1";
 
 pub const PROVIDER_ACCOUNT_COPY_CAPABILITY: &str = "provider_account_copy_v1";
-
 /// A receiver that installs a native OpenCode login. Without it the source
 /// refuses an OpenCode copy before it exports anything.
 pub const PROVIDER_ACCOUNT_COPY_OPENCODE_CAPABILITY: &str = "provider_account_copy_opencode_v1";
@@ -105,7 +104,8 @@ impl ProviderAccountCopyReceipt {
     }
 }
 
-/// Serialized only inside the encrypted kernel-to-kernel request.
+/// Serialized only inside the encrypted kernel-to-kernel request. The binding's
+/// provider identifies a Claude setup token or a base64-encoded native auth file.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProviderAccountCopyCredential(String);
@@ -150,6 +150,7 @@ pub(crate) fn failure(code: &'static str) -> crate::error::DaemonError {
 
 /// Why the Vault gave no stored login: a locked Vault is the owner's to unlock.
 /// Anything else (a missing record, an unreadable file) is a different problem
+
 /// and must not be reported as a lock.
 pub(crate) fn credential_read_failure(
     error: &crate::error::DaemonError,
@@ -165,6 +166,7 @@ pub(crate) fn failure_message(code: &str) -> &'static str {
     match code {
         "provider_account_copy_unauthorized" => "Account copy requires enrolled kernels with the same owner, realm and pinned keys.",
         "provider_account_copy_profile" => "Select an exact authenticated account on the source kernel. If it is missing or signed out, sign in there and retry the copy.",
+
         "provider_account_copy_unavailable" => "The target kernel is unavailable; reconnect it and retry the same operation.",
         "provider_account_copy_unsupported" => "Upgrade the target kernel to support provider account copy before retrying.",
         "provider_account_copy_vault_locked" => "Unlock the kernel Vault through Chariox, then retry the same account copy.",
@@ -176,6 +178,7 @@ pub(crate) fn failure_message(code: &str) -> &'static str {
         "provider_account_copy_cli_missing" => "The provider's command-line tool is not installed on the receiving kernel; install it there, then retry the same account copy. Nothing was copied.",
         "provider_account_copy_replace_differs" => "This operation was already used with a different replace setting; start a new operation to copy with that setting.",
         "provider_account_copy_credential_too_large" => "The account's login is larger than an account copy carries (16 KiB). Nothing was copied.",
+
         "provider_account_copy_cancelled" => "Account copy was cancelled or expired; no login was transferred.",
         "provider_account_copy_conflict" => "A target profile or operation already exists; use a new operation with explicit replacement to replace the profile.",
         "provider_account_copy_rejected" => "The official provider rejected the account; sign in to the source account again.",
@@ -298,4 +301,53 @@ mod tests {
         };
         binding.validate().unwrap();
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopyWait {
+    pub operation_id: String,
+    pub source_kernel_id: String,
+    pub target_kernel_id: String,
+    pub target_label: String,
+    pub expires_at_ms: u64,
+}
+
+impl ProviderAccountCopyWait {
+    pub(crate) fn matches(&self, binding: &ProviderAccountCopyBinding) -> bool {
+        self.operation_id == binding.operation_id
+            && self.source_kernel_id == binding.source_kernel_id
+            && self.target_kernel_id == binding.target_kernel_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProviderAccountCopyProgress {
+    WaitingForUnlock { wait: ProviderAccountCopyWait },
+    Installed { receipt: ProviderAccountCopyReceipt },
+    Failed { operation_id: String, code: String },
+}
+
+pub(crate) enum ProviderAccountCopyOutcome {
+    Installed(ProviderAccountCopyReceipt),
+    Waiting(ProviderAccountCopyWait),
+}
+
+impl ProviderAccountCopyOutcome {
+    pub(crate) fn into_response(self) -> crate::local::LocalDaemonResponse {
+        match self {
+            Self::Installed(receipt) => {
+                crate::local::LocalDaemonResponse::ProviderAccountCopied { receipt }
+            }
+            Self::Waiting(wait) => {
+                crate::local::LocalDaemonResponse::ProviderAccountCopyWaiting { wait }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopyUnlockRequest {
+    pub interaction_id: String,
+    pub expires_at_ms: u64,
 }

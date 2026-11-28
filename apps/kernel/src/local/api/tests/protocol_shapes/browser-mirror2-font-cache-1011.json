@@ -1,5 +1,5 @@
 {
-  "protocol_version": 1016,
+  "protocol_version": 1017,
   "peer_protocol_version": 445,
   "command": {
     "KernelBrowser": {
