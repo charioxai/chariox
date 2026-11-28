@@ -90,6 +90,7 @@ const currentSnapshots = [
   "fixtures/app-confirmation-protocol.json",
   "fixtures/async-questions-protocol.json",
   "fixtures/created-resource-register-protocol.json",
+  "fixtures/room-exec-protocol.json",
   "fixtures/historical-workflow-protocol.json",
   "fixtures/landing8-protocol.json",
   "fixtures/owner-vault-protocol.json",

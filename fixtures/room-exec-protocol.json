@@ -1,12 +1,15 @@
 {
-  "local": 1009,
-  "relayPeer": 447,
+  "local": 1017,
+  "relayPeer": 454,
   "shapes": [
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_open",
             "command": [
@@ -15,13 +18,16 @@
           }
         }
       },
-      "sha256": "cd5f52fdbc26a81efc94ee1b27ce088a49a4c407f4e4ccb60503136e85ea0cff"
+      "sha256": "01cad390e263fb66dfe3b87b0c446ec7f1f840263aa8fc1bc66096d57f935dfa"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_write",
             "exec_id": "exec-1",
@@ -30,13 +36,16 @@
           }
         }
       },
-      "sha256": "e437d00f96f4e63382dda6d047ef73982b34ccad8a866b7aea0a1a418f363834"
+      "sha256": "03780237d609e5732c0c2e7795c2852abb4a38d576512a6234594dbe73d9121b"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_stdin_close",
             "exec_id": "exec-1",
@@ -44,13 +53,16 @@
           }
         }
       },
-      "sha256": "3b91665d35fe13a6a96cf704ca19bccebcc8881a8892ec75d4b8c630f38933c0"
+      "sha256": "a90e3a920704bdf5f3050980508bc6698466d3318fcbbb3026e2616b07e35117"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_read",
             "exec_id": "exec-1",
@@ -59,62 +71,68 @@
           }
         }
       },
-      "sha256": "e72d51674861365cd4bfd2bbed2779c73754bb3a477439bca883d77fd6d65150"
+      "sha256": "4474ddfce5a3295ed12d336a1cfd50da33366ac0886bfb95cf19fd5e360d3c51"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_cancel",
             "exec_id": "exec-1"
           }
         }
       },
-      "sha256": "da90d745d09af8a5b0aaa952226a13a89a8687e9aa5e5bb48ab1b3c264c7a35e"
+      "sha256": "980720fbe7b81c4d8a1fc87ee5131d1959340f0e786f109f76d4cdac842e8663"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_close",
             "exec_id": "exec-1"
           }
         }
       },
-      "sha256": "cfb9f340f4e878b8742d73d779aac2e5c96ea922907987e5d70daf530609d85e"
+      "sha256": "47542f6a26c06c306d251e28dc0c332c1ab2d6b9823a24bb95ba96f70aab6d6d"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_opened",
             "exec_id": "exec-1"
           }
         }
       },
-      "sha256": "3c85d03eeecc57636d99f7f8dec75b17d6f9e66abcfcf7d775d8b42586e5bf31"
+      "sha256": "0cf5fc0af1cb4f72b8c263b4ac406ee2b200b17f8faef40f983fcd96c43bc930"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_input",
             "next_offset": 5
           }
         }
       },
-      "sha256": "3ba537c23acecccd017e10af37c8f272d0151100c13444a9515bfe316611bc9a"
+      "sha256": "234824f41a6d587b60fc08a8bd54e22d7478515edd06fbadb85df2ab1d6ae1be"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_output",
             "output": {
@@ -139,46 +157,49 @@
           }
         }
       },
-      "sha256": "2c8846c4043d064fa9eb3efd9e15da5014b083105ccab98a267ad251ea936626"
+      "sha256": "d074c3cc4d771992ade282a17a7f5b4fff436db520ca57ec6f404d17f739b3f5"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_cancelled"
           }
         }
       },
-      "sha256": "98ae86dfc35a06ec1b7606c916d7c885538c8a7e2d1ae129fb86e565260e1517"
+      "sha256": "15864642784ec5a6e42f93fcbbbf6064d9cc70eb7e38491c7457c4ab3129eb28"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_closed"
           }
         }
       },
-      "sha256": "aef274a0a7d15567562cd5eb8c6f1366ee5da1bbc768f46edf3f44de1138cf5e"
+      "sha256": "940499e2dc1125065862e7c197d481f4cb48b4f31f32f05eb5bd7fca666bc7b3"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_list"
           }
         }
       },
-      "sha256": "5a508e3b929b554192a3d6f40c205368e3b6bef2e00ced4412046734ddd7e732"
+      "sha256": "17f6656698159515516cfd42602ba02ca91b0ee1a66fdfffca2ae1d348792474"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_listed",
             "execs": [
@@ -202,25 +223,28 @@
           }
         }
       },
-      "sha256": "7ddb0d2426c4d93f0468f19082a382cab17700134e02b5b4772832bb0360c757"
+      "sha256": "e156346540a53558cba85e04945955f899e5153225bd35bce11b6faa4ccd3ed0"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_start_now",
             "exec_id": "exec-1"
           }
         }
       },
-      "sha256": "c934979d64529ce92cebba69f3f0daf4f11080ae813ba2851a3a232bb7aabcf3"
+      "sha256": "d9a654b7b9031301177110941156a94815e3be7451c276ce7de31818e751b64e"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_listed",
             "execs": [
@@ -249,13 +273,16 @@
           }
         }
       },
-      "sha256": "ff603e110abc73fc50f14fb30004f68c8b5dfe6a0f60bf0cd7ed1d45abb69586"
+      "sha256": "a57e965fa115258695260f69dbabeae8846827ece58bbbe597480361c13acd86"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_place",
             "exec_id": "exec-held",
@@ -264,13 +291,16 @@
           }
         }
       },
-      "sha256": "089772898846897fbbdf6b20b4a1202864ea20c6a22e13acb2e544020068814e"
+      "sha256": "b00851459196c44f5e6b58e02f782b97c20bd6076163121be25fb4cba317735d"
     },
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room-1",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room-1"
+          },
           "operation": {
             "operation": "exec_place",
             "exec_id": "exec-held",
@@ -278,12 +308,12 @@
           }
         }
       },
-      "sha256": "8f8477cdff41178d0fbc069bb397de0735e0c0749b4109393d218360c3f9d3a3"
+      "sha256": "f7a68255641100fe245b27e94ff506893f77ce723ee7a2dad0d09e2051f7c1b0"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_listed",
             "execs": [
@@ -316,7 +346,91 @@
           }
         }
       },
-      "sha256": "72f692f3d9a97d3f5599deaec898d209874624395c41026f76db6fcae27fe12f"
+      "sha256": "331f7eb3b8ef128501d98d0417b8c5c7c18b6317448a3fa48be2e293a75f33e8"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RunCommand": {
+          "target": {
+            "kind": "kernel"
+          },
+          "operation": {
+            "operation": "exec_open",
+            "command": [
+              "/bin/cat"
+            ],
+            "timeout_ms": 1000,
+            "directory": "/work"
+          }
+        }
+      },
+      "sha256": "c1c7779b4801fc6987f2a45d687635bb25cbaad4aae203e7e705de89b79bae3c"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RunCommand": {
+          "target": {
+            "kind": "agent_slice",
+            "session_id": "room-1",
+            "agent_id": "agent-1"
+          },
+          "operation": {
+            "operation": "exec_open",
+            "command": [
+              "/bin/cat"
+            ],
+            "timeout_ms": 1000
+          }
+        }
+      },
+      "sha256": "240f1c7a807cbc0296b565c90d59b5769175fc3cd29f51a980187ffb290f702f"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RunCommand": {
+          "result": {
+            "result": "exec_output",
+            "output": {
+              "chunks": [],
+              "next_cursor": 0,
+              "outcome": {
+                "kind": "timed_out",
+                "timeout_ms": 1000,
+                "exit": {
+                  "kind": "signaled",
+                  "signal": 9
+                }
+              }
+            }
+          }
+        }
+      },
+      "sha256": "9c10a452e81b8da8706b3553578de8a47cea494e82f1e7e344df72972559d4d4"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RunCommand": {
+          "result": {
+            "result": "exec_output",
+            "output": {
+              "chunks": [],
+              "next_cursor": 0,
+              "outcome": {
+                "kind": "timed_out",
+                "timeout_ms": 1000,
+                "exit": {
+                  "kind": "not_started"
+                }
+              }
+            }
+          }
+        }
+      },
+      "sha256": "fcfbb791d79bf9e823e03484b194ae8741c9f559f5ed75a3e88c4b6e8df14834"
     }
   ]
 }
