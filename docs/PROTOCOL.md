@@ -7411,6 +7411,16 @@ ends at once with reason `Browser tab closed`: a plain card as `condition_met`, 
 as `unavailable`. A card on a page shows the sign-in popup or new tab that page opens while it is open (also one already
 in front when the card opens), and the person's input there needs no Take over while the card is pending.
 
+Row 655 frame lifetime (no shape change): a card raised on an observed child document root is
+bound to its iframe owner in the original top document. Reloading or replacing that child
+document preserves the card and its crop. A card on a child element follows the same owner
+if the child document or element disappears. The owner must come from the agent's observed
+snapshot; a foreign reference still refuses. Losing the owner or navigating the top document
+uses the ordinary person-card page rebind described above. A host restart preserves the observed iframe
+identity in its Tab registry: only a unique iframe with the same origin, id, name and title on the same
+page origin supplies the crop again, including when it appears after the page loads. Renderer node IDs
+are never reused across the restart, and releasing the card removes this saved identity.
+
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
 that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that
 id or a choice labelled Done). The agent hears `status: "answered"`, `choice_id: "done"`: the person's word, which

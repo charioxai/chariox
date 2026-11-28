@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -21,6 +21,7 @@ async function withHost(run) {
   const tab = { tab_id: 'one', target_id: 'target', document_id: 'doc', url: 'https://user:pass@example.com/login?token=private#fragment' };
   const connection = { subscribe: () => () => {}, async send(method, params) {
     calls.push(method);
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: state.document_id } } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'element' } };
     if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function trackCardElement')) return {result:{objectId:'resolver'}};
@@ -308,6 +309,7 @@ test('MP-08/MP-11 an isolated-frame reference maps its owned quad into the Tab v
       ? { model: { content: [100, 120, 300, 120, 300, 220, 100, 220] } }
       : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
     return original(method, params, session);
   };
@@ -484,7 +486,8 @@ function childFrameConnection(host, state, frame) {
       if (method === 'DOM.resolveNode' && params.backendNodeId === 99) return { object: { objectId: 'owner' } };
       if (method === 'Runtime.callFunctionOn' && params.objectId === 'owner') return { result: { value: !frame.ownerHidden } };
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
-      if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
+      if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
+    if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
       return original(method, params, session);
     };
   });
@@ -561,6 +564,7 @@ test('666 a card on a challenge widget grows to the widget\'s visible frames of 
       return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
     }
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
     return original(method, params, session);
   };
@@ -740,4 +744,85 @@ test('655 a hidden anchor inside a widget (the closed challenge\'s Verify) shows
   assert.equal(parked.state, 'present');
   assert.equal(parked.anchor_hidden, true, 'the host says the named element itself is hidden');
   assert.ok(parked.region.rect.x <= 20 && parked.region.rect.x + parked.region.rect.width >= 320 && parked.region.rect.width < 400, `the visible checkbox frame, not the whole page: ${JSON.stringify(parked.region.rect)}`);
+}));
+
+test('655 a card on a child document keeps its frame owner across a child reload', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', node_type: 1 },
+    { node_ref: ref, document_index: 1, node_name: '#document', node_type: 9 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await childFrameConnection(host, state, { owner: [100, 120, 300, 120, 300, 220, 100, 220] });
+  await snapshot();
+  assert.equal((await region({ ref, card_id: 'frame-card' })).state, 'present');
+  const connection = await host.browser.ensureConnection(), original = connection.send;
+  connection.send = async (method, params, session) => {
+    const result = await original(method, params, session);
+    if (method === 'Page.getFrameTree') {
+      const change = tree => { if (tree.frame.id === 'child') tree.frame.loaderId = 'new-child-doc'; for (const child of tree.childFrames ?? []) change(child); };
+      change(result.frameTree);
+    }
+    return result;
+  };
+  const followed = await region({ ref, card_id: 'frame-card', generation: 1, document_id: 'doc' });
+  assert.equal(followed.state, 'present', 'the child document changing does not retire the frame card');
+  assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+  assert.equal((await region({ ref, card_id: 'new-frame-card' })).state, 'present', 'a recently observed frame root still attaches after its document reload');
+}));
+
+test('655 a missing child backend node follows its observed iframe owner', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', node_type: 1 },
+    { node_ref: ref, document_index: 1, node_name: 'BUTTON', node_type: 1 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await childFrameConnection(host, state, { owner: [100, 120, 300, 120, 300, 220, 100, 220] });
+  await snapshot();
+  assert.equal((await region({ ref, card_id: 'child-card' })).state, 'present');
+  const connection = await host.browser.ensureConnection(), original = connection.send;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.resolveNode' && params.backendNodeId === 43) throw new Error('No node with given id');
+    return original(method, params, session);
+  };
+  const followed = await region({ ref, card_id: 'child-card', generation: 1, document_id: 'doc' });
+  assert.equal(followed.state, 'present', 'a removed child node does not retire its live iframe card');
+  assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+}));
+
+test('655 a restarted frame card restores its observed iframe crop from the Tab registry', () => withHost(async ({ host, snapshot, region, state }) => {
+  host.browser.ensureFocusWorld = async (connection, session, target, frame) => { assert.equal(frame?.loaderId, state.document_id, 'the world is bound to the observed live frame'); return {contextId:7}; };
+  state.baseURI = 'https://challenge.example/base/';
+  const ref = 'frame:child:loader:backend:1';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', attributes: { src: '/widget#random=before', title: 'Challenge' } },
+    { node_ref: ref, document_index: 1, node_type: 9 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await snapshot();
+  const first = await region({ ref, card_id: 'restore-frame' });
+  const saved = JSON.parse(await readFile(path.join(host.root, 'tabs.json'), 'utf8'));
+  assert.equal(saved.card_frames[0][1].frame.frame_origin, 'https://challenge.example', 'relative src uses the live cross-origin base URI');
+  assert.equal(saved.card_frames.length, 1, 'the observed iframe identity is saved before registering the card');
+  assert.equal(JSON.stringify(saved.card_frames).includes('random=before'), false, 'frame addresses are reduced to origins');
+  // A new host has no renderer refs or card anchors. Only its saved Tab registry survives.
+  host.cardReferences.clear(); host.cardAnchors.clear();
+  host.cardFrames = new Map(saved.card_frames); host.generation = 2; state.document_id = 'restored-doc';
+  const connection = await host.browser.ensureConnection(), base = connection.send, resolved = [];
+  let frameReady = false;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: params.objectId === 'restored-frame' ? 42 : 77 } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function findCardFrame')) return { result: frameReady ? { objectId: 'restored-frame' } : { subtype: 'null' } };
+    if (method === 'DOM.resolveNode') resolved.push(params.backendNodeId);
+    return base(method, params, session);
+  };
+  const rebound = await region({ card_id: 'restore-frame', ref: undefined, rebind: true });
+  assert.equal(rebound.state, 'present');
+  frameReady = true; resolved.length = 0;
+  const followed = await region({ card_id: 'restore-frame', ref: rebound.region.ref, generation: 2, document_id: 'restored-doc' });
+  assert.equal(followed.state, 'present');
+  assert.deepEqual(followed.region.rect, first.region.rect);
+  assert.deepEqual(resolved, [42], 'the restored iframe supplies geometry instead of the page body');
+  await region({ card_id: 'restore-frame', release: true });
+  assert.deepEqual(JSON.parse(await readFile(path.join(host.root, 'tabs.json'), 'utf8')).card_frames, []);
 }));
