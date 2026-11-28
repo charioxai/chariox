@@ -1289,12 +1289,22 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 canary,
             );
             std::fs::rename(&saved_cli, &fake).unwrap();
-            let installed = source_request(&source_router, request.clone())
-                .await
+            let (first, second) = tokio::join!(
+                source_request(&source_router, request.clone()),
+                source_request(&source_router, request.clone())
+            );
+            let installed = first
                 .expect("repair must let the SAME operation retry reach the receiving kernel");
+            assert_eq!(
+                second.expect("a concurrent identical retry must settle the same operation"),
+                installed
+            );
             let receipt = &installed["ProviderAccountCopied"]["receipt"];
             assert_eq!(receipt["operation_id"], "copy-3");
             assert_eq!(receipt["account_profile"], target_id);
+            let settled = progress(read_progress().await.unwrap(), "copy-3");
+            assert_eq!(settled["status"], "installed");
+            assert_eq!(settled["receipt"], *receipt);
             assert_eq!(
                 source_request(&source_router, request.clone()).await.unwrap(),
                 installed,
