@@ -12,6 +12,14 @@ impl KernelRuntimeState {
         let Some(agent_id) = run.agent_instance_id() else {
             return Ok(false);
         };
+        if self
+            .owned
+            .provider_store
+            .get_latest_run_for_agent(session_id, agent_id)
+            .is_none_or(|current| current.id() != provider_run_id)
+        {
+            return Ok(false);
+        }
         let session = self.owned.session_store.get_session(session_id)?;
         let Some(prompt) = self
             .owned
