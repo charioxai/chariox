@@ -608,7 +608,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "required": ["request"],
                         "properties": {"request": {"type": "object"}},
                         "additionalProperties": false,
-                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request (your title and message are ignored) and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored). A request that only reads your own Room (ListAgents, GetSessionState and the like, with this Room's session_id) asks nobody: it runs at once and the result carries ran true and its response. Reads of other Rooms or the daemon wait for the card."
+                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request (your title and message are ignored) and asks for the Chariox passkey. The person decides: nothing runs before they approve; on approval the kernel runs it and returns its result; on Cancel nothing runs (status cancelled). Blocks until decided (wait is ignored). A read of your own Room (ListAgents, GetSessionState and the like, with this Room's session_id) asks nobody: it runs at once with ran true. To act without asking, use chariox_kernel_request."
                     },
                     "custom_choice": {
                         "type": "object",

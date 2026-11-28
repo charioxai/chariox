@@ -52,25 +52,8 @@ impl CommandRouter {
             };
             return Ok(RuntimeToolResult { ok: true, payload });
         }
-        // Row 405: what the owner's agent may do itself needs no card; it runs as its own call.
-        if let Ok(reach) = self.runtime_state.reach_caller_for_run(run.id()) {
-            if crate::runtime::state::reach::reach_need(&request)
-                == crate::runtime::state::reach::ReachNeed::Owner
-            {
-                let payload = match self.dispatch_as_owner_agent(&reach, request).await {
-                    Ok(response) => serde_json::json!({
-                        "status": "answered", "ran": true, "card": false, "response": response,
-                    }),
-                    Err(error) => serde_json::json!({
-                        "status": "answered",
-                        "ran": false,
-                        "card": false,
-                        "error": crate::secret_redaction::redact_secrets(&error.to_string()),
-                    }),
-                };
-                return Ok(RuntimeToolResult { ok: true, payload });
-            }
-        }
+        // Row 405 leaves this card alone: the agent itself asked the person, so the person decides
+        // (an owner's agent that wants no card calls chariox_kernel_request).
         let mut card = self
             .runtime_state
             .raise_action_card(&run, &request, args.timeout_sec)

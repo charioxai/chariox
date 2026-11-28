@@ -74,7 +74,7 @@ impl KernelRuntimeState {
         self.authenticated_owner_of(identity)
     }
 
-    pub(super) fn authenticated_owner_of(
+    pub(crate) fn authenticated_owner_of(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
     ) -> Option<String> {

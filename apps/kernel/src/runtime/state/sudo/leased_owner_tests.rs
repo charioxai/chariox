@@ -191,3 +191,190 @@ fn a_leased_agent_after_a_worker_restart_still_acts_and_the_old_run_does_not() {
         assert!(f.state.list_sudo_turns("local").is_empty());
     });
 }
+
+/// The home router as a forwarded call from a worker of ANOTHER account reaches it: the
+/// lease and the peer key are admitted, but the peer's relay identity is not the owner's.
+fn home_for_foreign_worker(f: &Fixture) -> crate::runtime::router::CommandRouter {
+    let worker = crate::config::DaemonConfig::for_tests();
+    crate::config::DaemonConfig::approve_remote_machine("worker-machine").unwrap();
+    lease_agent_to_machine(f, &worker.daemon_id);
+    let mut peer = crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id);
+    peer.owners_kernel = false;
+    f.router.with_relay_peer_authority(peer)
+}
+
+// Review P1 (L15 squash 1088804874): a worker run by another Cloud user cannot forge a leased
+// agent's kernel request into the owner's authority: with no live /sudo window bound to the
+// running home prompt it is refused, here and naming another of the owner's kernels.
+#[test]
+fn a_foreign_workers_forwarded_kernel_request_needs_the_window() {
+    crate::test_support::isolated_env_test!();
+    on_big_stack(|| async {
+        let f = fixture();
+        let router = home_for_foreign_worker(&f);
+        let listed = leased_call(
+            &f,
+            &router,
+            json!({"ListProjects": {"include_archived": false}}),
+        )
+        .await;
+        assert!(
+            matches!(&listed, Err(error) if error.to_string().contains("no sudo authority")),
+            "another account's worker acted with the owner's authority: {listed:?}"
+        );
+        let worker = crate::config::DaemonConfig::for_tests();
+        let gateway = Box::pin(router.dispatch_forwarded_meta_runtime_tool_call(
+            forwarded_context(&f, &worker.daemon_id),
+            REQUEST.into(),
+            json!({"request": {"ListProjects": {"include_archived": false}}, "kernel": "second-kernel"}),
+        ))
+        .await;
+        assert!(
+            matches!(&gateway, Err(error) if error.to_string().contains("reaches only its home kernel")),
+            "another account's worker reached the owner's other kernel: {gateway:?}"
+        );
+        assert!(f.state.list_sudo_turns("local").is_empty());
+    });
+}
+
+// Review P2 (L15 squash 1088804874): an agent's SpawnAgent through chariox_kernel_request
+// makes the agent's own child (child_finished comes back to it), not a root agent.
+#[test]
+fn an_agents_spawn_through_kernel_request_is_its_own_child() {
+    crate::test_support::isolated_env_test!();
+    on_big_stack(|| async {
+        let f = super::tests::fixture_with_options(None, true);
+        let parent = f.run.agent_instance_id().unwrap().to_string();
+        let prompt = "reach405-spawning-turn";
+        f.app
+            .lock()
+            .await
+            .prompt_owner_submit_prepared_prompt(
+                &f.request.session_id,
+                PromptQueueItem::new(
+                    prompt,
+                    &f.request.attachment_id,
+                    &parent,
+                    "spawn children",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            f.state
+                .owned
+                .session_store
+                .get_session(&f.request.session_id)
+                .unwrap()
+                .active_prompt_for_agent(&parent)
+                .unwrap()
+                .id(),
+            prompt
+        );
+        f.state
+            .owned
+            .durable_state_store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: "local".into(),
+                room: f.request.session_id.clone(),
+                agent: parent.clone(),
+                prompt: prompt.into(),
+                run: Some(f.run.id().into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        let spawn = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
+            max_context_tokens: None,
+            no_subscribe: false,
+            session_id: f.request.session_id.clone(),
+            alias: Some("reach405-child".into()),
+            provider: Some("dev-stub".into()),
+            account_profile: None,
+            model: None,
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        });
+        for (alias, request) in [
+            ("reach405-child", serde_json::to_value(&spawn).unwrap()),
+            (
+                "reach405-batch",
+                json!({"SpawnAgents": {
+                    "session_id": f.request.session_id,
+                    "no_subscribe": true,
+                    "agents": [{"alias": "reach405-batch", "provider": "dev-stub", "metaagent": false}]
+                }}),
+            ),
+        ] {
+            let result = Box::pin(f.router.dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                REQUEST,
+                json!({ "request": request }),
+            ))
+            .await;
+            assert!(
+                result.as_ref().is_ok_and(|result| result.ok),
+                "the owner's agent could not spawn: {result:?}"
+            );
+            let child = f
+                .state
+                .owned
+                .agent_store
+                .list_agents()
+                .into_iter()
+                .find(|agent| agent.alias() == Some(alias))
+                .expect("the spawned agent");
+            assert_eq!(
+                child.parent_agent_id(),
+                Some(parent.as_str()),
+                "an agent's spawn through chariox_kernel_request became a root agent"
+            );
+        }
+    });
+}
+
+// Review P1 (L15 squash 1088804874): the leased agent's reach identity itself. Under a call that
+// another account's worker forwarded it resolves to nothing, whichever tool the call came
+// through; under the owner's own worker it is the owner's.
+#[test]
+fn a_foreign_workers_call_resolves_no_leased_reach() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let worker = crate::config::DaemonConfig::for_tests();
+    crate::config::DaemonConfig::approve_remote_machine("worker-machine").unwrap();
+    lease_agent_to_machine(&f, &worker.daemon_id);
+    let context = forwarded_context(&f, &worker.daemon_id);
+    let run = crate::provider::projected_leased_provider_run_id(
+        &context.leased_agent_id,
+        &context.worker_provider_run_id,
+    );
+    let mut foreign = crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id);
+    foreign.owners_kernel = false;
+    let refused = f
+        .state
+        .with_relay_peer_authority(foreign)
+        .reach_caller_for_run(&run);
+    assert!(
+        matches!(&refused, Err(error) if error.to_string().contains("only the owner's own workers")),
+        "another account's worker resolved the owner's reach: {refused:?}"
+    );
+    let owners = f
+        .state
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            &worker.daemon_id,
+        ))
+        .reach_caller_for_run(&run);
+    assert!(
+        owners.is_ok(),
+        "the owner's own worker lost reach: {owners:?}"
+    );
+}

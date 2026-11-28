@@ -344,3 +344,92 @@ where
         .join()
         .unwrap_or_else(|error| std::panic::resume_unwind(error));
 }
+
+#[test]
+fn owner_runtime_requests_keep_cross_room_management_and_spawn_parentage() {
+    run_peer_test("owner-runtime-cross-room-management", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let target = {
+            let mut app = rooms.app.lock().await;
+            spawn_with_level(
+                &mut app,
+                &rooms.peer_room,
+                "managed",
+                AgentPermissionLevel::Yolo,
+            )
+        };
+        let mut failures = Vec::new();
+        for request in [
+            serde_json::json!({"AliasAgent":{"session_id":rooms.peer_room,"agent_id":target.id(),"alias":"renamed"}}),
+            serde_json::json!({"UpdateAgentProfile":{"session_id":rooms.peer_room,"agent_id":target.id(),"model":"managed-model"}}),
+            serde_json::json!({"UpdateAgentSubstitutes":{"session_id":rooms.peer_room,"agent_id":target.id(),"action":{"SetTimeout":{"timeout_ms":12000}}}}),
+        ] {
+            let result = rooms
+                .router
+                .dispatch_authenticated_runtime_tool_call(
+                    &rooms.sender_token,
+                    "chariox_kernel_request",
+                    serde_json::json!({"request":request}),
+                )
+                .await;
+            if !result.as_ref().is_ok_and(|result| result.ok) {
+                failures.push(format!("{request}: {result:?}"));
+            }
+        }
+        for request in [
+            serde_json::json!({"AliasAgent":{"session_id":rooms.foreign_room,"agent_id":rooms.foreign.id(),"alias":"foreign-renamed"}}),
+            serde_json::json!({"UpdateAgentProfile":{"session_id":rooms.foreign_room,"agent_id":rooms.foreign.id(),"model":"managed-model"}}),
+            serde_json::json!({"UpdateAgentSubstitutes":{"session_id":rooms.foreign_room,"agent_id":rooms.foreign.id(),"action":{"SetTimeout":{"timeout_ms":12000}}}}),
+        ] {
+            let result = rooms
+                .router
+                .dispatch_authenticated_runtime_tool_call(
+                    &rooms.sender_token,
+                    "chariox_kernel_request",
+                    serde_json::json!({"request":request}),
+                )
+                .await;
+            assert!(
+                !result.as_ref().is_ok_and(|result| result.ok),
+                "another owner's Room was changed: {result:?}"
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "admitted cross-Room operations failed: {failures:#?}"
+        );
+        for request in [
+            serde_json::json!({"SpawnAgent":{"session_id":rooms.home,"provider":"dev-stub","alias":"single-child"}}),
+            serde_json::json!({"SpawnAgents":{"session_id":rooms.home,"agents":[{"provider":"dev-stub","alias":"batch-child"}]}}),
+        ] {
+            let result = rooms
+                .router
+                .dispatch_authenticated_runtime_tool_call(
+                    &rooms.sender_token,
+                    "chariox_kernel_request",
+                    serde_json::json!({"request":request}),
+                )
+                .await
+                .expect("owner spawn answers");
+            assert!(result.ok, "{result:?}");
+            let spawned = serde_json::from_value::<LocalDaemonResponse>(result.payload)
+                .expect("typed spawn response");
+            let children = match spawned {
+                LocalDaemonResponse::AgentSpawned { agent, .. } => vec![agent],
+                LocalDaemonResponse::AgentsSpawned { agents, .. } => agents,
+                other => panic!("expected spawned children: {other:?}"),
+            };
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].parent_agent_id(), Some(rooms.sender.id()));
+        }
+        let peer_agents = rooms.router.runtime_state.session_agents(&rooms.peer_room);
+        let managed = peer_agents
+            .iter()
+            .find(|agent| agent.id() == target.id())
+            .unwrap();
+        assert_eq!(managed.alias(), Some("renamed"));
+        assert_eq!(managed.model(), Some("managed-model"));
+        assert_eq!(managed.substitution_timeout_ms(), Some(12000));
+        assert_eq!(managed.parent_agent_id(), None);
+    });
+}
