@@ -1114,37 +1114,48 @@ mod tests {
 
     #[test]
     fn a_fresh_windowed_upload_waits_for_its_opener_to_replace_stale_untrusted_staging() {
-        let dir = scratch();
-        let target = dir.join("stale-link.bin");
-        let partial = partial_of(&target);
-        let untouched = dir.join("absent-target");
-        std::os::unix::fs::symlink(&untouched, &partial).unwrap();
-        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
-            path: target.display().to_string(),
-            with_sha256: false,
-        })
-        .unwrap() else {
-            panic!("a stat response")
-        };
-        assert_eq!(stat.partial_size, None);
-        assert_eq!(stat.partial_upload_id, None);
-        let mut first = chunk(&target, 0, b"abc", 6, None);
-        first.upload_id = uuid::Uuid::new_v4();
-        let mut later = chunk(&target, 3, b"def", 6, None);
-        later.upload_id = first.upload_id;
-        let opener = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            write(&first)
-        });
-        let result = write(&later);
-        let opened = opener.join().unwrap();
-        assert_eq!(written(opened.unwrap()).0, 3);
-        assert!(written(result.expect("a fresh attempt waits for its own private opener")).1);
-        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
-        assert!(
-            !untouched.exists(),
-            "the stale symlink's target is never written"
-        );
+        use std::os::unix::fs::PermissionsExt;
+        for stale_link in [true, false] {
+            let dir = scratch();
+            let target = dir.join("stale-name.bin");
+            let partial = partial_of(&target);
+            let untouched = dir.join("absent-target");
+            if stale_link {
+                std::os::unix::fs::symlink(&untouched, &partial).unwrap();
+            } else {
+                std::fs::write(&partial, b"old").unwrap();
+                std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
+                path: target.display().to_string(),
+                with_sha256: false,
+            })
+            .unwrap() else {
+                panic!("a stat response")
+            };
+            assert_eq!(
+                stat.partial_size, None,
+                "untrusted staging is not resumable"
+            );
+            assert_eq!(stat.partial_upload_id, None);
+            let mut first = chunk(&target, 0, b"abc", 6, None);
+            first.upload_id = uuid::Uuid::new_v4();
+            let mut later = chunk(&target, 3, b"def", 6, None);
+            later.upload_id = first.upload_id;
+            let opener = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                write(&first)
+            });
+            let result = write(&later);
+            let opened = opener.join().unwrap();
+            assert_eq!(written(opened.unwrap()).0, 3);
+            assert!(written(result.expect("a fresh attempt waits for its own private opener")).1);
+            assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+            assert!(
+                !untouched.exists(),
+                "the stale symlink's target is never written"
+            );
+        }
     }
 
     // EA2-07: an upload resumes at the offset the target reports, and the file
