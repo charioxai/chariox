@@ -292,6 +292,12 @@ fn account_copy_repaired_background_failure_retries_the_same_operation() {
 }
 
 #[test]
+fn account_copy_repaired_relay_failure_rearms_the_same_wait() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::RecoverableRelay);
+}
+
+#[test]
 fn account_copy_verification_allows_unrelated_profile_operations() {
     crate::test_support::isolated_env_test!();
     run_account_copy_drill(CopyScenario::RegistryAccess);
@@ -329,6 +335,7 @@ enum CopyScenario {
     Recipient,
     Serial,
     RecoverableRetry,
+    RecoverableRelay,
     RegistryAccess,
     ChangedProfile,
     Bidirectional,
@@ -479,7 +486,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         ));
         let (stop_source, stopped_source) = watch::channel(false);
         let (stop_target, stopped_target) = watch::channel(false);
-        let source_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
+        let mut source_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
             source_router.clone(),
             source_state.clone(),
             stopped_source,
@@ -490,7 +497,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             target_router.clone(),
             target_state.clone(),
             stopped_target,
-            url,
+            url.clone(),
             target.relay_token.clone().unwrap(),
         ));
         wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
@@ -1240,9 +1247,6 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         if scenario == CopyScenario::RecoverableRetry {
             std::fs::rename(&fake, &saved_cli).unwrap();
         }
-        source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
-            "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
-        }})).await.unwrap();
         let read_progress = || {
             source_request(
                 &source_router,
@@ -1268,6 +1272,57 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 })
                 .unwrap_or_default()
         };
+        if scenario == CopyScenario::RecoverableRelay {
+            stop_source.send(true).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), &mut source_task)
+                .await
+                .expect("the fixture source connector must disconnect")
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if registry
+                        .read()
+                        .await
+                        .daemon_in_realm("copy-realm", &source.daemon_id)
+                        .is_none()
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the source peer must leave the relay");
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-3");
+                    if copy["status"] == "failed" {
+                        assert_eq!(copy["code"], "provider_account_copy_unavailable");
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("the waiting copy must report its disconnected relay");
+            stop_source.send_replace(false);
+            source_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
+                source_router.clone(),
+                source_state.clone(),
+                stop_source.subscribe(),
+                url.clone(),
+                source.relay_token.clone().unwrap(),
+            ));
+            wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
+            let resumed = source_request(&source_router, request.clone())
+                .await
+                .expect("repair must let the SAME operation resume its original unlock wait");
+            assert_eq!(resumed, waiting, "retry must preserve the original expiry");
+            assert_eq!(notices(read_vault().await.unwrap()).len(), 1);
+        }
+        source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
+            "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
+        }})).await.unwrap();
         if scenario == CopyScenario::RecoverableRetry {
             tokio::time::timeout(Duration::from_secs(12), async {
                 loop {
@@ -1334,7 +1389,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
 
         if matches!(
             scenario,
-            CopyScenario::Serial | CopyScenario::RecoverableRetry
+            CopyScenario::Serial | CopyScenario::RecoverableRetry | CopyScenario::RecoverableRelay
         ) {
             let mut cancel_copy = request.clone();
             cancel_copy["CopyProviderAccountToKernel"]["operation_id"] = "copy-cancelled".into();
@@ -1376,7 +1431,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
                 "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
             }})).await.unwrap();
-            if scenario == CopyScenario::RecoverableRetry {
+            if matches!(
+                scenario,
+                CopyScenario::RecoverableRetry | CopyScenario::RecoverableRelay
+            ) {
                 let (observer, mut observations) = tokio::sync::mpsc::unbounded_channel();
                 target_state
                     .write()
