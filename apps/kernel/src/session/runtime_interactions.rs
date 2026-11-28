@@ -650,6 +650,10 @@ impl RuntimeInteraction {
         )
     }
 
+    pub(crate) fn is_hidden(&self) -> bool {
+        matches!(self.presentation, RuntimeInteractionPresentation::Hidden)
+    }
+
     pub(crate) fn with_card_type(mut self, card_type: &str) -> Self {
         self.presentation = RuntimeInteractionPresentation::Card {
             card_type: card_type.to_owned(),

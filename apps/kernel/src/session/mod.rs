@@ -19,6 +19,7 @@ mod room_setup_store;
 mod runtime_card_types;
 mod runtime_interactions;
 pub use runtime_card_types::runtime_card_class;
+pub(crate) use runtime_card_types::runtime_card_type;
 pub use runtime_interactions::NativeInteractionOrigin;
 pub(crate) use runtime_interactions::{
     bounded_display_text, is_blocked_task_decision, BLOCKED_TASK_DECISION_PREFIX,

@@ -657,7 +657,7 @@ async fn request_runtime_interaction_holding(
         let receiver = if let Some(request) = codex_approval {
             state
                 .create_codex_workspace_approval(
-                    crate::runtime::state::InteractionSurface::native(&interaction),
+                    crate::runtime::state::InteractionSurface::native(&interaction)?,
                     session_id,
                     interaction.clone(),
                     request,
@@ -666,7 +666,7 @@ async fn request_runtime_interaction_holding(
         } else {
             state
                 .create_runtime_interaction_with_forwarding(
-                    crate::runtime::state::InteractionSurface::native(&interaction),
+                    crate::runtime::state::InteractionSurface::native(&interaction)?,
                     session_id,
                     interaction.clone(),
                     forwarding,

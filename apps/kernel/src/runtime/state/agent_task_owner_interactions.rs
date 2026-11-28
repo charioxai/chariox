@@ -335,19 +335,23 @@ impl KernelRuntimeState {
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone())
         .with_room_dismissed(dismissed)
-        .with_question_reply(reply_choice)
-        .with_level(crate::session::RuntimeInteractionLevel::Critical);
+        .with_question_reply(reply_choice);
+        let interrupted = self
+            .owned
+            .durable_state_store
+            .task_block_is_interrupted(&task.task_id, task.blocked_revision)?;
+        let interaction = if interrupted {
+            interaction.with_level(crate::session::RuntimeInteractionLevel::Critical)
+        } else {
+            interaction
+        };
 
         let rx = self
             .create_kernel_operation_interaction(
-                if self
-                    .owned
-                    .durable_state_store
-                    .task_block_is_interrupted(&task.task_id, task.blocked_revision)?
-                {
+                if interrupted {
                     crate::runtime::state::InteractionSurface::PaneStatus
                 } else {
-                    crate::runtime::state::InteractionSurface::Hidden
+                    crate::runtime::state::InteractionSurface::named("Question")
                 },
                 &task.room_id,
                 session.owner_user_id(),

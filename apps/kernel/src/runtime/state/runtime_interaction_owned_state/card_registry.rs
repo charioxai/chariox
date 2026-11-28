@@ -17,23 +17,46 @@ impl InteractionSurface {
     pub(crate) const fn named(name: &'static str) -> Self {
         Self::Card(name)
     }
-    pub(crate) fn native(interaction: &RuntimeInteraction) -> Self {
-        let id = interaction.id();
-        if id.starts_with("opencode-permission-") {
-            Self::named("opencode_permission")
-        } else if id.starts_with("codex-command-approval-")
-            || id.starts_with("codex-exec-command-approval-")
-        {
-            Self::named("codex_command_approval")
-        } else if id.starts_with("codex-file-change-approval-")
-            || id.starts_with("codex-apply-patch-approval-")
-        {
-            Self::named("codex_file_change_approval")
-        } else if id.starts_with("claude-permission-") {
-            Self::named("claude_permission_hook")
-        } else {
-            Self::named("provider_native_permission")
+    pub(crate) fn native(interaction: &RuntimeInteraction) -> Result<Self, DaemonError> {
+        if interaction.is_pane_status() {
+            return Ok(Self::PaneStatus);
         }
+        if interaction.is_hidden() {
+            return Ok(Self::Hidden);
+        }
+        if !interaction.card_type().is_empty() {
+            require_registered_type(interaction)?;
+            return Ok(Self::Card(
+                crate::session::runtime_card_type(interaction.card_type())
+                    .expect("registered type"),
+            ));
+        }
+        let id = interaction.id();
+        Ok(
+            if interaction.kind() == crate::session::RuntimeInteractionKind::Choice
+                && (id.starts_with("interaction-") || id.starts_with("popup-"))
+            {
+                if interaction.view().is_some() {
+                    Self::named("popup_browser_region")
+                } else {
+                    Self::named("Question")
+                }
+            } else if id.starts_with("opencode-permission-") {
+                Self::named("opencode_permission")
+            } else if id.starts_with("codex-command-approval-")
+                || id.starts_with("codex-exec-command-approval-")
+            {
+                Self::named("codex_command_approval")
+            } else if id.starts_with("codex-file-change-approval-")
+                || id.starts_with("codex-apply-patch-approval-")
+            {
+                Self::named("codex_file_change_approval")
+            } else if id.starts_with("claude-permission-") {
+                Self::named("claude_permission_hook")
+            } else {
+                Self::named("provider_native_permission")
+            },
+        )
     }
 
     pub(super) const fn name(self) -> &'static str {

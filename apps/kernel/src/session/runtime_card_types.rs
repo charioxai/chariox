@@ -31,34 +31,44 @@ fn approved(entry: &Registration, decisions: &[Decision]) -> bool {
     })
 }
 
-pub fn runtime_card_class(name: &str) -> Option<&'static str> {
+fn registered_types() -> &'static [Registration] {
     static TYPES: OnceLock<Vec<Registration>> = OnceLock::new();
-    TYPES
-        .get_or_init(|| {
-            let decisions: Vec<Decision> =
-                serde_json::from_str(include_str!("../../../../docs/card-decisions.json"))
-                    .expect("the tracked runtime card decisions must be valid");
-            let entries: Vec<Registration> =
-                serde_json::from_str(include_str!("../../../../docs/runtime-card-types.json"))
-                    .expect("the tracked runtime card list must be valid");
-            entries
-                .into_iter()
-                .filter(|entry| {
-                    let allowed = approved(entry, &decisions);
-                    if !allowed {
-                        tracing::error!(
-                            card_type = entry.name,
-                            class = entry.class,
-                            "card refused: missing individual type/class decision"
-                        );
-                    }
-                    allowed
-                })
-                .collect()
-        })
+    TYPES.get_or_init(|| {
+        let decisions: Vec<Decision> =
+            serde_json::from_str(include_str!("../../../../docs/card-decisions.json"))
+                .expect("the tracked runtime card decisions must be valid");
+        let entries: Vec<Registration> =
+            serde_json::from_str(include_str!("../../../../docs/runtime-card-types.json"))
+                .expect("the tracked runtime card list must be valid");
+        entries
+            .into_iter()
+            .filter(|entry| {
+                let allowed = approved(entry, &decisions);
+                if !allowed {
+                    tracing::error!(
+                        card_type = entry.name,
+                        class = entry.class,
+                        "card refused: missing individual type/class decision"
+                    );
+                }
+                allowed
+            })
+            .collect()
+    })
+}
+
+pub fn runtime_card_class(name: &str) -> Option<&'static str> {
+    registered_types()
         .iter()
         .find(|entry| entry.name == name)
         .map(|entry| entry.class.as_str())
+}
+
+pub(crate) fn runtime_card_type(name: &str) -> Option<&'static str> {
+    registered_types()
+        .iter()
+        .find(|entry| entry.name == name)
+        .map(|entry| entry.name.as_str())
 }
 
 #[cfg(test)]
