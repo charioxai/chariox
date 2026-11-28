@@ -400,7 +400,7 @@ pub use api::{
 
 pub use api::{
     AccountKernel, AccountKernelStatus, AccountKernelsRequest, ControlPlaneMachineRow,
-    ControlPlaneSavedStateRow,
+    ControlPlaneSavedStateRow, MachineEventReason,
 };
 
 pub use api::{

@@ -233,6 +233,9 @@ pub struct ControlPlaneMachineRow {
     pub kernel_id: Option<String>,
     pub machine_id: Option<String>,
     pub available_actions: Vec<String>,
+    /// Why the service stopped or failed this machine; absent for an owner-requested stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<MachineEventReason>,
     /// The machine's class and region, when the service lists them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_id: Option<String>,
@@ -245,6 +248,14 @@ pub struct ControlPlaneMachineRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hard_stop_at: Option<String>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineEventReason {
+    CopyFailed,
+    HardStop,
+    RentalFailed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlPlaneSavedStateRow {

@@ -81,3 +81,23 @@ fn machine_acquire_answer_keeps_named_option_apart_from_service_default() {
         assert!(serde_json::from_value::<LocalDaemonResponse>(answer).is_err());
     }
 }
+
+
+#[test]
+fn machine_event_reason_codes_preserve_status_facts_and_reject_an_unknown_reason() {
+    for (reason, state) in [("copy_failed", "failed"), ("hard_stop", "stopped"), ("rental_failed", "failed")] {
+        let input = serde_json::json!({"allocation_ref":"machine", "name":"Build box", "state":state,
+            "revision":3,"since":"2026-11-22T08:00:00Z","kernel_id":null,"machine_id":null,
+            "available_actions":["delete"],"class_id":"small","region":"eu",
+            "created_at":"2026-11-22T07:00:00Z","hard_stop_at":null,"reason":reason});
+        let row: crate::local::ControlPlaneMachineRow = serde_json::from_value(input.clone()).unwrap();
+        let output = serde_json::to_value(row).unwrap();
+        assert_eq!(output["reason"], reason);
+        assert_eq!(output["state"], state);
+        assert_eq!(output["class_id"], "small");
+        assert_eq!(output["available_actions"], serde_json::json!(["delete"]));
+        let mut unknown = input;
+        unknown["reason"] = "unknown".into();
+        assert!(serde_json::from_value::<crate::local::ControlPlaneMachineRow>(unknown).is_err());
+    }
+}
