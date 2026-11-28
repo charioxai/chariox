@@ -4843,6 +4843,7 @@ fn r8_late_allocation_after_an_unknown_interval_preserves_confirmed_filler_bytes
     log.written_by_inode = [(11, 0)].into();
     log.position_written_by_inode = [(11, 0)].into();
     let current = owner("agent", true, vec![usage], vec![(1, entry)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
     let free = Arc::new(AtomicU64::new(10 * GIB));
     let volume = r6_volumes(&free);
     let mut ledger = Ledger::new(None);
