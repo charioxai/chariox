@@ -2,6 +2,7 @@
 use super::*;
 
 #[cfg(unix)]
+#[path = "async_popup/local_card_factory.rs"]
 mod local_card_factory;
 
 fn browser_region() -> crate::session::RuntimeInteractionBrowserRegion {

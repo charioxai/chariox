@@ -241,26 +241,6 @@ pub(crate) fn agent_state_label(
     }
 }
 
-/// The state `agent children` and the session agent inspection name for an
-/// agent. One that yielded on a job, timer or source is waiting, not idle: its
-/// `liveness.waiting_on` says on what and since when.
-pub(crate) fn agent_state_label(
-    agent: &crate::agent::AgentInstance,
-    activity: Option<&AgentRuntimeActivity>,
-) -> &'static str {
-    use crate::agent::AgentState;
-    let yielded = activity.is_some_and(|activity| {
-        activity.status == AgentRuntimeStatus::Idle && activity.liveness.waiting_on.is_some()
-    });
-    match agent.state() {
-        AgentState::Idle | AgentState::Focused if yielded => "waiting",
-        AgentState::Idle => "idle",
-        AgentState::Working => "working",
-        AgentState::Focused => "focused",
-        AgentState::Error => "error",
-    }
-}
-
 /// A working agent in the health report: quiet since a time that is past the limit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SilentAgentHealth {
