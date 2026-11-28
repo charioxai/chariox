@@ -4,7 +4,9 @@
 //! without the prompt being sent again.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,7 +37,7 @@ pub(super) struct LineReader {
     ended: Arc<AtomicBool>,
     /// Written to when a hold is requested, so a reader waiting on its pipe
     /// stops at once.
-    wake: Arc<OwnedFd>,
+    wake: Arc<(UnixStream, UnixStream)>,
 }
 
 impl LineReader {
@@ -51,7 +53,7 @@ impl LineReader {
             fd: fd.as_raw_fd(),
             unread: Arc::new(Mutex::new(unread)),
             ended: Arc::default(),
-            wake: Arc::new(wake_fd()),
+            wake: Arc::new(wake_pair()),
         };
         if held {
             reader.gate.hold(Duration::ZERO);
@@ -59,6 +61,8 @@ impl LineReader {
         let gate = Arc::clone(&reader.gate);
         let unread = Arc::clone(&reader.unread);
         let ended = Arc::clone(&reader.ended);
+        // Keep both endpoints alive until the reader ends. Dropping its
+        // controller must not turn the wake socket into a permanent hangup.
         let wake = Arc::clone(&reader.wake);
         std::thread::spawn(move || {
             let mut chunk = [0_u8; 8192];
@@ -67,7 +71,7 @@ impl LineReader {
                 while let Some(line) = next_line(&unread) {
                     on_line(line);
                 }
-                match read_ready(&fd, &wake, &mut chunk) {
+                match read_ready(&fd, &wake.0, &mut chunk) {
                     Ok(0) => break,
                     Ok(read) => lock(&unread).extend_from_slice(&chunk[..read]),
                     Err(error) if is_transient(&error) => {}
@@ -86,10 +90,32 @@ impl LineReader {
 
     /// Stops the reader between two reads; `None` when it ended or did not stop.
     fn hold(&self) -> Option<(RawFd, Vec<u8>)> {
-        let one = 1_u64.to_ne_bytes();
-        // Best effort: without the wake the reader still stops within POLL_MS.
-        unsafe { libc::write(self.wake.as_raw_fd(), one.as_ptr().cast(), one.len()) };
-        if !self.gate.hold(HOLD_TIMEOUT) || self.ended.load(Ordering::SeqCst) {
+        self.hold_with_wake(|| self.wake_reader())
+    }
+
+    fn wake_reader(&self) -> std::io::Result<()> {
+        // A full nonblocking socket is already readable. Retry an interrupted
+        // write so a quiet reader never has to wait for the poll backstop.
+        loop {
+            match (&self.wake.1).write(&[1]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn hold_with_wake(
+        &self,
+        wake: impl FnOnce() -> std::io::Result<()>,
+    ) -> Option<(RawFd, Vec<u8>)> {
+        self.gate.request_hold();
+        if wake().is_err() {
+            self.gate.release();
+            return None;
+        }
+        if !self.gate.wait_held(HOLD_TIMEOUT) || self.ended.load(Ordering::SeqCst) {
             return None;
         }
         Some((self.fd, lock(&self.unread).clone()))
@@ -113,16 +139,17 @@ fn next_line(unread: &Mutex<Vec<u8>>) -> Option<String> {
     Some(String::from_utf8_lossy(&line[..end]).into_owned())
 }
 
-/// A counter that becomes readable when a hold is requested.
-fn wake_fd() -> OwnedFd {
-    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-    assert!(fd >= 0, "eventfd: {}", std::io::Error::last_os_error());
-    unsafe { OwnedFd::from_raw_fd(fd) }
+/// Both ends are nonblocking and close on exec on every supported Unix.
+fn wake_pair() -> (UnixStream, UnixStream) {
+    let (read, write) = UnixStream::pair().expect("reader wake socket pair");
+    read.set_nonblocking(true).expect("reader wake read end");
+    write.set_nonblocking(true).expect("reader wake write end");
+    (read, write)
 }
 
 /// Waits for the pipe or a hold request, at most one poll interval;
 /// `Ok(0)` only at end of file.
-fn read_ready(fd: &OwnedFd, wake: &OwnedFd, chunk: &mut [u8]) -> std::io::Result<usize> {
+fn read_ready(fd: &OwnedFd, wake: &UnixStream, chunk: &mut [u8]) -> std::io::Result<usize> {
     let mut polls = [
         libc::pollfd {
             fd: fd.as_raw_fd(),
@@ -462,6 +489,48 @@ mod line_reader_tests {
             median < Duration::from_millis(20),
             "an idle reader took {median:?} (median) to stop; it waited out its poll interval"
         );
+    }
+
+    /// Force the reader to acknowledge inside the wake operation, before the
+    /// requester can start its normal wait. Wake-before-register loses here.
+    #[test]
+    fn a_hold_is_registered_before_the_reader_consumes_its_wake() {
+        let (read_end, write_end) = pipe();
+        let (lines, received) = std::sync::mpsc::channel();
+        let reader = LineReader::start(read_end, Vec::new(), false, move |line| {
+            lines.send(line).unwrap();
+        });
+        assert!(reader
+            .hold_with_wake(|| {
+                reader.wake_reader()?;
+                assert!(
+                    reader.gate.wait_held(HOLD_TIMEOUT),
+                    "wake preceded hold registration"
+                );
+                Ok(())
+            })
+            .is_some());
+        let bytes = b"once\n";
+        assert_eq!(
+            unsafe { libc::write(write_end.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) },
+            bytes.len() as isize
+        );
+        assert!(received.try_recv().is_err());
+        reader.release();
+        assert_eq!(received.recv_timeout(HOLD_TIMEOUT).as_deref(), Ok("once"));
+        drop(write_end);
+        assert!(received.recv_timeout(HOLD_TIMEOUT).is_err());
+    }
+
+    #[test]
+    fn wake_sockets_are_nonblocking_and_close_on_exec() {
+        let (read, write) = wake_pair();
+        for fd in [&read, &write] {
+            let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            assert!(flags >= 0 && flags & libc::O_NONBLOCK != 0);
+            let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+            assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+        }
     }
 
     #[test]
