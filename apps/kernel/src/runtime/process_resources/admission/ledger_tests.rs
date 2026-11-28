@@ -2488,6 +2488,69 @@ fn later_stream_growth_corrects_an_earlier_apparent_residual_in_the_same_window(
     );
 }
 
+#[test]
+fn r4_unchanged_stdout_growth_cancels_residual_when_stderr_rotates() {
+    let (logger, mut usage, mut log) = stream_writer(1, 2, 500 * MIB);
+    usage.writes = 2000 * MIB;
+    log.written = 2000 * MIB;
+    log.rate = 0;
+    log.files.clear();
+    log.open = [11, 12].into();
+    let current = owner("agent", true, vec![usage], vec![(1, logger)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
+    let members = std::slice::from_ref(&current);
+    for (at, written, streamed, stderr) in [
+        (1000, 2000 * MIB, 2000 * MIB, 12),
+        (2000, 3000 * MIB, 2000 * MIB, 12),
+        (3000, 3000 * MIB, 1000 * MIB, 13),
+    ] {
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
+            // stdout11's delayed growth must still cancel the residual when
+            // stderr12, including its earlier bytes, is replaced by stderr13.
+            output.open = [11, stderr].into();
+            output.written = streamed;
+        }
+        drop(unplaced_writers(members, &watched));
+    }
+    assert!(
+        unplaced_writers(members, &watched).is_empty(),
+        "stderr rotation hid the unchanged stdout inode's measured growth"
+    );
+}
+
+#[test]
+fn r4_a_repeated_timestamp_keeps_the_first_command_counter_baseline() {
+    let (generator, mut usage, mut log) = stream_writer(1, 2, 300 * MIB);
+    usage.writes = 0;
+    log.written = 0;
+    log.rate = 0;
+    log.files.clear();
+    let current = owner("agent", true, vec![usage], vec![(1, generator)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
+    let members = std::slice::from_ref(&current);
+    for (at, written) in [(1000, 0), (2000, 0), (2000, 400 * MIB), (3000, 600 * MIB)] {
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+        }
+        drop(unplaced_writers(members, &watched));
+    }
+    assert_eq!(
+        unplaced_writers(members, &watched)
+            .iter()
+            .map(|writer| (writer.pid, writer.rate))
+            .collect::<Vec<_>>(),
+        vec![(1, 300 * MIB)]
+    );
+}
+
 /// A volume that starts with `free` and loses `per_second` from its first reading.
 fn losing(free: u64, per_second: u64) -> Box<Volume> {
     let started = Instant::now();
