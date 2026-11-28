@@ -6,7 +6,7 @@ fn agent_profile_turn_end_snapshot_and_hash() {
     let bytes = include_bytes!("agent-profile-turn-end.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "5b736a80eef2cb2792c2078c44412071105e5ce771f0486cb60c9d09ff071a31"
+        "9b2db4c766c0c39f13dcf6e12111db112112f12c8bab845155c4e2c58828e833"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

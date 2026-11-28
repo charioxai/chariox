@@ -192,10 +192,11 @@ impl KernelRuntimeState {
         let interaction =
             RuntimeInteraction::for_kernel_operation(&id, &id, "Agent stalled", &message, choices)
                 .without_timeout()
-                .with_related_agent_id(agent.id().to_owned());
+                .with_related_agent_id(agent.id().to_owned())
+                .with_level(crate::session::RuntimeInteractionLevel::Critical);
         let rx = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::PaneStatus,
                 room.id(),
                 agent.owner_user_id(),
                 interaction,

@@ -2,8 +2,8 @@ use super::*;
 
 mod agent_lifetime;
 mod card_registry;
-pub(super) use card_registry::CardRequest;
-pub(crate) use card_registry::{CardKind, LiveRoomCard};
+pub(super) use card_registry::InteractionRequest;
+pub(crate) use card_registry::{InteractionSurface, LiveRoomInteraction};
 mod kernel_wide;
 mod maintenance;
 mod registration;

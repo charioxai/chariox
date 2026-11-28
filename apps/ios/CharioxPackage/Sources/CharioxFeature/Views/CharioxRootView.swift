@@ -705,7 +705,7 @@ private struct InteractionPromptPanel: View {
     @Bindable var model: CharioxAppModel
 
     var body: some View {
-        let interactions = model.selectedSession?.activeInteractions ?? []
+        let interactions = (model.selectedSession?.activeInteractions ?? []).filter { $0.surface == "card" }
         if !interactions.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Interaction")

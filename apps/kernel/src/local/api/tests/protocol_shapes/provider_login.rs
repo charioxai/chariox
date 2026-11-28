@@ -7,7 +7,7 @@ fn provider_login_811_retry_status_contract_roundtrips() {
     let bytes = include_bytes!("provider-login-811.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "cd4df13f3939033461d17ff36477ccd76136635e1640b4adb6a84ed274554b84"
+        "fd93b45ebaad84802ae6b13098ad575ff1201e4a6a9d8c201eef2770cb4a070f"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();

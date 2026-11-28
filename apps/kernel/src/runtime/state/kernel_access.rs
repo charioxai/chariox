@@ -994,7 +994,7 @@ impl KernelRuntimeState {
         .with_requester(requester);
         let rx = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("kernel_access_grant"),
                 crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
                 &grant.owner_user_id,
                 interaction,

@@ -27,7 +27,7 @@ impl KernelRuntimeState {
                 )?;
             }
         }
-        Ok(())
+        self.sync_agent_subscription_errors()
     }
 
     fn agent_notification_trigger_availability(

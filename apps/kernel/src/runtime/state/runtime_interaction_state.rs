@@ -144,7 +144,7 @@ impl KernelRuntimeState {
 
     pub(in crate::runtime) async fn create_runtime_interaction(
         &self,
-        kind: super::CardKind,
+        kind: super::InteractionSurface,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
@@ -195,7 +195,7 @@ impl KernelRuntimeState {
 
     pub(in crate::runtime) async fn create_runtime_interaction_with_forwarding(
         &self,
-        kind: super::CardKind,
+        kind: super::InteractionSurface,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
@@ -206,7 +206,7 @@ impl KernelRuntimeState {
 
     pub(in crate::runtime) async fn create_codex_workspace_approval(
         &self,
-        kind: super::CardKind,
+        kind: super::InteractionSurface,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
         request: &crate::runtime::native_interaction_bridge::CodexApprovalRequest,
@@ -217,7 +217,7 @@ impl KernelRuntimeState {
 
     async fn create_agent_interaction(
         &self,
-        kind: super::CardKind,
+        kind: super::InteractionSurface,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
@@ -240,7 +240,7 @@ impl KernelRuntimeState {
         let event_interaction = interaction.clone();
         if let Some(request) = codex_approval {
             self.owned.register_codex_workspace_approval(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
                     kind,
                     interaction,
                 ),
@@ -250,7 +250,7 @@ impl KernelRuntimeState {
             )?;
         } else {
             self.owned.register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
                     kind,
                     interaction,
                 ),
@@ -321,9 +321,14 @@ impl KernelRuntimeState {
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let (tx, rx) = oneshot::channel();
+        let kind = if interaction.id().starts_with("vault-passphrase-") {
+            super::InteractionSurface::named("vault_passphrase_change")
+        } else {
+            super::InteractionSurface::named("vault_unlock")
+        };
         self.owned.register_runtime_interaction(
-            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                super::CardKind::VaultCredentialPayment,
+            crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                kind,
                 interaction,
             ),
             session_id,
@@ -338,7 +343,7 @@ impl KernelRuntimeState {
 
     pub(in crate::runtime) async fn create_kernel_operation_interaction(
         &self,
-        kind: super::CardKind,
+        kind: super::InteractionSurface,
         session_id: &str,
         owner_user_id: &str,
         interaction: crate::session::RuntimeInteraction,
@@ -352,7 +357,10 @@ impl KernelRuntimeState {
         let (tx, rx) = oneshot::channel();
         let id = interaction.id().to_owned();
         self.owned.register_runtime_interaction(
-            crate::runtime::state::runtime_interaction_owned_state::CardRequest(kind, interaction),
+            crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                kind,
+                interaction,
+            ),
             session_id,
             tx,
             Some(owner_user_id),

@@ -44,12 +44,13 @@ fn mp08_mp10_mp11_provider_login_projection_shape_is_versioned() {
         Some(600),
         None,
     )
-    .with_provider_login(projection.clone());
+    .with_provider_login(projection.clone())
+    .with_card_type("provider_auth_recovery");
     let mut snapshot = serde_json::to_value(interaction).unwrap();
     snapshot["requested_at_ms"] = serde_json::json!(1000);
     assert_eq!(
         snapshot,
-        serde_json::json!({
+        serde_json::json!({"surface":"card", "card_type":"provider_auth_recovery",
             "id":"provider-auth-recovery:run:login", "agent_id":"agent", "kind":"choice", "level":"warning",
             "title":"Log in to Codex on this machine", "message":"Complete official login",
             "choices":[{"id":"cancel","label":"Cancel login","reply":"cancel"}], "timeout_sec":600, "requested_at_ms":1000,

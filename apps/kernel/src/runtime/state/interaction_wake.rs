@@ -24,6 +24,18 @@ fn question(wake: &AgentWake) -> Result<RuntimeInteraction, DaemonError> {
     Ok(interaction)
 }
 
+fn question_type(interaction: &RuntimeInteraction) -> &'static str {
+    if super::vault_use::is_vault_payment_decision(interaction.id()) {
+        "vault_payment_approval"
+    } else if interaction.secret_request().is_some() {
+        "vault_secret_request"
+    } else if interaction.view().is_some() {
+        "popup_browser_region"
+    } else {
+        "Question"
+    }
+}
+
 impl WakeDriver for InteractionWakeDriver {
     fn kind(&self) -> &'static str {
         KIND
@@ -38,14 +50,9 @@ impl WakeDriver for InteractionWakeDriver {
             .is_some_and(|p| p.belongs_to(&self.owned.session_store))
         {
             let (tx, _rx) = tokio::sync::oneshot::channel();
-            let secret_card = interaction.secret_request().is_some();
             self.owned.register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    if secret_card || super::vault_use::is_vault_payment_decision(&wake.id) {
-                        super::CardKind::VaultCredentialPayment
-                    } else {
-                        super::CardKind::Task
-                    },
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    super::InteractionSurface::named(question_type(&interaction)),
                     interaction,
                 ),
                 &wake.room_id,
@@ -195,7 +202,10 @@ impl KernelRuntimeState {
                 "Wait already accepted. End this provider turn without more tools",
             ));
         }
-        let interaction = interaction.with_asking_task_id(task.task_id.clone());
+        let card_type = question_type(&interaction);
+        let interaction = interaction
+            .with_asking_task_id(task.task_id.clone())
+            .with_card_type(card_type);
         let mut wake = super::tool_dispatch::agent_wakes::new_wake(
             task,
             KIND,

@@ -1,11 +1,11 @@
 use crate::session::RuntimeInteraction;
 
 /// Owns the live publication permit for one Room card.
-pub(crate) struct LiveRoomCard {
+pub(crate) struct LiveRoomInteraction {
     presentation: RuntimeInteraction,
 }
 
-impl LiveRoomCard {
+impl LiveRoomInteraction {
     pub(super) fn admitted(presentation: RuntimeInteraction) -> Self {
         Self { presentation }
     }

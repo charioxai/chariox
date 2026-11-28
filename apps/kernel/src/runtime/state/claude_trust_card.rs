@@ -62,7 +62,7 @@ impl KernelRuntimeState {
                 ));
                 let receiver = match self
                     .create_runtime_interaction(
-                        crate::runtime::state::CardKind::NativePermissionInput,
+                        crate::runtime::state::InteractionSurface::named("claude_workspace_trust"),
                         session_id,
                         interaction,
                     )

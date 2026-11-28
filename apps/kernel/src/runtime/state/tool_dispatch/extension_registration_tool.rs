@@ -387,7 +387,9 @@ impl KernelRuntimeState {
         let interaction_id = interaction.id().to_string();
         let resolution = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::RuntimeGrant,
+                crate::runtime::state::InteractionSurface::named(
+                    "extension_registration_permission",
+                ),
                 session.id(),
                 interaction,
             )

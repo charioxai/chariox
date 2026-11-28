@@ -125,8 +125,8 @@ impl KernelRuntimeState {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         self.owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     interaction,
                 ),
                 session_id,
@@ -448,7 +448,7 @@ async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_bo
         };
         let rx = state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 scope,
                 owner,
                 decision("no-session-access"),
@@ -487,7 +487,7 @@ async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_bo
         assert!(state.passkey_prompts_for(owner).is_empty());
         let rx = state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 scope,
                 owner,
                 decision("no-session-expiry"),
@@ -1076,8 +1076,8 @@ async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
         state
             .owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     permission(id, agent_id, level),
                 ),
                 session.id(),
@@ -1123,8 +1123,8 @@ async fn a_holder_answers_kernel_decisions_except_one_that_needs_the_passkey() {
         state
             .owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     RuntimeInteraction::for_kernel_operation(
                         id,
                         id,
@@ -1206,8 +1206,8 @@ async fn a_decision_open_before_the_holder_subscribes_is_delivered_on_subscribe(
         state
             .owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     RuntimeInteraction::new(
                         id,
                         agent_id,
@@ -1335,7 +1335,7 @@ async fn enrolled_owner_can_manage_grants_approved_before_login() {
     .with_timeout_sec(60);
     let _answer = state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
             "local",
             extension,

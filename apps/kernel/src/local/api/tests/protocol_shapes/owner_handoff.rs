@@ -95,6 +95,6 @@ fn mp08_mp10_mp11_owner_handoff_protocol_477_snapshot_and_hash() {
     .is_err());
     assert_eq!(
         format!("{:x}", Sha256::digest(snapshot.to_string().as_bytes())),
-        "a6259cfa0565785778583aa0ffdd4adf03585d0baad1f2901e88bb1a8c953193"
+        "3b807cf7ae0ab5d737505e9f5b98bc52d9df53d6323672f62585fb97fcc4df0c"
     );
 }

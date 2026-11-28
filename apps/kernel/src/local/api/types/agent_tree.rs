@@ -20,6 +20,7 @@ pub enum AgentTreeState {
     Idle,
     Ended,
     Error,
+    TimeLimitEnded,
     Unreachable,
 }
 

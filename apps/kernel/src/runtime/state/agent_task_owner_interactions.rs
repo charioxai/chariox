@@ -335,11 +335,20 @@ impl KernelRuntimeState {
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone())
         .with_room_dismissed(dismissed)
-        .with_question_reply(reply_choice);
+        .with_question_reply(reply_choice)
+        .with_level(crate::session::RuntimeInteractionLevel::Critical);
 
         let rx = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::Task,
+                if self
+                    .owned
+                    .durable_state_store
+                    .task_block_is_interrupted(&task.task_id, task.blocked_revision)?
+                {
+                    crate::runtime::state::InteractionSurface::PaneStatus
+                } else {
+                    crate::runtime::state::InteractionSurface::Hidden
+                },
                 &task.room_id,
                 session.owner_user_id(),
                 interaction,

@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "c818ac1fd74a7a713b91fefd8f0914d51b16b77fcee1620017e618bd6067586c"
+        "c3dec9218998614d78782c8312c46243283b4f729533430405d26e021bd4627b"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.
@@ -86,7 +86,7 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
         serde_json::from_value::<crate::transport::runtime_tools::RequestPopupUntilArgs>(unknown)
             .is_err()
     );
-    let interaction = serde_json::json!({
+    let interaction = serde_json::json!({"surface":"card", "card_type":"popup_browser_region",
         "closes_with_wake": "wake-1",
         "id": "interaction-1",
         "agent_id": "agent-1",
@@ -130,14 +130,14 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
                 serde_json::to_vec(&serde_json::json!([arguments, interaction])).unwrap()
             )
         ),
-        "cb56dc70bbfc839aace0d66435a827cdc080b1b64cc30756c7d091724c32196d"
+        "92b6d73cdbf21a0c9ee69f01d17f3c3048b20ae6ed686fe3b20dbb1bd34c4426"
     );
 }
 
 // Person cards (protocol 1006): a sub-agent's card names the panel that shows it and its asker.
 #[test]
 fn a_sub_agent_card_carries_its_panel_and_asker_name() {
-    let interaction = serde_json::json!({
+    let interaction = serde_json::json!({"surface":"card", "card_type":"Question", "custom_choice":{"id":"reply","label":"","min_length":1},
         "shown_in_agent_id": "agent-room",
         "asker_name": "worker-1",
         "id": "interaction-2",
@@ -164,7 +164,7 @@ fn a_sub_agent_card_carries_its_panel_and_asker_name() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&interaction).unwrap())
         ),
-        "445199b2803142f0936fb2a5d18d929e14995d9969c23f8f674395426106af24"
+        "da6628226f789834461b2e47912e3d11d1a0a0b4833c3aeb99a4e388f8ac62eb"
     );
 }
 
@@ -189,7 +189,7 @@ fn browser_verification_protocol_992_431_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "919fc1c70df4cb1e0525ba319ad037a37808f683d77bbf77ec44dd89ebe835de"
+        "48f2369a7065e0afc9a54a4b5c20ab09aa36caa31737f92a357d8d466cbdc545"
     );
 }
 
@@ -214,6 +214,6 @@ fn browser_done_text_protocol_1011_448_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9384550dee1aab52cbdf1b020e78dd1d8c903aa389e958d90e458406d59c872f"
+        "ee98781ee76ddd9e53c14b2122671ee6ce30963555b6ba4b9dc791c60b6bca95"
     );
 }

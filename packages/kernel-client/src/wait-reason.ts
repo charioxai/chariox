@@ -95,6 +95,7 @@ export function waitReasonText(liveness: AgentLiveness | undefined, now: number,
  * error says so and never claims a wait.
  */
 export function agentStatusLine(node: Pick<AgentTreeNode, "state" | "liveness">, now: number, options: WaitReasonOptions = {}): string {
+  if (node.state === "time_limit_ended") return "Time limit ended"
   if (node.state === "idle" || node.state === "ended" || node.state === "error") return node.state
   return waitReasonText(node.liveness, now, options) ?? node.state
 }

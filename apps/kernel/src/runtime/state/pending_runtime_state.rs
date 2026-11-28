@@ -174,7 +174,7 @@ impl PendingInteraction {
                 .is_some_and(|prompt| prompt.kind != crate::local::PasskeyPromptKind::AppInstall)
         {
             Some("it needs the passkey")
-        } else if super::agent_deadline_cards::is_deadline_card(interaction.id()) {
+        } else if super::agent_deadline_status::is_deadline_status(interaction.id()) {
             Some("it changes the agent’s time limit")
         } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
             // A critical decision is the risky, irreversible kind the passkey guards.

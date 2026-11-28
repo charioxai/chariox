@@ -893,7 +893,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "75d5e3e796965d9d5fbf104bfd875c37d9ba01016f3147c4a79740f5ee30ff43"
+        "74d1f022dbcc22085f75a0dab3da62ad5f315807996292b3ec6129c98dbff69b"
     );
 
     let content = WorkspaceFileContent {

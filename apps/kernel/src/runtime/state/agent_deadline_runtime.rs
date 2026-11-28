@@ -101,7 +101,7 @@ impl KernelRuntimeState {
                         && current.deadline_ms > crate::session::unix_epoch_ms()
                 })
         }) {
-            self.owned.close_deadline_card(&previous)?;
+            self.owned.close_deadline_status(&previous)?;
         }
         self.publish_changed_agent_trees();
         Ok(LocalDaemonResponse::AgentDeadline { deadline })
@@ -227,7 +227,7 @@ impl KernelRuntimeState {
                     stopped: false,
                 })?;
             if retires_messages {
-                self.show_deadline_refusal(&deadline.session_id, &deadline.agent_id)
+                self.show_deadline_status(&deadline.session_id, &deadline.agent_id)
                     .await;
             }
             due.push((deadline, work));
@@ -256,6 +256,7 @@ impl KernelRuntimeState {
                         // The Room hears of it once: when the first cleanup finishes.
                         if stopped.is_ok() && deadline.stopped_at_ms.is_none() {
                             self.announce_deadline_stop(deadline, work);
+                            self.show_deadline_status(room, agent).await;
                         }
                         stopped
                     }

@@ -2,7 +2,7 @@
 
 #[test]
 fn a_secret_card_names_its_entry_and_an_old_client_ignores_it() {
-    let wire = serde_json::json!({
+    let wire = serde_json::json!({"surface":"card", "card_type":"credential_secret",
         "id": "credential-secret-1",
         "agent_id": "agent",
         "asking_task_id": "task",

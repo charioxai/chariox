@@ -10,7 +10,7 @@ enum InteractionSource<'a> {
 impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn register_runtime_interaction(
         &self,
-        request: super::card_registry::CardRequest,
+        request: super::card_registry::InteractionRequest,
         session_id: &str,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
@@ -29,7 +29,7 @@ impl KernelRuntimeOwnedState {
 
     pub(in crate::runtime::state) fn register_codex_workspace_approval(
         &self,
-        request: super::card_registry::CardRequest,
+        request: super::card_registry::InteractionRequest,
         session_id: &str,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         approval: &CodexApprovalRequest,
@@ -46,7 +46,7 @@ impl KernelRuntimeOwnedState {
 
     fn register_interaction(
         &self,
-        request: super::card_registry::CardRequest,
+        request: super::card_registry::InteractionRequest,
         session_id: &str,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
@@ -58,7 +58,11 @@ impl KernelRuntimeOwnedState {
             InteractionSource::CodexWorkspaceApproval(request) => (None, Some(request)),
             InteractionSource::Local => (None, None),
         };
-        let super::card_registry::CardRequest(kind, interaction) = request;
+        let super::card_registry::InteractionRequest(kind, interaction) = request;
+        let interaction = kind.present(interaction);
+        if kind.is_card() {
+            super::card_registry::require_registered_type(&interaction)?;
+        }
         let _admission = self.begin_managed_activity_admission()?;
         self.sweep_stale_task_owner_interactions()?;
         let _mutation = self
@@ -228,7 +232,7 @@ impl KernelRuntimeOwnedState {
                                 interaction.id(),
                             ) || super::super::provider_stall::is_provider_stall_decision(
                                 &interaction,
-                            ) || super::super::agent_deadline_cards::is_deadline_card(
+                            ) || super::super::agent_deadline_status::is_deadline_status(
                                 interaction.id(),
                             )) && interaction.kernel_operation_id() == Some(interaction.id()),
                     }
@@ -495,14 +499,22 @@ impl KernelRuntimeOwnedState {
                 pending.holder_tenure = tenure;
             }
         }
-        // The user sees a sub-agent's decision in its top parent's panel from the start, also while
-        // a parent agent holds it: the first answer, the holder's or the user's, wins.
-        let shown_in = self.decision_shown_in(session_id, &interaction);
+        // Card placement follows the decision holder's Room. A status belongs to the
+        // affected agent; its presentation does not change the holder or parent delivery.
+        let shown_in = if kind.is_card() {
+            self.decision_shown_in(session_id, &interaction)
+        } else {
+            interaction
+                .agent_id()
+                .or(interaction.related_agent_id())
+                .map(str::to_owned)
+        };
         let interaction = interaction.shown_in(shown_in);
         let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
             self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)
         });
-        let Ok(card) = self.admit_room_card(kind, interaction, &pending, &session, worker_live)
+        let Ok(card) =
+            self.admit_room_interaction(kind, interaction, &pending, &session, worker_live)
         else {
             if let Some(sender) = pending
                 .responder
@@ -518,7 +530,7 @@ impl KernelRuntimeOwnedState {
             }
             return Ok(());
         };
-        let interaction = super::card_registry::card_presentation(&card);
+        let interaction = super::card_registry::interaction_presentation(&card);
         if let Some(adopted) = adopted {
             pending.goal_approval = adopted.goal.clone();
         } else if pending.terminal_credential_owner.is_none()
@@ -554,11 +566,13 @@ impl KernelRuntimeOwnedState {
         sessions.restore_session(session);
         drop(sessions);
         activity_mutation.record();
-        // Nobody looks at a hidden agent's card, so the agent returns with it.
+        // A visible card or error brings its agent back. Hidden recovery bookkeeping creates no UI row.
         if let Some(agent_id) = concerned_agent.as_deref().filter(|id| {
-            self.agent_store
-                .get_agent(id)
-                .is_ok_and(|a| a.session_id() == session_id)
+            kind.is_visible()
+                && self
+                    .agent_store
+                    .get_agent(id)
+                    .is_ok_and(|a| a.session_id() == session_id)
         }) {
             if let Err(error) = self.unhide_agent(agent_id) {
                 crate::logging::error_with_fields(

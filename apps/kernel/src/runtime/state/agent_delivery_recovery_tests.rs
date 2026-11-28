@@ -808,7 +808,7 @@ impl Fixture {
             .unwrap()
             .active_interactions()
             .iter()
-            .filter(|card| super::agent_deadline_cards::is_deadline_card(card.id()))
+            .filter(|card| super::agent_deadline_status::is_deadline_status(card.id()))
             .count()
     }
 

@@ -942,7 +942,7 @@ fn no_request_from_another_kernel_answers_a_card_on_this_one() {
                 .router
                 .runtime_state
                 .create_runtime_interaction(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     &b.room,
                     card,
                 )

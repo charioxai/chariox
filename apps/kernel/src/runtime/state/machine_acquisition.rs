@@ -298,7 +298,7 @@ impl KernelRuntimeState {
         }
         let receiver = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("machine_acquisition"),
                 &room,
                 &owner,
                 interaction,

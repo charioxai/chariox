@@ -5,20 +5,15 @@
 //! A workflow card is a run of a workflow the person answers for that is held on a decision; a
 //! failed run is status on its workflow row and a subscription that stopped delivering is status on
 //! its row, never cards. Read, snooze and mute follow the person to every client.
-use crate::durable_state::workflow_notifications::naming::workflow_name;
 use crate::durable_state::{PersonInboxState, StoredNotice, WORKFLOW_RELINK_ORIGIN};
 use crate::error::DaemonError;
 use crate::local::{
     InboxCardChange, LocalDaemonResponse, PersonInboxCard, PersonInboxCardBody, PersonInboxNotice,
-    PersonInboxNoticeOrigin, PersonInboxPriority, PersonInboxWorkflowRun, SetInboxCardStateRequest,
-    SetInboxMuteRequest,
+    PersonInboxNoticeOrigin, PersonInboxPriority, SetInboxCardStateRequest, SetInboxMuteRequest,
 };
 use crate::runtime::command::{caller_user_id, KernelCaller};
 use crate::runtime::state::KernelRuntimeState;
-use crate::session::{
-    unix_epoch_ms, RuntimeSession, WorkflowDefinition, WorkflowRun, WorkflowRunOutcome,
-    DEFAULT_LOCAL_USER_ID,
-};
+use crate::session::{unix_epoch_ms, RuntimeSession, DEFAULT_LOCAL_USER_ID};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod provider_account;
@@ -59,15 +54,9 @@ pub(crate) fn execute_set_inbox_card_state(
         let owner = match (inbox.card_owner(&card_id), &request.change) {
             (Some((owner, CardKind::Notice)), _) => owner,
             (Some((owner, CardKind::NeedsYou)), InboxCardChange::Snooze { .. }) => owner,
-            (Some((owner, CardKind::Workflow)), InboxCardChange::Snooze { .. }) => owner,
             (Some((_, CardKind::NeedsYou)), InboxCardChange::Read { .. }) => {
                 return Err(refused(
                     "A needs-you card is not marked read: it leaves when it is answered.",
-                ))
-            }
-            (Some((_, CardKind::Workflow)), InboxCardChange::Read { .. }) => {
-                return Err(refused(
-                    "A workflow card is not marked read: it leaves when you open the run.",
                 ))
             }
             (None, _) => {
@@ -162,7 +151,6 @@ pub(crate) fn notify_person(
 enum CardKind {
     NeedsYou,
     Notice,
-    Workflow,
 }
 
 /// The caller's Rooms on this kernel and the stored Inbox state of their owners. A subscription
@@ -226,16 +214,9 @@ impl OwnedInbox {
             .state
             .notices
             .iter()
-            .find(|notice| notice.card_id == card_id)
+            .find(|notice| notice.card_id == card_id && notice_card_type(notice).is_some())
         {
             return Some((notice.owner_user_id.clone(), CardKind::Notice));
-        }
-        if let Some(session) = self
-            .sessions
-            .iter()
-            .find(|session| person_runs(session).any(|(run, _, _)| run_card_id(run) == card_id))
-        {
-            return Some((session.owner_user_id().to_owned(), CardKind::Workflow));
         }
         self.sessions
             .iter()
@@ -258,6 +239,9 @@ impl OwnedInbox {
                 session
                     .named_active_interactions()
                     .into_iter()
+                    .filter(|interaction| {
+                        crate::session::runtime_card_class(interaction.card_type()).is_some()
+                    })
                     .map(|interaction| PersonInboxCard {
                         card_id: interaction.id().to_owned(),
                         session_id: session.id().to_owned(),
@@ -268,7 +252,8 @@ impl OwnedInbox {
                     })
             })
             .collect::<Vec<_>>();
-        cards.extend(self.state.notices.iter().map(|notice| {
+        cards.extend(self.state.notices.iter().filter_map(|notice| {
+            let card_type = notice_card_type(notice)?;
             let action = provider_account::action(notice);
             let room = self
                 .sessions
@@ -298,11 +283,12 @@ impl OwnedInbox {
                     notice.folded,
                 )
             };
-            PersonInboxCard {
+            Some(PersonInboxCard {
                 card_id: notice.card_id.clone(),
                 session_id: session_id.to_owned(),
                 snoozed_until_ms: snoozed(&notice.card_id),
                 body: PersonInboxCardBody::Notice(PersonInboxNotice {
+                    card_type: card_type.to_owned(),
                     agent_id: notice.agent_id.clone(),
                     agent_name,
                     title,
@@ -322,21 +308,6 @@ impl OwnedInbox {
                     read: notice.read,
                     folded,
                 }),
-            }
-        }));
-        cards.extend(self.sessions.iter().flat_map(|session| {
-            person_runs(session).map(|(run, workflow, outcome)| PersonInboxCard {
-                card_id: run_card_id(run),
-                session_id: session.id().to_owned(),
-                snoozed_until_ms: snoozed(&run_card_id(run)),
-                body: PersonInboxCardBody::Workflow(PersonInboxWorkflowRun {
-                    workflow_id: run.workflow_id().to_owned(),
-                    workflow_name: workflow_name(workflow),
-                    run_id: run.id().to_owned(),
-                    run_number: run.number(),
-                    outcome,
-                    at_ms: run.completed_at_ms().unwrap_or(run.created_at_ms()),
-                }),
             })
         }));
         cards.sort_by(|left, right| {
@@ -349,6 +320,26 @@ impl OwnedInbox {
             mutes: self.state.mutes,
         }
     }
+}
+
+fn notice_card_type(notice: &StoredNotice) -> Option<&'static str> {
+    if notice.is_workflow_relink() || notice.is_workflow_start_refusal() {
+        return None;
+    }
+    let card_type = if provider_account::is_sign_in_notice(notice) {
+        "provider_sign_in_notice_origin_kernel"
+    } else {
+        "notify_person_notice_origin_agent"
+    };
+    if crate::session::runtime_card_class(card_type).is_none() {
+        tracing::error!(
+            card_type,
+            notice_id = notice.card_id,
+            "card refused: unregistered type"
+        );
+        return None;
+    }
+    Some(card_type)
 }
 
 /// A folded card names the origin and the count; a single notice keeps its own title.
@@ -378,29 +369,7 @@ fn sort_key(card: &PersonInboxCard) -> (bool, u64) {
             notice.priority == PersonInboxPriority::High,
             notice.created_at_ms,
         ),
-        PersonInboxCardBody::Workflow(run) => (false, run.at_ms),
-        // Never projected any more: a stopped subscription is status on its row.
-        PersonInboxCardBody::Flag(flag) => (false, flag.at_ms.unwrap_or_default()),
     }
-}
-
-/// Runs of the Room's workflows that the person answers for and that are held on a decision. A
-/// failed run is status on its workflow row (`outcome`), not a card.
-fn person_runs(
-    session: &RuntimeSession,
-) -> impl Iterator<Item = (&WorkflowRun, &WorkflowDefinition, WorkflowRunOutcome)> {
-    session.workflow_runs().iter().filter_map(move |run| {
-        let workflow = session.workflow(run.workflow_id())?;
-        let outcome = run.outcome()?;
-        (run.attention()
-            && workflow.responsible().is_person()
-            && matches!(outcome, WorkflowRunOutcome::Waiting { .. }))
-        .then_some((run, workflow, outcome))
-    })
-}
-
-fn run_card_id(run: &WorkflowRun) -> String {
-    format!("run:{}", run.id())
 }
 
 fn refused(message: impl Into<String>) -> DaemonError {

@@ -105,7 +105,7 @@ async fn the_pane_feed_lists_a_card_a_text_terminal_can_answer_and_drops_it_once
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &pane.session_id,
             question("ask", &pane.agent_id),
         )
@@ -204,7 +204,7 @@ async fn a_watched_pane_feed_shows_a_card_answered_elsewhere_within_two_seconds(
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &pane.session_id,
             question("ask", &pane.agent_id),
         )

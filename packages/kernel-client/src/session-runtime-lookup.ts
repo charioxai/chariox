@@ -1,3 +1,4 @@
+import { runtimeCardClass } from "./runtime-card-types.js"
 import type {
   RuntimeInteraction,
   RuntimeProviderRun,
@@ -17,7 +18,9 @@ export function sessionActiveInteractionForAgent(
   if (!agentId) {
     return null
   }
-  return session.active_interactions?.find((interaction) => interactionShownInAgentId(interaction) === agentId) ?? null
+  return session.active_interactions?.find(interaction =>
+    interaction.surface === "card" && runtimeCardClass(interaction.card_type) !== undefined
+      && interactionShownInAgentId(interaction) === agentId) ?? null
 }
 
 export function sessionFocusedInteraction(

@@ -261,6 +261,6 @@ fn provider_account_auth_error_shape_is_versioned() {
     assert_eq!(actual, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
-        "fb99c9ca144e29abc2232b907f17647c9f4837470f2839bd750a5a9baf6a0dc2"
+        "092f4103c7a3565fa850091927e73094b6bcdf191337718232a8d115a14d8015"
     );
 }

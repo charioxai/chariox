@@ -164,7 +164,7 @@ impl KernelRuntimeState {
         let name = if label.is_empty() { profile_id } else { label };
         let receiver = match self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::ProviderLogin,
+                crate::runtime::state::InteractionSurface::named("portable_claude_login"),
                 &session_id,
                 RuntimeInteraction::new(
                     &id,
