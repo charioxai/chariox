@@ -32,7 +32,14 @@
       }
     ],
     "timeout_sec": 300,
-    "requested_at_ms": 1
+    "requested_at_ms": 1,
+    "surface": "card",
+    "card_type": "Question",
+    "custom_choice": {
+      "id": "reply",
+      "label": "",
+      "min_length": 1
+    }
   },
   "answer": {
     "RespondToInteraction": {
