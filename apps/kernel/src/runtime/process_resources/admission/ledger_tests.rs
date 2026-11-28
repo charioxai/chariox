@@ -2241,6 +2241,76 @@ fn unplaced_writer_rate_excludes_observed_stdout_growth() {
     assert_eq!(unplaced[0].volume, 1);
 }
 
+#[test]
+fn a_bursty_stdout_logger_is_not_charged_to_another_volume_during_its_quiet_interval() {
+    let (logger, mut usage, mut log) = stream_writer(1, 2, 700 * MIB);
+    usage.writes = 0;
+    log.written = 0;
+    let current = owner("agent", true, vec![usage], vec![(1, logger)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    let volume = stream_volumes();
+    let mut ledger = Ledger::new(None);
+    // The baseline and burst precede the quiet interval. Command writes are
+    // still 700 MiB/s over two seconds when the latest file-growth rate is zero.
+    for (at, written, rate) in [(1000, 0, 0), (2000, 1400 * MIB, 1400 * MIB)] {
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
+            output.written = written;
+            output.rate = rate;
+        }
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        assert!(ledger.take_fillers(&current).is_empty());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let (filler, filler_use, scratch) = stream_writer(2, 1, 300 * MIB);
+    {
+        let mut observation = current.lock().unwrap();
+        observation.samples = vec![write_sample(1, 3000), write_sample(2, 3000)];
+        let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
+        output.rate = 0;
+        output.files.clear();
+        observation.commands.push(filler_use);
+        observation.admission.insert(2, filler);
+        observation.disk_writes.insert(2, vec![scratch]);
+    }
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        ledger
+            .take_fillers(&current)
+            .iter()
+            .map(|(pid, _)| *pid)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+}
+
+fn write_sample(pid: u32, at: u64) -> super::super::sampling::ProcessSample {
+    super::super::sampling::ProcessSample {
+        process_id: format!("stream-{pid}"),
+        pid,
+        command: "writer".into(),
+        resident_set_bytes: 0,
+        cpu_millis: 0,
+        disk_io_bytes: None,
+        disk_written_bytes: None,
+        deleted_open_bytes: 0,
+        outlived: false,
+        sampled_at_ms: at,
+        age_ms: at,
+    }
+}
+
 /// A volume that starts with `free` and loses `per_second` from its first reading.
 fn losing(free: u64, per_second: u64) -> Box<Volume> {
     let started = Instant::now();
