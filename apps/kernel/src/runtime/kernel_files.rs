@@ -905,6 +905,29 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
     }
 
+    // The record of an abandoned upload must not make a retried
+    // upload to the same path reject its own out-of-order startup.
+    #[test]
+    fn an_abandoned_upload_without_a_reported_error_does_not_reject_the_retry() {
+        let dir = scratch();
+        let target = dir.join("incoming/nested/retry.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        write(&chunk(&target, 0, b"abc", 6, Some(&sha))).unwrap();
+        std::fs::remove_dir_all(dir.join("incoming")).unwrap();
+
+        // The retry starts from offset 0, but its later chunk runs first and the folders are gone.
+        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        let second = chunk(&target, 3, b"def", 6, Some(&sha));
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
     // An upload that has been silent for longer than a chunk waits for its turn is abandoned: its
     // record no longer authorizes an immediate failure for a later upload to the same path.
     #[test]
