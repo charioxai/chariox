@@ -25,8 +25,12 @@ const TASK_STALL_FAULT_ENV: &str = "CHARIOX_SWEEP_TASK_STALL_FILE";
 /// "did not settle" warns in 50 min) must not flood the pass that asks it.
 const ASK_BACKOFF_MS: u64 = 5 * 60_000;
 const ASK_BACKOFF_MAX_MS: u64 = 60 * 60_000;
-/// How long the wake dead-man check may run in its own work before the next pass starts it
-/// again. The check probes sources that may not answer; the pass never waits on it.
+/// How long the wake dead-man check may run before the pass reports it degraded. The check
+/// probes sources that may not answer; the pass never waits on it. Tests hold a probe to
+/// prove the degradation is reported while it is still held.
+#[cfg(test)]
+const WAKE_CHECK_LIMIT: Duration = Duration::from_secs(2);
+#[cfg(not(test))]
 const WAKE_CHECK_LIMIT: Duration = Duration::from_secs(180);
 
 /// What a report of a lost watch tells its agent to do: the kernel never starts the work again, the agent does.
@@ -42,6 +46,11 @@ pub(crate) struct AgentWakeMonitor {
     /// The wake dead-man check is degraded: reported once when it starts, again when it recovers,
     /// never per pass.
     deadman_degraded: AtomicBool,
+    /// A dead-man check is outstanding: a new one starts only when this one's probes have
+    /// ended. A probe parked in a source that does not answer keeps its own thread and this
+    /// mark; the probe's own end clears it, so one degraded source costs at most a single
+    /// parked thread, never a new check per pass.
+    deadman_outstanding: AtomicBool,
     stall_fault: Option<PathBuf>,
     task_stall_fault: std::sync::Mutex<Option<PathBuf>>,
     /// Per task the sweep asked and waited for: when it may be asked again, and how many times in
@@ -66,6 +75,7 @@ impl AgentWakeMonitor {
             sweep_stall_alerted: AtomicBool::new(false),
             tick_failure_alerted: AtomicBool::new(false),
             deadman_degraded: AtomicBool::new(false),
+            deadman_outstanding: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
             task_stall_fault: std::sync::Mutex::new(
                 std::env::var_os(TASK_STALL_FAULT_ENV).map(PathBuf::from),
@@ -410,7 +420,27 @@ impl KernelRuntimeState {
         }) {
             self.tick_timer_wakes(now, false)?;
         }
-        self.sweep_driver_liveness(now)?;
+        // A source's liveness probe may park its thread and never return (20A7 11-27: the
+        // pass waited on this check for hours): the probes run off the async worker, so the
+        // check's own limit still expires and the pass's report leaves it; the probe's body
+        // clears the outstanding mark when it ends, even after the check was abandoned.
+        let probing = self.clone();
+        match tokio::task::spawn_blocking(move || {
+            let probed = probing.sweep_driver_liveness(now);
+            probing
+                .owned
+                .agent_wakes
+                .deadman_outstanding
+                .store(false, Ordering::Release);
+            probed
+        })
+        .await
+        {
+            Ok(probed) => probed?,
+            Err(error) => {
+                tracing::warn!(%error, "the wake dead-man check's source probes did not end cleanly");
+            }
+        }
         let wakes: BTreeMap<_, _> = store
             .agent_wakes(None, None)?
             .into_iter()
@@ -453,28 +483,47 @@ impl KernelRuntimeState {
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
-        let Some(claim) = self.task_work.claim("wake-deadman") else {
+        // One outstanding check at a time. The mark is cleared where the check's probes
+        // end — inside the probe's own blocking body — because a parked probe outlives the
+        // check's limit: a check abandoned by its own timeout leaves the mark set until its
+        // probes return, so one degraded source never parks a new thread per pass.
+        if monitor.deadman_outstanding.swap(true, Ordering::AcqRel) {
             return;
-        };
+        }
         let state = self.clone();
         tokio::spawn(async move {
-            let _claim = claim;
-            let degraded = &state.owned.agent_wakes.deadman_degraded;
+            let monitor = &state.owned.agent_wakes;
             match tokio::time::timeout(WAKE_CHECK_LIMIT, state.sweep_agent_wakes(now)).await {
                 Ok(Ok(())) => {
-                    if degraded.swap(false, Ordering::AcqRel) {
-                        tracing::warn!("MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check recovered; wake delivery checks run again");
+                    monitor.deadman_outstanding.store(false, Ordering::Release);
+                    if monitor.deadman_degraded.swap(false, Ordering::AcqRel) {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check recovered; wake delivery checks run again",
+                            serde_json::json!({"held_check": true}),
+                        );
                     }
                 }
                 Ok(Err(error)) => {
-                    if !degraded.swap(true, Ordering::AcqRel) {
-                        tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                            "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is degraded; it runs apart from the sweep and is retried until it recovers");
+                    monitor.deadman_outstanding.store(false, Ordering::Release);
+                    if !monitor.deadman_degraded.swap(true, Ordering::AcqRel) {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is degraded; it runs apart from the sweep and is retried until it recovers",
+                            serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                        );
                     }
                 }
                 Err(_) => {
-                    if !degraded.swap(true, Ordering::AcqRel) {
-                        tracing::warn!("MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is held by a source that does not answer; it runs apart from the sweep and a fresh check starts when this one ends");
+                    // The check ran out of its own time with its probes still outstanding:
+                    // the probe's body clears the mark when it ends, and a fresh check then
+                    // starts. Only this report leaves the timeout itself.
+                    if !monitor.deadman_degraded.swap(true, Ordering::AcqRel) {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is held by a source that does not answer; it runs apart from the sweep and a fresh check starts when this one ends",
+                            serde_json::json!({"held_check": true}),
+                        );
                     }
                 }
             }

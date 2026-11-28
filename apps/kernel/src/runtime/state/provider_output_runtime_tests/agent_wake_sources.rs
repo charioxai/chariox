@@ -2411,10 +2411,11 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
 
 /// Row 689 (20A7 11-27: the pass waited on the wake dead-man check since 12:32:57Z): a
 /// degraded check — a source probe that does not answer — never holds the pass. The check runs
-/// apart from it, the pass returns, and the check still does its work, so a lost source is
-/// still reported.
+/// apart from it, the pass returns, the check's own limit reports the degradation while the
+/// probe is still held, and the check still does its work, so a lost source is reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_degraded_wake_deadman_check_never_holds_the_pass_and_still_works() {
+    let _capture = crate::logging::capture::start();
     let f = fixture("deadman-degraded", false).await;
     let task = f.begin("turn-1");
     let wake = f.arm(&task, "wake-a").unwrap();
@@ -2442,8 +2443,25 @@ async fn a_degraded_wake_deadman_check_never_holds_the_pass_and_still_works() {
         passed.is_ok(),
         "the pass returns while the wake dead-man check is held by a source that does not answer"
     );
-    // The probe is still held: no report about the check escapes per pass, and the pass
-    // returned without waiting for it.
+    // The probe is STILL held: the check's own limit reports the degradation once, without
+    // the probe ever answering.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !_capture
+        .records()
+        .iter()
+        .any(|record| record.contains("held by a source that does not answer"))
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        _capture
+            .records()
+            .iter()
+            .any(|record| record.contains("held by a source that does not answer")),
+        "the held check is reported while its probe never answers: {}",
+        _capture.records().join("\n")
+    );
     // The check still does its work once released: a lost source is reported.
     f.driver.lost.store(true, Ordering::Release);
     release_tx.send(()).unwrap();
@@ -2457,6 +2475,26 @@ async fn a_degraded_wake_deadman_check_never_holds_the_pass_and_still_works() {
         f.notices().contains("was lost (test source vanished)"),
         "the loss is still shown to the room: {}",
         f.notices()
+    );
+    // The released probe cleared the outstanding mark: a later pass runs a fresh check
+    // that ends on its own, and the recovery is reported once.
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !_capture
+        .records()
+        .iter()
+        .any(|record| record.contains("the wake dead-man check recovered"))
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        _capture
+            .records()
+            .iter()
+            .any(|record| record.contains("the wake dead-man check recovered")),
+        "a fresh check after the probe ended reports the recovery: {}",
+        _capture.records().join("\n")
     );
 }
 
@@ -2495,24 +2533,7 @@ async fn a_backstop_rescues_a_stated_wait_once_and_never_chains() {
         "the agent is told what the kernel did: {}",
         f.notices()
     );
-
-    // The backstop fires and starts the next turn; that turn restates the wait.
-    let fired = crate::session::unix_epoch_ms()
-        + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS
-        + 1_000;
-    let Outcome::Wakes(_) = f
-        .store()
-        .agent_lifecycle(Operation::FireWakes { now: fired })
-        .unwrap()
-    else {
-        panic!("fire returns wakes")
-    };
-    let backstop = backstops(&f).pop().unwrap();
-    assert!(
-        backstop.last_fired_at_ms.is_some(),
-        "the backstop fired to start the next turn"
-    );
-    // The firing settles the turn it armed, as the delivery path does, and the next turn begins.
+    // The turn the backstop belongs to ends, so the agent is idle when it fires.
     let now = crate::session::unix_epoch_ms();
     f.store()
         .agent_lifecycle(Operation::Settle {
@@ -2525,22 +2546,147 @@ async fn a_backstop_rescues_a_stated_wait_once_and_never_chains() {
             now,
         })
         .unwrap();
-    let _turn_2 = f.begin("turn-2");
+
+    // The backstop fires; its delivery starts the next turn, whose prompt is the firing's
+    // own delivered prompt. That turn restates the wait: it arms no second backstop.
+    let fired = now + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS + 1_000;
+    let Outcome::Wakes(_) = f
+        .store()
+        .agent_lifecycle(Operation::FireWakes { now: fired })
+        .unwrap()
+    else {
+        panic!("fire returns wakes")
+    };
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let delivered = loop {
+        let event = f
+            .store()
+            .agent_inbox(&f.room, &f.agent, 0)
+            .unwrap()
+            .into_iter()
+            .find(|event| {
+                event.prompt_id.is_some()
+                    && [
+                        event.payload["public_answer"]["label"].as_str(),
+                        event.payload["label"].as_str(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|label| {
+                        label.starts_with(crate::runtime::state::stranded_agent::BACKSTOP_LABEL)
+                    })
+            });
+        match event {
+            Some(event) => break event.prompt_id.unwrap(),
+            None => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    };
+    assert!(
+        backstops(&f)
+            .iter()
+            .any(|wake| wake.last_fired_at_ms.is_some()),
+        "the backstop fired to start the next turn"
+    );
     f.runtime.owned.arm_wakes_at_turn_end(
         &f.room,
         &f.agent,
-        "turn-2",
+        &delivered,
         &f.run,
         "Still waiting for the review.",
     );
     assert_eq!(
         backstops(&f).len(),
         1,
-        "the turn a backstop fired to start arms no second one"
+        "the turn a backstop's delivery started arms no second one"
     );
     assert!(
         f.notices().contains("the kernel will not arm another"),
         "the agent is told the rescue was once, not stranded silently: {}",
+        f.notices()
+    );
+}
+
+/// Row 554, review finding: a backstop steered into a turn that started on its own did not
+/// start that turn, so it must not consume the turn's own rescue.
+#[tokio::test]
+async fn a_turn_a_fired_backstop_steered_into_keeps_its_own_rescue() {
+    let f = fixture("row-554-backstop-steer", true).await;
+    // An earlier task of the same agent armed a backstop and ended; its turn is long gone.
+    let waiting = f.begin("turn-waiting");
+    f.runtime.owned.arm_wakes_at_turn_end(
+        &f.room,
+        &f.agent,
+        "turn-waiting",
+        &f.run,
+        "Waiting for the review.",
+    );
+    assert_eq!(backstops(&f).len(), 1, "the earlier task armed its rescue");
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: waiting.prompt_id.clone(),
+            run: f.run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    // The running turn is an independent turn; the backstop fires into it as a steer.
+    let fired = now + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS + 1_000;
+    let Outcome::Wakes(_) = f
+        .store()
+        .agent_lifecycle(Operation::FireWakes { now: fired })
+        .unwrap()
+    else {
+        panic!("fire returns wakes")
+    };
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let steered = loop {
+        let event = f
+            .store()
+            .agent_inbox(&f.room, &f.agent, 0)
+            .unwrap()
+            .into_iter()
+            .find(|event| {
+                event.target_prompt_id.as_deref() == Some(f.prompt_id.as_str())
+                    && [
+                        event.payload["public_answer"]["label"].as_str(),
+                        event.payload["label"].as_str(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|label| {
+                        label.starts_with(crate::runtime::state::stranded_agent::BACKSTOP_LABEL)
+                    })
+            });
+        match event {
+            Some(event) => break event,
+            None => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    };
+    assert_eq!(
+        steered.target_prompt_id.as_deref(),
+        Some(f.prompt_id.as_str())
+    );
+    // The independent turn ends stating a wait: it keeps its own rescue.
+    f.runtime.owned.arm_wakes_at_turn_end(
+        &f.room,
+        &f.agent,
+        &f.prompt_id,
+        &f.run,
+        "Still waiting for the review.",
+    );
+    assert_eq!(
+        backstops(&f).len(),
+        2,
+        "a backstop steered into a turn that started on its own did not start it: {}",
+        f.notices()
+    );
+    assert!(
+        !f.notices().contains("the kernel will not arm another"),
+        "the steered turn is not told its wait was already rescued: {}",
         f.notices()
     );
 }

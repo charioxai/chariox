@@ -316,24 +316,24 @@ impl KernelRuntimeOwnedState {
 
         if nothing_armed {
             if let Some(phrase) = phrase.as_deref() {
-                // The rescue is once. A turn that the backstop of the task before it fired to
-                // start does not arm another one: a lane that only restates its wait would burn
-                // a turn every interval while nothing is pending (20A7 11-27, row 554: ~30
-                // lanes looping on exactly that). The agent is told, never stranded silently.
-                let tasks = store.agent_tasks(Some(room), Some(agent))?;
-                let previous = tasks
-                    .iter()
-                    .rposition(|earlier| earlier.task_id == task.task_id)
-                    .and_then(|at| at.checked_sub(1))
-                    .map(|before| tasks[before].task_id.clone());
-                let wakes = store.agent_wakes(Some(room), Some(agent))?;
-                let rescued = previous.is_some_and(|armed_by| {
-                    wakes.iter().any(|wake| {
-                        wake.label.starts_with(BACKSTOP_LABEL)
-                            && wake.task_id == armed_by
-                            && wake.last_fired_at_ms.is_some()
-                    })
-                });
+                // The rescue is once: a turn whose prompt is the delivery of a fired
+                // backstop does not arm another one — a lane that only restates its wait
+                // would burn a turn every interval while nothing is pending (20A7 11-27,
+                // row 554: ~30 lanes looping on exactly that). The binding is the firing's
+                // own delivery of THIS prompt; a backstop steered into a turn that started
+                // on its own did not start it, so that turn keeps its rescue.
+                let rescued = store
+                    .agent_event_for_prompt(room, agent, &task.prompt_id)?
+                    .is_some_and(|event| {
+                        event.target_prompt_id.is_none()
+                            && [
+                                &event.payload["public_answer"]["label"],
+                                &event.payload["label"],
+                            ]
+                            .into_iter()
+                            .filter_map(|label| label.as_str())
+                            .any(|label| label.starts_with(BACKSTOP_LABEL))
+                    });
                 if rescued {
                     told.push(format!(
                         "your turn ended saying \"{phrase}\"; this turn was the backstop the kernel armed for it, so the kernel will not arm another; register a wake yourself, or start a turn when it changes"
