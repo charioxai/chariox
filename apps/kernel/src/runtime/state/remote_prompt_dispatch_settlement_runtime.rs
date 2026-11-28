@@ -212,8 +212,9 @@ impl KernelRuntimeState {
                     Ok(true)
                 }
                 Err(error) => {
-                    let message =
-                        format!("Remote prompt dispatch failed after acknowledgement: {error}");
+                    let failure =
+                        remote_dispatch_failure_outcome(&error, &dispatch.worker_kernel_id);
+                    let message = failure.reason.clone();
                     let provider_run_id = format!("remote-dispatch:{}", dispatch.prompt_id);
                     let merge_key = Some(format!("remote-dispatch-error:{}", dispatch.prompt_id));
                     owned.fan_out_remote_dispatch_error(
@@ -240,7 +241,7 @@ impl KernelRuntimeState {
                             Some(&dispatch.agent_id),
                             crate::terminal::TerminalOutputKind::ProviderError,
                             merge_key,
-                            message,
+                            message.clone(),
                         )
                         .with_prompt_origin(dispatch.prompt_origin)
                         .with_source_attachment_id(Some(dispatch.source_attachment_id.clone())),
@@ -261,14 +262,26 @@ impl KernelRuntimeState {
                     owned.update_metaagent_event_prompt_delivery_for_prompt(
                         &dispatch.prompt_id,
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
-                        Some(error.to_string()),
+                        Some(message.clone()),
                     );
+                    if settled_prompt.workflow_run_id().is_none()
+                        && settled_prompt.status() != crate::session::PromptStatus::Cancelling
+                    {
+                        owned.block_failed_prompt_task(
+                            &dispatch.session_id,
+                            &dispatch.agent_id,
+                            &dispatch.prompt_id,
+                            None,
+                            &failure.reason,
+                        )?;
+                        self.schedule_agent_lifecycle_sweep();
+                    }
                     owned.record_failed_prompt_settlement(
                         &dispatch.session_id,
                         &dispatch.agent_id,
                         &settled_prompt,
                         settled_prompt.durable_delivery_provider_run_id(),
-                        remote_dispatch_failure_outcome(&error, &dispatch.worker_kernel_id),
+                        failure,
                     );
                     if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                         settled_prompt.workflow_run_id(),
@@ -333,43 +346,53 @@ pub(super) fn remote_dispatch_failure_outcome(
     worker_kernel_id: &str,
 ) -> crate::provider::TurnOutcome {
     use crate::provider::TurnOutcomeKind;
-    let text = error.to_string();
-    let missing_account_code = matches!(
-        error,
-        DaemonError::RelayTransport { code, .. }
-            if code == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
-    );
-    let (kind, retryable, reason) = if missing_account_code
-        || text.contains("account is unavailable on the worker")
-    {
-        (
-            TurnOutcomeKind::Other,
-            false,
-            format!(
-                "Worker kernel {worker_kernel_id} does not hold the selected account and could not be given it. Copy the account to that kernel or choose another account."
-            ),
-        )
-    } else if text.contains("could not resolve executable") {
-        (
-            TurnOutcomeKind::Other,
-            false,
-            format!(
-                "The provider's program is not installed on worker kernel {worker_kernel_id}. Install it there."
-            ),
-        )
-    } else if text.contains("target_not_connected") || text.contains("not connected") {
-        (
-            TurnOutcomeKind::Network,
-            true,
-            format!("Worker kernel {worker_kernel_id} is not connected."),
-        )
-    } else {
-        let detail: String = text.chars().take(240).collect();
-        (
-            TurnOutcomeKind::Other,
-            false,
-            format!("Worker kernel {worker_kernel_id} could not start the provider: {detail}"),
-        )
+    use crate::transport::relay_peer::{
+        LeasedPromptRejection, REMOTE_PROVIDER_ACCOUNT_MISSING_CODE,
+        REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE,
     };
-    crate::provider::TurnOutcome::new(kind, retryable, &reason)
+    let cause = match error {
+        DaemonError::RemotePromptRejected { reason } => *reason,
+        DaemonError::RelayTransport { code, .. } => match code.as_str() {
+            REMOTE_PROVIDER_ACCOUNT_MISSING_CODE | "provider_profile_unavailable" => {
+                LeasedPromptRejection::AccountMissing
+            }
+            REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
+            | "provider_profile_unverified"
+            | "provider_profile_unauthenticated"
+            | "provider_profile_usage_exhausted" => LeasedPromptRejection::AccountUnusable,
+            "vault_locked" | "target_vault_locked" => LeasedPromptRejection::VaultLocked,
+            "target_not_connected" => {
+                return crate::provider::TurnOutcome::new(
+                    TurnOutcomeKind::Network,
+                    true,
+                    &format!("Worker kernel {worker_kernel_id} is not connected. Reconnect it and retry."),
+                );
+            }
+            _ => LeasedPromptRejection::Other,
+        },
+        error => LeasedPromptRejection::from_error(error),
+    };
+    let (kind, reason) = match cause {
+        LeasedPromptRejection::AccountMissing => (
+            TurnOutcomeKind::SignInRequired,
+            format!("Worker kernel {worker_kernel_id} does not hold the selected account. Copy it there in Provider Accounts or choose another account."),
+        ),
+        LeasedPromptRejection::AccountUnusable => (
+            TurnOutcomeKind::SignInRequired,
+            format!("The selected provider account is unavailable for use on worker kernel {worker_kernel_id}. Check its sign-in in Provider Accounts or choose another account."),
+        ),
+        LeasedPromptRejection::ExecutableMissing => (
+            TurnOutcomeKind::Other,
+            format!("The provider program is not installed on worker kernel {worker_kernel_id}. Install it on that machine."),
+        ),
+        LeasedPromptRejection::VaultLocked => (
+            TurnOutcomeKind::Other,
+            format!("The provider could not open the Vault for worker kernel {worker_kernel_id}. Unlock the Vault in Chariox and retry."),
+        ),
+        LeasedPromptRejection::Other => (
+            TurnOutcomeKind::Other,
+            format!("Worker kernel {worker_kernel_id} could not start the provider. Check the provider setup on that machine and retry."),
+        ),
+    };
+    crate::provider::TurnOutcome::new(kind, false, &reason)
 }

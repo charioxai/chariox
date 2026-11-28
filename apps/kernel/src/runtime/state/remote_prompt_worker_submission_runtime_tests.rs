@@ -1582,11 +1582,8 @@ fn a_prompt_that_cannot_start_on_a_worker_says_why() {
         .contains("does not hold the selected account"));
 
     let no_executable = remote_dispatch_failure_outcome(
-        &DaemonError::RelayTransport {
-            operation: "read relay peer response",
-            code: "relay_request_failed".to_string(),
-            message: "provider adapter `codex` could not resolve executable `codex`".to_string(),
-            retryable: false,
+        &DaemonError::RemotePromptRejected {
+            reason: crate::transport::relay_peer::LeasedPromptRejection::ExecutableMissing,
         },
         "kernel-lab",
     );
