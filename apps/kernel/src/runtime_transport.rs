@@ -732,9 +732,10 @@ where
             progress.stage("schedule maintenance", Duration::from_secs(1));
             #[cfg(test)]
             pump_state.count_transport_pump_iteration();
+            // The independent output pump settles provider actor completion.
+            // Idle output polls complete twice a second per run; they must not
+            // request another transport maintenance pass for every completion.
             let output_ready_sequence = pump_state.provider_output_ready_sequence();
-            let provider_actor_completion_sequence =
-                pump_router.provider_run_actor_completion_sequence();
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
             if pass_requested && maintenance.is_empty() {
@@ -775,7 +776,6 @@ where
                 _ = sleep(delay) => pass_requested |= maintenance.is_empty(),
                 _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => pass_requested = true,
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => pass_requested = true,
-                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => pass_requested = true,
                 _ = pump_router.wait_for_started_app_refreshes() => pass_requested = true,
                 _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => pass_requested = true,
                 // The pass sweeps grants when it starts. While one runs, a holder that
