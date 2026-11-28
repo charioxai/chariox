@@ -162,6 +162,8 @@ enum Promotion {
     Urgent,
     /// Read, or started a turn: nothing is left to change.
     Delivered,
+    /// Text may have been staged, but the provider has not confirmed delivery.
+    Unconfirmed,
     /// The person cancelled it before its recipient read it.
     Withdrawn,
 }
@@ -182,6 +184,10 @@ fn promotion_result(
         Promotion::Delivered => (
             "already_delivered",
             "the message was already delivered; nothing changed",
+        ),
+        Promotion::Unconfirmed => (
+            "queued",
+            "The message is saved. Delivery has not been confirmed.",
         ),
         Promotion::Withdrawn => (
             "withdrawn",
@@ -206,6 +212,9 @@ impl KernelRuntimeState {
         };
         if event.state == "expired" {
             return Ok(Promotion::Withdrawn);
+        }
+        if matches!(event.state.as_str(), "submitting" | "uncertain") {
+            return Ok(Promotion::Unconfirmed);
         }
         if event.state != "pending" || read {
             return Ok(Promotion::Delivered);
@@ -247,9 +256,8 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_inbox_event(submitted.sequence)?;
-        let (event, read) = current
-            .as_ref()
-            .map_or((submitted, false), |(event, read)| (event, *read));
+        // The read flag also records inline text staged before provider acceptance.
+        let event = current.as_ref().map_or(submitted, |(event, _)| event);
         Ok(match event.state.as_str() {
             "accepted" | "acknowledged" | "handled" => {
                 if let Some(target) = &event.target_prompt_id {
@@ -261,7 +269,6 @@ impl KernelRuntimeState {
                 }
             }
             "failed" | "expired" => (Undelivered, None),
-            _ if read => (AlreadyDelivered, None),
             _ => (Queued, None),
         })
     }

@@ -5823,7 +5823,7 @@ authority for its own sessions, agents, terminals and files.
   before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an
   interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
-  Local protocol **1016** (relay peer 453) adds `GetGatewayCommandStatus { command_id }` on the same gateway route and access grant.
+  Local protocol **1017** (relay peer 454) adds `GetGatewayCommandStatus { command_id }` on the same gateway route and access grant.
   Run `chariox request --kernel NAME` with that request on stdin. It reads the target's receipt without resending the
   command. `GatewayCommandStatus { command_id, status }` reports `not_run` for an unreserved ID, `running` for a live
   reservation, or `ran` with its original `result.response` or `result.error`. After the target restarts, a reservation
