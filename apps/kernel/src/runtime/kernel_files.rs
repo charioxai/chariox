@@ -469,7 +469,7 @@ fn wait_for_turn(
             // The first chunk creates the folders and may still be on its way: only an upload
             // already started here has lost its folder.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if upload_id.is_some_and(|id| upload_attempts::known(partial, id)) {
+                if upload_id.is_some_and(|id| upload_attempts::known(id)) {
                     if let Some(error) = missing_destination(path) {
                         // This attempt ends here; a retry to the same path starts over.
                         upload_attempts::forget(partial, upload_id);
@@ -783,7 +783,11 @@ mod tests {
         sha: Option<&str>,
     ) -> WriteKernelFileRequest {
         WriteKernelFileRequest {
-            upload_id: uuid::Uuid::nil(),
+            upload_id: uuid::Uuid::from_bytes(
+                Sha256::digest(path.to_string_lossy().as_bytes())[..16]
+                    .try_into()
+                    .unwrap(),
+            ),
             path: path.display().to_string(),
             offset,
             data_base64: STANDARD.encode(bytes),

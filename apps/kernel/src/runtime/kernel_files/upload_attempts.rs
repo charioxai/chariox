@@ -27,12 +27,21 @@ pub(super) fn resumable_id(metadata: &std::fs::Metadata) -> Uuid {
     )
 }
 
-pub(super) fn known(path: &Path, id: Uuid) -> bool {
+// During out-of-order startup the parent may not exist yet. Once it exists, aliases of
+// that parent must address the same staging record as the offset-zero opener.
+fn identity_path(path: &Path) -> PathBuf {
+    path.parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .map(|parent| parent.join(path.file_name().unwrap_or_default()))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+pub(super) fn known(id: Uuid) -> bool {
     STARTED
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(path)
-        .is_some_and(|a| a.id == id)
+        .values()
+        .any(|a| a.id == id)
 }
 
 pub(super) fn matches(path: &Path, id: Uuid, metadata: &std::fs::Metadata) -> bool {
@@ -40,7 +49,7 @@ pub(super) fn matches(path: &Path, id: Uuid, metadata: &std::fs::Metadata) -> bo
     STARTED
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(path)
+        .get(&identity_path(path))
         .is_some_and(|a| a.id == id && a.revision == revision)
         || id == resumable_id(metadata)
 }
@@ -58,7 +67,7 @@ pub(super) fn claim(path: &Path, id: Uuid, metadata: &std::fs::Metadata) -> bool
     let mut started = STARTED.lock().unwrap_or_else(|e| e.into_inner());
     let revision = crate::agent_file_copy::revision(metadata);
     let known = started
-        .get(path)
+        .get(&identity_path(path))
         .is_some_and(|a| a.id == id && a.revision == revision);
     if !is_current(path, metadata) || (!known && id != resumable_id(metadata)) {
         return false;
@@ -77,7 +86,11 @@ fn is_current(path: &Path, metadata: &std::fs::Metadata) -> bool {
 /// A late writer must not replace the record of a newer offset-zero opener.
 pub(super) fn progress(path: &Path, id: Uuid, metadata: &std::fs::Metadata) -> bool {
     let mut started = STARTED.lock().unwrap_or_else(|e| e.into_inner());
-    if !is_current(path, metadata) || started.get(path).is_some_and(|a| a.id != id) {
+    if !is_current(path, metadata)
+        || started
+            .get(&identity_path(path))
+            .is_some_and(|a| a.id != id)
+    {
         return false;
     }
     insert(&mut started, path, id, metadata);
@@ -90,7 +103,7 @@ fn insert(
     id: Uuid,
     metadata: &std::fs::Metadata,
 ) {
-    if !started.contains_key(path) && started.len() >= CAP {
+    if !started.contains_key(&identity_path(path)) && started.len() >= CAP {
         if let Some(oldest) = started
             .iter()
             .min_by_key(|(_, a)| a.active_at)
@@ -100,7 +113,7 @@ fn insert(
         }
     }
     started.insert(
-        path.to_path_buf(),
+        identity_path(path),
         Started {
             id,
             revision: crate::agent_file_copy::revision(metadata),
@@ -111,8 +124,12 @@ fn insert(
 
 pub(super) fn forget(path: &Path, id: Option<Uuid>) {
     let mut started = STARTED.lock().unwrap_or_else(|e| e.into_inner());
-    if id.is_none() || started.get(path).is_some_and(|a| Some(a.id) == id) {
-        started.remove(path);
+    if let Some(id) = id {
+        // Publication removes the staging name, so its parent alias need not resolve now.
+        // IDs are unique per attempt; do not remove a newer attempt at the same path.
+        started.retain(|_, attempt| attempt.id != id);
+    } else {
+        started.remove(&identity_path(path));
     }
 }
 
@@ -137,7 +154,12 @@ mod tests {
         };
         super::super::write(&first, &StateGuard::default()).unwrap();
         let staging = super::super::partial_of(&target);
-        STARTED.lock().unwrap().get_mut(&staging).unwrap().active_at = Instant::now()
+        STARTED
+            .lock()
+            .unwrap()
+            .get_mut(&identity_path(&staging))
+            .unwrap()
+            .active_at = Instant::now()
             .checked_sub(super::super::TURN_WAIT + std::time::Duration::from_secs(1))
             .unwrap();
         std::fs::remove_dir_all(dir.join("incoming")).unwrap();
