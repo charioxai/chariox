@@ -1173,3 +1173,41 @@ fn a_distinct_code_literal_space_streams_when_only_the_heading_was_saved() {
         assert!(rows[1].contains("echo \"a b\""), "{rows:?}");
     }
 }
+
+#[test]
+fn a_completed_code_block_with_a_leading_blank_line_is_not_streamed_again() {
+    for lose_reader in [false, true] {
+        let mut turn = running_turn("streamed-code-leading-blank");
+        turn.hook_event("UserPromptSubmit");
+        turn.pass();
+        let partial = screen(&["● Result", "", "  alpha", "✻ Working (3s)"]);
+        turn.terminal_shows(&partial);
+        turn.terminal_shows(&partial);
+        if lose_reader {
+            super::live_reply::forget(turn.run.id());
+        }
+        let reply = "Result\n\n```text\n\nalpha\nbeta\n```\n\nDone.";
+        turn.append_transcript(assistant_text("first", reply));
+        turn.pass();
+        assert_eq!(turn.live_rows(), [reply]);
+        let redrawn = screen(&[
+            "● Result",
+            "",
+            "",
+            "  alpha",
+            "  beta",
+            "",
+            "  Done.",
+            "",
+            "✻ Working (4s)",
+        ]);
+        turn.terminal_shows(&redrawn);
+        turn.terminal_shows(&redrawn);
+        assert_eq!(
+            turn.live_rows(),
+            [reply],
+            "a completed fence keeps its leading empty line on redraw"
+        );
+        assert_eq!(turn.stored_replies(), [reply], "redraw adds no history row");
+    }
+}
