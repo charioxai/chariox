@@ -1491,6 +1491,7 @@ async fn assert_tool_updates_received_during_cleanup(queued: bool) {
     let entered = Arc::new(tokio::sync::Notify::new());
     runtime.observe_app_lock_wait_for_test(entered.clone());
     let held = app.lock().await;
+    let cancelling_prompt_id = dispatch.prompt_id.clone();
     let finishing = {
         let state = runtime.clone();
         tokio::spawn(async move {
@@ -1526,7 +1527,7 @@ async fn assert_tool_updates_received_during_cleanup(queued: bool) {
         runtime
             .owned
             .structured_output_records
-            .mark_poll_enqueued(run.id(), Some("tool-completion-prompt".into()));
+            .mark_poll_enqueued(run.id(), Some(cancelling_prompt_id));
         runtime
             .owned
             .provider_store
