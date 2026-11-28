@@ -170,6 +170,7 @@ extension AgentInstance {
             permissionLevelOverride: permissionLevelOverride,
             worktreeID: nil,
             state: state,
+            archived: nil,
             isProcessing: false
         )
     }

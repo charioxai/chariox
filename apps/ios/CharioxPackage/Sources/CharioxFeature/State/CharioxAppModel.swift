@@ -924,6 +924,7 @@ extension AgentInstance {
       permissionLevelOverride: permissionLevelOverride,
       worktreeID: worktreeID,
       state: state,
+      archived: archived,
       isProcessing: isProcessing
     )
   }
