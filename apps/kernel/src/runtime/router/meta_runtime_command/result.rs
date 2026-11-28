@@ -155,6 +155,9 @@ fn summarize_meta_command_response(
         LocalDaemonResponse::ProviderAccountCopied { receipt } => serde_json::json!({
             "type": "ProviderAccountCopied", "receipt": receipt,
         }),
+        LocalDaemonResponse::ProviderAccountCopyWaiting { wait } => serde_json::json!({
+            "type": "ProviderAccountCopyWaiting", "wait": wait,
+        }),
         LocalDaemonResponse::AccountKernelsListed { kernels } => serde_json::json!({
             "type": "AccountKernelsListed",
             "kernels": kernels,
