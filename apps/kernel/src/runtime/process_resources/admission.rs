@@ -2042,13 +2042,37 @@ impl StreamWrites {
         }
         let at = sample.sampled_at_ms;
         let window = FREE_WINDOW.as_millis() as u64;
+        // Unverifiable descriptor progress gives no aligned stream-write
+        // evidence. Do not turn that uncertainty into a destructive candidate.
+        if outputs.iter().any(|output| {
+            output
+                .open
+                .iter()
+                .any(|inode| !output.position_written_by_inode.contains_key(inode))
+        }) {
+            *self = Self {
+                process_id: sample.process_id.clone(),
+                ..Self::default()
+            };
+            return 0;
+        }
         let observed = outputs
             .iter()
             .flat_map(|output| {
                 output
-                    .written_by_inode
+                    .position_written_by_inode
                     .iter()
-                    .map(move |(inode, written)| ((output.id, *inode), *written))
+                    .map(move |(inode, position)| {
+                        // Position progress accounts for overwrites and allocation lag.
+                        // Both counters cover the same bytes: never add them together.
+                        let written = output
+                            .written_by_inode
+                            .get(inode)
+                            .copied()
+                            .unwrap_or(0)
+                            .max(*position);
+                        ((output.id, *inode), written)
+                    })
             })
             .collect::<BTreeMap<_, _>>();
         let continuous = observed.len() == self.outputs.len()

@@ -22,6 +22,10 @@ struct FileGrowth {
     allocated: u64,
     at: u64,
     written: u64,
+    position: Option<u64>,
+    position_written: u64,
+    write_only: bool,
+    modified: (i64, i64),
 }
 
 impl WriteGrowth {
@@ -55,11 +59,13 @@ impl WriteGrowth {
                 else {
                     continue;
                 };
-                let writable = info
+                let access = info
                     .lines()
                     .find_map(|line| line.strip_prefix("flags:"))
                     .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
-                    .is_some_and(|flags| flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32);
+                    .map(|flags| flags & libc::O_ACCMODE as u32);
+                let writable = access.is_some_and(|mode| mode != libc::O_RDONLY as u32);
+                let write_only = access == Some(libc::O_WRONLY as u32);
                 if !writable {
                     continue;
                 }
@@ -75,6 +81,19 @@ impl WriteGrowth {
                     continue;
                 }
                 let allocated = meta.blocks().saturating_mul(512);
+                let modified = (meta.mtime(), meta.mtime_nsec());
+                let position = info
+                    .lines()
+                    .find_map(|line| line.strip_prefix("pos:"))
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .filter(|_| {
+                        // The descriptor may have been reused between fdinfo
+                        // and metadata reads. Never pair another inode's offset.
+                        info.lines()
+                            .find_map(|line| line.strip_prefix("ino:"))
+                            .and_then(|value| value.trim().parse::<u64>().ok())
+                            .is_some_and(|inode| inode == key.1)
+                    });
                 let before = self.files.get(&key);
                 // Only this interval's growth can justify stopping a writer.
                 // Decay would retain another volume's earlier write activity.
@@ -89,6 +108,39 @@ impl WriteGrowth {
                     Some(before) => (before.written, 0),
                     None => (0, 0),
                 };
+                let position_continuous = before
+                    .is_none_or(|before| at >= before.at && write_only == before.write_only)
+                    && match (position, before) {
+                        (Some(_), None) => true,
+                        (Some(now), Some(before)) => match before.position {
+                            Some(old) if now == old => modified == before.modified,
+                            // Reads on a read/write fd and a seek without a file
+                            // change cannot establish how much this stream wrote.
+                            Some(old) if now > old => {
+                                write_only
+                                    && (modified != before.modified
+                                        || allocated != before.allocated)
+                            }
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                let position_written = match before {
+                    Some(before) if at > before.at && position_continuous && write_only => {
+                        before.position_written.saturating_add(
+                            position
+                                .zip(before.position)
+                                .map_or(0, |(now, old)| now.saturating_sub(old)),
+                        )
+                    }
+                    Some(before) => before.position_written,
+                    None => 0,
+                };
+                let (position, write_only, modified) = before
+                    .filter(|before| at <= before.at)
+                    .map_or((position, write_only, modified), |before| {
+                        (before.position, before.write_only, before.modified)
+                    });
                 let (allocated, at) = before
                     .filter(|before| at <= before.at)
                     .map_or((allocated, at), |before| (before.allocated, before.at));
@@ -98,6 +150,10 @@ impl WriteGrowth {
                         allocated,
                         at,
                         written,
+                        position,
+                        position_written,
+                        write_only,
+                        modified,
                     },
                 );
                 let volume = volumes.entry(key.0).or_insert_with(|| VolumeWrites {
@@ -108,10 +164,16 @@ impl WriteGrowth {
                     files: Default::default(),
                     open: Default::default(),
                     written_by_inode: Default::default(),
+                    position_written_by_inode: Default::default(),
                     receiving: false,
                 });
                 volume.open.insert(key.1);
                 volume.written_by_inode.insert(key.1, written);
+                if position_continuous && position.is_some() {
+                    volume
+                        .position_written_by_inode
+                        .insert(key.1, position_written);
+                }
                 let stream = fd
                     .file_name()
                     .to_str()
@@ -155,6 +217,7 @@ impl WriteGrowth {
                     files: Default::default(),
                     open: Default::default(),
                     written_by_inode: Default::default(),
+                    position_written_by_inode: Default::default(),
                     receiving: false,
                 });
                 volume.path = dir.clone();
