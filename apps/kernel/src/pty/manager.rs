@@ -225,6 +225,8 @@ struct PtyProcess {
     exit_code: Option<u32>,
     signal: Option<String>,
     reference_count: usize,
+    #[cfg(unix)]
+    abort_owned_processes: Option<crate::runtime::owned_process_signals::OwnedProcessSignals>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,6 +646,8 @@ impl PtyManager {
                 exit_code: None,
                 signal: None,
                 reference_count: 1,
+                #[cfg(unix)]
+                abort_owned_processes: None,
             },
         );
         self.process_aliases
@@ -935,8 +939,8 @@ impl PtyManager {
         Ok(process.child.process_id())
     }
 
-    /// Tools can create their own sessions, outside the provider's PTY group.
-    pub(crate) fn terminate_owned_processes(
+    /// Retain detached descendants before an interrupt can orphan them.
+    pub(crate) fn capture_prompt_abort_processes(
         &mut self,
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
@@ -944,7 +948,7 @@ impl PtyManager {
         if let Some(process) = self
             .process_aliases
             .get(provider_run_id)
-            .and_then(|key| self.processes.get(key))
+            .and_then(|key| self.processes.get_mut(key))
         {
             if process.reference_count > 1 {
                 return Err(DaemonError::PtyCleanup {
@@ -953,21 +957,50 @@ impl PtyManager {
                         .into(),
                 });
             }
-            if process.exit_code.is_none() && process.signal.is_none() {
-                let mut signals =
+            if process.abort_owned_processes.is_none()
+                && process.exit_code.is_none()
+                && process.signal.is_none()
+            {
+                process.abort_owned_processes = Some(
                     crate::runtime::owned_process_signals::OwnedProcessSignals::for_pty_child(
                         process.child.as_ref(),
                     )
                     .map_err(|error| DaemonError::PtyCleanup {
                         provider_run_id: provider_run_id.into(),
                         message: error.to_string(),
-                    })?;
-                signals
-                    .kill_owned_processes()
-                    .map_err(|error| DaemonError::PtyCleanup {
-                        provider_run_id: provider_run_id.into(),
-                        message: error.to_string(),
-                    })?;
+                    })?,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Tools can create their own sessions, outside the provider's PTY group.
+    pub(crate) fn terminate_owned_processes(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.capture_prompt_abort_processes(provider_run_id)?;
+        #[cfg(unix)]
+        if let Some(signals) = self
+            .process_aliases
+            .get(provider_run_id)
+            .and_then(|key| self.processes.get_mut(key))
+            .and_then(|process| process.abort_owned_processes.as_mut())
+        {
+            let cleanup_error = |error: std::io::Error| DaemonError::PtyCleanup {
+                provider_run_id: provider_run_id.into(),
+                message: error.to_string(),
+            };
+            signals.kill_owned_processes().map_err(cleanup_error)?;
+            if signals
+                .has_running_owned_processes()
+                .map_err(cleanup_error)?
+            {
+                return Err(DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.into(),
+                    message: "owned provider processes have not exited; retry cleanup".into(),
+                });
             }
         }
         Ok(())

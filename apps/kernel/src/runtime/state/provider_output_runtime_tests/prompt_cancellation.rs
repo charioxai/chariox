@@ -956,15 +956,28 @@ async fn assert_unresponsive_abort_settles(
         // The provider lane stays occupied while another output pump observes
         // exit. Its detached tool must still belong to the cancelling turn.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        app.lock().await.pty_mut().write_input(run.id(), b"\x03").unwrap();
+        app.lock()
+            .await
+            .pty_mut()
+            .write_input(run.id(), b"\x03")
+            .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if app.lock().await.pty_mut().poll_process_state(run.id()).unwrap().is_exited() {
+                if app
+                    .lock()
+                    .await
+                    .pty_mut()
+                    .poll_process_state(run.id())
+                    .unwrap()
+                    .is_exited()
+                {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-        }).await.expect("provider must exit and cache its status before cleanup");
+        })
+        .await
+        .expect("provider must exit and cache its status before cleanup");
     }
     if deferred_reap {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {

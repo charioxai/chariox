@@ -58,6 +58,38 @@ impl KernelRuntimeState {
     ) {
         let state = self.clone();
         tokio::spawn(async move {
+            // Capture before lane admission or provider I/O can deliver an interrupt.
+            // The manager retains these births through exit polling and cleanup retries.
+            let mut reported_capture_failure = false;
+            loop {
+                if state
+                    .owned
+                    .cancelling_prompt_for_abort(
+                        &dispatch.session_id,
+                        &dispatch.provider_run_id,
+                        &dispatch.prompt_id,
+                    )
+                    .is_none()
+                {
+                    return;
+                }
+                let run_id = dispatch.provider_run_id.clone();
+                match state
+                    .with_app_side_effect_blocking(move |app| {
+                        app.pty_mut().capture_prompt_abort_processes(&run_id)
+                    })
+                    .await
+                {
+                    Ok(()) => break,
+                    Err(error) => {
+                        if !reported_capture_failure {
+                            state.record_prompt_abort_failure(&dispatch, &error);
+                            reported_capture_failure = true;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
             let attempt = async {
                 let _permit = provider_runtime_lanes
                     .acquire(&dispatch.provider_run_id)

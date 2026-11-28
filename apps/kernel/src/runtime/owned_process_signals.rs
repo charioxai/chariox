@@ -8,6 +8,7 @@ struct ProcessIdentity {
     group: u32,
     session: u32,
     start: String,
+    running: bool,
 }
 
 pub(crate) struct OwnedProcessSignals {
@@ -126,6 +127,13 @@ impl OwnedProcessSignals {
         self.group_with(&snapshot()?, send_signal)
     }
 
+    /// Recheck retained births after signalling, including reparented descendants.
+    pub(crate) fn has_running_owned_processes(&mut self) -> io::Result<bool> {
+        let rows = snapshot()?;
+        self.refresh_from(&rows);
+        Ok(rows.iter().any(|row| row.running && self.matches(row)))
+    }
+
     pub(crate) fn kill_owned_processes(&mut self) -> io::Result<()> {
         self.kill_owned_with(snapshot, send_signal)
     }
@@ -218,6 +226,7 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
             group: parse(fields[2])?,
             session: parse(fields[3])?,
             start: fields[19].into(),
+            running: fields[0] != "Z" && fields[0] != "X",
         });
     }
     Ok(rows)
@@ -274,6 +283,7 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
                     group: parse(fields[2])?,
                     session: 0,
                     start: String::new(),
+                    running: true,
                 });
                 continue;
             }
@@ -300,6 +310,7 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
             group: info.pbi_pgid,
             session,
             start: format!("{}:{}", info.pbi_start_tvsec, info.pbi_start_tvusec),
+            running: info.pbi_status != 5, // SZOMB: exited, even if its parent has not reaped it.
         });
     }
     Ok(rows)
@@ -335,6 +346,7 @@ mod tests {
             group,
             session: 0,
             start: start.into(),
+            running: true,
         }
     }
     #[test]
