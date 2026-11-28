@@ -525,7 +525,11 @@ async fn a_queued_successor_of_a_cancelled_turn_on_a_refused_primary_runs_on_the
         .unwrap();
 
     let dispatch = cancellation.dispatch.expect("turn B is dispatched");
-    fixture.dispatch_then_expect_the_substitute(dispatch).await;
+    fixture
+        .dispatch_then_expect_the_substitute(
+            crate::runtime::state::owned::NextPromptDispatch::Submit(dispatch),
+        )
+        .await;
 }
 
 /// The OpenCode `default` account of the test owner, signed in nowhere.
