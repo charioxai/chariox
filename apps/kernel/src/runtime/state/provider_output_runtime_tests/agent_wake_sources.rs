@@ -1468,14 +1468,14 @@ async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     f.wait_on(&task, &wake.registration_id);
 
     f.driver.lost.store(true, Ordering::Release);
+    // The source probes run apart from the dead-man check's own work: drive them through
+    // their own admission and let them end before asserting on the loss.
     f.runtime
-        .sweep_agent_wakes(crate::session::unix_epoch_ms())
-        .await
-        .unwrap();
-    f.runtime
-        .sweep_agent_wakes(crate::session::unix_epoch_ms())
-        .await
-        .unwrap();
+        .spawn_wake_deadman_check(crate::session::unix_epoch_ms());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while f.wake_state("wake-a") != "lost" && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(f.wake_state("wake-a"), "lost");
     assert!(
         f.notices().contains("was lost (test source vanished)"),
@@ -2492,8 +2492,104 @@ async fn a_degraded_wake_deadman_check_never_holds_the_pass_and_still_works() {
         _capture
             .records()
             .iter()
-            .any(|record| record.contains("the wake dead-man check recovered")),
-        "a fresh check after the probe ended reports the recovery: {}",
+            .any(|record| record.contains("the wake source probes recovered")),
+        "a fresh probe after the earlier one ended reports the recovery: {}",
+        _capture.records().join("\n")
+    );
+}
+
+/// Review P1 (11-28): the source probes park their own thread and never answer, but the
+/// dead-man check's own work — the due-timer rescue and the receipt alerts — keeps running
+/// on its own admission: an unrelated timer that becomes due later still fires, and an
+/// overdue receipt still alerts, while the probe is held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_source_probe_still_leaves_the_timer_rescue_and_receipt_alerts_running() {
+    let _capture = crate::logging::capture::start();
+    let f = fixture("probe-held-rescue", false).await;
+    let task = f.begin("turn-1");
+    // The probe source: a running driver wake whose liveness call is held and never released.
+    let probe_wake = f.arm(&task, "probe-wake").unwrap();
+    f.wait_on(&task, &probe_wake.registration_id);
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    std::mem::forget(release_tx); // held for the whole test: the probe never answers
+    *f.driver.stall.lock().unwrap() = Some((entered_tx, release_rx));
+
+    // An overdue receipt: a timer that fired long ago and was never delivered.
+    let now = crate::session::unix_epoch_ms();
+    let mut overdue = f.wake(&task, "wake-overdue");
+    overdue.kind = "timer".into();
+    overdue.next_due_ms = Some(now - 120_000);
+    f.store()
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: overdue,
+        })
+        .unwrap();
+    // A later timer: it becomes due only after the first pass.
+    let mut later = f.wake(&task, "wake-later");
+    later.kind = "timer".into();
+    later.next_due_ms = Some(now + 3_000);
+    f.store()
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: later,
+        })
+        .unwrap();
+    let Outcome::Wakes(_) = f
+        .store()
+        .agent_lifecycle(Operation::FireWakes { now: now - 120_000 })
+        .unwrap()
+    else {
+        panic!("fire returns wakes")
+    };
+
+    // The first pass starts the checks and the probe; the probe parks, the checks must not.
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    tokio::task::spawn_blocking(move || {
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the check probes the source")
+    })
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !_capture
+        .records()
+        .iter()
+        .any(|record| record.contains("held by a source that does not answer"))
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        _capture
+            .records()
+            .iter()
+            .any(|record| record.contains("held by a source that does not answer")),
+        "the held probe is reported: {}",
+        _capture.records().join("\n")
+    );
+    assert!(
+        f.notices().contains("is not delivered after"),
+        "the overdue receipt still alerts while the probe is held: {}",
+        f.notices()
+    );
+
+    // The later timer becomes due: a second pass's checks fire it even though the same
+    // probe is still parked.
+    tokio::time::sleep(std::time::Duration::from_millis(3_500)).await;
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while f.wake_state("wake-later") != "fired" && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        f.wake_state("wake-later"),
+        "fired",
+        "a timer that became due while the probe is held still fires: {}",
         _capture.records().join("\n")
     );
 }
@@ -2558,28 +2654,38 @@ async fn a_backstop_rescues_a_stated_wait_once_and_never_chains() {
         panic!("fire returns wakes")
     };
     f.runtime.sweep_agent_lifecycle().await.unwrap();
-    let delivered = loop {
-        let event = f
-            .store()
-            .agent_inbox(&f.room, &f.agent, 0)
-            .unwrap()
-            .into_iter()
-            .find(|event| {
-                event.prompt_id.is_some()
-                    && [
-                        event.payload["public_answer"]["label"].as_str(),
-                        event.payload["label"].as_str(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .any(|label| {
-                        label.starts_with(crate::runtime::state::stranded_agent::BACKSTOP_LABEL)
-                    })
-            });
-        match event {
-            Some(event) => break event.prompt_id.unwrap(),
-            None => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+    let delivered = match tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let event = f
+                .store()
+                .agent_inbox(&f.room, &f.agent, 0)
+                .unwrap()
+                .into_iter()
+                .find(|event| {
+                    event.prompt_id.is_some()
+                        && [
+                            event.payload["public_answer"]["label"].as_str(),
+                            event.payload["label"].as_str(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .any(|label| {
+                            label.starts_with(crate::runtime::state::stranded_agent::BACKSTOP_LABEL)
+                        })
+                });
+            match event {
+                Some(event) => break event.prompt_id.unwrap(),
+                None => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
         }
+    })
+    .await
+    {
+        Ok(found) => found,
+        Err(_) => panic!(
+            "the backstop delivery never landed in the inbox: {:?}",
+            f.store().agent_inbox(&f.room, &f.agent, 0).unwrap()
+        ),
     };
     assert!(
         backstops(&f)
@@ -2643,28 +2749,38 @@ async fn a_turn_a_fired_backstop_steered_into_keeps_its_own_rescue() {
         panic!("fire returns wakes")
     };
     f.runtime.sweep_agent_lifecycle().await.unwrap();
-    let steered = loop {
-        let event = f
-            .store()
-            .agent_inbox(&f.room, &f.agent, 0)
-            .unwrap()
-            .into_iter()
-            .find(|event| {
-                event.target_prompt_id.as_deref() == Some(f.prompt_id.as_str())
-                    && [
-                        event.payload["public_answer"]["label"].as_str(),
-                        event.payload["label"].as_str(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .any(|label| {
-                        label.starts_with(crate::runtime::state::stranded_agent::BACKSTOP_LABEL)
-                    })
-            });
-        match event {
-            Some(event) => break event,
-            None => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+    let steered = match tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let event = f
+                .store()
+                .agent_inbox(&f.room, &f.agent, 0)
+                .unwrap()
+                .into_iter()
+                .find(|event| {
+                    event.target_prompt_id.as_deref() == Some(f.prompt_id.as_str())
+                        && [
+                            event.payload["public_answer"]["label"].as_str(),
+                            event.payload["label"].as_str(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .any(|label| {
+                            label.starts_with(crate::runtime::state::stranded_agent::BACKSTOP_LABEL)
+                        })
+                });
+            match event {
+                Some(event) => break event,
+                None => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
         }
+    })
+    .await
+    {
+        Ok(found) => found,
+        Err(_) => panic!(
+            "the fired backstop never steered into the running turn; inbox: {:?}",
+            f.store().agent_inbox(&f.room, &f.agent, 0).unwrap()
+        ),
     };
     assert_eq!(
         steered.target_prompt_id.as_deref(),

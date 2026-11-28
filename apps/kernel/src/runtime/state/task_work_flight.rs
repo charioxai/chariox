@@ -17,6 +17,10 @@ const WORK_LIMIT: Duration = Duration::from_secs(180);
 /// (three sweeps) even when several tasks hold.
 const TASK_WAIT: Duration = Duration::from_secs(5);
 pub(super) const SWEEP_PATIENCE: Duration = Duration::from_secs(20);
+/// The part of a pass's patience the newest-first walk may not spend: the oldest task that
+/// has never been asked still gets its turn on every pass, so sustained new arrivals cannot
+/// starve the reconciliation of old work.
+pub(super) const SWEEP_OLDEST_RESERVE: Duration = TASK_WAIT;
 
 /// How the work of one task ended as far as the sweep that asked for it is concerned.
 pub(super) enum TaskStep<T> {

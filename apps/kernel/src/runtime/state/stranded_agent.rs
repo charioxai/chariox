@@ -30,9 +30,10 @@ const WAIT_PHRASES: &[&str] = &[
     "will be woken",
     "wake me when",
 ];
-/// Words that say it does not. The last four are the fleet's own words for it (20A7 11-27, row
-/// 554): a lane that says nothing was waiting or that it is parked states no wait, and a
-/// backstop armed on those words only burned a turn of the lane every interval.
+/// Words that say it does not. The last six are the agent's own parked state (20A7 11-27,
+/// row 554: parked lanes' answers armed backstops that only burned a turn every interval):
+/// "parked" as a plain word describes the work ("the branch I parked yesterday") and does
+/// not veto anything; only the agent saying IT is parked does.
 const NOT_WAITING: &[&str] = &[
     "not waiting",
     "no longer waiting",
@@ -46,7 +47,16 @@ const NOT_WAITING: &[&str] = &[
     "nothing was waiting",
     "nothing is waiting",
     "waiting for nothing",
-    "parked",
+    "i'm parked",
+    "im parked",
+    "i am parked",
+    "am parked",
+    "is parked",
+    "are parked",
+    "stay parked",
+    "staying parked",
+    "remain parked",
+    "remains parked",
 ];
 
 /// The sentence of the end of `answer` that says the agent waits, if one does.
@@ -411,6 +421,11 @@ mod tests {
         assert_eq!(
             stated_wait("The lane is parked for the night, still waiting on the morning review."),
             None
+        );
+        assert_eq!(
+            stated_wait("Waiting for the review of the branch I parked yesterday.").as_deref(),
+            Some("Waiting for the review of the branch I parked yesterday"),
+            "parked as a plain word describes the work, not the agent's own idle state"
         );
     }
 

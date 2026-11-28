@@ -1613,24 +1613,71 @@ impl KernelRuntimeState {
         // Live work first: the task with the freshest progress is the newest turn's, and a
         // restored backlog (20A7 11-27: 2466 old tasks of 612 agents) never asks before it.
         tasks.sort_by(|a, b| b.last_progress_at_ms.cmp(&a.last_progress_at_ms));
-        for task in tasks {
+        // A pass that always restarts at the newest task starves the oldest under sustained
+        // arrivals (review, 11-28), so the last wait of the budget is reserved for a walk
+        // from the oldest end: a finished task that still owes its outcome is reconciled
+        // even while newer work keeps arriving.
+        let mut asked = std::collections::BTreeSet::new();
+        for task in &tasks {
             let monitor = &self.owned.agent_wakes;
             // A task that did not settle is asked again when its backoff expires, not every
             // pass: the pass is O(new work), however much history it restores.
-            if monitor.task_ask_held(&task.task_id, now) {
+            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
                 continue;
             }
-            // The pass's patience is spent: the tasks it never asked are the next pass's work,
-            // not a warn each.
+            // The pass's newest budget is spent: the oldest walk below takes the rest.
+            if patience <= super::task_work_flight::SWEEP_OLDEST_RESERVE {
+                break;
+            }
+            step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
+            let key = format!("sweep-task:{}", task.task_id);
+            let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
+            // The settlement runs apart from the pass: it takes its own copy of the task,
+            // not a borrow of this pass's list.
+            let owned = task.clone();
+            match self
+                .sweep_task_within(key, &mut patience, move |state| async move {
+                    state.sweep_task(owned, now).await
+                })
+                .await
+            {
+                super::task_work_flight::TaskStep::Done(Err(error)) => return Err(error),
+                super::task_work_flight::TaskStep::Done(Ok(ended)) => {
+                    monitor.task_settled(&task_id);
+                    blocked.extend(ended);
+                }
+                super::task_work_flight::TaskStep::Busy => {}
+                super::task_work_flight::TaskStep::TimedOut => {
+                    let backoff = monitor.task_did_not_settle(&task_id, now);
+                    crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "supervision sweep moved on from a task that did not settle in time; it is not asked again until its backoff expires",
+                        serde_json::json!({"task_id": task_id, "agent_id": agent_id,
+                            "step": step.current().map(|(name, _)| name),
+                            "ask_backoff_s": backoff / 1000}),
+                    );
+                }
+            }
+        }
+        // The oldest walk: the reserved budget reaches the tasks the newest walk never
+        // offered a place to, oldest first, until the pass's patience is spent.
+        for task in tasks.iter().rev() {
+            let monitor = &self.owned.agent_wakes;
+            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
+                continue;
+            }
             if patience.is_zero() {
                 break;
             }
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let key = format!("sweep-task:{}", task.task_id);
             let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
+            // The settlement runs apart from the pass: it takes its own copy of the task,
+            // not a borrow of this pass's list.
+            let owned = task.clone();
             match self
                 .sweep_task_within(key, &mut patience, move |state| async move {
-                    state.sweep_task(task, now).await
+                    state.sweep_task(owned, now).await
                 })
                 .await
             {
