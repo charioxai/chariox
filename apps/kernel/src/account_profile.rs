@@ -1207,6 +1207,8 @@ struct RegistryDocument {
     claude_account_merges: Vec<identity::ClaudeAccountMerge>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    credential_copies_issued: Vec<copy_notice::IssuedCredentialCopy>,
     #[serde(default)]
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1230,6 +1232,7 @@ impl Default for RegistryDocument {
             version: REGISTRY_VERSION,
             claude_account_merges: Vec::new(),
             credential_copy_notices: Vec::new(),
+            credential_copies_issued: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
             seen_machine_locations: Vec::new(),
