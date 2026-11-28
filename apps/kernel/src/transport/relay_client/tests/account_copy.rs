@@ -1199,20 +1199,126 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         );
         std::fs::remove_file(root.join("reject")).unwrap();
         crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
-        assert_code(
-            source_request(&source_router, request.clone()).await,
-            "provider_account_copy_target_vault_locked",
-            canary,
+        let waiting = source_request(&source_router, request.clone()).await;
+        assert!(
+            waiting
+                .as_ref()
+                .is_ok_and(|reply| reply.get("ProviderAccountCopyWaiting").is_some()),
+            "a locked receiver must return the account-copy waiting contract: {waiting:?}"
         );
-        crate::secret::unlock_chariox_encrypted_vault(
-            &target_vault,
-            "fixture-pass",
-            crate::secret::VaultUnlockLease::KernelShutdown,
-        )
-        .unwrap();
+        let waiting = waiting.unwrap();
+        let wait = &waiting["ProviderAccountCopyWaiting"]["wait"];
+        assert_eq!(wait["operation_id"], "copy-3");
+        assert_eq!(wait["target_kernel_id"], target.daemon_id);
+        assert_eq!(
+            source_request(&source_router, request.clone())
+                .await
+                .unwrap(),
+            waiting
+        );
+        let notices = |value: serde_json::Value| {
+            value["CredentialVaultStatus"]["copy_unlock_requests"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let read_vault = || {
+            source_request(
+                &target_router,
+                serde_json::json!({"GetCredentialVaultStatus":null}),
+            )
+        };
+        assert_eq!(notices(read_vault().await.unwrap()).len(), 1);
+        source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
+            "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
+        }})).await.unwrap();
+        let read_progress = || {
+            source_request(
+                &source_router,
+                serde_json::json!({"ListProviderAccountProfiles":{}}),
+            )
+        };
+        let progress = |value: serde_json::Value, op: &str| {
+            value["ProviderAccountProfilesListed"]["copies"]
+                .as_array()
+                .and_then(|copies| {
+                    copies
+                        .iter()
+                        .find(|copy| {
+                            [
+                                &copy["operation_id"],
+                                &copy["wait"]["operation_id"],
+                                &copy["receipt"]["operation_id"],
+                            ]
+                            .into_iter()
+                            .any(|id| id == op)
+                        })
+                        .cloned()
+                })
+                .unwrap_or_default()
+        };
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let copy = progress(read_progress().await.unwrap(), "copy-3");
+                if copy["status"] == "installed" {
+                    assert_eq!(copy["receipt"]["account_profile"], target_id);
+                    break;
+                }
+                assert_ne!(copy["status"], "failed", "{copy}");
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("source must resume the copy after target unlock");
+        assert!(notices(read_vault().await.unwrap()).is_empty());
         assert!(source_request(&source_router, request.clone())
             .await
-            .is_ok());
+            .unwrap()
+            .get("ProviderAccountCopied")
+            .is_some());
+
+        if scenario == CopyScenario::Serial {
+            let mut cancel_copy = request.clone();
+            cancel_copy["CopyProviderAccountToKernel"]["operation_id"] = "copy-cancelled".into();
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            assert!(source_request(&source_router, cancel_copy.clone())
+                .await
+                .unwrap()
+                .get("ProviderAccountCopyWaiting")
+                .is_some());
+            let notice = notices(read_vault().await.unwrap())
+                .pop()
+                .expect("target has an unlock request");
+            source_request(
+                &target_router,
+                serde_json::json!({"AnswerUserDomainInteraction":{
+                    "interaction_id": notice["interaction_id"], "choice_id":"cancel"
+                }}),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let copy = progress(read_progress().await.unwrap(), "copy-cancelled");
+                    if copy["status"] == "failed" {
+                        assert_eq!(copy["code"], "provider_account_copy_cancelled");
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("target cancel must stop the source retry");
+            assert!(notices(read_vault().await.unwrap()).is_empty());
+            assert_code(
+                source_request(&source_router, cancel_copy).await,
+                "provider_account_copy_cancelled",
+                canary,
+            );
+            source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
+                "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
+            }})).await.unwrap();
+        }
         // Target admission also sees authenticated wrong-owner/realm and forged binding cases.
         let base_binding = serde_json::json!({
             "operation_id":"direct-peer", "provider":"claude", "source_profile_id":profile.profile_id,
