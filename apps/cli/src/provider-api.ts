@@ -1,4 +1,4 @@
-import { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest, type ProviderAccountCopyOffer, type ProviderAccountCopyReceipt } from "@chariox/kernel-client"
+import { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest, type ProviderAccountCopyOffer, type ProviderAccountCopyReceipt, type ProviderAccountCopyWait } from "@chariox/kernel-client"
 import {
   normalizeRuntimeSession,
   type ProviderAuthStatus,
@@ -367,11 +367,19 @@ export async function listProviderAccountCopyOffers(client: LocalIpcClient): Pro
   const response = await client.send<Record<string, unknown>>(listProviderAccountCopyOffersRequest())
   return expectVariant<{ offers: ProviderAccountCopyOffer[] }>(response, "ProviderAccountCopyOffers").offers
 }
-export async function copyProviderAccountFromKernel(client: LocalIpcClient, offer: ProviderAccountCopyOffer, operationId: string): Promise<ProviderAccountCopyReceipt> {
+export async function copyProviderAccountFromKernel(client: LocalIpcClient, offer: ProviderAccountCopyOffer, operationId: string): Promise<ProviderAccountCopyReceipt | ProviderAccountCopyWait> {
   const status = expectVariant<{status: {daemon_id: string}}>(await client.send<Record<string, unknown>>({RelayStatus: null}), "RelayStatus").status
   if (status.daemon_id !== offer.target_kernel_id) throw new Error("This login copy belongs to the previous machine. Open Account again.")
   const response = await client.send<Record<string, unknown>>(copyProviderAccountFromKernelRequest(offer, operationId))
+  if ("ProviderAccountCopyWaiting" in response) {
+    const wait = expectVariant<{ wait: ProviderAccountCopyWait }>(response, "ProviderAccountCopyWaiting").wait
+    if (!wait || typeof wait !== "object" || Array.isArray(wait)
+      || !Object.keys(wait).every(key => ["operation_id", "source_kernel_id", "target_kernel_id", "target_label", "expires_at_ms"].includes(key))
+      || wait.operation_id !== operationId || wait.target_kernel_id !== offer.target_kernel_id || wait.source_kernel_id !== offer.source_kernel_id
+      || typeof wait.target_label !== "string" || typeof wait.expires_at_ms !== "number" || !Number.isFinite(wait.expires_at_ms)) throw new Error("The kernel did not confirm this login copy")
+    return wait
+  }
   const receipt = expectVariant<{ receipt: ProviderAccountCopyReceipt }>(response, "ProviderAccountCopied").receipt
-  if (receipt.operation_id !== operationId || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile) throw new Error("The kernel did not confirm this login copy")
+  if (!receipt || receipt.operation_id !== operationId || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile || typeof receipt.account_profile !== "string") throw new Error("The kernel did not confirm this login copy")
   return receipt
 }

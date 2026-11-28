@@ -165,3 +165,18 @@ If the same check fails from the host service, have the operator check the
 AppArmor policy for Bubblewrap's user namespaces and the service's effective
 namespace restrictions and capabilities. Keep the production provider
 confinement policy in place.
+
+### Owner agent account-copy commands
+
+Discover these through command search; no always-loaded tool is added.
+`provider accounts copy-offers` lists source profile metadata and pinned keys.
+`provider accounts copy-targets` lists the owner's enrolled target kernel IDs
+and pinned keys. An enrolled target may be offline; the copy checks it live.
+
+From the receiving kernel, run `provider accounts copy-from <provider> <profile>
+<source-kernel> <source-key-thumbprint> <operation-id> [--replace]`. It uses the
+existing recipient consent card. From the source kernel, use `provider accounts
+copy-to <provider> <profile> <target-kernel> <target-key-thumbprint> <operation-id>
+[--replace]`. Keep the operation ID and pinned key when retrying; use a new
+operation ID for a different copy. Both commands return metadata-only receipts
+and retain the protocol's existing ownership, verification and replacement rules.

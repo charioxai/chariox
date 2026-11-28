@@ -45,7 +45,7 @@ export type ProviderCommandHandlerDeps = {
   refreshWaitingRoomInventory?: () => Promise<void>
   applyAccountSelection?: (value: string) => Promise<void>
   listProviderAccountCopyOffers?: () => Promise<import("@chariox/kernel-client").ProviderAccountCopyOffer[]>
-  copyProviderAccountFromKernel?: (offer: import("@chariox/kernel-client").ProviderAccountCopyOffer) => Promise<import("@chariox/kernel-client").ProviderAccountCopyReceipt>
+  copyProviderAccountFromKernel?: (offer: import("@chariox/kernel-client").ProviderAccountCopyOffer) => Promise<import("@chariox/kernel-client").ProviderAccountCopyReceipt | import("@chariox/kernel-client").ProviderAccountCopyWait>
   accountCopyBinding?: () => object
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
@@ -397,6 +397,10 @@ async function handleProviderAccountsCommand(
     if (!current()) throw new Error("The kernel connection changed. Open /provider accounts copy again.")
     deps.flashFooter(`Copying ${offer.label} from ${offer.source_label}; answer the kernel approval`, "info")
     const receipt = await deps.copyProviderAccountFromKernel(offer)
+    if (!("account_profile" in receipt)) {
+      if (current()) deps.appendNotice(`Waiting for the Vault on ${receipt.target_label}. Unlock it there to finish the login copy.`)
+      return
+    }
     if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) {
       await deps.refreshWaitingRoomInventory?.()
       if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) await deps.applyAccountSelection?.(receipt.account_profile)

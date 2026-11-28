@@ -702,4 +702,5 @@ pub use workspace::*;
 /// `{"kind":"all"}`, every login of the owner on the source kernel; the package carries the source Vault's key sealed
 /// for a target with no Vault; a machine row carries the service's `reason`; `context_transfer` hands the kernel that
 /// acquired a machine its transfer ticket. Capabilities `managed_context_all_providers_v1`, `agent_machine_install_v1`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
+/// Local1017 exposes receiving-Vault account-copy waits, unlock requests and source progress.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1017;

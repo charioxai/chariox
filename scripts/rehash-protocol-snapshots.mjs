@@ -41,6 +41,10 @@ export function hashModules() {
 function runTests() {
   const result = spawnSync('cargo', ['test', '-q', '-p', 'chariox-kernel', '--lib', '--', ...hashModules()], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'] })
   if (result.error) throw result.error
+  if (result.status !== 0) {
+    process.stdout.write(result.stdout)
+    process.stderr.write(result.stderr)
+  }
   return { status: result.status, output: `${result.stdout}\n${result.stderr}` }
 }
 
@@ -66,7 +70,7 @@ function main() {
       process.exit(1)
     }
     if (!found.length) {
-      console.error(`protocol:rehash: ${failedTests(output).length || 'some'} test(s) fail and none is a hash mismatch it can rewrite:\n${failedTests(output).join('\n')}\n${output.slice(-3000)}`)
+      console.error(`protocol:rehash: ${failedTests(output).length || 'some'} test(s) fail and none is a hash mismatch it can rewrite:\n${failedTests(output).join('\n')}`)
       process.exit(1)
     }
     for (const { file, line, left, right } of found) {

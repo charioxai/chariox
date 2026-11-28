@@ -186,7 +186,14 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
             message: "empty metaagent command".to_string(),
         };
     };
-    let normalized = if first == "session" {
+    let normalized = if first == "provider" && tokens.get(1).is_some_and(|v| v == "accounts") {
+        tokens
+            .iter()
+            .take(3)
+            .map(|v| v.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else if first == "session" {
         tokens
             .get(1)
             .map(|subcommand| format!("session {}", subcommand.to_lowercase()))

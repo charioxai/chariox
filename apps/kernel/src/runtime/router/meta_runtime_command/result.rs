@@ -149,6 +149,15 @@ fn summarize_meta_command_response(
             "type": "AgentFocused",
             "agent": summarize_meta_agent(agent),
         }),
+        LocalDaemonResponse::ProviderAccountCopyOffers { offers } => serde_json::json!({
+            "type": "ProviderAccountCopyOffers", "offers": offers,
+        }),
+        LocalDaemonResponse::ProviderAccountCopied { receipt } => serde_json::json!({
+            "type": "ProviderAccountCopied", "receipt": receipt,
+        }),
+        LocalDaemonResponse::ProviderAccountCopyWaiting { wait } => serde_json::json!({
+            "type": "ProviderAccountCopyWaiting", "wait": wait,
+        }),
         LocalDaemonResponse::AccountKernelsListed { kernels } => serde_json::json!({
             "type": "AccountKernelsListed",
             "kernels": kernels,
@@ -186,7 +195,7 @@ fn summarize_meta_command_response(
                 "usage": account.usage,
             })).collect::<Vec<_>>(),
         }),
-        LocalDaemonResponse::ProviderAccountProfilesListed { profiles } => serde_json::json!({
+        LocalDaemonResponse::ProviderAccountProfilesListed { profiles, .. } => serde_json::json!({
             "type": "ProviderAccountProfilesListed",
             "profiles": profiles.iter().map(|profile| serde_json::json!({
                 "provider": profile.provider,
