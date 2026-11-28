@@ -188,7 +188,7 @@ test("workflow capabilities survive app and command action composition", async (
     refreshSplitPaneFocusRepaint: () => {},
   } as any)
 
-  state = { ...state, active_interactions: [{ id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title: "Copy", message: "copy", choices: [{ id: "decline", label: "Decline", reply: "deny" }] }] }
+  state = { ...state, active_interactions: [{ id: "app_host_0123456789abcdef0123456789abcdef", surface: "card", card_type: "app_clipboard_write", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title: "Copy", message: "copy", choices: [{ id: "decline", label: "Decline", reply: "deny" }] }] }
   await handlers.handleAppCommand({ kind: "app", raw: "/app host accept", args: ["host", "accept"] })
   assert.deepEqual(clipboard, ["accepted copy"])
   assert.deepEqual(requests.pop(), { AcceptAppHostAction: { session_id: state.id, operation_id: "0123456789abcdef0123456789abcdef" } })

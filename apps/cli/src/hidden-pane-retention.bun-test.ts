@@ -81,7 +81,7 @@ test("hidden interaction strips release 1,000 appearing and resolved cards", asy
   })
   try {
     for (let index = 0; index < 1_000; index += 1) {
-      interaction = { id: `card-${index}`, agent_id: "agent", kind: "permission", level: "warning",
+      interaction = { id: `card-${index}`, surface: "card", card_type: "provider_native_permission", agent_id: "agent", kind: "permission", level: "warning",
         message: "Allow fixture install, uninstall or export?", requested_at_ms: index,
         choices: [{ id: "allow", label: "Allow", reply: "allow" }] }
       render()
@@ -157,7 +157,7 @@ test("hidden kernel approval dock releases 1,000 App consent cards", async () =>
     for (let index = 0; index < 1_000; index += 1) {
       const view = { handoffEntry: null, choices: [{ id: "allow", label: "Allow", reply: "allow" }], open: true, count: 1, criticalCount: 0, index: 0, selected: null, pending: false,
         connected: true, error: null, passkey: null, interaction: {
-          id: `install-${index}`, kernel_operation_id: `operation-${index}`, kind: "permission" as const,
+          id: `install-${index}`, surface: "card" as const, card_type: "app_install", kernel_operation_id: `operation-${index}`, kind: "permission" as const,
           level: "warning" as const, requested_at_ms: index,
           message: "Approve fixture install or uninstall?", choices: [{ id: "allow", label: "Allow", reply: "allow" }],
         } }

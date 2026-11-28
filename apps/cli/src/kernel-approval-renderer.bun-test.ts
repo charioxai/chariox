@@ -13,7 +13,7 @@ const view: KernelApprovalView = {
   choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }], handoffEntry: null,
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
   interaction: {
-    id: "approval-1", kernel_operation_id: "install-1", kind: "permission", level: "warning",
+    id: "approval-1", surface: "card", card_type: "app_install", kernel_operation_id: "install-1", kind: "permission", level: "warning",
     title: "Install Linear", message: "Allow this App to use the capabilities listed in the installation?",
     choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }],
     requested_at_ms: 1,
@@ -212,7 +212,7 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
   surface.assign(box)
   try {
     for (const [title, payload] of [["Open a link from an App", "Exact URL: https://example.org/a?x=%20"], ["Copy text from an App", 'Text (11 UTF-8 bytes): "copy\\ntext"']] as const) {
-      surface.render({ ...view, open: true, choices: [{ id: "decline", label: "Decline", reply: "deny" }], interaction: { id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title,
+      surface.render({ ...view, open: true, choices: [{ id: "decline", label: "Decline", reply: "deny" }], interaction: { surface: "card", card_type: title === "Open a link from an App" ? "app_open_link" : "app_clipboard_write", id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title,
         message: `${payload}\nOnly alice can answer.\n/app host accept`, choices: [{ id: "decline", label: "Decline", reply: "deny" }] } }, { width: 100, height: 26 })
       await harness.renderOnce()
       const frame = harness.captureCharFrame()
@@ -239,7 +239,7 @@ test("MP-08/MP-10/MP-11 A07: trusted TUI renders the exact safe diff and masked 
     expires_at_ms: Date.now() + 60000, save_to_vault_offered: true }
   try {
     surface.render({ ...view, open: true, choices: [{id: "cancel", label: "Cancel", reply: "cancel"}],
-      interaction: {id: "handoff-o", kernel_operation_id: "handoff-o", kind: "permission", level: "warning", requested_at_ms: 1, title: "Protected step", message: "Owner input required", handoff,
+      interaction: {id: "handoff-o", surface: "card", card_type: "owner_handoff_input", kernel_operation_id: "handoff-o", kind: "permission", level: "warning", requested_at_ms: 1, title: "Protected step", message: "Owner input required", handoff,
         choices: [{id: "cancel", label: "Cancel", reply: "cancel"}]},
       handoffEntry: {kind: "secret", length: 8, saveToVault: false, saveOffered: true},
     }, { width: 110, height: 42 })

@@ -100,7 +100,7 @@ test("settleAttachProviderRun keeps the TUI attachable when the credential vault
 test("MP-08/MP-10 attaching to an existing unlock does not launch the agent twice", async () => {
   let launches = 0
   const result = await settleAttachProviderRun({ ...session, active_interactions: [{
-    id: "vault-unlock-existing", agent_id: "agent-vault", kind: "choice", level: "critical",
+    id: "vault-unlock-existing", surface: "card", card_type: "vault_unlock", agent_id: "agent-vault", kind: "choice", level: "critical",
     title: "Unlock Chariox Vault", message: "Enter the passphrase.", requested_at_ms: 1,
     choices: [{ id: "cancel", label: "Cancel", reply: "cancel" }],
   }] }, { provider: "claude-p", model: "claude-haiku-5-5", effort: "low" }, "work", false, {

@@ -85,7 +85,7 @@ test("agent interaction strip controller renders current pane and interaction in
 
 function interactionFixture(): RuntimeInteraction {
   return {
-    id: "interaction-a",
+    id: "interaction-a", surface: "card", card_type: "provider_native_permission",
     agent_id: "agent-a",
     kind: "choice",
     level: "info",

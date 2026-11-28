@@ -15,7 +15,7 @@ test("native permission interaction reads session state with projected activity"
           SessionState: {
             session: runtimeSession({
               active_interactions: [{
-                id: "interaction-1",
+                id: "interaction-1", surface: "card", card_type: "provider_native_permission",
                 agent_id: "agent-1",
                 kind: "permission",
                 level: "warning",

@@ -266,7 +266,7 @@ test("MP-08/MP-11 kernel retry and Vault replies report continued sign-in, not a
 
 function loginInteractionFixture(): RuntimeInteraction {
   return {
-    id: "provider-auth-recovery:login-1", agent_id: "agent-1", kind: "choice", level: "warning", message: "Sign in",
+    id: "provider-auth-recovery:login-1", surface: "card", card_type: "provider_auth_recovery", agent_id: "agent-1", kind: "choice", level: "warning", message: "Sign in",
     choices: [{ id: "cancel", label: "Cancel", reply: "cancel" }],
     custom_choice: { id: "provider-response", label: "Send response", input_kind: "secret", min_length: 1, max_length: 8192 },
     requested_at_ms: 1,
@@ -388,7 +388,7 @@ function interactionFixture(options: {
   maxLength?: number
 } = {}): RuntimeInteraction {
   return {
-    id: "interaction-1",
+    id: "interaction-1", surface: "card", card_type: "Question",
     agent_id: "agent-1",
     kind: "choice",
     level: "info",
@@ -480,7 +480,7 @@ test("MP-08 / MP-10 A3/A4 a sub-agent's decision shown in the room agent is answ
 test("MP-08/MP-09/MP-10/MP-11 a card payment's Allow opens the passkey popup and sends nothing", async () => {
   const shown: string[] = []
   const payment = {
-    ...interactionFixture(), id: "vault-card-0000000000000001",
+    ...interactionFixture(), id: "vault-card-0000000000000001", card_type: "vault_payment_approval",
     choices: [{ id: "allow", label: "Allow once", reply: "allow", requires_passkey: true }, { id: "cancel", label: "Cancel", reply: "cancel" }],
   } as RuntimeInteraction
   const harness = createHarness({ interaction: payment, showPasskeyPrompt: (sessionId, id) => { shown.push(`${sessionId}/${id}`); return true } })
