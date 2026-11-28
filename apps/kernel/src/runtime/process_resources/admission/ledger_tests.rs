@@ -2972,9 +2972,12 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
     );
     let second = stream(growth.sample(&pids, 2000));
     assert_eq!(second[0].written_by_inode[&stdout_inode], 0);
-    assert_eq!(
-        second[0].position_written_by_inode[&stdout_inode],
-        1000 * MIB
+    assert_eq!(stdout.stream_position().unwrap(), 2 * MIB);
+    assert!(
+        !second[0]
+            .position_written_by_inode
+            .contains_key(&stdout_inode),
+        "an overwrite offset alone cannot prove how much was written"
     );
     {
         let mut observation = current.lock().unwrap();
@@ -2994,8 +2997,8 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
     drop(stderr);
     let third = stream(growth.sample(&pids, 3000));
     assert_eq!(
-        third[0].position_written_by_inode[&stdout_inode],
-        1000 * MIB
+        third[0].position_written_by_inode[&stdout_inode], 0,
+        "the next quiet sample must not credit the earlier unproven jump"
     );
     assert!(!third[0]
         .position_written_by_inode

@@ -1979,40 +1979,37 @@ impl StreamWrites {
         }
         let at = sample.sampled_at_ms;
         let window = FREE_WINDOW.as_millis() as u64;
-        // Unverifiable descriptor progress gives no aligned stream-write
-        // evidence. Do not turn that uncertainty into a destructive candidate.
-        if outputs.iter().any(|output| {
+        // An unknown interval excludes its command delta, not the earlier
+        // valid history. Keep each proven inode baseline so the next quiet
+        // interval can be measured without starting the whole window again.
+        let complete = outputs.iter().all(|output| {
             output
                 .open
                 .iter()
-                .any(|inode| !output.position_written_by_inode.contains_key(inode))
-        }) {
-            *self = Self {
-                process_id: sample.process_id.clone(),
-                ..Self::default()
-            };
-            return 0;
-        }
+                .all(|inode| output.position_written_by_inode.contains_key(inode))
+        });
         let observed = outputs
             .iter()
-            .flat_map(|output| {
-                output
+            .flat_map(|output| output.open.iter().map(move |inode| (output, *inode)))
+            .map(|(output, inode)| {
+                let key = (output.id, inode);
+                let position = output
                     .position_written_by_inode
-                    .iter()
-                    .map(move |(inode, position)| {
-                        // Position progress accounts for overwrites and allocation lag.
-                        // Both counters cover the same bytes: never add them together.
-                        let written = output
-                            .written_by_inode
-                            .get(inode)
-                            .copied()
-                            .unwrap_or(0)
-                            .max(*position);
-                        ((output.id, *inode), written)
-                    })
+                    .get(&inode)
+                    .copied()
+                    .or_else(|| self.outputs.get(&key).copied())
+                    .unwrap_or(0);
+                let written = output
+                    .written_by_inode
+                    .get(&inode)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(position);
+                (key, written)
             })
             .collect::<BTreeMap<_, _>>();
-        let continuous = observed.len() == self.outputs.len()
+        let continuous = complete
+            && observed.len() == self.outputs.len()
             && observed.iter().all(|(key, written)| {
                 self.outputs
                     .get(key)
