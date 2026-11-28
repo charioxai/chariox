@@ -4662,6 +4662,12 @@ fn r7_shared_stream_inode(duplicate: bool) {
     for at in [2000, 3000] {
         let output = r7_sample_streams(&mut growth, at, &[inode], 500);
         let uncertain = !output[0].position_written_by_inode.contains_key(&inode);
+        if at == 2000 {
+            assert!(uncertain, "moving aliases remain ambiguous");
+        }
+        if at == 3000 {
+            assert_eq!(output[0].position_written_by_inode[&inode], 0);
+        }
         {
             let mut observation = current.lock().unwrap();
             observation.samples = vec![write_sample(1, at)];
@@ -4696,8 +4702,8 @@ fn r7_shared_stream_inode(duplicate: bool) {
                 "an incomplete stream inode charged the healthy logger to scratch"
             );
             assert!(
-                uncertain,
-                "shared inode cursor evidence must not imply independent bytes"
+                !uncertain,
+                "stable idle aliases must provide measurable zero progress"
             );
         } else {
             assert!(chosen.is_empty());

@@ -1,7 +1,7 @@
 //! Allocated growth of a command's open output files, by receiving volume.
 use super::VolumeWrites;
 #[cfg(target_os = "linux")]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
@@ -9,12 +9,27 @@ use std::path::PathBuf;
 pub(in crate::runtime::process_resources) struct WriteGrowth {
     #[cfg(target_os = "linux")]
     files: BTreeMap<(u64, u64), FileGrowth>,
-    /// The one volume it last sent output to: its id and a directory on it.
-    /// A command that writes one short-lived file after another is seen with
-    /// a file open in few samples; the volume stands until it is seen sending
-    /// output elsewhere.
+    /// A receiving inode and a directory on its volume, retained between files.
     #[cfg(target_os = "linux")]
-    last: Option<(u64, PathBuf)>,
+    last: Option<(u64, u64, PathBuf)>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, PartialEq, Eq)]
+struct Descriptor {
+    position: Option<u64>,
+    flags: u32,
+}
+
+#[cfg(target_os = "linux")]
+struct FileSnapshot {
+    allocated: u64,
+    length: u64,
+    modified: (i64, i64),
+    block_size: u64,
+    descriptors: BTreeMap<(u32, u32), Descriptor>,
+    path: PathBuf,
+    stream: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -22,13 +37,59 @@ struct FileGrowth {
     allocated: u64,
     at: u64,
     written: u64,
-    position: Option<u64>,
     position_written: u64,
-    write_only: bool,
-    modified: (i64, i64),
     length: u64,
-    append: bool,
-    multiple: bool,
+    modified: (i64, i64),
+    descriptors: BTreeMap<(u32, u32), Descriptor>,
+}
+
+#[cfg(target_os = "linux")]
+impl FileSnapshot {
+    fn position_added(&self, before: Option<&FileGrowth>, at: u64) -> Option<u64> {
+        if self.descriptors.values().any(|fd| fd.position.is_none()) {
+            return None;
+        }
+        let Some(before) = before else {
+            return Some(0);
+        };
+        if at < before.at {
+            return None;
+        }
+        // Aliases need not share an open description to prove that every
+        // observed cursor and the file itself stayed idle.
+        if self.descriptors == before.descriptors
+            && self.modified == before.modified
+            && self.length == before.length
+        {
+            return Some(0);
+        }
+        if self.descriptors.len() != 1 || before.descriptors.len() != 1 {
+            return None;
+        }
+        let (key, descriptor) = self.descriptors.iter().next()?;
+        let old = before.descriptors.get(key)?;
+        if old.flags != descriptor.flags
+            || descriptor.flags & libc::O_ACCMODE as u32 != libc::O_WRONLY as u32
+            || self.modified == before.modified
+        {
+            return None;
+        }
+        let position = descriptor.position?;
+        let added = if descriptor.flags & libc::O_APPEND as u32 != 0 {
+            // A zero initial cursor must not credit an existing file prefix.
+            if position < before.length || position > self.length || self.length < before.length {
+                return None;
+            }
+            position - before.length
+        } else {
+            position.checked_sub(old.position?)?
+        };
+        let allocated = self.allocated.saturating_sub(before.allocated);
+        // Neither sparse extension nor a seek proves written bytes. Excess
+        // allocation can also be an older excluded write becoming visible.
+        // Allow only the filesystem's allocation rounding around new progress.
+        (added > 0 && allocated >= added && allocated - added < self.block_size).then_some(added)
+    }
 }
 
 impl WriteGrowth {
@@ -41,12 +102,9 @@ impl WriteGrowth {
         at: u64,
     ) -> Vec<VolumeWrites> {
         use std::os::unix::fs::MetadataExt;
-        let mut files = BTreeMap::<(u64, u64), FileGrowth>::new();
+        let mut snapshots = BTreeMap::<(u64, u64), FileSnapshot>::new();
         // Partial attribution cannot justify a stop; bound each monitor tick.
         let mut budget = 16_384usize;
-        let mut volumes = BTreeMap::<u64, VolumeWrites>::new();
-        // A descriptor (other than a standard stream) per receiving volume.
-        let mut outputs = BTreeMap::<u64, PathBuf>::new();
         for pid in pids {
             let base = PathBuf::from(format!("/proc/{pid}"));
             let Ok(fds) = std::fs::read_dir(base.join("fd")) else {
@@ -58,19 +116,25 @@ impl WriteGrowth {
                     return Vec::new();
                 };
                 budget = left;
+                let Some(number) = fd
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.parse::<u32>().ok())
+                else {
+                    continue;
+                };
                 let Ok(info) = std::fs::read_to_string(base.join("fdinfo").join(fd.file_name()))
                 else {
                     continue;
                 };
-                let flags = info
+                let Some(flags) = info
                     .lines()
                     .find_map(|line| line.strip_prefix("flags:"))
-                    .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok());
-                let access = flags.map(|flags| flags & libc::O_ACCMODE as u32);
-                let append = flags.is_some_and(|flags| flags & libc::O_APPEND as u32 != 0);
-                let writable = access.is_some_and(|mode| mode != libc::O_RDONLY as u32);
-                let write_only = access == Some(libc::O_WRONLY as u32);
-                if !writable {
+                    .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
+                else {
+                    continue;
+                };
+                if flags & libc::O_ACCMODE as u32 == libc::O_RDONLY as u32 {
                     continue;
                 }
                 let path = fd.path();
@@ -81,176 +145,152 @@ impl WriteGrowth {
                     continue;
                 }
                 let key = (meta.dev(), meta.ino());
-                let stream = fd
-                    .file_name()
-                    .to_str()
-                    .and_then(|fd| fd.parse::<u32>().ok())
-                    .is_some_and(|fd| fd <= 2);
-                if let Some(file) = files.get_mut(&key) {
-                    // fdinfo cannot distinguish dup() from an independent open.
-                    // One inode must never imply one shared cursor or summed aliases.
-                    file.multiple = true;
-                    file.position_written = self
-                        .files
-                        .get(&key)
-                        .map_or(0, |before| before.position_written);
-                    if let Some(volume) = volumes.get_mut(&key.0) {
-                        volume.position_written_by_inode.remove(&key.1);
-                        if !stream {
-                            volume.receiving = true;
-                            outputs.entry(key.0).or_insert_with(|| fd.path());
-                        }
-                    }
-                    continue;
-                }
-                let allocated = meta.blocks().saturating_mul(512);
-                let modified = (meta.mtime(), meta.mtime_nsec());
-                let length = meta.len();
                 let position = info
                     .lines()
                     .find_map(|line| line.strip_prefix("pos:"))
                     .and_then(|value| value.trim().parse::<u64>().ok())
                     .filter(|_| {
-                        // The descriptor may have been reused between fdinfo
-                        // and metadata reads. Never pair another inode's offset.
                         info.lines()
                             .find_map(|line| line.strip_prefix("ino:"))
                             .and_then(|value| value.trim().parse::<u64>().ok())
-                            .is_some_and(|inode| inode == key.1)
+                            == Some(key.1)
                     });
-                let before = self.files.get(&key);
-                // Only this interval's growth can justify stopping a writer.
-                // Decay would retain another volume's earlier write activity.
-                let (written, rate) = match before {
-                    Some(before) if at > before.at => {
-                        let added = allocated.saturating_sub(before.allocated);
-                        (
-                            before.written.saturating_add(added),
-                            added.saturating_mul(1000) / (at - before.at),
-                        )
-                    }
-                    Some(before) => (before.written, 0),
-                    None => (0, 0),
-                };
-                let position_added = match (position, before) {
-                    (Some(_), None) => Some(0),
-                    (Some(now), Some(before))
-                        if at >= before.at
-                            && write_only == before.write_only
-                            && append == before.append
-                            && !before.multiple =>
-                    {
-                        match before.position {
-                            Some(old) if now == old && modified == before.modified => Some(0),
-                            Some(_)
-                                if write_only
-                                    && append
-                                    && modified != before.modified
-                                    && length >= before.length
-                                    && now >= before.length
-                                    && now <= length =>
-                            {
-                                // An append starts at the prior EOF, even when the
-                                // descriptor's first sampled position was zero.
-                                Some(now - before.length)
-                            }
-                            Some(old)
-                                if write_only
-                                    && !append
-                                    && now > old
-                                    && modified != before.modified
-                                    && now - old <= allocated.saturating_sub(before.allocated) =>
-                            {
-                                Some(now - old)
-                            }
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                };
-                let position_continuous = position_added.is_some();
-                let position_written = match before {
-                    Some(before) if at > before.at => before
-                        .position_written
-                        .saturating_add(position_added.unwrap_or(0)),
-                    Some(before) => before.position_written,
-                    None => 0,
-                };
-                let (position, write_only, modified, length, append) = before
-                    .filter(|before| at <= before.at)
-                    .map_or((position, write_only, modified, length, append), |before| {
-                        (
-                            before.position,
-                            before.write_only,
-                            before.modified,
-                            before.length,
-                            before.append,
-                        )
-                    });
-                let (allocated, at) = before
-                    .filter(|before| at <= before.at)
-                    .map_or((allocated, at), |before| (before.allocated, before.at));
-                files.insert(
-                    key,
-                    FileGrowth {
-                        allocated,
-                        at,
-                        written,
+                let snapshot = snapshots.entry(key).or_insert_with(|| FileSnapshot {
+                    allocated: 0,
+                    length: 0,
+                    modified: (0, 0),
+                    block_size: 1,
+                    descriptors: BTreeMap::new(),
+                    path,
+                    stream: false,
+                });
+                snapshot.allocated = meta.blocks().saturating_mul(512);
+                snapshot.length = meta.len();
+                snapshot.modified = (meta.mtime(), meta.mtime_nsec());
+                snapshot.block_size = meta.blksize().max(1);
+                snapshot.stream |= number <= 2;
+                snapshot.descriptors.insert(
+                    (*pid, number),
+                    Descriptor {
                         position,
-                        position_written,
-                        write_only,
-                        modified,
-                        length,
-                        append,
-                        multiple: false,
+                        flags: flags & (libc::O_ACCMODE | libc::O_APPEND) as u32,
                     },
                 );
-                let volume = volumes.entry(key.0).or_insert_with(|| VolumeWrites {
-                    id: key.0,
-                    path,
-                    written: 0,
-                    rate: 0,
-                    files: Default::default(),
-                    open: Default::default(),
-                    written_by_inode: Default::default(),
-                    position_written_by_inode: Default::default(),
-                    receiving: false,
-                });
-                volume.open.insert(key.1);
-                volume.written_by_inode.insert(key.1, written);
-                if position_continuous && position.is_some() {
-                    volume
-                        .position_written_by_inode
-                        .insert(key.1, position_written);
-                }
-                if !stream {
-                    volume.receiving = true;
-                    outputs.entry(key.0).or_insert_with(|| fd.path());
-                }
-                if rate > 0 {
-                    volume.files.insert(key.1);
-                }
-                volume.written = volume.written.saturating_add(written);
-                volume.rate = volume.rate.saturating_add(rate);
             }
+        }
+        let streams = snapshots
+            .iter()
+            .filter_map(|(key, value)| value.stream.then_some(*key))
+            .collect::<BTreeSet<_>>();
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|(id, inode, _)| streams.contains(&(*id, *inode)))
+        {
+            // An alias of a standard stream is not a separate receiving file.
+            self.last = None;
+        }
+        let mut files = BTreeMap::new();
+        let mut volumes = BTreeMap::<u64, VolumeWrites>::new();
+        let mut outputs = BTreeMap::<u64, (u64, PathBuf)>::new();
+        for (key, snapshot) in snapshots {
+            let before = self.files.get(&key);
+            let (written, rate) = match before {
+                Some(before) if at > before.at => {
+                    let added = snapshot.allocated.saturating_sub(before.allocated);
+                    (
+                        before.written.saturating_add(added),
+                        added.saturating_mul(1000) / (at - before.at),
+                    )
+                }
+                Some(before) => (before.written, 0),
+                None => (0, 0),
+            };
+            let position_added = snapshot.position_added(before, at);
+            let position_written = match before {
+                Some(before) if at > before.at => before
+                    .position_written
+                    .saturating_add(position_added.unwrap_or(0)),
+                Some(before) => before.position_written,
+                None => 0,
+            };
+            let volume = volumes.entry(key.0).or_insert_with(|| VolumeWrites {
+                id: key.0,
+                path: snapshot.path.clone(),
+                written: 0,
+                rate: 0,
+                files: Default::default(),
+                open: Default::default(),
+                written_by_inode: Default::default(),
+                position_written_by_inode: Default::default(),
+                receiving: false,
+            });
+            volume.open.insert(key.1);
+            volume.written_by_inode.insert(key.1, written);
+            if position_added.is_some() {
+                volume
+                    .position_written_by_inode
+                    .insert(key.1, position_written);
+            }
+            if !snapshot.stream {
+                volume.receiving = true;
+                outputs
+                    .entry(key.0)
+                    .or_insert_with(|| (key.1, snapshot.path.clone()));
+            }
+            if rate > 0 {
+                volume.files.insert(key.1);
+            }
+            volume.written = volume.written.saturating_add(written);
+            volume.rate = volume.rate.saturating_add(rate);
+            let (allocated, at, length, modified, descriptors) =
+                before.filter(|before| at <= before.at).map_or(
+                    (
+                        snapshot.allocated,
+                        at,
+                        snapshot.length,
+                        snapshot.modified,
+                        snapshot.descriptors,
+                    ),
+                    |before| {
+                        (
+                            before.allocated,
+                            before.at,
+                            before.length,
+                            before.modified,
+                            before.descriptors.clone(),
+                        )
+                    },
+                );
+            files.insert(
+                key,
+                FileGrowth {
+                    allocated,
+                    at,
+                    written,
+                    position_written,
+                    length,
+                    modified,
+                    descriptors,
+                },
+            );
         }
         self.files = files;
         self.remember(&mut volumes, &outputs);
         volumes.into_values().collect()
     }
 
-    /// A many-file copy is between two files at most samples. While it
-    /// holds no output open, the one volume it last sent output to still
-    /// receives it.
+    /// A many-file copy is between two files at most samples. Retain its
+    /// receiving directory while keeping standard-stream aliases separate.
     #[cfg(target_os = "linux")]
     fn remember(
         &mut self,
         volumes: &mut BTreeMap<u64, VolumeWrites>,
-        outputs: &BTreeMap<u64, PathBuf>,
+        outputs: &BTreeMap<u64, (u64, PathBuf)>,
     ) {
         match outputs.iter().next() {
             None => {
-                let Some((id, dir)) = self.last.as_ref() else {
+                let Some((id, _, dir)) = self.last.as_ref() else {
                     return;
                 };
                 let volume = volumes.entry(*id).or_insert_with(|| VolumeWrites {
@@ -267,13 +307,12 @@ impl WriteGrowth {
                 volume.path = dir.clone();
                 volume.receiving = true;
             }
-            Some((id, output)) if outputs.len() == 1 => {
-                // The descriptor closes soon; its directory stays measurable.
+            Some((id, (inode, output))) if outputs.len() == 1 => {
                 let dir = std::fs::canonicalize(output)
                     .ok()
                     .and_then(|file| file.parent().map(PathBuf::from));
                 if let Some(dir) = dir {
-                    self.last = Some((*id, dir));
+                    self.last = Some((*id, *inode, dir));
                 }
             }
             Some(_) => self.last = None,
