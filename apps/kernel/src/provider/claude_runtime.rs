@@ -943,7 +943,8 @@ mod tests {
         apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
         handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
         new_claude_session_id, restart_claude_runtime, submit_claude_prompt,
-        write_claude_hidden_context, ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch,
+        write_claude_hidden_context, ClaudeRuntimeProcess, ClaudeRuntimeState, PromptEnvelope,
+        ProviderPromptSignalBatch,
     };
 
     pub(super) fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {

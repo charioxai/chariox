@@ -1623,6 +1623,10 @@ async fn assert_unresponsive_abort_settles(
                 working_directory: None,
                 cols: 80,
                 rows: 24,
+                agent: Some(crate::pty::PtyAgent {
+                    session_id: session.id().into(),
+                    agent_id: agent.id().into(),
+                }),
             })
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {

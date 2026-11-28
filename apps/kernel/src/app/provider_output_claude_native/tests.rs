@@ -1100,6 +1100,10 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
                 working_directory: None,
                 cols: 80,
                 rows: 24,
+                agent: Some(crate::pty::PtyAgent {
+                    session_id: session.id().into(),
+                    agent_id: agent.id().into(),
+                }),
             })
             .unwrap();
         app.pty_mut()
