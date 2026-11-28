@@ -1313,6 +1313,7 @@ async fn assert_failed_source_compaction_starts_fresh(leased: bool) {
                     effort: None,
                 },
                 false,
+                None,
             )
             .await
             .unwrap();

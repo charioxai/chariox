@@ -9,6 +9,7 @@ impl KernelRuntimeState {
         leased_agent_id: &str,
         profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
         while_turn_runs: bool,
+        provider_resume_state: Option<crate::provider::ProviderResumeState>,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
         let id = leased_agent_id.to_string();
         let prepared = self
@@ -48,6 +49,12 @@ impl KernelRuntimeState {
         };
         let result = self
             .with_app_side_effect(move |app| {
+                // Seed the home's state while it still names the previous physical account.
+                // The profile commit must be the last authority on which sessions survive.
+                if let Some(resume) = provider_resume_state {
+                    crate::app::RemoteLeaseRuntime::new(app)
+                        .seed_leased_agent_resume_state(&prepared.leased_agent.id, resume)?;
+                }
                 crate::app::RemoteLeaseRuntime::new(app).commit_leased_agent_profile(prepared)
             })
             .await;

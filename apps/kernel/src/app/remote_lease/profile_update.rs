@@ -179,11 +179,17 @@ impl RemoteLeaseRuntime<'_> {
             });
         }
         let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
-        let source_account = self.resolve_leased_profile_account(
-            &leased_agent,
-            backing_agent.provider(),
-            backing_agent.provider_account_profile(),
-        )?;
+        // A new transfer can already resolve the home's id to the copy. The previous session
+        // still belongs to the physical profile the worker run actually used.
+        let source_account = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .map(|run| run.account_profile().to_string())
+            .unwrap_or_else(|| backing_agent.provider_account_profile().to_string());
         if !prepared.while_turn_runs {
             self.terminate_backing_provider_runtime(&leased_agent);
         }

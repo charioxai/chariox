@@ -908,3 +908,191 @@ fn a_leased_claude_agent_without_its_copy_reads_as_a_missing_account() {
         }
     }
 }
+
+#[test]
+fn tracked_worker_copy_adoption_drops_the_previous_codex_profile_session() {
+    assert_tracked_worker_copy_session(Some(false));
+}
+
+#[tokio::test]
+async fn leased_prompt_provider_change_does_not_reseed_the_old_home_thread() {
+    crate::test_support::isolated_env_test!();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let registry = app.provider_account_profile_registry();
+    let old = registry
+        .create_managed(owner, "codex", "old worker account")
+        .unwrap();
+    let lease = {
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let execution = runtime
+            .create_execution_lease("home-kernel", "home-session", "home-agent", false, owner)
+            .unwrap();
+        runtime
+            .create_leased_agent(
+                &execution.id,
+                "codex",
+                &old.profile_id,
+                Some("model".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    let saved = crate::provider::ProviderResumeState::from_codex_thread_id("old-home-thread");
+    app.agents_mut()
+        .set_agent_provider_resume_state(&lease.backing_agent_id, saved.clone())
+        .unwrap();
+    let mut profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    // The managed adapter exercises relay admission without starting a native CLI.
+    // Codex's old thread must still be cleared before the new provider receives the turn.
+    profile.provider = "managed-dev-stub".into();
+    profile.account_profile = "receiving-worker-profile".into();
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let (run, _) = router
+        .relay_submit_leased_prompt(
+            &lease.id,
+            profile,
+            Some(saved),
+            "continue after worker account adoption",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            crate::extension::RemoteExtensionManifest::default(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        app.lock()
+            .await
+            .providers()
+            .get_run(&run)
+            .unwrap()
+            .resume_state()
+            .is_empty(),
+        "the incoming home thread belongs to the previous physical profile"
+    );
+}
+
+#[test]
+fn tracked_worker_copy_adoption_preserves_its_existing_codex_profile_session() {
+    assert_tracked_worker_copy_session(Some(true));
+}
+
+#[test]
+fn tracked_worker_copy_adoption_without_a_run_drops_the_old_profile_session() {
+    assert_tracked_worker_copy_session(None);
+}
+
+fn assert_tracked_worker_copy_session(run_already_uses_copy: Option<bool>) {
+    crate::test_support::isolated_env_test!();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let registry = app.provider_account_profile_registry();
+    let old = registry
+        .create_managed(owner, "codex", "home account")
+        .unwrap();
+    let copied = registry
+        .create_managed(owner, "codex", "worker copy")
+        .unwrap();
+    let lease = {
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let execution = runtime
+            .create_execution_lease("home-kernel", "home-session", "home-agent", false, owner)
+            .unwrap();
+        runtime
+            .create_leased_agent(
+                &execution.id,
+                "codex",
+                &old.profile_id,
+                Some("model".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    let thread =
+        crate::provider::ProviderResumeState::from_codex_thread_id("previous-worker-thread");
+    app.agents_mut()
+        .set_agent_provider_resume_state(&lease.backing_agent_id, thread.clone())
+        .unwrap();
+    if let Some(already_copy) = run_already_uses_copy {
+        let request = crate::provider::LaunchProviderRequest::new(
+            &lease.backing_session_id,
+            "codex",
+            "codex",
+            if already_copy {
+                &copied.profile_id
+            } else {
+                &old.profile_id
+            },
+            "model",
+        )
+        .with_agent_id(&lease.backing_agent_id)
+        .with_owner_user_id(owner)
+        .with_resume_state(thread.clone());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "worker-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "tracked-copy-session-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run);
+    }
+    let receipt = crate::account_profile::ManagedContextProviderAccountReceipt {
+        context_id: "copy".into(),
+        package_sha256: "package".into(),
+        materialization_sha256: "materialization".into(),
+        provider: "codex".into(),
+        profile_id: copied.profile_id.clone(),
+    };
+    for _ in 0..2 {
+        registry
+            .record_transfer_origin(owner, &receipt, "home-kernel", &old.profile_id)
+            .unwrap();
+        let selected = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_profile(
+                &lease.id,
+                "codex".into(),
+                old.profile_id.clone(),
+                Some("model".into()),
+                None,
+            )
+            .unwrap();
+        assert_eq!(selected.account_profile, copied.profile_id);
+        let backing = app.agents().get_agent(&lease.backing_agent_id).unwrap();
+        if run_already_uses_copy == Some(true) {
+            assert_eq!(backing.provider_resume_state(), &thread, "same physical worker profile keeps its provider session, including a repeated copy");
+        } else {
+            assert!(backing.provider_resume_state().is_empty(), "a newly copied profile cannot resume a thread stored only in the old worker profile");
+        }
+    }
+}

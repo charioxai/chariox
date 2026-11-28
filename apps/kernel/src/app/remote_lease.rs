@@ -1656,6 +1656,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
 mod tests {
     use super::*;
     mod catalog_admission;
+    mod codex_account_adoption;
     mod profile_admission;
     mod skill_names;
 
