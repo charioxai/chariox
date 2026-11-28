@@ -22,6 +22,9 @@ pub(super) struct VolumeWrites {
     /// Cumulative new stream progress supported by the descriptor snapshots
     /// and allocation. Stable idle aliases are measurable; ambiguous movement is not.
     pub position_written_by_inode: BTreeMap<u64, u64>,
+    /// A conservative bound for this interval when cursor aliases are ambiguous.
+    /// It may consume current command bytes only, never earlier residual history.
+    pub stream_upper_by_inode: BTreeMap<u64, u64>,
     /// Its output goes here: it holds a writable file open here other than
     /// its standard streams, or did a moment ago. A log its streams go to
     /// does not say where a copy writes.

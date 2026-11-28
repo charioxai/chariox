@@ -2069,13 +2069,35 @@ impl StreamWrites {
                 (key, written)
             })
             .collect::<BTreeMap<_, _>>();
-        let continuous = complete
-            && observed.len() == self.outputs.len()
+        let retained = observed.len() == self.outputs.len()
             && observed.iter().all(|(key, written)| {
                 self.outputs
                     .get(key)
                     .is_some_and(|before| written >= before)
             });
+        let continuous = complete && retained;
+        let bounded = retained
+            && outputs.iter().all(|output| {
+                output.open.iter().all(|inode| {
+                    output.position_written_by_inode.contains_key(inode)
+                        || output.stream_upper_by_inode.contains_key(inode)
+                })
+            });
+        let upper = outputs.iter().fold(0u64, |sum, output| {
+            output.open.iter().fold(sum, |sum, inode| {
+                if output.position_written_by_inode.contains_key(inode) {
+                    sum
+                } else {
+                    sum.saturating_add(
+                        output
+                            .stream_upper_by_inode
+                            .get(inode)
+                            .copied()
+                            .unwrap_or(0),
+                    )
+                }
+            })
+        });
         let streamed = observed.iter().fold(0u64, |sum, (key, written)| {
             sum.saturating_add(
                 self.outputs
@@ -2086,7 +2108,9 @@ impl StreamWrites {
         // A newer I/O read on a cached process-table timestamp belongs to
         // the next interval, just as it does in the command/file samplers.
         if self.previous.is_some_and(|(before_at, _)| at == before_at) {
-            self.streams_changed |= !continuous;
+            // The file sampler retains its first baseline on a cached
+            // timestamp. Defer its interval bound until the next fresh sample.
+            self.streams_changed |= !bounded;
             self.pending_streamed = self.pending_streamed.saturating_add(streamed);
             // The file sampler rescans even on a cached table timestamp.
             // Follow its inode baselines while keeping the first command count.
@@ -2111,6 +2135,13 @@ impl StreamWrites {
             if continuous && !self.streams_changed {
                 known_writes = known_writes.saturating_add(command);
                 known_streamed = known_streamed.saturating_add(streamed);
+            } else if bounded && !self.streams_changed {
+                known_writes = known_writes.saturating_add(command);
+                known_streamed = known_streamed.saturating_add(streamed);
+                // An alias bound can count one write more than once. It may
+                // consume this command interval, never earlier valid history.
+                known_streamed =
+                    known_streamed.saturating_add(upper.min(command.saturating_sub(streamed)));
             } else {
                 // The excluded command delta can cover new writes on a
                 // stable stream. Only growth beyond those bytes can correct

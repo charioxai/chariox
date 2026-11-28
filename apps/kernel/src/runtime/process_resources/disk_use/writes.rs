@@ -41,6 +41,7 @@ struct FileGrowth {
     length: u64,
     modified: (i64, i64),
     descriptors: BTreeMap<(u32, u32), Descriptor>,
+    stream: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -89,6 +90,53 @@ impl FileSnapshot {
         // allocation can also be an older excluded write becoming visible.
         // Allow only the filesystem's allocation rounding around new progress.
         (added > 0 && allocated >= added && allocated - added < self.block_size).then_some(added)
+    }
+    fn stream_upper_bound(&self, before: Option<&FileGrowth>, at: u64) -> Option<u64> {
+        let before = before?;
+        if at < before.at
+            || self.length <= before.length
+            || self.allocated < before.allocated
+            || self.modified == before.modified
+            || self.descriptors.keys().ne(before.descriptors.keys())
+        {
+            return None;
+        }
+        let growth = self.length - before.length;
+        // Small progress can fit in the previously allocated tail. A sparse
+        // extension beyond that tail must still have new allocation evidence.
+        let tail = match before.length % self.block_size {
+            used if used > 0 && before.allocated > 0 => self.block_size - used,
+            _ => 0,
+        };
+        if growth > (self.allocated - before.allocated).saturating_add(tail) {
+            return None;
+        }
+        let mut upper = 0u64;
+        for (key, descriptor) in &self.descriptors {
+            let old = before.descriptors.get(key)?;
+            if old.flags != descriptor.flags
+                || descriptor.flags & libc::O_ACCMODE as u32 != libc::O_WRONLY as u32
+            {
+                return None;
+            }
+            let position = descriptor.position?;
+            let old_position = old.position?;
+            if position < old_position || position > self.length {
+                return None;
+            }
+            let added = if descriptor.flags & libc::O_APPEND as u32 != 0 {
+                growth
+            } else {
+                // Equal offsets do not prove a shared open description.
+                // An independent interior/overwriting cursor stays unknown.
+                if old_position != before.length || position <= old_position {
+                    return None;
+                }
+                position - old_position
+            };
+            upper = upper.saturating_add(added);
+        }
+        (upper > 0).then_some(upper)
     }
 }
 
@@ -178,6 +226,15 @@ impl WriteGrowth {
                 );
             }
         }
+        for (key, snapshot) in &mut snapshots {
+            if let Some(before) = self.files.get(key) {
+                snapshot.stream |= before.stream
+                    && snapshot
+                        .descriptors
+                        .keys()
+                        .any(|fd| before.descriptors.contains_key(fd));
+            }
+        }
         let streams = snapshots
             .iter()
             .filter_map(|(key, value)| value.stream.then_some(*key))
@@ -222,6 +279,7 @@ impl WriteGrowth {
                 files: Default::default(),
                 open: Default::default(),
                 written_by_inode: Default::default(),
+                stream_upper_by_inode: Default::default(),
                 position_written_by_inode: Default::default(),
                 receiving: false,
             });
@@ -231,6 +289,11 @@ impl WriteGrowth {
                 volume
                     .position_written_by_inode
                     .insert(key.1, position_written);
+            }
+            if position_added.is_none() {
+                if let Some(upper) = snapshot.stream_upper_bound(before, at) {
+                    volume.stream_upper_by_inode.insert(key.1, upper);
+                }
             }
             if !snapshot.stream {
                 volume.receiving = true;
@@ -272,6 +335,7 @@ impl WriteGrowth {
                     length,
                     modified,
                     descriptors,
+                    stream: snapshot.stream,
                 },
             );
         }
@@ -301,6 +365,7 @@ impl WriteGrowth {
                     files: Default::default(),
                     open: Default::default(),
                     written_by_inode: Default::default(),
+                    stream_upper_by_inode: Default::default(),
                     position_written_by_inode: Default::default(),
                     receiving: false,
                 });
