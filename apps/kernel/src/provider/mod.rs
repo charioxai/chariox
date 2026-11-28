@@ -86,6 +86,10 @@ pub(crate) use account_credential::{
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::{
+    claude_native_permission_interaction_id, is_claude_native_permission,
+    CLAUDE_PANE_STATUS_FILE_ENV, CLAUDE_TERMINAL_MODEL_FILE_ENV, CLAUDE_TERMINAL_MODE_FILE_ENV,
+};
+pub(crate) use claude::{
     prepare_claude_launch_state, trusted_workspace_notice, CLAUDE_START_BUDGET,
 };
 

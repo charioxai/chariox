@@ -73,7 +73,7 @@ impl KernelRuntimeState {
                 &agent_id,
                 agent.provider(),
                 model.or_else(|| agent.model().map(str::to_owned)),
-                effort.or_else(|| agent.effort().map(str::to_owned)),
+                effort.unwrap_or_else(|| agent.effort().map(str::to_owned)),
                 agent.account_profile().map(str::to_owned),
                 agent.provider_resume_state().clone(),
                 Some(run.id()),

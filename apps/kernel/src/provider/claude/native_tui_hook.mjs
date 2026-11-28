@@ -50,6 +50,11 @@ try {
   input = { hook_event_name: "parse_error", raw, error: String(error) }
 }
 const eventName = input.hook_event_name ?? "unknown"
+// A provider terminal reports the permission mode the person runs Claude in
+// (docs/PROTOCOL.md section 3.3.2.1); every hook input carries it.
+if (process.env.CHARIOX_CLAUDE_TERMINAL_MODE_FILE && typeof input.permission_mode === "string") {
+  try { writeFileSync(process.env.CHARIOX_CLAUDE_TERMINAL_MODE_FILE, input.permission_mode) } catch {}
+}
 const dispatchedContext = process.env.CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE === "dispatched"
 const promptText = typeof input.prompt === "string" ? input.prompt.trimStart() : ""
 const notificationContext = dispatchedContext && eventName === "UserPromptSubmit" && (

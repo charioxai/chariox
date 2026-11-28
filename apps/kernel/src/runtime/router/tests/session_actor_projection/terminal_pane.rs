@@ -150,7 +150,11 @@ impl Terminal {
     ) -> tokio::sync::oneshot::Receiver<crate::runtime::state::PendingInteractionResolution> {
         self.router
             .runtime_state
-            .create_runtime_interaction(&self.session_id, interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
+                &self.session_id,
+                interaction,
+            )
             .await
             .expect("the card is raised")
     }
