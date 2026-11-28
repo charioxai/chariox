@@ -1979,7 +1979,7 @@ impl StreamWrites {
         }
         let at = sample.sampled_at_ms;
         let window = FREE_WINDOW.as_millis() as u64;
-        // A missing or rewound descriptor position gives no aligned stream
+        // Unverifiable descriptor progress gives no aligned stream-write
         // evidence. Do not turn that uncertainty into a destructive candidate.
         if outputs.iter().any(|output| {
             output

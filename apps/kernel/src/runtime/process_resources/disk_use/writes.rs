@@ -24,6 +24,8 @@ struct FileGrowth {
     written: u64,
     position: Option<u64>,
     position_written: u64,
+    write_only: bool,
+    modified: (i64, i64),
 }
 
 impl WriteGrowth {
@@ -57,11 +59,13 @@ impl WriteGrowth {
                 else {
                     continue;
                 };
-                let writable = info
+                let access = info
                     .lines()
                     .find_map(|line| line.strip_prefix("flags:"))
                     .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
-                    .is_some_and(|flags| flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32);
+                    .map(|flags| flags & libc::O_ACCMODE as u32);
+                let writable = access.is_some_and(|mode| mode != libc::O_RDONLY as u32);
+                let write_only = access == Some(libc::O_WRONLY as u32);
                 if !writable {
                     continue;
                 }
@@ -77,6 +81,7 @@ impl WriteGrowth {
                     continue;
                 }
                 let allocated = meta.blocks().saturating_mul(512);
+                let modified = (meta.mtime(), meta.mtime_nsec());
                 let position = info
                     .lines()
                     .find_map(|line| line.strip_prefix("pos:"))
@@ -103,24 +108,39 @@ impl WriteGrowth {
                     Some(before) => (before.written, 0),
                     None => (0, 0),
                 };
-                let position_continuous =
-                    match (position, before.and_then(|before| before.position)) {
-                        (Some(now), Some(before)) => now >= before,
+                let position_continuous = before
+                    .is_none_or(|before| at >= before.at && write_only == before.write_only)
+                    && match (position, before) {
                         (Some(_), None) => true,
+                        (Some(now), Some(before)) => match before.position {
+                            Some(old) if now == old => modified == before.modified,
+                            // Reads on a read/write fd and a seek without a file
+                            // change cannot establish how much this stream wrote.
+                            Some(old) if now > old => {
+                                write_only
+                                    && (modified != before.modified
+                                        || allocated != before.allocated)
+                            }
+                            _ => false,
+                        },
                         _ => false,
                     };
                 let position_written = match before {
-                    Some(before) if at > before.at => before.position_written.saturating_add(
-                        position
-                            .zip(before.position)
-                            .map_or(0, |(now, old)| now.saturating_sub(old)),
-                    ),
+                    Some(before) if at > before.at && position_continuous && write_only => {
+                        before.position_written.saturating_add(
+                            position
+                                .zip(before.position)
+                                .map_or(0, |(now, old)| now.saturating_sub(old)),
+                        )
+                    }
                     Some(before) => before.position_written,
                     None => 0,
                 };
-                let position = before
+                let (position, write_only, modified) = before
                     .filter(|before| at <= before.at)
-                    .map_or(position, |before| before.position);
+                    .map_or((position, write_only, modified), |before| {
+                        (before.position, before.write_only, before.modified)
+                    });
                 let (allocated, at) = before
                     .filter(|before| at <= before.at)
                     .map_or((allocated, at), |before| (before.allocated, before.at));
@@ -132,6 +152,8 @@ impl WriteGrowth {
                         written,
                         position,
                         position_written,
+                        write_only,
+                        modified,
                     },
                 );
                 let volume = volumes.entry(key.0).or_insert_with(|| VolumeWrites {
