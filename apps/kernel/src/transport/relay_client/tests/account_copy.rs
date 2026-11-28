@@ -1314,6 +1314,16 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 source.relay_token.clone().unwrap(),
             ));
             wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if source_state.read().await.connected() {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the source must acknowledge its repaired relay connection");
             let resumed = source_request(&source_router, request.clone())
                 .await
                 .expect("repair must let the SAME operation resume its original unlock wait");
