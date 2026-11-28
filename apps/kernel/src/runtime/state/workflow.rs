@@ -115,10 +115,7 @@ impl KernelRuntimeOwnedState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
         let previous_run = existing_run.clone();
-        let (agent, turn_substitute) = self.admission_launch_profile(
-            self.agent_store.get_agent(agent_id)?,
-            workflow_node_run_id,
-        )?;
+        let agent = self.agent_store.get_agent(agent_id)?;
         let provider = crate::provider::provider_id_for_launch(agent.provider());
         // Only custom provider variants may reuse an adapter mapping from a prior
         // run. Known providers must always use their official adapter, including
@@ -239,8 +236,7 @@ impl KernelRuntimeOwnedState {
         )
         .with_agent_id(agent.id().to_string())
         .with_owner_user_id(agent.owner_user_id().to_string())
-        .with_variant(agent.effort().map(str::to_string))
-        .with_turn_substitute(turn_substitute);
+        .with_variant(agent.effort().map(str::to_string));
         if fresh_context || profile_changed {
             request.resume_state = Some(crate::provider::ProviderResumeState::default());
         }
@@ -274,91 +270,6 @@ impl KernelRuntimeOwnedState {
         self.provider_run_projection.update(run.clone());
         self.retain_pending_provider_launch_credentials(&provider_run_id, provider_credential_env);
         Ok((provider_run_id, retired_provider_run_id))
-    }
-
-    /// The profile a workflow node's cold launch uses: the agent's own, or the
-    /// first substitute that can run when the agent's account is refused for a
-    /// reason a substitute answers. The node's turn is not a prompt yet, so the
-    /// substitute is bound to the node; the dispatch of the active prompt
-    /// relaunches it for that turn. When none can run, the refusal is the answer.
-    pub(super) fn admission_launch_profile(
-        &self,
-        agent: crate::agent::AgentInstance,
-        workflow_node_run_id: Option<&str>,
-    ) -> Result<
-        (
-            crate::agent::AgentInstance,
-            Option<crate::provider::TurnSubstitute>,
-        ),
-        DaemonError,
-    > {
-        let Some(node_run_id) = workflow_node_run_id else {
-            return Ok((agent, None));
-        };
-        if agent.remote_execution().is_some() {
-            return Ok((agent, None));
-        }
-        let owner = self.provider_account_authority_owner_for_agent(&agent)?;
-        let refusal = match self.provider_account_profiles.require_agent_authenticated(
-            &owner,
-            &agent,
-            "admit turn",
-        ) {
-            Ok(()) => return Ok((agent, None)),
-            Err(refusal) => refusal,
-        };
-        if !crate::substitute_admission::substitute_can_answer(&refusal) {
-            return Ok((agent, None));
-        }
-        let daemon_id = self.config_projection.snapshot().daemon_id.clone();
-        let crate::substitute_admission::SubstituteChoice { index, skipped } =
-            crate::substitute_admission::first_usable_substitute(
-                &self.provider_account_profiles,
-                &owner,
-                &daemon_id,
-                &agent,
-                &[],
-            )?;
-        let attachments = self
-            .attachment_store
-            .list_session_attachment_ids(agent.session_id());
-        for (skipped_index, reason) in skipped {
-            self.record_notice(
-                agent.session_id(),
-                None,
-                attachments.clone(),
-                format!(
-                    "Skipping substitute {} for agent `{}`: {reason}.",
-                    skipped_index + 1,
-                    agent.id()
-                ),
-            );
-        }
-        // No profile can run: the entry waits for one, with the configured
-        // account's own reason, instead of failing at its credentials.
-        let Some(index) = index else {
-            return Err(refusal);
-        };
-        let profile = agent.substitutes()[index].clone();
-        let label = if profile.model.trim().is_empty() || profile.model == "default" {
-            profile.provider.clone()
-        } else {
-            profile.model.clone()
-        };
-        self.record_notice(
-            agent.session_id(),
-            None,
-            attachments,
-            format!(
-                "This turn runs on {label} because {}.",
-                refusal.to_string().trim_end_matches('.')
-            ),
-        );
-        let turn = crate::provider::TurnSubstitute {
-            prompt_id: format!("pending:{node_run_id}"),
-            tried: vec![profile.clone()],
-        };
-        Ok((agent.with_substitute_profile(&profile), Some(turn)))
     }
 
     pub(super) fn workflow_prompt_requires_fresh_provider_context(

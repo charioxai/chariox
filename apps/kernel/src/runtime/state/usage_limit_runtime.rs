@@ -870,12 +870,6 @@ fn event_notice(event: &StopEvent<'_>, stop: Option<&UsageLimitStop>) -> String 
                 clock(*at_ms)
             )
         }
-        (StopEvent::Reset { .. }, _) => {
-            format!(
-                "Usage is back on {}. The kernel resumes now.",
-                stop.account_label
-            )
-        }
         (StopEvent::Hit { .. }, UsageLimitStopState::Armed { at_ms }) if stop.refused == 0 => {
             format!(
                 "Usage limit reached on {}. The kernel resumes at {}.",

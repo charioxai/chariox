@@ -890,10 +890,9 @@ impl KernelRuntimeState {
                                     // The app mutex can outlive the grant. Reauthorize only
                                     // after acquiring it, before launching a cold provider.
                                     authorize()?;
-                                    app.ensure_prompt_provider_run_for_turn(
+                                    app.ensure_prompt_provider_run_for_agent(
                                         &session_id,
                                         &target_agent_id,
-                                        prepared.prompt.id(),
                                     )
                                     .map(|_| ())
                                 },

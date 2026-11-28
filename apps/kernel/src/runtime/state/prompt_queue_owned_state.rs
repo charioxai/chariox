@@ -138,50 +138,15 @@ impl KernelRuntimeOwnedState {
         let Err(error) = error else {
             return true;
         };
-        // A workflow entry deferred for its account shows the wait on its node,
-        // with the account and its reset, and tells the Room once.
-        let newly_held = match &error {
-            DaemonError::ProviderProfileRefused {
-                reason,
-                account_name,
-                ..
-            } => self
-                .session_store
-                .get_session(session_id)
-                .ok()
-                .and_then(|session| {
-                    self.prompt_state_owner
-                        .peek_next_queued_prompt(&session, agent.id())
-                })
-                .and_then(|head| {
-                    Some((
-                        head.workflow_run_id()?.to_string(),
-                        head.workflow_node_run_id()?.to_string(),
-                    ))
-                })
-                .is_some_and(|(run_id, node_run_id)| {
-                    self.workflow_hold_refused_entry(
-                        session_id,
-                        &run_id,
-                        &node_run_id,
-                        agent.id(),
-                        (*reason).into(),
-                        account_name,
-                    )
-                }),
-            _ => false,
-        };
-        if newly_held || !matches!(error, DaemonError::ProviderProfileRefused { .. }) {
-            crate::logging::warn_with_fields(
-                "daemon.prompt_queue",
-                "deferred queued prompt because its provider account is unavailable",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "agent_id": agent.id(),
-                    "error": error.to_string(),
-                }),
-            );
-        }
+        crate::logging::warn_with_fields(
+            "daemon.prompt_queue",
+            "deferred queued prompt because its provider account is unavailable",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent.id(),
+                "error": error.to_string(),
+            }),
+        );
         false
     }
 

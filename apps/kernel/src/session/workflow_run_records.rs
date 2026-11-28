@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::types::unix_epoch_ms;
 use super::workflow_outputs::{WorkflowCompletionSnapshot, WorkflowTurnSubmissionKind};
 use super::workflow_turns::{
-    WorkflowNodeRunStatus, WorkflowNodeWait, WorkflowNodeWaitingReason, WorkflowTurnEnvelope,
+    WorkflowNodeRunStatus, WorkflowNodeWaitingReason, WorkflowTurnEnvelope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,11 +140,6 @@ pub struct WorkflowNodeRun {
     waiting_reason: Option<WorkflowNodeWaitingReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_claim_holding_run_id: Option<String>,
-    /// The account the wait is on, by name, and when its usage is back.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    waiting_account: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    waiting_until_ms: Option<u64>,
     summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion: Option<WorkflowCompletionSnapshot>,
@@ -173,8 +168,6 @@ impl WorkflowNodeRun {
             status,
             waiting_reason: None,
             workspace_claim_holding_run_id: None,
-            waiting_account: None,
-            waiting_until_ms: None,
             summary: None,
             completion: None,
             turn_envelope: None,
@@ -249,29 +242,10 @@ impl WorkflowNodeRun {
         self.waiting_reason
     }
 
-    pub fn waiting_account(&self) -> Option<&str> {
-        self.waiting_account.as_deref()
-    }
-
-    pub fn waiting_until_ms(&self) -> Option<u64> {
-        self.waiting_until_ms
-    }
-
-    /// The whole wait of a held node: its reason, account and reset time.
-    pub fn held_wait(&self) -> Option<WorkflowNodeWait> {
-        Some(WorkflowNodeWait {
-            reason: self.waiting_reason?,
-            account: self.waiting_account.clone(),
-            resets_at_ms: self.waiting_until_ms,
-        })
-    }
-
     /// Only a held Ready node waits; any dispatch or outcome ends the wait.
-    pub fn set_wait(&mut self, wait: WorkflowNodeWait) {
+    pub fn set_waiting_reason(&mut self, reason: WorkflowNodeWaitingReason) {
         if self.status == WorkflowNodeRunStatus::Ready {
-            self.waiting_reason = Some(wait.reason);
-            self.waiting_account = wait.account;
-            self.waiting_until_ms = wait.resets_at_ms;
+            self.waiting_reason = Some(reason);
         }
     }
 
@@ -284,16 +258,10 @@ impl WorkflowNodeRun {
         self.workspace_claim_holding_run_id = holding_run_id.map(str::to_owned);
     }
 
-    pub fn set_waiting_reason(&mut self, reason: WorkflowNodeWaitingReason) {
-        self.set_wait(reason.into());
-    }
-
     pub fn set_status(&mut self, status: WorkflowNodeRunStatus) {
         self.status = status;
         if status != WorkflowNodeRunStatus::Ready {
             self.waiting_reason = None;
-            self.waiting_account = None;
-            self.waiting_until_ms = None;
         }
         if status != WorkflowNodeRunStatus::BlockedOnWorkspaceClaim {
             self.workspace_claim_holding_run_id = None;

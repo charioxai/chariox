@@ -28,25 +28,6 @@ pub enum WorkflowNodeWaitingReason {
     ProviderProfileUsageExhausted,
 }
 
-/// Why a held node waits, on which account, and until when that account's
-/// usage is back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowNodeWait {
-    pub reason: WorkflowNodeWaitingReason,
-    pub account: Option<String>,
-    pub resets_at_ms: Option<u64>,
-}
-
-impl From<WorkflowNodeWaitingReason> for WorkflowNodeWait {
-    fn from(reason: WorkflowNodeWaitingReason) -> Self {
-        Self {
-            reason,
-            account: None,
-            resets_at_ms: None,
-        }
-    }
-}
-
 impl From<crate::error::ProviderProfileRefusal> for WorkflowNodeWaitingReason {
     fn from(refusal: crate::error::ProviderProfileRefusal) -> Self {
         use crate::error::ProviderProfileRefusal as Refusal;

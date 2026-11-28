@@ -118,32 +118,6 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     fresh_context: bool,
     workflow_node_run_id: Option<&str>,
 ) -> Result<String, DaemonError> {
-    // A workflow node's process can start before its prompt is active: the
-    // substitute is then bound to the node, and the dispatch that finds the
-    // active prompt relaunches it for that turn.
-    let active_prompt_id = app
-        .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-        .map(|prompt| prompt.id().to_string());
-    let turn_prompt_id = active_prompt_id
-        .or_else(|| workflow_node_run_id.map(|node_run_id| format!("pending:{node_run_id}")));
-    app.with_admission_substitute(session_id, agent_id, turn_prompt_id.as_deref(), |app| {
-        launch_workflow_provider_run_for_agent(
-            app,
-            session_id,
-            agent_id,
-            fresh_context,
-            workflow_node_run_id,
-        )
-    })
-}
-
-fn launch_workflow_provider_run_for_agent(
-    app: &mut DaemonApp,
-    session_id: &str,
-    agent_id: &str,
-    fresh_context: bool,
-    workflow_node_run_id: Option<&str>,
-) -> Result<String, DaemonError> {
     if fresh_context {
         app.end_agent_provider_run(session_id, agent_id)?;
     }

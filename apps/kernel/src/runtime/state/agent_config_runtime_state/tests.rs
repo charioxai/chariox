@@ -28,9 +28,6 @@ mod self_settings;
 #[path = "tests/usage_limit.rs"]
 mod usage_limit;
 
-#[path = "tests/admission_substitute.rs"]
-mod admission_substitute;
-
 #[path = "tests/failure_causes.rs"]
 mod failure_causes;
 

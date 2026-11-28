@@ -249,15 +249,11 @@ impl KernelRuntimeOwnedState {
                 // intent before scheduling, and its prompt path owns recovery.
                 match self.workflow_start_next_queued_prompt_for_response(&session) {
                     Ok((_, dispatches)) => output.dispatches.extend(dispatches),
-                    Err(error) => {
-                        if let Some(silent_passes) = pass.refusal_log_due(&session) {
-                            crate::logging::warn_with_fields(
-                                "daemon.app_events",
-                                "durable App event remains queued for normal workflow recovery",
-                                serde_json::json!({"session_id":session,"error":error.to_string(),"silent_passes":silent_passes}),
-                            );
-                        }
-                    }
+                    Err(error) => crate::logging::warn_with_fields(
+                        "daemon.app_events",
+                        "durable App event remains queued for normal workflow recovery",
+                        serde_json::json!({"session_id":session,"error":error.to_string()}),
+                    ),
                 }
             }
         }

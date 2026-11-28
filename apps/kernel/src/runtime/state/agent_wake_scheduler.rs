@@ -228,12 +228,6 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(%error, "usage limit resume retained for retry");
             }
-            step.enter("usage resets");
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                self.tick_provider_usage_resets(crate::session::unix_epoch_ms()),
-            )
-            .await;
             while orphan_sweep.try_join_next().is_some() {}
             if orphan_sweep.is_empty() {
                 let state = self.clone();

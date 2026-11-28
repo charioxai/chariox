@@ -3,7 +3,6 @@
 //! While a wake or backlog is pending, the pump tells the transport pump when
 //! its next pass is due, so passes follow the one-second floor instead of the
 //! idle tick.
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,12 +19,7 @@ struct State {
     delivery: Option<AppCursor>,
     maintenance: Option<AppCursor>,
     dispatch: Option<String>,
-    /// When each session's refused dispatch was last logged, and how many
-    /// passes since stayed silent.
-    refusal_logged: HashMap<String, (Instant, u64)>,
 }
-/// A session whose queued work stays refused is logged once a minute.
-const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(60);
 pub(crate) struct AppEventPass {
     state: Arc<Mutex<State>>,
     delivery: Option<AppCursor>,
@@ -44,7 +38,6 @@ impl AppEventPump {
             delivery: None,
             maintenance: None,
             dispatch: None,
-            refusal_logged: HashMap::new(),
         })))
     }
     pub(crate) fn set_gate_due(&self, due: Option<Instant>) {
@@ -96,25 +89,6 @@ impl AppEventPump {
     }
 }
 impl AppEventPass {
-    /// `Some(passes kept silent)` when `session_id`'s refusal is due in the
-    /// log, `None` when it was logged less than a minute ago.
-    pub(crate) fn refusal_log_due(&self, session_id: &str) -> Option<u64> {
-        let now = Instant::now();
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        match state.refusal_logged.get_mut(session_id) {
-            Some((logged, silent)) if now.duration_since(*logged) < REFUSAL_LOG_INTERVAL => {
-                *silent += 1;
-                None
-            }
-            slot => {
-                let silent = slot.map_or(0, |(_, silent)| *silent);
-                state
-                    .refusal_logged
-                    .insert(session_id.to_string(), (now, 0));
-                Some(silent)
-            }
-        }
-    }
     pub(crate) fn delivery_after(&self) -> Option<(&str, &str)> {
         self.delivery
             .as_ref()

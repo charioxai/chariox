@@ -289,7 +289,8 @@ impl<'a> KernelAgentService<'a> {
                 .app
                 .provider_account_authority_owner_for_agent(&target_agent)?;
             self.app
-                .require_agent_admitted(&account_owner, &target_agent, "submit prompt")?;
+                .provider_account_profiles
+                .require_agent_authenticated(&account_owner, &target_agent, "submit prompt")?;
         }
         let (provider_run_id, provider_run_is_starting) = if remote_execution.is_some() {
             (None, false)
@@ -304,11 +305,10 @@ impl<'a> KernelAgentService<'a> {
                     .get_run_for_agent(&session_id, &target_agent_id)
                     .map(|run| run.id().to_string())
             } else {
-                Some(self.app.ensure_prompt_provider_run_for_turn(
-                    &session_id,
-                    &target_agent_id,
-                    prompt.id(),
-                )?)
+                Some(
+                    self.app
+                        .ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)?,
+                )
             };
             let provider_run_is_starting = provider_run_id
                 .as_deref()
