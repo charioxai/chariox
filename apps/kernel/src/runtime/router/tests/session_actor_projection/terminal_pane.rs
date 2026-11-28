@@ -504,3 +504,106 @@ async fn overlapping_gets_share_one_open_dialog_until_cancel() {
         "cancel leaves the card open"
     );
 }
+
+#[tokio::test]
+async fn an_unanswered_dialog_is_offered_again_after_its_get_disconnects() {
+    let terminal = terminal().await;
+    let mut first = terminal.stream().await;
+    let resolved = terminal
+        .raise(question("unanswered", &terminal.agent_id))
+        .await;
+    let original = next_message(&mut first, "elicitation/create", Duration::from_secs(3))
+        .await
+        .expect("the original GET offers the card");
+    drop(first);
+    let mut replacement = terminal.stream().await;
+    let offered = next_message(
+        &mut replacement,
+        "elicitation/create",
+        Duration::from_secs(3),
+    )
+    .await
+    .expect("disconnecting does not dismiss an unanswered card");
+    assert_ne!(
+        original["id"], offered["id"],
+        "the live GET owns a new request"
+    );
+    assert_eq!(offered["params"]["message"], "Question unanswered");
+    terminal
+        .http(
+            Method::POST,
+            json!({"jsonrpc":"2.0","id":offered["id"],
+        "result":{"action":"accept","content":{"choice":"allow"}}})
+            .to_string(),
+        )
+        .await;
+    let answer = tokio::time::timeout(Duration::from_secs(2), resolved)
+        .await
+        .expect("the replacement GET's answer settles the card")
+        .unwrap();
+    assert_eq!(answer.choice_id.as_deref(), Some("allow"));
+    assert!(terminal.feed().await.cards.is_empty());
+}
+
+#[tokio::test]
+async fn an_external_answer_cancels_the_dialog_on_the_get_that_offered_it() {
+    let terminal = terminal().await;
+    // The replacement already has an empty feed when the original offers the card.
+    let mut replacement = terminal.stream().await;
+    assert!(next_message(
+        &mut replacement,
+        "elicitation/create",
+        Duration::from_millis(100)
+    )
+    .await
+    .is_none());
+    let mut original = terminal.stream().await;
+    let _resolved = terminal
+        .raise(question("external-overlap", &terminal.agent_id))
+        .await;
+    let dialog = next_message(&mut original, "elicitation/create", Duration::from_secs(3))
+        .await
+        .expect("the original GET offers the dialog");
+    assert!(
+        next_message(
+            &mut replacement,
+            "notifications/cancelled",
+            Duration::from_millis(1200)
+        )
+        .await
+        .is_none(),
+        "an older empty feed cannot cancel another GET's offer"
+    );
+    let request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+        session_id: terminal.session_id.clone(),
+        interaction_id: "external-overlap".into(),
+        choice_id: "allow".into(),
+        custom_reply: None,
+        passkey: None,
+        passkey_remember_minutes: None,
+    });
+    let command = KernelCommand::from_local_request("web", None, None, &request);
+    terminal
+        .router
+        .dispatch(command, request)
+        .await
+        .expect("another client answers");
+    let cancelled = next_message(
+        &mut original,
+        "notifications/cancelled",
+        Duration::from_secs(3),
+    )
+    .await
+    .expect("cancellation reaches the GET with the visible dialog");
+    assert_eq!(cancelled["params"]["requestId"], dialog["id"]);
+    assert!(
+        next_message(
+            &mut replacement,
+            "notifications/cancelled",
+            Duration::from_millis(1200)
+        )
+        .await
+        .is_none(),
+        "a replacement GET does not cancel a request it never offered"
+    );
+}
