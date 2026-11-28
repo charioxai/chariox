@@ -261,6 +261,32 @@ fn spawned_agent() -> crate::agent::AgentInstance {
 }
 
 #[test]
+fn account_copy_wait_is_reported_as_pending_metadata_to_the_agent() {
+    let wait = crate::provider_account_copy::ProviderAccountCopyWait {
+        operation_id: "copy-operation".into(),
+        source_kernel_id: "source".into(),
+        target_kernel_id: "target".into(),
+        target_label: "Receiving machine".into(),
+        expires_at_ms: 600_000,
+    };
+    let response = LocalDaemonResponse::ProviderAccountCopyWaiting { wait: wait.clone() };
+    let result = super::result::meta_command_success_result(
+        "provider accounts copy target --provider claude --account-profile work",
+        &response,
+        &spawned_agent(),
+        false,
+    );
+    assert!(result.ok);
+    assert_eq!(
+        result.payload["response"],
+        serde_json::json!({
+            "type": "ProviderAccountCopyWaiting", "wait": wait,
+        })
+    );
+    assert!(!result.payload.to_string().contains("CommandAccepted"));
+}
+
+#[test]
 fn a_spawn_answer_states_the_worktree_the_facts_name_and_none_when_they_name_none() {
     let named =
         super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(Some("/workspace")));
