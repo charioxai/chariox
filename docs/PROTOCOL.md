@@ -7346,6 +7346,11 @@ card is open replaces it. The older card ends `unavailable` ("Replaced by the ag
 and the new card's result (wait:false or waiting) names it as `replaced`. Hand-off, App confirmation, verification, page-text
 and `until` cards are never replaced.
 
+Row 666 (no shape change): an open card whose Tab closed (a sign-in popup closing itself when the person is done)
+ends at once with reason `Browser tab closed`: a plain card as `condition_met`, a card waiting for page text or a proof
+as `unavailable`. A card on a page shows the sign-in popup or new tab that page opens while it is open (also one already
+in front when the card opens), and the person's input there needs no Take over while the card is pending.
+
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
 that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that
 id or a choice labelled Done). The agent hears `status: "answered"`, `choice_id: "done"`: the person's word, which
