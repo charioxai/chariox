@@ -143,7 +143,8 @@ extension RuntimeInteraction {
             defaultOnTimeout: nil,
             requestedAtMs: 1,
             relatedAgentID: nil,
-            customChoice: nil
+            customChoice: nil,
+            shownInAgentID: nil
         )
     }
 }

@@ -16,6 +16,7 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
     public let requestedAtMs: Int64
     public let relatedAgentID: String?
     public let customChoice: RuntimeInteractionCustomChoice?
+    public let shownInAgentID: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -33,6 +34,7 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
         case requestedAtMs = "requested_at_ms"
         case relatedAgentID = "related_agent_id"
         case customChoice = "custom_choice"
+        case shownInAgentID = "shown_in_agent_id"
     }
 }
 
@@ -72,6 +74,7 @@ extension RuntimeInteraction {
         requestedAtMs = try values.decode(Int64.self, forKey: .requestedAtMs)
         relatedAgentID = try values.decodeIfPresent(String.self, forKey: .relatedAgentID)
         customChoice = try values.decodeIfPresent(RuntimeInteractionCustomChoice.self, forKey: .customChoice)
+        shownInAgentID = try values.decodeIfPresent(String.self, forKey: .shownInAgentID)
     }
 }
 
@@ -95,5 +98,13 @@ public struct RuntimeInteractionCustomChoice: Identifiable, Equatable, Sendable,
         case minLength = "min_length"
         case maxLength = "max_length"
         case inputKind = "input_kind"
+    }
+}
+
+extension RuntimeInteraction {
+    func appears(inAgentPane agent: String, defaultAgentID: String?) -> Bool {
+        let subject = relatedAgentID ?? agentID
+        let pane = surface == "pane_status" ? subject : (shownInAgentID ?? subject ?? defaultAgentID)
+        return pane == agent
     }
 }

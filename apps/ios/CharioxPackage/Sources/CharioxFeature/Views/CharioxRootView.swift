@@ -381,6 +381,8 @@ private struct AgentPane: View {
     var body: some View {
         VStack(spacing: 0) {
             TranscriptSurface(entries: model.transcriptEntries(for: agent), agent: agent)
+            InteractionPromptPanel(model: model, agentID: agent.id)
+                .padding(.horizontal, 10)
             AgentPaneFooter(
                 agent: agent,
                 focused: focused,
@@ -703,9 +705,13 @@ private struct RuntimeInventory: View {
 
 private struct InteractionPromptPanel: View {
     @Bindable var model: CharioxAppModel
+    var agentID: String? = nil
 
     var body: some View {
-        let interactions = (model.selectedSession?.activeInteractions ?? []).filter { $0.surface == "card" }
+        let shown = (model.selectedSession?.activeInteractions ?? []).filter { interaction in
+            agentID == nil || interaction.appears(inAgentPane: agentID!, defaultAgentID: model.selectedSession?.focusedAgentID)
+        }
+        let interactions = shown.filter { $0.surface == "card" }
         if !interactions.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Interaction")
@@ -737,7 +743,7 @@ private struct InteractionPromptPanel: View {
             }
         }
         // Recovery belongs to the subject's pane and keeps its kernel choices.
-        ForEach((model.selectedSession?.activeInteractions ?? []).filter { $0.surface == "pane_status" && ($0.relatedAgentID ?? $0.agentID) == model.selectedSession?.focusedAgentID }) { status in
+        ForEach(shown.filter { $0.surface == "pane_status" }) { status in
             VStack(alignment: .leading, spacing: 8) {
                 Text(status.displayTitle)
                     .foregroundStyle(status.level == "critical" ? CharioxPalette.red : CharioxPalette.orange)

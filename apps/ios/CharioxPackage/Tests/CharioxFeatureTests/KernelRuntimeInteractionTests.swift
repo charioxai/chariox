@@ -59,3 +59,19 @@ private func interactionData(_ subject: [String: Any]) throws -> Data {
     #expect(status.relatedAgentID == "child")
     #expect(status.choices.first?.id == "extend")
 }
+
+@Test func attachedRoomPaneRoutesRecoveryToTheChildAndQuestionToItsHolder() throws {
+    let status = try JSONDecoder().decode(RuntimeInteraction.self, from: interactionData([
+        "agent_id": "child", "shown_in_agent_id": "parent", "surface": "pane_status", "card_type": NSNull(),
+        "choices": [["id": "resume", "label": "Resume", "reply": "resume"], ["id": "fresh", "label": "Start fresh", "reply": "fresh"]],
+    ]))
+    #expect(status.appears(inAgentPane: "child", defaultAgentID: "parent"))
+    #expect(!status.appears(inAgentPane: "parent", defaultAgentID: "parent"))
+    let question = try JSONDecoder().decode(RuntimeInteraction.self, from: interactionData([
+        "agent_id": "child", "shown_in_agent_id": "parent", "card_type": "Question", "kind": "choice",
+        "custom_choice": ["id": "reply", "label": "Something else"],
+    ]))
+    #expect(question.appears(inAgentPane: "parent", defaultAgentID: "parent"))
+    #expect(!question.appears(inAgentPane: "child", defaultAgentID: "parent"))
+    #expect(question.customChoice?.id == "reply")
+}
