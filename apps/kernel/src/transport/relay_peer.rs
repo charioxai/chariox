@@ -1598,6 +1598,9 @@ pub enum RelayPeerResponse {
         record: Option<crate::project_environment::ProjectEnvironmentRecord>,
         /// Secret names the source's Vault holds a value for.
         secrets: Vec<String>,
+        /// Of those, the names linked on the source (filled from a Vault entry or copied from a linked
+        /// Secret): a copy of one follows the source's value at each Update. Names only, never a value.
+        linked: Vec<String>,
         /// Listed Files that exist in the source's checkout.
         files: Vec<String>,
         /// Listed MCP registrations and skills this source holds.
