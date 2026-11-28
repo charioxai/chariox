@@ -1369,13 +1369,39 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             .expect("target cancel must stop the source retry");
             assert!(notices(read_vault().await.unwrap()).is_empty());
             assert_code(
-                source_request(&source_router, cancel_copy).await,
+                source_request(&source_router, cancel_copy.clone()).await,
                 "provider_account_copy_cancelled",
                 canary,
             );
             source_request(&target_router, serde_json::json!({"UnlockCredentialVault": {
                 "passphrase": "fixture-pass", "duration":{"kind":"until_kernel_stops"}, "surface":"vault_window"
             }})).await.unwrap();
+            if scenario == CopyScenario::RecoverableRetry {
+                let (observer, mut observations) = tokio::sync::mpsc::unbounded_channel();
+                target_state
+                    .write()
+                    .await
+                    .test_set_authenticated_peer_request_observer(observer);
+                let retry = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    source_request(&source_router, cancel_copy),
+                )
+                .await
+                .expect("a cancelled copy must settle without contacting the target again");
+                target_state
+                    .write()
+                    .await
+                    .test_clear_authenticated_peer_request_observer();
+                assert_code(retry, "provider_account_copy_cancelled", canary);
+                assert!(
+                    matches!(
+                        observations.try_recv(),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                            | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+                    ),
+                    "unlocking after cancellation must not send another copy"
+                );
+            }
         }
         // Target admission also sees authenticated wrong-owner/realm and forged binding cases.
         let base_binding = serde_json::json!({
