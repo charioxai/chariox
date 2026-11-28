@@ -451,6 +451,8 @@ fn terminal_output_event(session_id: &str, marker: &str) -> KernelEvent {
             pending_recipient_attachment_ids: vec!["attachment-a".to_string()],
             bytes: marker.as_bytes().to_vec(),
             external_observation_metadata: None,
+            replaces: false,
+            continues_replacement: false,
         }],
     }
 }

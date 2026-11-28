@@ -45,6 +45,10 @@ export type TranscriptStreamEntry = {
 
 export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {
   readonly historySequence?: number | undefined
+  /** The chunk is the whole text of its merge key's row, not more of it. */
+  readonly replaces?: true | undefined
+  /** The chunk is more of the text a `replaces` chunk of the same merge key set: it joins that row, wherever the row is now. */
+  readonly continuesReplacement?: true | undefined
   readonly promptId?: string | null | undefined
   readonly promptOrigin?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
@@ -288,6 +292,17 @@ function mergeProviderChunk(
     mergeAdjacentUnkeyedRoles,
   } = options
 
+  if (mergeKey && metadata.replaces) {
+    return replaceKeyedRow(entries, { role, normalized, normalizedSource, mergeKey, metadata, providerRunId })
+  }
+  if (mergeKey && metadata.continuesReplacement) {
+    // A later piece of a replacement joins the row the first piece set, wherever that row is now.
+    const continued = continueKeyedRow(entries, { role, normalized, normalizedSource, mergeKey, metadata, providerRunId })
+    if (continued) {
+      return continued
+    }
+  }
+
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const candidate = entries[index]
@@ -365,6 +380,84 @@ function sameStreamingMergeIdentity(
     return false
   }
   return true
+}
+
+/**
+ * The whole text of a keyed row: its first fragment takes it and the fragments
+ * a tool row split off are dropped. The merge key names one prompt's row, so a
+ * replacement that lands after later rows or in a later turn still finds it.
+ */
+function replaceKeyedRow(
+  entries: MutableTranscriptStreamEntry[],
+  options: {
+    role: string
+    normalized: string
+    normalizedSource: string | undefined
+    mergeKey: string
+    metadata: TranscriptStreamMetadata
+    providerRunId: string | null | undefined
+  },
+): { readonly kind: "noop" | "merged"; readonly entry: MutableTranscriptStreamEntry } | null {
+  const fragments = entries.flatMap((candidate, index) =>
+    candidate.role === options.role
+    && candidate.mergeKey === options.mergeKey
+    && sameStreamingMergeIdentity(candidate, { currentTurnId: null, providerRunId: options.providerRunId, metadata: options.metadata })
+      ? [index]
+      : [])
+  const [first, ...rest] = fragments
+  if (first === undefined) {
+    return null
+  }
+  const row = entries[first]!
+  if (rest.length === 0 && row.text === options.normalized && row.sourceText === options.normalizedSource) {
+    return { kind: "noop", entry: row }
+  }
+  for (const index of rest.reverse()) {
+    entries.splice(index, 1)
+  }
+  row.text = options.normalized
+  if (options.normalizedSource === undefined) {
+    delete row.sourceText
+  } else {
+    row.sourceText = options.normalizedSource
+  }
+  applyStreamMetadata(row, options.metadata, { preserveExisting: true })
+  return { kind: "merged", entry: row }
+}
+
+/**
+ * More of a replacement than fit one record: it goes on the row the first piece set, however many tool rows
+ * or turns came after that row. Nothing to join (the first piece never arrived) leaves the piece to start a row.
+ */
+function continueKeyedRow(
+  entries: MutableTranscriptStreamEntry[],
+  options: {
+    role: string
+    normalized: string
+    normalizedSource: string | undefined
+    mergeKey: string
+    metadata: TranscriptStreamMetadata
+    providerRunId: string | null | undefined
+  },
+): { readonly kind: "merged"; readonly entry: MutableTranscriptStreamEntry } | null {
+  let row: MutableTranscriptStreamEntry | undefined
+  for (let index = entries.length - 1; index >= 0 && !row; index -= 1) {
+    const candidate = entries[index]!
+    if (candidate.role === options.role
+      && candidate.mergeKey === options.mergeKey
+      && sameStreamingMergeIdentity(candidate, { currentTurnId: null, providerRunId: options.providerRunId, metadata: options.metadata })) {
+      row = candidate
+    }
+  }
+  if (!row) {
+    return null
+  }
+  row.text += options.normalized
+  if (options.normalizedSource !== undefined) {
+    row.sourceText = `${row.sourceText ?? ""}${options.normalizedSource}`
+  }
+  applyStreamMetadata(row, options.metadata, { preserveExisting: true })
+  return { kind: "merged", entry: row }
 }
 
 function applyMergedChunk(

@@ -415,6 +415,9 @@ public struct TerminalOutputRecord: Equatable, Sendable, Decodable {
     public let kind: String
     public let mergeKey: String?
     public let bytes: [UInt8]
+    /// Protocol 1016: the bytes take the place of the row under `mergeKey`
+    /// instead of being added to it (a reply streamed live gets its finished text).
+    public var replaces: Bool?
 
     public var text: String {
         String(decoding: bytes, as: UTF8.self)
@@ -425,6 +428,7 @@ public struct TerminalOutputRecord: Equatable, Sendable, Decodable {
         case kind
         case mergeKey = "merge_key"
         case bytes
+        case replaces
     }
 }
 
