@@ -20,6 +20,7 @@ mod mcp_paging;
 mod stale_waits;
 #[cfg(unix)]
 mod unwatched_work;
+mod owner_wait;
 mod watch_open;
 
 const KIND: &str = "test-source";
