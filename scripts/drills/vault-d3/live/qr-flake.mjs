@@ -5,6 +5,7 @@
 // (D3_DEBUG_FILE), because the kernel's own error label hides it ("host browser operation failed"). Prints one line per round.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { kernelBrowserScript } from "./paths.mjs"
 import { startDrillKernel } from "./drill-kernel.mjs"
 import { restartFixtures, stopFixtures, fixtureState } from "./boat.mjs"
 
@@ -13,9 +14,10 @@ const evidence = flags.get("--evidence")
 if (!evidence?.startsWith("/root/.chariox/dev/")) throw new Error("--evidence must be under /root/.chariox/dev/")
 const rounds = Number(flags.get("--rounds") ?? 4), pause = Number(flags.get("--pause") ?? 0)
 mkdirSync(evidence, { recursive: true, mode: 0o700 })
+const browserScript = kernelBrowserScript(process.env.D3_KERNEL_SCRIPT)
 const origins = restartFixtures()
 const debugFile = join(evidence, "controller-errors.jsonl")
-const extraEnv = { D3_DEBUG_FILE: debugFile, ...(process.env.D3_KERNEL_SCRIPT ? { CHARIOX_KERNEL_BROWSER_SCRIPT: process.env.D3_KERNEL_SCRIPT } : {}) }
+const extraEnv = { D3_DEBUG_FILE: debugFile, ...(browserScript ? { CHARIOX_KERNEL_BROWSER_SCRIPT: browserScript } : {}) }
 const k = await startDrillKernel({ label: "d3qr", binary: process.env.D3_KERNEL_BIN, stateRoot: "/root/.chariox/dev/orch15-vaultd3prep/state", evidence, tokenFile: "/root/.claude-lanes/oauth-token.chariox", model: flags.get("--model") ?? "claude-haiku-5-5", extraEnv })
 try {
   const work = join(k.dir, "work", "qr"), r = await k.room("qr", work)

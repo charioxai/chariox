@@ -7,6 +7,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { kernelBrowserScript, kernelStateSurfaces } from "./paths.mjs"
 import { startDrillKernel } from "./drill-kernel.mjs"
 import { boat, fixtureState, restartFixtures, stopFixtures } from "./boat.mjs"
 import { spawn } from "node:child_process"
@@ -24,9 +25,10 @@ const cell = (id, status, detail) => { results.push({ id, status, detail }); con
 const sha8 = v => createHash("sha256").update(v).digest("hex").slice(0, 8)
 const read = p => existsSync(p) ? readFileSync(p, "utf8") : ""
 
+const browserScript = kernelBrowserScript(process.env.D3_KERNEL_SCRIPT)
 const origins = restartFixtures()
 const needles = join(evidence, "needles"); mkdirSync(needles, { recursive: true, mode: 0o700 })
-const k = await startDrillKernel({ label: "d3live", binary: process.env.D3_KERNEL_BIN, stateRoot: "/root/.chariox/dev/orch15-vaultd3prep/state", evidence, tokenFile: "/root/.claude-lanes/oauth-token.chariox", model, extraEnv: { D3_DEBUG_FILE: join(evidence, "controller-errors.jsonl"), ...(process.env.D3_KERNEL_SCRIPT ? { CHARIOX_KERNEL_BROWSER_SCRIPT: process.env.D3_KERNEL_SCRIPT } : {}) } })
+const k = await startDrillKernel({ label: "d3live", binary: process.env.D3_KERNEL_BIN, stateRoot: "/root/.chariox/dev/orch15-vaultd3prep/state", evidence, tokenFile: "/root/.claude-lanes/oauth-token.chariox", model, extraEnv: { D3_DEBUG_FILE: join(evidence, "controller-errors.jsonl"), ...(browserScript ? { CHARIOX_KERNEL_BROWSER_SCRIPT: browserScript } : {}) } })
 const exportDir = join(evidence, "export"); mkdirSync(exportDir, { recursive: true, mode: 0o700 })
 const hasFiles = p => { try { return statSync(p).isFile() || readdirSync(p).some(n => hasFiles(join(p, n))) } catch { return false } }
 const exportState = async (r, name) => writeFileSync(join(exportDir, name), JSON.stringify(await k.session(r.id)), { mode: 0o600 })
@@ -95,7 +97,7 @@ Final answer: DONE.`
   const hasDir = p => hasFiles(p)
   const bar = (p, files) => ({ path: p, files })
   const surfaceDefs = [
-    { label: "kernel-state", path: join(k.dir, "chariox", "state") },
+    ...kernelStateSurfaces(join(k.dir, "chariox")),
     // The session transcript store is chariox/history/operational.db (history.operational.enabled, default on); CHARIOX_SESSION_HISTORY_DIR is only
     // the fallback root and stays empty when CHARIOX_HOME is set. chariox/sessions holds the per-session jsonl log and is empty on this build.
     { label: "session-history", path: join(k.dir, "chariox", "history") }, { label: "session-log-jsonl", path: join(k.dir, "chariox", "sessions") },
@@ -122,7 +124,7 @@ Final answer: DONE.`
   writeFileSync(join(evidence, "surface-matrix.json"), JSON.stringify({ roots: scannedRoots, absent, matrix, hit_files: Object.fromEntries(Object.entries(hitFiles).map(([g, by]) => [g, Object.fromEntries(Object.entries(by).map(([s, f]) => [s, f.map(x => x.replace(k.dir, "<run>"))]))])) }, null, 2) + "\n")
   // Which live decoy proves which surface: the decoy planted for that surface, not a stand-in.
   const candidates = {
-    "kernel-state": ["decoy-chat", "decoy-shell"], "session-history": ["decoy-chat", "decoy-shell"], "session-log-jsonl": ["decoy-chat"], "traces": ["decoy-client", "decoy-alias", "decoy-chat"], "kernel-log": ["decoy-alias", "decoy-badid"],
+    "kernel-state": ["decoy-chat", "decoy-shell"], "kernel-durable-state": ["decoy-chat", "decoy-shell"], "session-history": ["decoy-chat", "decoy-shell"], "session-log-jsonl": ["decoy-chat"], "traces": ["decoy-client", "decoy-alias", "decoy-chat"], "kernel-log": ["decoy-alias", "decoy-badid"],
     "provider-session": ["decoy-shell", "decoy-chat"], "provider-tmp-events": ["decoy-shell", "decoy-chat"], "kernel-cache": ["decoy-alias", "decoy-badid"],
     "session-export": ["decoy-card"], "workspace": ["decoy-work"], "browser-frames-ocr": ["decoy-frame"], "process-argv": ["decoy-argv"], "process-environ": ["decoy-environ"],
   }
