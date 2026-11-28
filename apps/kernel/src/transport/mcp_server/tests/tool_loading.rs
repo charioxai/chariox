@@ -4,23 +4,12 @@ use super::*;
 const TOKEN: &str = "claude-print-tool-loading-token";
 const BUDGET: &str = include_str!("../../../../agent_context_budget.json");
 
-/// What a Claude agent must have in context before its first call (delegation is one of them, so
-/// handing work to sub-agents costs no tool search); every other runtime tool is found through
-/// Claude Code's tool search.
-const CORE_TOOLS: [&str; 4] = [
-    "chariox.agents.run",
-    "chariox.events.ack",
-    "chariox.events.inbox",
-    "chariox.permission_prompt",
-];
-
-/// An agent another agent started: its inbox and the permission prompt.
-const SUB_AGENT_CORE_TOOLS: [&str; 4] = [
-    "chariox.events.ack",
-    "chariox.events.blocked",
-    "chariox.events.inbox",
-    "chariox.permission_prompt",
-];
+/// The one list of upfront tools (`agent_upfront_tools.json`): what a Claude agent must have in
+/// context before its first call, and what an agent another agent started has; every other
+/// runtime tool is found through Claude Code's tool search.
+fn core_tools(role: &str) -> Vec<String> {
+    super::super::tool_loading::upfront_names("claude", role).to_vec()
+}
 
 fn always_load(tool: &Value) -> bool {
     tool["_meta"]["anthropic/alwaysLoad"] == true
@@ -104,7 +93,7 @@ async fn claude_run_loads_its_core_tools_upfront_and_finds_the_rest_on_demand() 
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     upfront.sort_unstable();
-    assert_eq!(upfront, CORE_TOOLS);
+    assert_eq!(upfront, core_tools("agent"));
 
     let names: Vec<&str> = tools
         .iter()
@@ -133,7 +122,7 @@ async fn a_sub_agent_loads_only_its_inbox_tools_and_finds_the_rest_on_demand() {
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     upfront.sort_unstable();
-    assert_eq!(upfront, SUB_AGENT_CORE_TOOLS);
+    assert_eq!(upfront, core_tools("sub_agent"));
 
     let (_, agent_tools) = claude_catalog(false).await;
     assert_eq!(
