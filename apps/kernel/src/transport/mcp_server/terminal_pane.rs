@@ -31,8 +31,8 @@ const REQUEST_ID_PREFIX: &str = "chariox-card-";
 /// arrives as a separate POST; whoever takes the entry closes the dialog.
 static DIALOGS: LazyLock<Mutex<HashMap<String, Dialog>>> = LazyLock::new(Default::default);
 
-// A reconnect belongs to the same provider run: it keeps the open dialog, dismissals and
-// observed settings. Discard ended runs whenever another terminal connects or answers.
+// A reconnect belongs to the same provider run: it keeps dismissals and observed
+// settings. Only a live GET owns a dialog offer. Discard ended runs whenever another terminal connects or answers.
 static RUN_PANES: LazyLock<Mutex<HashMap<String, RunPane>>> = LazyLock::new(Default::default);
 
 struct RunPane {
@@ -45,8 +45,15 @@ struct RunPane {
 struct RunPaneState {
     /// The provider run survives reconnecting its notification stream.
     closed_here: BTreeSet<String>,
-    open: Option<(String, String)>,
+    open: Option<OpenDialog>,
     model_seen: Option<TerminalModel>,
+}
+
+#[derive(Clone)]
+struct OpenDialog {
+    stream_id: String,
+    request_id: String,
+    card_id: String,
 }
 
 fn run_state(router: &Arc<CommandRouter>, token: &str, run_id: &str) -> Arc<Mutex<RunPaneState>> {
@@ -141,6 +148,7 @@ pub(super) fn stream(
     let agent_id = run.agent_instance_id()?.to_string();
     let state = run_state(&router, &token, run.id());
     let pane = Pane {
+        stream_id: next_request_id(),
         sessions_seen: router.session_projection_change_sequence(),
         inbox_seen: router.person_inbox_change_sequence(),
         router: Arc::downgrade(&router),
@@ -185,6 +193,7 @@ pub(super) fn stream(
 }
 
 struct Pane {
+    stream_id: String,
     router: Weak<CommandRouter>,
     token: String,
     run_id: String,
@@ -193,13 +202,21 @@ struct Pane {
     agent_id: String,
     files: PaneFiles,
     shutdown: tokio::sync::watch::Receiver<()>,
-    /// Dialog ownership, dismissals and observed settings belong to the run, across GET streams.
+    /// Dismissals and observed settings belong to the run, across GET streams.
     state: Arc<Mutex<RunPaneState>>,
     status: Option<String>,
     feed: Option<PaneFeed>,
     feed_due: Instant,
     sessions_seen: u64,
     inbox_seen: u64,
+}
+
+impl Drop for Pane {
+    fn drop(&mut self) {
+        // An unanswered card remains in the kernel feed. Releasing this connection's
+        // offer lets a replacement GET present it with a fresh request ID.
+        self.close();
+    }
 }
 
 impl Pane {
@@ -215,8 +232,13 @@ impl Pane {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((request_id, _)) = state.open.take() {
-            dialogs().remove(&request_id);
+        if state
+            .open
+            .as_ref()
+            .is_some_and(|open| open.stream_id == self.stream_id)
+        {
+            let open = state.open.take().expect("this stream owns the offer");
+            dialogs().remove(&open.request_id);
         }
     }
 
@@ -231,9 +253,13 @@ impl Pane {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((request_id, card_id)) = state.open.clone() {
-                if !dialogs().contains_key(&request_id) {
-                    state.closed_here.insert(card_id);
+            if let Some(open) = state
+                .open
+                .clone()
+                .filter(|open| open.stream_id == self.stream_id)
+            {
+                if !dialogs().contains_key(&open.request_id) {
+                    state.closed_here.insert(open.card_id);
                     state.open = None;
                     self.feed_due = Instant::now();
                 }
@@ -253,14 +279,18 @@ impl Pane {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((request_id, card_id)) = state.open.clone() {
-            if !feed.cards.iter().any(|card| card.id == card_id) {
-                // Answered elsewhere: close the terminal's dialog.
-                dialogs().remove(&request_id);
+        if let Some(open) = state
+            .open
+            .clone()
+            .filter(|open| open.stream_id == self.stream_id)
+        {
+            if !feed.cards.iter().any(|card| card.id == open.card_id) {
+                // Only the GET with the visible dialog may reconcile and cancel it.
+                dialogs().remove(&open.request_id);
                 frames.extend(sse_message(&serde_json::json!({
                     "jsonrpc": JSON_RPC_VERSION,
                     "method": "notifications/cancelled",
-                    "params": { "requestId": request_id, "reason": "Answered in Chariox." }
+                    "params": { "requestId": open.request_id, "reason": "Answered in Chariox." }
                 })));
                 state.open = None;
             }
@@ -283,7 +313,11 @@ impl Pane {
                     card_id: dialog.0,
                     answers: dialog.1,
                 };
-                state.open = Some((request_id.clone(), dialog.card_id.clone()));
+                state.open = Some(OpenDialog {
+                    stream_id: self.stream_id.clone(),
+                    request_id: request_id.clone(),
+                    card_id: dialog.card_id.clone(),
+                });
                 dialogs().insert(request_id.clone(), dialog);
                 frames.extend(sse_message(&serde_json::json!({
                     "jsonrpc": JSON_RPC_VERSION,
