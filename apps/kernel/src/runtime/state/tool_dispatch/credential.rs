@@ -224,7 +224,9 @@ impl KernelRuntimeState {
                 } else {
                     let resolution_rx = self
                         .create_runtime_interaction(
-                            crate::runtime::state::CardKind::VaultCredentialPayment,
+                            crate::runtime::state::InteractionSurface::named(
+                                "credential_secret_capture",
+                            ),
                             &session_id,
                             interaction,
                         )
@@ -942,7 +944,7 @@ impl KernelRuntimeState {
         let timeout_sec = interaction.timeout_sec();
         let resolution_rx = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::VaultCredentialPayment,
+                crate::runtime::state::InteractionSurface::named("credential_secret"),
                 &context.home_session_id,
                 interaction,
             )

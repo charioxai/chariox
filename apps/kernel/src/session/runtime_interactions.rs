@@ -275,7 +275,17 @@ impl NativeInteractionOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "surface", rename_all = "snake_case")]
+enum RuntimeInteractionPresentation {
+    Card { card_type: String },
+    PaneStatus,
+    Hidden,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    #[serde(flatten)]
+    presentation: RuntimeInteractionPresentation,
     /// Kernel-resolved presentation; agents supply only the observed element reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     view: Option<RuntimeInteractionView>,
@@ -449,6 +459,9 @@ impl RuntimeInteraction {
         default_on_timeout: Option<String>,
     ) -> Self {
         Self {
+            presentation: RuntimeInteractionPresentation::Card {
+                card_type: String::new(),
+            },
             view: None,
             asking_task_id: None,
             related_agent_id: None,
@@ -616,6 +629,44 @@ impl RuntimeInteraction {
         self
     }
 
+    pub(crate) fn with_level(mut self, level: RuntimeInteractionLevel) -> Self {
+        self.level = level;
+        self
+    }
+
+    pub fn card_type(&self) -> &str {
+        match &self.presentation {
+            RuntimeInteractionPresentation::Card { card_type } => card_type,
+            RuntimeInteractionPresentation::PaneStatus | RuntimeInteractionPresentation::Hidden => {
+                ""
+            }
+        }
+    }
+
+    pub fn is_pane_status(&self) -> bool {
+        matches!(
+            self.presentation,
+            RuntimeInteractionPresentation::PaneStatus
+        )
+    }
+
+    pub(crate) fn with_card_type(mut self, card_type: &str) -> Self {
+        self.presentation = RuntimeInteractionPresentation::Card {
+            card_type: card_type.to_owned(),
+        };
+        self
+    }
+
+    pub(crate) fn as_pane_status(mut self) -> Self {
+        self.presentation = RuntimeInteractionPresentation::PaneStatus;
+        self
+    }
+
+    pub(crate) fn hidden(mut self) -> Self {
+        self.presentation = RuntimeInteractionPresentation::Hidden;
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -693,6 +744,9 @@ impl RuntimeInteraction {
         choices: Vec<RuntimeInteractionChoice>,
     ) -> Self {
         Self {
+            presentation: RuntimeInteractionPresentation::Card {
+                card_type: String::new(),
+            },
             view: None,
             asking_task_id: None,
             related_agent_id: None,

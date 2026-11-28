@@ -15,6 +15,8 @@ test("session active interaction lookup is scoped to an agent", () => {
     active_interactions: [{
       id: "interaction-1",
       agent_id: "agent-2",
+      surface: "card",
+      card_type: "provider_native_permission",
       kind: "permission",
       level: "info",
       title: "Approve?",
@@ -36,6 +38,8 @@ test("session focused interaction lookup follows focused agent fallback", () => 
     active_interactions: [{
       id: "interaction-2",
       agent_id: "agent-2",
+      surface: "card",
+      card_type: "provider_native_permission",
       kind: "permission",
       level: "info",
       title: "Approve?",
@@ -54,6 +58,8 @@ const projectedCard = (id: string, agentId: string, shownIn: string | null, at: 
   id,
   agent_id: agentId,
   shown_in_agent_id: shownIn,
+  surface: "card" as const,
+  card_type: "provider_native_permission",
   kind: "permission" as const,
   level: "info" as const,
   title: "Approve?",
@@ -210,4 +216,16 @@ test("same provider run compares identity and projected runtime metadata", () =>
       },
     },
   }), false)
+})
+
+test("card lookup excludes pane status, hidden recovery and unknown types", () => {
+  const { card_type: _type, ...base } = projectedCard("status", "agent-r", null, 1)
+  const session = makeSession({ active_interactions: [
+    { ...base, surface: "pane_status" },
+    { ...base, id: "hidden", surface: "hidden" },
+    { ...base, id: "unknown", surface: "card", card_type: "unregistered-test-type" },
+  ] })
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-r"), null)
+  const approved = projectedCard("approved", "agent-r", null, 2)
+  assert.equal(sessionActiveInteractionForAgent({ ...session, active_interactions: [...session.active_interactions!, approved] }, "agent-r")?.id, "approved")
 })

@@ -40,7 +40,8 @@ fn app_confirmation_shapes_are_pinned() {
         Some(300),
         Some("cancel".into()),
     )
-    .with_app_confirmation(frame);
+    .with_app_confirmation(frame)
+    .with_card_type("app_view_confirmation");
     let mut wire = serde_json::to_value(interaction).unwrap();
     wire["requested_at_ms"] = serde_json::json!(1);
     assert_eq!(
@@ -85,6 +86,6 @@ fn app_confirmation_shapes_are_pinned() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "c8c844cfbe1be93205cb3aa5cbdc831b7740cc7fc77350cce87a8cc9f7df180f"
+        "cf210e9172d12ebafb8b183c5a2ebc702cc6c352ba8dc1e6ef997d7e9e2857b1"
     );
 }

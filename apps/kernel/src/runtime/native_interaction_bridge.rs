@@ -657,7 +657,7 @@ async fn request_runtime_interaction_holding(
         let receiver = if let Some(request) = codex_approval {
             state
                 .create_codex_workspace_approval(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::native(&interaction),
                     session_id,
                     interaction.clone(),
                     request,
@@ -666,7 +666,7 @@ async fn request_runtime_interaction_holding(
         } else {
             state
                 .create_runtime_interaction_with_forwarding(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::native(&interaction),
                     session_id,
                     interaction.clone(),
                     forwarding,
@@ -940,7 +940,7 @@ mod tests {
         let second_id = format!("native-queue-{session}-second");
         let first = state
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &session,
                 queued_permission(&first_id, &agent, 10),
             )
@@ -1175,7 +1175,7 @@ mod tests {
         let second_id = format!("native-queue-{session}-second");
         let _first = state
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &session,
                 queued_permission(&first_id, &agent, 10),
             )
@@ -1207,7 +1207,7 @@ mod tests {
         let shared = format!("shared-{agent}");
         let first = state
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &session,
                 queued_permission(&shared, &agent, 10),
             )

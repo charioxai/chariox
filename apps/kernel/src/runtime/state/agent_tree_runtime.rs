@@ -75,7 +75,7 @@ impl KernelRuntimeState {
                     .agent_deadline(agent.session_id(), agent.id())
                     .ok()
                     .flatten()
-                    .map(|deadline| deadline.deadline_ms)
+                    .map(|deadline| (deadline.deadline_ms, deadline.state))
             },
             &|agent| {
                 let active = active_turns.values().any(|turn| {

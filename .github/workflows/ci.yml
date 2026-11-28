@@ -74,6 +74,9 @@ jobs:
       - name: Build shared TypeScript packages
         run: pnpm build:kernel-client
 
+      - name: Card type admission ratchet fixtures
+        run: node --test scripts/checks/runtime-card-registry.test.mjs
+
       - name: Lint
         run: pnpm lint
 

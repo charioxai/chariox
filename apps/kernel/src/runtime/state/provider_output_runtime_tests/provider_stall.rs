@@ -48,6 +48,16 @@ async fn provider_stall_reaches_the_parent_once_with_recovery_actions() {
         let cards = stall_cards(&room, &kid.child);
         assert_eq!(cards.len(), 1);
         let card = cards[0];
+        assert!(card.is_pane_status());
+        assert!(
+            card.card_type().is_empty(),
+            "a provider stall is never a card"
+        );
+        assert_eq!(
+            card.level(),
+            crate::session::RuntimeInteractionLevel::Critical
+        );
+        assert_eq!(card.shown_in_agent_id(), Some(kid.child.as_str()));
         assert!(card.message().contains("child"));
         assert!(card.message().contains("10 minutes"));
         assert!(card.message().contains("provider"));

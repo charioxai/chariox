@@ -125,6 +125,8 @@ extension RuntimeInteraction {
             id: id,
             agentID: agentID,
             kernelOperationID: nil,
+            surface: "card",
+            cardType: "provider_native_permission",
             kind: "permission",
             level: "warning",
             title: nil,

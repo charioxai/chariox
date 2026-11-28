@@ -533,6 +533,8 @@ test("sessionActiveInteractionForAgent returns active interaction scoped to agen
   const session = makeSession({
     active_interactions: [{
       id: "interaction-1",
+      surface: "card",
+      card_type: "provider_native_permission",
       agent_id: "agent-2",
       kind: "permission",
       level: "info",

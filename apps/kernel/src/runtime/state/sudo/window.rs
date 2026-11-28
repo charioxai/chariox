@@ -446,7 +446,7 @@ impl KernelRuntimeState {
             .with_timeout_sec(remaining);
         let rx = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("sudo_window_extension"),
                 &turn.session_id,
                 owner,
                 interaction,

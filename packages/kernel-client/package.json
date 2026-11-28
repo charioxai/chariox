@@ -112,7 +112,8 @@
     "./agent-task-state": "./dist/agent-task-state.js",
     "./ipc-runtime-identity-requests": "./dist/ipc-runtime-identity-requests.js",
     "./context-transfer-types": "./dist/context-transfer-types.js",
-    "./ipc-control-plane-requests": "./dist/ipc-control-plane-requests.js"
+    "./ipc-control-plane-requests": "./dist/ipc-control-plane-requests.js",
+    "./runtime-card-types": "./dist/runtime-card-types.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

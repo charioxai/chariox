@@ -4,7 +4,7 @@ import Testing
 
 private func interactionData(_ subject: [String: Any]) throws -> Data {
     var value: [String: Any] = [
-        "id": "decision", "kind": "permission", "level": "warning",
+        "id": "decision", "surface": "card", "card_type": "provider_native_permission", "kind": "permission", "level": "warning",
         "message": "Review App installation", "choices": [], "requested_at_ms": 1,
     ]
     value.merge(subject) { _, replacement in replacement }

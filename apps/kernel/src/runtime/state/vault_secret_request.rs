@@ -71,7 +71,7 @@ impl KernelRuntimeState {
         let expires_at = crate::session::unix_epoch_ms() + SECRET_REQUEST_TIMEOUT_SEC * 1000;
         let answer = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::VaultCredentialPayment,
+                crate::runtime::state::InteractionSurface::named("vault_secret_request"),
                 ACCESS_INTERACTION_SCOPE,
                 &grant.owner_user_id,
                 interaction,

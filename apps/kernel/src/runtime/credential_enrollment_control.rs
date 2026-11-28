@@ -339,7 +339,7 @@ pub(crate) async fn execute_credential_enrollment_interaction(
     );
     let receiver = state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::ProviderLogin,
+            crate::runtime::state::InteractionSurface::named("credential_enrollment"),
             &request.session_id,
             interaction,
         )

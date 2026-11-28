@@ -360,7 +360,7 @@ impl KernelRuntimeState {
         // still awaiting the owner is answered first.
         let answer = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::App,
+                crate::runtime::state::InteractionSurface::named("app_deployment_consent"),
                 &consent.session_id,
                 &owner,
                 interaction,

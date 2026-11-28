@@ -3,59 +3,105 @@
 use super::*;
 use crate::session::{RuntimeInteraction, RuntimeSession};
 
-mod live_room_card;
-pub(crate) use live_room_card::LiveRoomCard;
+mod live_room_interaction;
+pub(crate) use live_room_interaction::LiveRoomInteraction;
 
-macro_rules! card_kinds {
-    ($($variant:ident => [$name:literal, $event:literal, $live:literal, $answers:literal, $ends:literal, $restart:literal]),+ $(,)?) => {
-        #[derive(Clone, Copy, Debug)]
-        pub(crate) enum CardKind {
-            $($variant),+
-        }
-
-        impl CardKind {
-            const fn name(self) -> &'static str {
-                match self { $(Self::$variant => $name),+ }
-            }
-        }
-
-        #[cfg(test)]
-        const TABLE: &str = concat!(
-            "| Group | Trigger | Live state | Answerer | Retirement | Cold restart |\n",
-            "| --- | --- | --- | --- | --- | --- |\n",
-            $("| ", $name, " | ", $event, " | ", $live, " | ", $answers, " | ", $ends, " | ", $restart, " |\n",)+
-        );
-    };
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InteractionSurface {
+    Card(&'static str),
+    PaneStatus,
+    Hidden,
 }
 
-card_kinds! {
-    Task => ["Task", "An owner blocker or task question is admitted", "Current blocked revision or unanswered wake bound to its task", "Eligible holder or Room owner", "Answer, timeout, cancellation or supersession", "Recheck the ledger and rearm current blockers"],
-    NativePermissionInput => ["Native permission or input", "Provider request, forwarded request or live popup", "Live requester and matching provider turn or lease where applicable", "Eligible holder or Room owner under native policy", "Answer, timeout or end of the caller or turn", "Requires a fresh request"],
-    ProviderLogin => ["Provider login", "Login, logout, recovery, enrollment or account copy needs input", "Current provider-account operation and requester", "Authorized account or kernel owner", "Answer, process exit, timeout or cancellation", "Only a recovered operation can request input again"],
-    VaultCredentialPayment => ["Vault, credential or payment", "An exact secret, unlock, credential or payment operation needs input", "Current requester and exact operation, with secret delivery scoped to its destination", "Authorized owner", "Answer, completion, timeout or abandonment", "Requires a new live waiter"],
-    RuntimeGrant => ["Runtime grant", "An operation needs a missing permission", "Current requesting operation and ungranted scope", "Authorized owner or eligible holder", "Answer, existing grant, timeout or abandonment", "Requires a fresh request"],
-    App => ["App", "An App install, publish, validation, deployment or host operation needs consent", "Current pending operation and eligible App revision or caller", "Authorized App owner or eligible holder", "Answer, expiry, revocation or abandonment", "Revalidate still-pending durable operations"],
-    OwnerControl => ["Owner control", "An owner decision, access request, hand-off or usage stop needs a response", "Current operation, authorized owner, and applicable live requester or target", "Authorized owner or eligible holder under the operation's policy", "Answer, timeout, supersession or abandonment", "Revalidate durable hand-offs and usage stops"],
+impl InteractionSurface {
+    pub(crate) const fn named(name: &'static str) -> Self {
+        Self::Card(name)
+    }
+    pub(crate) fn native(interaction: &RuntimeInteraction) -> Self {
+        let id = interaction.id();
+        if id.starts_with("opencode-permission-") {
+            Self::named("opencode_permission")
+        } else if id.starts_with("codex-command-approval-")
+            || id.starts_with("codex-exec-command-approval-")
+        {
+            Self::named("codex_command_approval")
+        } else if id.starts_with("codex-file-change-approval-")
+            || id.starts_with("codex-apply-patch-approval-")
+        {
+            Self::named("codex_file_change_approval")
+        } else if id.starts_with("claude-permission-") {
+            Self::named("claude_permission_hook")
+        } else {
+            Self::named("provider_native_permission")
+        }
+    }
+
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::Card(name) => name,
+            Self::PaneStatus => "pane status",
+            Self::Hidden => "hidden operation",
+        }
+    }
+    pub(super) const fn is_card(self) -> bool {
+        matches!(self, Self::Card(_))
+    }
+    pub(super) const fn is_visible(self) -> bool {
+        !matches!(self, Self::Hidden)
+    }
+    pub(super) fn present(self, interaction: RuntimeInteraction) -> RuntimeInteraction {
+        match self {
+            Self::Card(name) => interaction.with_card_type(name),
+            Self::PaneStatus => interaction.as_pane_status(),
+            Self::Hidden => interaction.hidden(),
+        }
+    }
 }
 
-/// A producer selects an existing trigger group. The presentation remains
+/// A producer names its individual type. The presentation remains
 /// untrusted until the normal registration path has validated its authority.
-pub(in crate::runtime::state) struct CardRequest(pub CardKind, pub RuntimeInteraction);
+pub(in crate::runtime::state) struct InteractionRequest(
+    pub InteractionSurface,
+    pub RuntimeInteraction,
+);
 
-fn stale(kind: CardKind, id: &str) -> DaemonError {
-    tracing::error!(card_group = kind.name(), interaction_id = %id, "card refused: no live requester");
+pub(super) fn require_registered_type(interaction: &RuntimeInteraction) -> Result<(), DaemonError> {
+    if crate::session::runtime_card_class(interaction.card_type()).is_none() {
+        tracing::error!(
+            card_type = interaction.card_type(),
+            interaction_id = interaction.id(),
+            "card refused: unregistered type"
+        );
+        return Err(interaction_error("This card type is not registered. Keep the operation in its existing pane until its individual type is approved."));
+    }
+    if interaction.card_type() == "Question"
+        && (interaction.kind() != crate::session::RuntimeInteractionKind::Choice
+            || interaction.custom_choice().is_none())
+    {
+        return Err(interaction_error(
+            "A Question has a free-text answer, with optional choices.",
+        ));
+    }
+    Ok(())
+}
+
+fn stale(kind: InteractionSurface, id: &str) -> DaemonError {
+    tracing::error!(presentation_type = kind.name(), interaction_id = %id, "card refused: no live requester");
     interaction_error("The requesting operation ended before its card could open")
 }
 
-pub(super) fn card_presentation(card: &LiveRoomCard) -> &RuntimeInteraction {
+pub(super) fn interaction_presentation(card: &LiveRoomInteraction) -> &RuntimeInteraction {
     card.presentation()
 }
 
 pub(super) fn admit_scoped_card(
-    kind: CardKind,
+    kind: InteractionSurface,
     interaction: &RuntimeInteraction,
     responder: &tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
 ) -> Result<(), DaemonError> {
+    if kind.is_card() {
+        require_registered_type(interaction)?;
+    }
     if responder.is_closed() {
         return Err(stale(kind, interaction.id()));
     }
@@ -66,14 +112,17 @@ impl KernelRuntimeOwnedState {
     /// Called after the domain has admitted the request and while registration
     /// owns the session mutation. A renderable card cannot leave this boundary
     /// unless the requester is still live.
-    pub(super) fn admit_room_card(
+    pub(super) fn admit_room_interaction(
         &self,
-        kind: CardKind,
+        kind: InteractionSurface,
         interaction: RuntimeInteraction,
         pending: &super::super::PendingInteraction,
         session: &RuntimeSession,
         worker_live: bool,
-    ) -> Result<LiveRoomCard, DaemonError> {
+    ) -> Result<LiveRoomInteraction, DaemonError> {
+        if kind.is_card() {
+            require_registered_type(&interaction)?;
+        }
         if session.status() == crate::session::SessionStatus::Ended
             || pending.nobody_waits()
             || !worker_live
@@ -81,15 +130,19 @@ impl KernelRuntimeOwnedState {
         {
             return Err(stale(kind, interaction.id()));
         }
-        Ok(LiveRoomCard::admitted(interaction))
+        Ok(LiveRoomInteraction::admitted(interaction))
     }
 }
 
 #[cfg(test)]
 #[test]
-fn generated_card_table_covers_each_kind() {
-    assert_eq!(
-        include_str!("../../../../../../docs/RUNTIME_CARD_RULES.md"),
-        TABLE
-    );
+fn documented_types_match_the_authoritative_list() {
+    let entries: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../../../../docs/runtime-card-types.json"
+    ))
+    .unwrap();
+    let documentation = include_str!("../../../../../../docs/RUNTIME_CARD_RULES.md");
+    for entry in entries {
+        assert!(documentation.contains(entry["type"].as_str().unwrap()));
+    }
 }

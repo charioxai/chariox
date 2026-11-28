@@ -380,7 +380,7 @@ async fn f4_legacy_decisions_inner() {
         let _pending = router
             .runtime_state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &id,
                 decision_owner,
                 interaction,

@@ -612,3 +612,65 @@ async fn a_parents_limit_leaves_three_sub_agents_running_and_each_is_told() {
         assert!(text.contains(alias), "{alias} is named: {text}");
     }
 }
+
+#[tokio::test]
+async fn taxonomy_actual_deadline_transition_is_a_tree_warning_and_pane_status_without_a_card() {
+    let team = team_with("taxonomy-deadline-transition", None, true).await;
+    let deadline = crate::session::unix_epoch_ms() + 30;
+    set_deadline(&team, &team.child, deadline).await;
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    team.runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    let response = team
+        .runtime
+        .list_descendants(
+            session.owner_user_id(),
+            crate::local::ListDescendantsRequest {
+                session_id: team.room.clone(),
+                agent_id: team.parent.clone(),
+            },
+        )
+        .unwrap();
+    let tree = serde_json::to_value(response).unwrap();
+    let node = tree["AgentTree"]["tree"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["agent_id"] == team.child)
+        .unwrap();
+    assert_eq!(node["state"], "time_limit_ended");
+    let status = session
+        .active_interactions()
+        .iter()
+        .find(|interaction| {
+            interaction.related_agent_id() == Some(team.child.as_str())
+                && interaction.is_pane_status()
+        })
+        .expect("owning pane warning after the actual transition");
+    assert_eq!(
+        status.level(),
+        crate::session::RuntimeInteractionLevel::Warning
+    );
+    assert_eq!(status.shown_in_agent_id(), Some(team.child.as_str()));
+    assert!(session
+        .active_interactions()
+        .iter()
+        .all(|interaction| interaction.card_type().is_empty()));
+    let reached = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_deadline(&team.room, &team.child)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reached.state, crate::local::AgentDeadlineState::Reached);
+    assert!(reached.stopped_at_ms.is_some());
+}

@@ -346,7 +346,7 @@ impl KernelRuntimeState {
         );
         let receiver = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::ProviderLogin,
+                crate::runtime::state::InteractionSurface::named("provider_account_copy"),
                 "",
                 owner,
                 interaction,

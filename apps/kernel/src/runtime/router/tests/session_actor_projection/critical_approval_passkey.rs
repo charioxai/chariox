@@ -119,7 +119,7 @@ impl Fixture {
         self.router
             .runtime_state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::App,
+                crate::runtime::state::InteractionSurface::named("app_install"),
                 &self.session,
                 DEFAULT_LOCAL_USER_ID,
                 RuntimeInteraction::for_kernel_operation(
@@ -483,7 +483,7 @@ async fn routine_decisions_agent_meta_and_other_users_are_unchanged() {
         .router
         .runtime_state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::App,
+            crate::runtime::state::InteractionSurface::named("app_install"),
             &f.session,
             DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(
@@ -543,7 +543,7 @@ async fn routine_decisions_agent_meta_and_other_users_are_unchanged() {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::App,
+            crate::runtime::state::InteractionSurface::named("app_install"),
             &f.session,
             agent_question,
         )

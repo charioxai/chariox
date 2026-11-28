@@ -314,7 +314,11 @@ impl AppInstallControl {
             let interaction = approval_interaction(&prompt.challenge);
             let result = runtime
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::App,
+                    if prompt.challenge.is_update() {
+                        crate::runtime::state::InteractionSurface::named("app_update")
+                    } else {
+                        crate::runtime::state::InteractionSurface::named("app_install")
+                    },
                     &prompt.session,
                     &prompt.key.0,
                     interaction,

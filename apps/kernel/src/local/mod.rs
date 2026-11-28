@@ -35,9 +35,9 @@ pub use api::{
 pub use api::{
     ListNotificationSubscriptionsRequest, NotificationSubscriptionChange,
     NotificationSubscriptionHealth, NotificationSubscriptionRow, NotificationTraceLine,
-    NotificationTraceTurn, PersonInboxFlag, PersonInboxWorkflowRun, PersonResponsibilityRow,
-    ReadNotificationTraceRequest, RemoveNotificationSubscriptionRequest,
-    TestNotificationSubscriptionRequest, UpdateNotificationSubscriptionRequest,
+    NotificationTraceTurn, PersonResponsibilityRow, ReadNotificationTraceRequest,
+    RemoveNotificationSubscriptionRequest, TestNotificationSubscriptionRequest,
+    UpdateNotificationSubscriptionRequest,
 };
 pub use api::{OwnerViewRequest, OwnerViewRows, OwnerViewWatcher};
 mod api;

@@ -296,6 +296,17 @@ impl DurableKernelStateStore {
             .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
             .pop())
     }
+    pub(crate) fn task_block_is_interrupted(
+        &self,
+        task: &str,
+        revision: u64,
+    ) -> Result<bool, DaemonError> {
+        self.lock_connection("agent.lifecycle.block_cause")?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_interrupted_blocks WHERE task_id=?1 AND blocked_revision=?2)",
+            params![task, sql_integer(revision)?], |row| row.get(0)
+        ).map_err(sql)
+    }
+
     pub(crate) fn task_card_is_dismissed(
         &self,
         task: &str,

@@ -80,7 +80,7 @@ async fn cards() {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.other_room,
             card("xroom-perm", &world.ids["q"], false),
         )
@@ -155,7 +155,7 @@ async fn kernel_decision_metadata() {
         receivers.push(
             state
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     "",
                     card_owner,
                     decision,
@@ -208,7 +208,7 @@ async fn paged() {
                 .router
                 .runtime_state
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     &world.other_room,
                     &owner,
                     interaction,
@@ -257,7 +257,7 @@ async fn answer() {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.other_room,
             card("xroom-answer", &world.ids["q"], false),
         )
@@ -295,7 +295,7 @@ async fn secrets() {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.other_room,
             card("xroom-secret", &world.ids["q"], true),
         )
@@ -384,7 +384,7 @@ async fn authority() {
             .router
             .runtime_state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 room,
                 &owner,
                 interaction,
@@ -420,7 +420,7 @@ async fn authority() {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.other_room,
             card("limited", &world.ids["q"], false),
         )
@@ -468,7 +468,7 @@ async fn passkey() {
         .router
         .runtime_state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.other_room,
             &owner,
             interaction,
@@ -541,7 +541,7 @@ async fn competing_answers() {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.other_room,
             card("race", &world.ids["q"], false),
         )
@@ -609,7 +609,7 @@ async fn owner_identity() {
         .router
         .runtime_state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &target,
             "xroom-owner",
             interaction,

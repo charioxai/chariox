@@ -63,7 +63,7 @@ impl KernelRuntimeState {
         let interaction_id = interaction.id().to_string();
         let resolution = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::RuntimeGrant,
+                crate::runtime::state::InteractionSurface::named("workspace_live_sync_permission"),
                 session_id,
                 interaction,
             )

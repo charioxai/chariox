@@ -90,7 +90,7 @@ impl Tree {
     ) -> tokio::sync::oneshot::Receiver<PendingInteractionResolution> {
         self.runtime
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &self.room,
                 interaction,
             )
@@ -360,7 +360,7 @@ async fn a_cross_room_childs_permission_goes_to_its_parent() {
     let mut answer = t
         .runtime
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &destination,
             permission("perm-cross-room", &child),
         )
@@ -1671,7 +1671,7 @@ async fn a_sub_agents_owner_card_is_listed_for_the_person_in_its_top_parents_pan
     let _answer = t
         .runtime
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &t.room,
             &owner,
             card,

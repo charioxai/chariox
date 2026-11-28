@@ -264,7 +264,7 @@ impl KernelRuntimeState {
         };
         let receiver = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::App,
+                crate::runtime::state::InteractionSurface::named("app_view_confirmation"),
                 session_id,
                 interaction,
             )

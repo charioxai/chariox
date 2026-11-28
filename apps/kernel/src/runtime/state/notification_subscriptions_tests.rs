@@ -1,7 +1,6 @@
 //! NC-09 / NC-10 / NC-11: the subscriptions table lists each subscription of the owner's agents
 //! once, with what it picked and its counters; pause holds delivery back and resume lets the
-//! next event through; Test is a dry run; an orphan says why, raises a flag in the person's
-//! Inbox, and is removed cleanly.
+//! next event through; Test is a dry run; an orphan says why in its owning view and is removed cleanly.
 use super::options::{app_event_source, review_requested, subscribe};
 use super::*;
 use crate::local::{
@@ -45,26 +44,27 @@ impl Rig {
         }
     }
 
-    /// The flag cards of the person's Inbox: none any more, a stopped subscription is status on its row.
-    fn flags(&self) -> Vec<(String, NotificationSubscriptionHealth)> {
+    /// Stopped subscriptions never create an Inbox card.
+    fn inbox_cards(&self) -> Vec<crate::local::PersonInboxCard> {
         match crate::runtime::person_inbox::execute_person_inbox_request(
             &self.runtime,
             &crate::runtime::command::KernelCaller::default(),
         )
         .unwrap()
         {
-            LocalDaemonResponse::PersonInbox { cards, .. } => cards
-                .into_iter()
-                .filter_map(|card| match card.body {
-                    crate::local::PersonInboxCardBody::Flag(flag) => {
-                        assert_eq!(card.card_id, format!("flag:{}", flag.subscription_id));
-                        Some((flag.subscription_id, flag.health))
-                    }
-                    _ => None,
-                })
-                .collect(),
+            LocalDaemonResponse::PersonInbox { cards, .. } => cards,
             other => panic!("expected the Inbox, got {other:?}"),
         }
+    }
+
+    fn pane_errors(&self) -> Vec<crate::session::AgentSubscriptionError> {
+        self.runtime
+            .owned
+            .session_store
+            .get_session(&self.session_id)
+            .unwrap()
+            .notification_errors()
+            .to_vec()
     }
 
     fn test(&self, subscription_id: &str) -> String {
@@ -245,7 +245,11 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
     rig.trigger_on(&source).await;
     let id = rig.rows()[0].subscription.subscription_id.clone();
     assert!(
-        rig.flags().is_empty(),
+        rig.pane_errors().is_empty(),
+        "healthy subscriptions add no error line"
+    );
+    assert!(
+        rig.inbox_cards().is_empty(),
         "a healthy subscription raises no card"
     );
     rig.set_source_enabled(&workflow, false).await;
@@ -255,8 +259,17 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
         (true, NotificationSubscriptionHealth::SourceGone)
     );
     assert!(
-        rig.flags().is_empty(),
+        rig.inbox_cards().is_empty(),
         "a subscription that cannot deliver is status on its row (health), not a card"
+    );
+    assert_eq!(
+        rig.pane_errors(),
+        vec![crate::session::AgentSubscriptionError {
+            agent_id: rig.agent_id.clone(),
+            subscription_id: id.clone(),
+            health: NotificationSubscriptionHealth::SourceGone,
+        }],
+        "canonical source loss is an error only in its owning agent pane"
     );
     let moved = rig
         .runtime
@@ -280,7 +293,11 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
         .unwrap();
     assert!(rig.rows().is_empty(), "no stale row remains");
     assert!(
-        rig.flags().is_empty(),
+        rig.pane_errors().is_empty(),
+        "removing the subscription clears its error"
+    );
+    assert!(
+        rig.inbox_cards().is_empty(),
         "no card is left with the subscription"
     );
     assert!(rig.subscriptions().is_empty());
@@ -533,7 +550,7 @@ async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters()
 /// NC-12: a delivery that comes back to the subscription that caused it is dropped, and the
 /// row and the person's Inbox say the loop was stopped.
 #[tokio::test]
-async fn a_delivery_that_comes_back_to_its_subscriber_stops_the_loop_and_raises_a_flag() {
+async fn a_delivery_that_comes_back_to_its_subscriber_stops_the_loop_and_sets_its_pane_error() {
     let rig = rig().await;
     rig.app_notification().await;
     let room = rig
@@ -574,8 +591,16 @@ async fn a_delivery_that_comes_back_to_its_subscriber_stops_the_loop_and_raises_
     let stopped = row(&rig);
     assert_eq!(stopped.health, NotificationSubscriptionHealth::LoopStopped);
     assert!(stopped.loop_stopped_at_ms.is_some());
+    assert_eq!(
+        rig.pane_errors(),
+        vec![crate::session::AgentSubscriptionError {
+            agent_id: rig.agent_id.clone(),
+            subscription_id: id.clone(),
+            health: NotificationSubscriptionHealth::LoopStopped,
+        }]
+    );
     assert!(
-        rig.flags().is_empty(),
+        rig.inbox_cards().is_empty(),
         "a stopped loop is status on its row (health), not a card"
     );
     assert_eq!(

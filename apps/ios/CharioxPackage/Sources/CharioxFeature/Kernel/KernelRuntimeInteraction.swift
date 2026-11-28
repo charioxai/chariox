@@ -4,6 +4,8 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
     public let id: String
     public let agentID: String?
     public let kernelOperationID: String?
+    public let surface: String
+    public let cardType: String?
     public let kind: String
     public let level: String
     public let title: String?
@@ -17,6 +19,8 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
         case id
         case agentID = "agent_id"
         case kernelOperationID = "kernel_operation_id"
+        case surface
+        case cardType = "card_type"
         case kind
         case level
         case title
@@ -47,6 +51,13 @@ extension RuntimeInteraction {
                 debugDescription: "Invalid interaction subject"))
         }
         id = try values.decode(String.self, forKey: .id)
+        surface = try values.decode(String.self, forKey: .surface)
+        cardType = try values.decodeIfPresent(String.self, forKey: .cardType)
+        guard ["card", "pane_status", "hidden"].contains(surface),
+              surface != "card" || !(cardType ?? "").isEmpty else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                debugDescription: "Invalid interaction presentation"))
+        }
         kind = try values.decode(String.self, forKey: .kind)
         level = try values.decode(String.self, forKey: .level)
         title = try values.decodeIfPresent(String.self, forKey: .title)

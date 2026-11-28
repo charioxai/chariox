@@ -70,7 +70,7 @@ impl KernelRuntimeState {
         ).with_timeout_sec(900);
         let receiver = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("owner_context"),
                 session.id(),
                 session.owner_user_id(),
                 interaction,

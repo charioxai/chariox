@@ -70,7 +70,7 @@ pub(super) async fn complete(
     let mut resolution = authority
         .state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::OwnerControl,
+            crate::runtime::state::InteractionSurface::named("auth_md_claim"),
             &authority.actor.session_id,
             &authority.actor.owner_user_id,
             interaction,

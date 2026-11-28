@@ -569,7 +569,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Ask a question through the shared Chariox interaction card. To get your supervisor or the person to look at something while you keep working, ask with wait:false: your parent, or else the person and whoever follows them, is woken with your title and message and the answer comes back to you; a line like `FOR <name>:` in your reply wakes nobody. Use wait:false for questions you can keep working without: returns interaction_id and registration_id at once; the attributed answer arrives in your event inbox and wakes you after you yield or finish this turn. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it for status timed_out with no choice_id or reply. Omit wait (or use true) only when work cannot continue without the answer: it blocks until an answer or timeout, and the provider cuts a blocking call after about 5 minutes and withdraws its card, so for a step a person must do (CAPTCHA, login, approval, anything slow) use wait:false and yield on the registration_id. Each choice carries the exact reply returned; a blocking notice may use one acknowledgement choice, such as OK. When a browser card becomes unavailable, verification has not succeeded: continue the owner's current request (ask for browser access if needed, take a fresh snapshot, show a new card) and follow any later instruction to pause or stop.".to_string(),
+            description: "Ask a Question with free text and optional fixed choices; use choices:[] for a free-text-only Question. custom_choice sets its label and limits. Use wait:false when other work can continue, especially slow person steps (login, CAPTCHA, approval): returns interaction_id and registration_id; your parent, or else the person and their followers, gets your title and message. After you yield or end the turn, attributed answers arrive in your inbox and wake you. A `FOR <name>:` reply wakes nobody. wait:true blocks until answer or timeout; providers cut a blocking call after about 5 minutes and withdraw its card. With fixed choices or a browser region, Cancel returns status cancelled and choice_id cancel. Each choice returns its exact reply. default_on_timeout must name an existing choice; otherwise timeout returns status timed_out without choice_id or reply. An unavailable browser card is not successful verification: continue the owner's request, regain access, take a fresh snapshot and show a new card; honor later pause or stop instructions.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
@@ -624,7 +624,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "choices": {
                         "type": "array",
-                        "minItems": 1,
+                        "minItems": 0,
                         "items": {
                             "type": "object",
                             "required": ["id", "label", "reply"],

@@ -268,10 +268,10 @@ impl KernelRuntimeState {
                 "an action card must be raised by a local agent's own provider run",
             ));
         }
-        if args.choices.is_empty() {
+        if args.choices.is_empty() && args.view.is_some() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_request_popup",
-                message: "popup interactions require at least one choice".to_string(),
+                message: "a projected browser card requires at least one choice".to_string(),
             });
         }
         if args
@@ -288,6 +288,7 @@ impl KernelRuntimeState {
         {
             return Err(popup_error("verification cards require wait:false and only Cancel; no until, custom reply or default"));
         }
+        let free_text_only = args.view.is_none() && args.choices.is_empty();
         let folded_cancel: Vec<String> = args
             .choices
             .iter()
@@ -309,7 +310,7 @@ impl KernelRuntimeState {
             })
             .collect::<Vec<_>>();
         add_person_done(args.view.as_ref(), &mut choices);
-        if choices.iter().all(|choice| choice.id() != CANCEL_CHOICE_ID) {
+        if !free_text_only && choices.iter().all(|choice| choice.id() != CANCEL_CHOICE_ID) {
             choices.push(crate::session::RuntimeInteractionChoice::new(
                 CANCEL_CHOICE_ID,
                 "Cancel",
@@ -317,15 +318,32 @@ impl KernelRuntimeState {
                 Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
             ));
         }
-        let custom_choice = args.custom_choice.map(|choice| {
-            crate::session::RuntimeInteractionCustomChoice::new(
-                choice.id,
-                choice.label,
-                choice.placeholder,
-                choice.min_length,
-                choice.max_length,
-            )
-        });
+        let custom_choice = args
+            .custom_choice
+            .map(|choice| {
+                crate::session::RuntimeInteractionCustomChoice::new(
+                    choice.id,
+                    choice.label,
+                    choice.placeholder,
+                    choice.min_length,
+                    choice.max_length,
+                )
+            })
+            .or_else(|| {
+                args.view.is_none().then(|| {
+                    let mut reply_id = "reply".to_owned();
+                    while choices.iter().any(|choice| choice.id() == reply_id) {
+                        reply_id.push('_');
+                    }
+                    crate::session::RuntimeInteractionCustomChoice::new(
+                        reply_id,
+                        "",
+                        None,
+                        Some(1),
+                        None,
+                    )
+                })
+            });
         if let Some(custom_choice) = custom_choice.as_ref() {
             if choices
                 .iter()
@@ -505,7 +523,11 @@ impl KernelRuntimeState {
         }
         let resolution_rx = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                if interaction.view().is_some() {
+                    crate::runtime::state::InteractionSurface::named("popup_browser_region")
+                } else {
+                    crate::runtime::state::InteractionSurface::named("Question")
+                },
                 &session_id,
                 interaction,
             )
