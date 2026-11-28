@@ -1,5 +1,5 @@
 use super::*;
-use crate::local::GatewayKernelVia;
+use crate::local::{GatewayKernelUpdate, GatewayKernelVia};
 use crate::room_exec::queue_tests::{limited, queued, TempDir};
 
 fn held(
@@ -31,6 +31,8 @@ fn kernel(name: &str, id: &str, status: GatewayKernelStatus, gateway_ready: bool
         last_seen_ms: 1,
         gateway_ready,
         via: GatewayKernelVia::Hosted,
+        protocol: None,
+        update: GatewayKernelUpdate::Current,
     }
 }
 

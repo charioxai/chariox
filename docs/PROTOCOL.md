@@ -5826,7 +5826,13 @@ authority for its own sessions, agents, terminals and files.
   heartbeat for the caller's own attachments; any other id is reported lapsed). A `DetachFromSession` stops it; a
   grant that ends or three missed beats stop it, and the target sweeps the attachment after 30 s.
 - `ListGatewayKernels {}` -> `GatewayKernelsListed { kernels: [{name, kernel_id, label, machine_id, machine_alias,
-  status: online|offline|unpaired, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
+  status: online|offline|unpaired, last_seen_ms, gateway_ready, via: hosted|self_hosted, protocol: number|null,
+  update: current|update_needed}] }`. `protocol` is what the kernel last reported (its relay registration, or its status
+  answer when paired; null for a kernel too old to report one) and stays on an offline kernel. `update` is the kernel's
+  own verdict, the rule behind `kernel_update_needed`: `update_needed` when `protocol` is null or below the protocol this
+  gateway needs. It says whether this gateway can use the kernel, not whether a client can open it (the web keeps its own,
+  lower minimum). A kernel the relay refuses for its age (relay peer 450) is listed `offline` and `update_needed` with the
+  protocol it reported. The list comes from one
   inventory source (the relay inventory, filtered to the account's fresh Cloud targets when hosted). An offline
   kernel stays listed with its last-seen time. A self-hosted kernel that answers but refuses this gateway (its owner revoked it there) is `unpaired`, not `offline`; hosted lists cannot tell and keep `online` until a call answers `kernel_unpaired`.
 - Origin decision: the local kernel checks that the grant is live and that the request shape is not human-only

@@ -157,6 +157,8 @@ impl KernelGateway {
             last_seen_ms: crate::session::unix_epoch_ms(),
             gateway_ready: super::directory::is_gateway_ready(&presence),
             via: GatewayKernelVia::SelfHosted,
+            protocol: presence.local_protocol,
+            update: super::update_needed::update_state(presence.local_protocol),
         };
         self.paired.save(PairedKernel {
             presence,

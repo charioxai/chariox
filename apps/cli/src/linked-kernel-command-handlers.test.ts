@@ -14,7 +14,7 @@ const TOKEN_VARIABLE = "CHARIOX_TEST_OPERATOR_CLIENT_TOKEN"
 
 const builder: GatewayKernelRecord = {
   name: "builder", kernel_id: "kernel-b", machine_id: "machine-b", machine_alias: null, label: "builder",
-  status: "online", last_seen_ms: 1, gateway_ready: true, via: "self_hosted",
+  status: "online", last_seen_ms: 1, gateway_ready: true, via: "self_hosted", protocol: 1015, update: "current",
 }
 
 test("kernel add pairs with a link and reports the kernel's status", async () => {

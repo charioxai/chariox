@@ -3,20 +3,33 @@
 use super::error::GatewayError;
 use super::link::Link;
 use super::self_hosted::status_of;
+use crate::local::GatewayKernelUpdate;
 
 /// Forwarded Room writes and their acknowledgments use the current local protocol.
 pub(crate) const MINIMUM_TARGET_PROTOCOL: u32 = crate::local::LOCAL_DAEMON_PROTOCOL_VERSION;
 
+/// Whether a kernel that reports `protocol` is new enough for this kernel's gateway.
+/// The same rule as the refusal below: a protocol under the minimum. A kernel that reports none
+/// is too old to say (the relay refuses a registration without one), so it needs an update too.
+pub(crate) fn update_state(protocol: Option<u32>) -> GatewayKernelUpdate {
+    match protocol {
+        Some(protocol) if !is_below_minimum(protocol) => GatewayKernelUpdate::Current,
+        _ => GatewayKernelUpdate::UpdateNeeded,
+    }
+}
+
+fn is_below_minimum(protocol: u32) -> bool {
+    protocol < MINIMUM_TARGET_PROTOCOL
+}
+
 /// `refusal`, unless the target's protocol shows it is too old: then `UpdateNeeded`.
 fn settle(name: &str, protocol: Option<u32>, refusal: GatewayError) -> GatewayError {
     match protocol {
-        Some(kernel_protocol) if kernel_protocol < MINIMUM_TARGET_PROTOCOL => {
-            GatewayError::UpdateNeeded {
-                name: name.into(),
-                kernel_protocol,
-                needed_protocol: MINIMUM_TARGET_PROTOCOL,
-            }
-        }
+        Some(kernel_protocol) if is_below_minimum(kernel_protocol) => GatewayError::UpdateNeeded {
+            name: name.into(),
+            kernel_protocol,
+            needed_protocol: MINIMUM_TARGET_PROTOCOL,
+        },
         _ => refusal,
     }
 }
@@ -60,6 +73,24 @@ mod tests {
                 MINIMUM_TARGET_PROTOCOL - 1
             )
         );
+    }
+
+    // Row 490: the list says what the refusal says: below the gateway's minimum, or no protocol.
+    #[test]
+    fn the_list_marks_a_kernel_below_the_minimum_or_without_a_protocol() {
+        assert_eq!(
+            update_state(Some(MINIMUM_TARGET_PROTOCOL)),
+            GatewayKernelUpdate::Current
+        );
+        assert_eq!(
+            update_state(Some(MINIMUM_TARGET_PROTOCOL + 1)),
+            GatewayKernelUpdate::Current
+        );
+        assert_eq!(
+            update_state(Some(MINIMUM_TARGET_PROTOCOL - 1)),
+            GatewayKernelUpdate::UpdateNeeded
+        );
+        assert_eq!(update_state(None), GatewayKernelUpdate::UpdateNeeded);
     }
 
     #[test]
