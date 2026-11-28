@@ -2385,7 +2385,7 @@ mod tests {
         for (phase, phase_wire) in [
             (
                 LeasedPromptReceiptPhase::WaitingForMemory,
-                "waiting_for_memory",
+                serde_json::json!("waiting_for_memory"),
             ),
             (
                 LeasedPromptReceiptPhase::SteerDispatching,

@@ -607,7 +607,6 @@ pub(super) fn session_agent_description(
             .map(|grant| grant.name.clone())
             .collect::<Vec<_>>()
     };
-    let activity = activity.get(agent.id());
     let mut description = serde_json::json!({
         "id": agent.id(),
         "agent_ref": agent.agent_ref(),
