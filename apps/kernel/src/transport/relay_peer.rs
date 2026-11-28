@@ -245,7 +245,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// the kernel online.
 /// Peer 451 carries the local 1014 terminal `stdin` of a program.
 /// Peer 452 carries the local 1015 OpenCode tool timing (`started_at_ms`, `finished_at_ms`).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 454;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

@@ -644,4 +644,4 @@ pub use workspace::*;
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
 /// Local 1015 (relay peer 452): an OpenCode tool call carries `started_at_ms` and `finished_at_ms`, so a retained transcript shows how long the command ran.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1017;
