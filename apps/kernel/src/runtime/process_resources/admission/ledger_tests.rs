@@ -2151,6 +2151,96 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
     );
 }
 
+// Both destinations are standard streams: no non-stream descriptor can mask
+// a mistaken fallback onto the other command's volume.
+fn stream_writer(
+    pid: u32,
+    volume: u64,
+    rate: u64,
+) -> (Entry, pool::CommandUse, disk_use::VolumeWrites) {
+    let (_, entry, command) = writing(pid, 3 * GIB, rate);
+    let output = disk_use::VolumeWrites {
+        id: volume,
+        path: if volume == 2 {
+            "/log/out"
+        } else {
+            "/scratch/out"
+        }
+        .into(),
+        written: 3 * GIB,
+        rate,
+        files: [u64::from(pid)].into(),
+        open: [u64::from(pid)].into(),
+        receiving: false,
+    };
+    (entry, command, output)
+}
+
+fn stream_volumes() -> Box<Volume> {
+    let scratch = losing(GIB, 300 * MIB);
+    Box::new(move |path| {
+        if path.starts_with("/log") {
+            Some(Space {
+                id: 2,
+                free: 50 * GIB,
+                total: 100 * GIB,
+            })
+        } else {
+            scratch(path)
+        }
+    })
+}
+
+#[test]
+fn stdout_only_writers_keep_their_volume_and_stop_only_the_filler() {
+    let (logger, logger_use, log) = stream_writer(1, 2, 700 * MIB);
+    let (filler, filler_use, scratch) = stream_writer(2, 1, 300 * MIB);
+    let current = owner(
+        "agent",
+        true,
+        vec![logger_use, filler_use],
+        vec![(1, logger), (2, filler)],
+    );
+    current.lock().unwrap().disk_writes = [(1, vec![log]), (2, vec![scratch])].into();
+    let members = std::slice::from_ref(&current);
+    let placed = writers(members);
+    assert_eq!(
+        placed
+            .iter()
+            .map(|w| (w.pid, w.volume, w.rate))
+            .collect::<Vec<_>>(),
+        vec![(1, 2, 700 * MIB), (2, 1, 300 * MIB)]
+    );
+    let fillers = pass_twice(members, &*stream_volumes());
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(fillers[0].1.rate, 300 * MIB);
+}
+
+#[test]
+fn stdout_only_writer_is_left_alone_when_another_volume_loses_room() {
+    let (logger, logger_use, log) = stream_writer(1, 2, 700 * MIB);
+    let current = owner("agent", true, vec![logger_use], vec![(1, logger)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    assert!(pass_twice(std::slice::from_ref(&current), &*stream_volumes()).is_empty());
+}
+
+#[test]
+fn unplaced_writer_rate_excludes_observed_stdout_growth() {
+    let (generator, mut generator_use, log) = stream_writer(1, 2, 700 * MIB);
+    generator_use.write_rate = 1000 * MIB;
+    let current = owner("agent", true, vec![generator_use], vec![(1, generator)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
+    let members = std::slice::from_ref(&current);
+    let unplaced = unplaced_writers(members, &watched);
+    assert_eq!(unplaced.len(), 1);
+    assert_eq!(unplaced[0].rate, 300 * MIB);
+    assert_eq!(unplaced[0].volume, 1);
+}
+
 /// A volume that starts with `free` and loses `per_second` from its first reading.
 fn losing(free: u64, per_second: u64) -> Box<Volume> {
     let started = Instant::now();

@@ -1964,15 +1964,26 @@ fn unplaced_writers<'a>(
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
         for command in &observation.commands {
-            let placed = observation
+            let outputs = observation
                 .disk_writes
                 .get(&command.pid)
-                .is_some_and(|outputs| outputs.iter().any(|output| output.receiving));
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let placed = outputs.iter().any(|output| output.receiving);
+            // Stream destinations do not locate a generator's other outputs,
+            // but their observed growth already accounts for that part of its
+            // writes. Only the remaining rate can belong to an unseen output.
+            let rate = outputs
+                .iter()
+                .filter(|output| !output.files.is_empty())
+                .fold(command.write_rate, |rate, output| {
+                    rate.saturating_sub(output.rate)
+                });
             let holdable = observation
                 .admission
                 .get(&command.pid)
                 .is_some_and(|entry| entry.holdable);
-            if placed || !holdable || command.write_rate < RUNAWAY_WRITE {
+            if placed || !holdable || rate < RUNAWAY_WRITE {
                 continue;
             }
             for (volume, (lost, path)) in watched {
@@ -1982,7 +1993,7 @@ fn unplaced_writers<'a>(
                         pid: command.pid,
                         volume: *volume,
                         path: path.clone(),
-                        rate: command.write_rate,
+                        rate,
                         grown: 0,
                         written: command.writes,
                         deleted_open: command.deleted_open,
