@@ -1,6 +1,9 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 AM-ASK: authenticated non-blocking questions.
 use super::*;
 
+#[cfg(unix)]
+mod local_card_factory;
+
 fn browser_region() -> crate::session::RuntimeInteractionBrowserRegion {
     crate::session::RuntimeInteractionBrowserRegion {
         tab_id: "tab-one".into(),
