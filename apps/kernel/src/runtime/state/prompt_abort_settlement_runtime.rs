@@ -217,13 +217,6 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
-        let tool_ids = self
-            .owned
-            .prompt_activity
-            .read()
-            .get(&dispatch.provider_run_id)
-            .map(|state| state.active_tool_ids.clone())
-            .unwrap_or_default();
         // The protocol ACK can precede tool exit. Retire the owned process group
         // before releasing the turn; its persisted provider identity resumes on the next prompt.
         let finished = {
@@ -282,6 +275,15 @@ impl KernelRuntimeState {
         ) else {
             return Ok(());
         };
+        // Output already received during cleanup has now reached history. Use
+        // its final activity, not the IDs from before the cleanup await.
+        let tool_ids = self
+            .owned
+            .prompt_activity
+            .read()
+            .get(&dispatch.provider_run_id)
+            .map(|state| state.active_tool_ids.clone())
+            .unwrap_or_default();
         self.owned.record_cancelled_tool_transcripts(
             &dispatch.session_id,
             &agent_id,

@@ -3,6 +3,52 @@
 use super::*;
 
 impl KernelRuntimeState {
+    async fn finish_cancelling_provider_exit(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let Some(agent_id) = run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling)
+        else {
+            return Ok(false);
+        };
+        let dispatch = crate::app::KernelPromptAbortDispatch {
+            session_id: session_id.into(),
+            provider_run_id: provider_run_id.into(),
+            prompt_id: prompt.id().into(),
+            source_attachment_id: prompt.source_attachment_id().into(),
+            pty_input: b"\x03",
+        };
+        // A reaped provider can still own a detached tool. Keep its PTY record
+        // and birth witnesses until cancellation confirms physical cleanup.
+        Box::pin(self.finish_owned_prompt_abort(&dispatch, false)).await?;
+        if self
+            .owned
+            .cancelling_prompt_for_abort(session_id, provider_run_id, prompt.id())
+            .is_some()
+        {
+            return Err(DaemonError::PtyCleanup {
+                provider_run_id: provider_run_id.into(),
+                message: "provider exit cancellation has not settled; retry cleanup".into(),
+            });
+        }
+        self.owned.withdraw_stale_agent_interactions();
+        self.owned
+            .connector_adapter_processes
+            .shutdown_run(provider_run_id)
+            .await;
+        Ok(true)
+    }
+
     pub(super) async fn reconcile_provider_run_exit(
         &self,
         session_id: &str,
@@ -34,6 +80,12 @@ impl KernelRuntimeState {
             provider_run_id,
             None,
         )? {
+            if self
+                .finish_cancelling_provider_exit(session_id, provider_run_id, &exit.ended_run)
+                .await?
+            {
+                return Ok(true);
+            }
             owned.withdraw_stale_agent_interactions();
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -158,6 +210,12 @@ impl KernelRuntimeState {
         let Some(exit) = exit else {
             return Ok(false);
         };
+        if self
+            .finish_cancelling_provider_exit(session_id, provider_run_id, &exit.ended_run)
+            .await?
+        {
+            return Ok(true);
+        }
         owned.withdraw_stale_agent_interactions();
         let terminal_diagnostic = process_terminal_diagnostic
             .or_else(|| exit.ended_run.terminal_diagnostic().map(str::to_string));
