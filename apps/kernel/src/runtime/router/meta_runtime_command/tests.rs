@@ -261,6 +261,32 @@ fn spawned_agent() -> crate::agent::AgentInstance {
 }
 
 #[test]
+fn account_copy_wait_is_reported_as_pending_metadata_to_the_agent() {
+    let wait = crate::provider_account_copy::ProviderAccountCopyWait {
+        operation_id: "copy-operation".into(),
+        source_kernel_id: "source".into(),
+        target_kernel_id: "target".into(),
+        target_label: "Receiving machine".into(),
+        expires_at_ms: 600_000,
+    };
+    let response = LocalDaemonResponse::ProviderAccountCopyWaiting { wait: wait.clone() };
+    let result = super::result::meta_command_success_result(
+        "provider accounts copy target --provider claude --account-profile work",
+        &response,
+        &spawned_agent(),
+        false,
+    );
+    assert!(result.ok);
+    assert_eq!(
+        result.payload["response"],
+        serde_json::json!({
+            "type": "ProviderAccountCopyWaiting", "wait": wait,
+        })
+    );
+    assert!(!result.payload.to_string().contains("CommandAccepted"));
+}
+
+#[test]
 fn a_spawn_answer_states_the_worktree_the_facts_name_and_none_when_they_name_none() {
     let named =
         super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(Some("/workspace")));
@@ -268,4 +294,55 @@ fn a_spawn_answer_states_the_worktree_the_facts_name_and_none_when_they_name_non
 
     let unnamed = super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(None));
     assert_eq!(unnamed["worktree"], serde_json::Value::Null);
+}
+
+#[test]
+fn account_copy_commands_keep_pinned_identity_and_operation() {
+    let parse = |command: &str| {
+        super::provider_accounts::account_copy_request(
+            &crate::runtime::metaagent_command_registry::tokenize_command(command).unwrap(),
+        )
+    };
+    let request =
+        parse("provider accounts copy-from opencode work kernel-source pinned operation --replace")
+            .unwrap();
+    let LocalDaemonRequest::CopyProviderAccountFromKernel(copy) = request else {
+        panic!("copy request")
+    };
+    assert_eq!(copy.source_kernel_id, "kernel-source");
+    assert_eq!(copy.source_key_thumbprint, "pinned");
+    assert_eq!(copy.operation_id, "operation");
+    assert!(copy.replace);
+    assert!(parse(
+        "provider accounts copy-from opencode work kernel-source pinned operation --accept"
+    )
+    .is_err());
+    assert!(parse(
+        "provider accounts copy-to codex work kernel-target pinned operation --replace --replace"
+    )
+    .is_err());
+    assert!(matches!(
+        parse("provider accounts copy-offers").unwrap(),
+        LocalDaemonRequest::ListProviderAccountCopyOffers(_)
+    ));
+}
+
+#[test]
+fn account_copy_commands_are_discovered_and_admitted() {
+    use crate::runtime::metaagent_command_registry::{
+        execution_policy, tokenize_command, MetaCommandExecutionPolicy,
+    };
+    for command in [
+        "provider accounts copy-offers",
+        "provider accounts copy-targets",
+        "provider accounts copy-from opencode work source key operation",
+        "provider accounts copy-to codex work target key operation --replace",
+    ] {
+        let tokens = tokenize_command(command).unwrap();
+        assert_eq!(
+            execution_policy(&tokens),
+            MetaCommandExecutionPolicy::Routed
+        );
+        assert!(crate::runtime::room_tool_admission::command(&tokens).is_ok());
+    }
 }

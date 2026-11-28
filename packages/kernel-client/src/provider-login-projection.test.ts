@@ -11,6 +11,14 @@ test("MP-08/MP-10/MP-11 login projection identifies receiving kernel and renders
   assert.equal(safeProviderLoginUrl("https://user:password@provider.test/"), null)
 })
 
+test("credfix: a dead-copy recovery names the machine in the TUI strip title; other flows keep the account title", () => {
+  const projection = {kernel_id: "worker", login: {provider: "codex", account_profile: "work", login_kind: "chatgptDeviceCode",
+    verification_url: "https://auth.example.test/device", user_code: "ABCD-1234"}, terminal_output_base64: ""}
+  assert.equal(providerLoginView(projection, undefined, "work", "Sign in again on laptop-b").title, "Sign in again on laptop-b")
+  assert.equal(providerLoginView(projection, undefined, "work", "Authenticate provider account").title, "Sign in to ChatGPT · work")
+  assert.equal(providerLoginView(projection, undefined, "work").title, "Sign in to ChatGPT · work")
+})
+
 test("MP-08/MP-11 login view numbers the steps and names the failure the provider or kernel reported", () => {
   const projection = {kernel_id: "fleet", login: {provider: "claude", account_profile: "claude-1-abc", login_kind: "terminal_setup_token",
     auth_url: "https://claude.ai/oauth/authorize?code=true"}, terminal_output_base64: ""}

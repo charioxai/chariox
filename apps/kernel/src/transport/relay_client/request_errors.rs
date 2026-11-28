@@ -94,6 +94,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         }
         DaemonError::LocalTransport { operation, .. }
             if *operation
+                == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
                 == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION =>
         {
             relay_error(

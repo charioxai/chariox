@@ -291,7 +291,12 @@ pub enum LocalDaemonResponse {
     OwnerVault { result: OwnerVaultResult },
     CredentialSecretStored { key: String, },
     CredentialSecretDeleted { key: String, },
-    CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, unlock: crate::local::VaultUnlockOptions, },
+    CredentialVaultStatus {
+        status: crate::secret::CharioxVaultUnlockStatus,
+        unlock: crate::local::VaultUnlockOptions,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copy_unlock_requests: Vec<crate::provider_account_copy::ProviderAccountCopyUnlockRequest>,
+    },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultUnlocked { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     CredentialVaultKeySealed { seed: crate::secret::VaultKeySeed, },
@@ -411,12 +416,23 @@ pub enum LocalDaemonResponse {
     ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
-    ProviderLoggedOut { provider: String, account_profile: String, },
-    ProviderAccountProfilesListed { profiles: Vec<crate::account_profile::ProviderAccountProfile>, },
+    ProviderLoggedOut {
+        provider: String,
+        account_profile: String,
+        /// The login is shared with other machines, so only this machine's copy was removed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        local_only: bool,
+    },
+    ProviderAccountProfilesListed {
+        profiles: Vec<crate::account_profile::ProviderAccountProfile>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copies: Vec<crate::provider_account_copy::ProviderAccountCopyProgress>,
+    },
     ProviderAccountProfile { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileRemoved { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileDataDeleted { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountCopyOffers { offers: Vec<crate::provider_account_copy::ProviderAccountCopyOffer>, },
+    ProviderAccountCopyWaiting { wait: crate::provider_account_copy::ProviderAccountCopyWait, },
     ProviderAccountCopied { receipt: crate::provider_account_copy::ProviderAccountCopyReceipt, },
     ProviderAccountCredentialStored { provider: String, account_profile: String, credential_id: String, replaced: bool, },
     ProviderProcessesListed { processes: Vec<ProviderProcessInfo>, },

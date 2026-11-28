@@ -1,4 +1,4 @@
-import { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest, type ProviderAccountCopyOffer, type ProviderAccountCopyReceipt } from "@chariox/kernel-client"
+import { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest, type ProviderAccountCopyOffer, type ProviderAccountCopyReceipt, type ProviderAccountCopyWait, type ProviderAccountCopyProgress } from "@chariox/kernel-client"
 import {
   normalizeRuntimeSession,
   type ProviderAuthStatus,
@@ -295,8 +295,9 @@ export async function logoutProvider(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
+  endEverywhere = false,
 ): Promise<ProviderLogoutOutcome> {
-  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider, accountProfile))
+  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider, accountProfile, endEverywhere))
   if ("ProviderLoggedOut" in response) {
     return { kind: "logged_out", result: response.ProviderLoggedOut as ProviderLogoutResult }
   }
@@ -367,11 +368,50 @@ export async function listProviderAccountCopyOffers(client: LocalIpcClient): Pro
   const response = await client.send<Record<string, unknown>>(listProviderAccountCopyOffersRequest())
   return expectVariant<{ offers: ProviderAccountCopyOffer[] }>(response, "ProviderAccountCopyOffers").offers
 }
-export async function copyProviderAccountFromKernel(client: LocalIpcClient, offer: ProviderAccountCopyOffer, operationId: string): Promise<ProviderAccountCopyReceipt> {
+export async function copyProviderAccountFromKernel(client: LocalIpcClient, offer: ProviderAccountCopyOffer, operationId: string): Promise<ProviderAccountCopyReceipt | ProviderAccountCopyWait> {
   const status = expectVariant<{status: {daemon_id: string}}>(await client.send<Record<string, unknown>>({RelayStatus: null}), "RelayStatus").status
   if (status.daemon_id !== offer.target_kernel_id) throw new Error("This login copy belongs to the previous machine. Open Account again.")
   const response = await client.send<Record<string, unknown>>(copyProviderAccountFromKernelRequest(offer, operationId))
+  if ("ProviderAccountCopyWaiting" in response) {
+    const wait = expectVariant<{ wait: ProviderAccountCopyWait }>(response, "ProviderAccountCopyWaiting").wait
+    if (!wait || typeof wait !== "object" || Array.isArray(wait)
+      || !Object.keys(wait).every(key => ["operation_id", "source_kernel_id", "target_kernel_id", "target_label", "expires_at_ms"].includes(key))
+      || wait.operation_id !== operationId || wait.target_kernel_id !== offer.target_kernel_id || wait.source_kernel_id !== offer.source_kernel_id
+      || typeof wait.target_label !== "string" || typeof wait.expires_at_ms !== "number" || !Number.isFinite(wait.expires_at_ms)) throw new Error("The kernel did not confirm this login copy")
+    return wait
+  }
   const receipt = expectVariant<{ receipt: ProviderAccountCopyReceipt }>(response, "ProviderAccountCopied").receipt
-  if (receipt.operation_id !== operationId || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile) throw new Error("The kernel did not confirm this login copy")
+  return confirmedAccountCopyReceipt(offer, operationId, receipt)
+}
+
+function confirmedAccountCopyReceipt(offer: ProviderAccountCopyOffer, operationId: string, receipt: ProviderAccountCopyReceipt): ProviderAccountCopyReceipt {
+  if (!receipt || typeof receipt !== "object" || receipt.operation_id !== operationId || receipt.provider !== offer.provider || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile || typeof receipt.account_profile !== "string") throw new Error("The kernel did not confirm this login copy")
   return receipt
+}
+
+/** Local clients read the same owner-scoped progress as the relay resource feed. */
+export async function followProviderAccountCopy(client: LocalIpcClient, offer: ProviderAccountCopyOffer, wait: ProviderAccountCopyWait, current: () => boolean): Promise<ProviderAccountCopyReceipt> {
+  if (wait.source_kernel_id !== offer.source_kernel_id || wait.target_kernel_id !== offer.target_kernel_id || !Number.isFinite(wait.expires_at_ms)) throw new Error("The kernel did not confirm the login copy progress")
+  while (current()) {
+    const { copies } = expectVariant<{ copies: ProviderAccountCopyProgress[] }>(
+      await client.send<Record<string, unknown>>({ ListProviderAccountProfiles: {} }), "ProviderAccountProfilesListed")
+    if (!Array.isArray(copies)) throw new Error("The kernel did not confirm the login copy progress")
+    const progress = copies.find(copy => copy && typeof copy === "object" && (
+      copy.status === "installed" ? copy.receipt?.operation_id : copy.status === "waiting_for_unlock" ? copy.wait?.operation_id : copy.status === "failed" ? copy.operation_id : undefined
+    ) === wait.operation_id)
+    if (!progress) throw new Error("The kernel no longer reports this login copy. Check the receiving account before copying it again.")
+    if (progress.status === "installed") return confirmedAccountCopyReceipt(offer, wait.operation_id, progress.receipt)
+    if (progress.status === "failed") {
+      const message = progress.code === "provider_account_copy_cancelled"
+        ? "The login copy was cancelled. Copy the login again if you still need it."
+        : progress.code === "provider_account_copy_cli_missing"
+          ? "Install the provider’s command-line tool on the receiving machine, then retry the login copy."
+          : "The login copy could not finish. Check both machines and the receiving Vault, then retry the copy."
+      throw Object.assign(new Error(message), { code: progress.code })
+    }
+    if (progress.wait.source_kernel_id !== offer.source_kernel_id || progress.wait.target_kernel_id !== offer.target_kernel_id || progress.wait.expires_at_ms !== wait.expires_at_ms) throw new Error("The kernel did not confirm the login copy progress")
+    await new Promise<void>(resolve => setTimeout(resolve, 1_000))
+  }
+  // Ending this client continuation never cancels the kernel-owned operation.
+  throw new Error("The kernel connection changed while following the login copy")
 }

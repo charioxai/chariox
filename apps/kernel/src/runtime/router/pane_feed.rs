@@ -114,7 +114,7 @@ impl CommandRouter {
             )
             .await
         {
-            Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles }) => profiles,
+            Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles, .. }) => profiles,
             Ok(_) => return Err(unexpected_response()),
             Err(DaemonError::OwnershipAccessDenied { .. }) => Vec::new(),
             Err(error) => return Err(error),
