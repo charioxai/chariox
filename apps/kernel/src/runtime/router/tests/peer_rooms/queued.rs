@@ -733,7 +733,7 @@ fn receipt_explicit_promotions_report_failed_and_blocked_deliveries() {
             // authenticated sender's receipt for an already settled or blocked delivery.
             rusqlite::Connection::open(path).unwrap().execute(
                 "UPDATE agent_inbox SET payload=json_set(payload,'$.state',?2) WHERE sequence=?1",
-                rusqlite::params![sequence, state],
+                rusqlite::params![i64::try_from(sequence).unwrap(), state],
             ).unwrap();
             assert_eq!(rooms.inline_message_row(sequence).await.0.state, state);
             let promoted = rooms.promote(sent["message_id"].as_str().unwrap()).await;
