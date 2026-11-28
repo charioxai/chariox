@@ -136,10 +136,29 @@ async fn taxonomy_authorized_local_browser_factory_registers_the_observed_view_a
                 );
                 card.id().to_owned()
             };
-            let (result, id) =
+            let (result, id) = if wait {
                 tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(call, answer) })
                     .await
-                    .expect("the owner answer returns to the waiting provider");
+                    .expect("the owner answer returns to the waiting provider")
+            } else {
+                let result = tokio::time::timeout(Duration::from_secs(2), call)
+                    .await
+                    .expect("wait:false returns before the owner answers");
+                let pending_id = result.as_ref().unwrap().payload["interaction_id"]
+                    .as_str()
+                    .unwrap();
+                assert!(f
+                    .runtime
+                    .owned
+                    .session_store
+                    .get_session(&f.room)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .any(|card| card.id() == pending_id));
+                let id = answer.await;
+                (result, id)
+            };
             let result = result.expect("the authenticated popup tool returns its outcome");
             assert!(result.ok);
             if wait {
