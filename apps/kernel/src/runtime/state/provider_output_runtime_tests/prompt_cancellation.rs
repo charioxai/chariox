@@ -1830,6 +1830,7 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
             .unwrap()
             .active_prompt_for_agent(agent.id())
             .is_none());
+        assert_cancelled_tool_history(&runtime, session.id());
         return;
     }
     // The finisher has read its activity, but physical cleanup awaits this lock.
@@ -1915,6 +1916,10 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
             "cancellation must not consume another run's received output"
         );
     }
+    assert_cancelled_tool_history(&runtime, session.id());
+}
+
+fn assert_cancelled_tool_history(runtime: &KernelRuntimeState, session_id: &str) {
     let updates: Vec<serde_json::Value> = runtime
         .owned
         .terminal_stream
@@ -1939,7 +1944,7 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
         .owned
         .operational_history_store
         .query_events(crate::history::HistoryEventQuery {
-            session_id: Some(session.id().into()),
+            session_id: Some(session_id.into()),
             kind: Some("provider_tool".into()),
             ..Default::default()
         })
