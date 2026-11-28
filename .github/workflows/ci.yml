@@ -268,7 +268,7 @@ jobs:
         if: matrix.suite == 'workspace' && matrix.part == 'release'
         # Compile the production library and this regression, rather than optimize
         # the entire kernel unit-test harness to execute one public service call.
-        run: bash scripts/ci/release-session-project.sh
+        run: python3 scripts/ci/release-session-project.py
 
       - name: Clippy
         if: matrix.suite == 'workspace' && matrix.part == 'checks'
