@@ -443,6 +443,11 @@ impl RuntimeProviderRun {
     pub fn pty_env(&self) -> &BTreeMap<String, String> {
         &self.pty_env
     }
+    #[cfg(test)]
+    pub(crate) fn with_pty_env(mut self, pty_env: BTreeMap<String, String>) -> Self {
+        self.pty_env = pty_env;
+        self
+    }
 
     /// Only the provider process receives the agent credential. Keeping it out
     /// of the stored launch environment also keeps it out of snapshots.

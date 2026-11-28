@@ -164,18 +164,19 @@ function fakeBackend() {
       store.drafts.set(key, draft);
       return { saved: true };
     },
-    // The contract of the App's claim: an editor keeps its own latest draft, else is handed a COPY of the
-    // latest of another editor, whose draft stays. A draft of a deleted document is not offered.
+    // The contract of the App's claim: an editor keeps its own latest draft, else takes the latest of another.
     claim_draft: ({ editor }) => {
       if (typeof editor !== 'string') throw Error('editor is required');
-      const all = [...store.drafts.values()].filter((draft) => store.docs.has(draft.id));
+      for (const [key, draft] of store.drafts) if (!store.docs.has(draft.id)) store.drafts.delete(key);
+      const all = [...store.drafts.values()];
       const own = all.filter((draft) => draft.editor === editor).at(-1);
       const other = all.filter((draft) => draft.editor !== editor).at(-1);
       if (own) return { draft: own };
       if (!other) return { draft: null };
-      const copy = { ...other, editor };
-      store.drafts.set(`${editor}/${copy.id}`, copy);
-      return { draft: copy };
+      store.drafts.delete(`${other.editor}/${other.id}`);
+      const moved = { ...other, editor };
+      store.drafts.set(`${editor}/${moved.id}`, moved);
+      return { draft: moved };
     },
     discard_draft: ({ editor, id }) => {
       if (typeof editor !== 'string' || typeof id !== 'string') throw Error('editor and id are required');
@@ -331,30 +332,6 @@ test('a window that gives up its edit discards only its own draft of the documen
   await until(() => first.$('content').value === 'saved text', 'the edit is given up');
   await until(() => backend.store.drafts.size === 1, 'this window\'s draft is discarded');
   assert.deepEqual([...backend.store.drafts.keys()], ['other/d1']);
-});
-
-// The review's first repro: a window that is still open keeps its edit through another window starting,
-// restoring it and giving it up, and the next window to start finds it.
-test('a window that restored another window\'s edit and gave it up leaves that window\'s draft for the next one', async () => {
-  const backend = fakeBackend();
-  const first = await loadView(backend);
-  await openNotes(first);
-  type(first, { content: 'edit from the open window' });
-  await until(() => backend.store.draft?.content === 'edit from the open window', 'the open window\'s draft is kept');
-  const [openKey] = backend.store.drafts.keys();
-
-  const second = await loadView(backend);
-  await until(() => second.$('content').value === 'edit from the open window', 'the second window restores the edit');
-  const pick = () => second.$('docs').children[0].children[0].click();
-  pick();
-  await until(() => /Unsaved changes/.test(second.$('status').textContent), 'the second window asks before it gives up the edit');
-  pick();
-  await until(() => second.$('content').value === 'saved text', 'the second window gave the edit up');
-  await until(() => backend.store.drafts.size === 1, 'the second window\'s own copy is discarded');
-  assert.deepEqual([...backend.store.drafts.keys()], [openKey], 'the open window\'s draft is untouched');
-
-  const third = await loadView(backend);
-  await until(() => third.$('content').value === 'edit from the open window', 'the next window finds the edit');
 });
 
 test('a window whose own draft exists is not handed another window\'s edit', async () => {

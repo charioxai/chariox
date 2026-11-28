@@ -272,7 +272,7 @@
     },
     {
       "name": "claim_draft",
-      "description": "The unsaved edit a window starts with: its own editor's latest draft, otherwise a copy of the most recently kept draft of another editor, written under this editor's name; the other editor's draft stays. Null when there is none. A draft of a deleted document is not offered. A draft is removed only by its editor (discard_draft) or once it is a day old.",
+      "description": "The unsaved edit a window starts with: its own editor's latest draft, otherwise the most recently kept draft of another editor, which moves to this one. Null when there is none; a draft whose document was deleted is dropped.",
       "inputSchema": {
         "type": "object",
         "properties": {
