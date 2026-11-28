@@ -1177,7 +1177,7 @@ fn a_distinct_code_literal_space_streams_when_only_the_heading_was_saved() {
 #[test]
 fn a_completed_code_block_with_a_leading_blank_line_is_not_streamed_again() {
     for lose_reader in [false, true] {
-        let mut turn = running_turn("streamed-code-leading-blank");
+        let mut turn = running_turn(&format!("streamed-code-leading-blank-{lose_reader}"));
         turn.hook_event("UserPromptSubmit");
         turn.pass();
         let partial = screen(&["● Result", "", "  alpha", "✻ Working (3s)"]);
