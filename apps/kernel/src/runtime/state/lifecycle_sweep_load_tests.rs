@@ -192,6 +192,36 @@ fn did_not_settle_warnings(records: &[String]) -> Vec<&String> {
         .collect()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_that_finishes_after_the_sweep_wait_clears_its_ask_backoff() {
+    let backlog = room_with_backlog(1);
+    let task = backlog
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(None, None)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.agent_id != backlog.healthy)
+        .unwrap();
+    backlog.runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(backlog
+        .runtime
+        .owned
+        .agent_wakes
+        .task_ask_held(&task.task_id, crate::session::unix_epoch_ms()));
+    std::fs::remove_file(&backlog.fault).unwrap();
+    backlog.runtime.task_work_settled().await;
+    assert!(
+        !backlog
+            .runtime
+            .owned
+            .agent_wakes
+            .task_ask_held(&task.task_id, crate::session::unix_epoch_ms()),
+        "successful detached settlement must clear its earlier ask backoff"
+    );
+}
+
 fn warned_tasks<'a>(records: &[&'a String]) -> Vec<&'a str> {
     records
         .iter()

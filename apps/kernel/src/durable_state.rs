@@ -1526,6 +1526,15 @@ impl DurableKernelStateStore {
         Ok(None)
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_connection_locked_for_test<T>(
+        &self,
+        hold: impl FnOnce() -> T,
+    ) -> Result<T, DaemonError> {
+        let _connection = self.lock_connection("test held durable connection")?;
+        Ok(hold())
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

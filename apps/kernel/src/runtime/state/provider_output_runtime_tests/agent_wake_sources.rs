@@ -31,6 +31,7 @@ struct TestDriver {
     fail_arm: AtomicBool,
     cancel_pending: AtomicBool,
     lost: AtomicBool,
+    lost_ids: StdMutex<std::collections::BTreeSet<String>>,
     /// Holds the next liveness probe until released, as a slow source would.
     stall: StdMutex<
         Option<(
@@ -63,12 +64,12 @@ impl WakeDriver for TestDriver {
     fn recover(&self, _wake: &AgentWake) -> Recovery {
         Recovery::Lost("test source does not survive a restart".into())
     }
-    fn liveness(&self, _wake: &AgentWake) -> Liveness {
+    fn liveness(&self, wake: &AgentWake) -> Liveness {
         if let Some((entered, release)) = self.stall.lock().unwrap().take() {
             let _ = entered.send(());
             let _ = release.recv();
         }
-        if self.lost.load(Ordering::Acquire) {
+        if self.lost.load(Ordering::Acquire) || self.lost_ids.lock().unwrap().contains(&wake.id) {
             Liveness::Lost("test source vanished".into())
         } else {
             Liveness::Live
@@ -146,6 +147,7 @@ async fn fixture(name: &str, running_prompt: bool) -> Fixture {
         fail_arm: AtomicBool::new(false),
         cancel_pending: AtomicBool::new(false),
         lost: AtomicBool::new(false),
+        lost_ids: Default::default(),
         stall: Default::default(),
     });
     runtime.register_wake_driver(Arc::downgrade(&driver) as std::sync::Weak<dyn WakeDriver>);
@@ -1341,7 +1343,11 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
     let mut wake = f.wake(&other_task, "wake-other");
     wake.agent_id = other.into();
     f.runtime.arm_wake_source(&other_task, &wake).unwrap();
-    f.driver.lost.store(true, Ordering::Release);
+    f.driver
+        .lost_ids
+        .lock()
+        .unwrap()
+        .insert("wake-other".into());
 
     f.runtime
         .sweep_agent_lifecycle()
@@ -2427,6 +2433,49 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
 /// degraded check — a source probe that does not answer — never holds the pass. The check runs
 /// apart from it, the pass returns, the check's own limit reports the degradation while the
 /// probe is still held, and the check still does its work, so a lost source is reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blocked_durable_wake_read_reports_degradation_before_the_worker_exits() {
+    let capture = crate::logging::capture::start();
+    let f = fixture("deadman-blocked-write", false).await;
+    let store = f.store().clone();
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let writer = tokio::task::spawn_blocking(move || {
+        store
+            .with_connection_locked_for_test(|| {
+                entered.send(()).unwrap();
+                let _ = released.recv();
+            })
+            .unwrap();
+    });
+    entered_rx.await.unwrap();
+    f.runtime
+        .spawn_wake_deadman_check(crate::session::unix_epoch_ms());
+    tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+    let while_blocked = f.runtime.owned.agent_wakes.deadman_status_for_test();
+    let reported = capture
+        .records()
+        .iter()
+        .any(|record| record.contains("wake dead-man check stalled"));
+    f.runtime
+        .spawn_wake_deadman_check(crate::session::unix_epoch_ms());
+    let still_owned = f.runtime.owned.agent_wakes.deadman_status_for_test().0;
+    release.send(()).unwrap();
+    writer.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while f.runtime.owned.agent_wakes.deadman_status_for_test().0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(while_blocked, (true, true), "the blocked physical worker keeps admission while its independent supervisor reports degradation");
+    assert!(
+        still_owned && reported,
+        "no new worker is admitted before the blocked one exits"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_degraded_wake_deadman_check_never_holds_the_pass_and_still_works() {
     let _capture = crate::logging::capture::start();
@@ -2680,20 +2729,41 @@ fn backstops(f: &Fixture) -> Vec<AgentWake> {
 /// (20A7 11-27: ~30 lanes looping on exactly that), and it is told, never stranded silently.
 #[tokio::test]
 async fn a_backstop_rescues_a_stated_wait_once_and_never_chains() {
+    assert_stated_wait_rescue(false).await;
+}
+
+#[tokio::test]
+async fn an_ordinary_timer_named_like_a_backstop_keeps_its_turns_rescue() {
+    assert_stated_wait_rescue(true).await;
+}
+
+async fn assert_stated_wait_rescue(ordinary_timer: bool) {
     let f = fixture("row-554-backstop-chain", false).await;
     let turn_1 = f.begin("turn-1");
-    f.runtime.owned.arm_wakes_at_turn_end(
-        &f.room,
-        &f.agent,
-        "turn-1",
-        &f.run,
-        "Waiting for the review.",
-    );
+    if ordinary_timer {
+        let mut timer = f.wake(&turn_1, "ordinary-backstop-label");
+        timer.kind = "timer".into();
+        timer.state = "scheduled".into();
+        timer.label = format!(
+            "{}: ordinary caller label",
+            crate::runtime::state::stranded_agent::BACKSTOP_LABEL
+        );
+        timer.next_due_ms = Some(crate::session::unix_epoch_ms() + 1_000);
+        f.runtime.arm_wake_source(&turn_1, &timer).unwrap();
+    } else {
+        f.runtime.owned.arm_wakes_at_turn_end(
+            &f.room,
+            &f.agent,
+            "turn-1",
+            &f.run,
+            "Waiting for the review.",
+        );
+    }
     let armed = backstops(&f);
     assert_eq!(armed.len(), 1, "one stated wait arms one backstop");
     assert_eq!(armed[0].state, "scheduled");
     assert!(
-        f.notices().contains("the kernel armed a backstop timer"),
+        ordinary_timer || f.notices().contains("the kernel armed a backstop timer"),
         "the agent is told what the kernel did: {}",
         f.notices()
     );
@@ -2770,18 +2840,22 @@ async fn a_backstop_rescues_a_stated_wait_once_and_never_chains() {
     );
     assert_eq!(
         backstops(&f).len(),
-        1,
-        "the turn a backstop's delivery started arms no second one"
+        if ordinary_timer { 2 } else { 1 },
+        "only a genuine kernel backstop delivery suppresses another rescue"
     );
     assert!(
-        f.notices().contains("the kernel will not arm another"),
+        if ordinary_timer {
+            f.notices().contains("the kernel armed a backstop timer")
+        } else {
+            f.notices().contains("the kernel will not arm another")
+        },
         "the agent is told the rescue was once, not stranded silently: {}",
         f.notices()
     );
 }
 
-/// Row 554, review finding: a backstop steered into a turn that started on its own did not
-/// start that turn, so it must not consume the turn's own rescue.
+/// Row 554 provenance boundary: an admitted backstop steer did not start its target
+/// turn. Its durable Attempt/Receipt must not consume that turn's own rescue.
 #[tokio::test]
 async fn a_turn_a_fired_backstop_steered_into_keeps_its_own_rescue() {
     let f = fixture("row-554-backstop-steer", true).await;
@@ -2807,7 +2881,7 @@ async fn a_turn_a_fired_backstop_steered_into_keeps_its_own_rescue() {
             now,
         })
         .unwrap();
-    // The running turn is an independent turn; the backstop fires into it as a steer.
+    // The running turn is independent; retain the earlier task's actual firing.
     let fired = now + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS + 1_000;
     let Outcome::Wakes(_) = f
         .store()
@@ -2816,7 +2890,48 @@ async fn a_turn_a_fired_backstop_steered_into_keeps_its_own_rescue() {
     else {
         panic!("fire returns wakes")
     };
-    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    // Normal nonurgent timer delivery stays queued during an independent turn.
+    // This case exercises the durable admitted-steer provenance boundary; the
+    // sibling below covers the actual busy delivery policy without fabricating urgency.
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    let firing = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.source_id == backstops(&f)[0].id)
+        .unwrap();
+    assert_eq!(firing.state, "pending");
+    assert!(!firing.urgent);
+    assert!(firing.target_prompt_id.is_none());
+    let delivered_prompt = firing.transport_prompt_id(false);
+    let Outcome::Event(attempt) = f
+        .store()
+        .agent_lifecycle(Operation::Attempt {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            sequence: firing.sequence,
+            prompt: delivered_prompt,
+            target: Some(f.prompt_id.clone()),
+            run: Some(f.run.clone()),
+            now: crate::session::unix_epoch_ms(),
+            work: None,
+            through: firing.sequence,
+        })
+        .unwrap()
+    else {
+        panic!("the durable steering attempt must be recorded");
+    };
+    assert_eq!(
+        attempt.target_prompt_id.as_deref(),
+        Some(f.prompt_id.as_str())
+    );
+    f.runtime
+        .record_agent_delivery_receipt(&f.room, &f.agent, firing.sequence, "accepted")
+        .unwrap();
     let steered = match tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
             let event = f
@@ -2871,6 +2986,128 @@ async fn a_turn_a_fired_backstop_steered_into_keeps_its_own_rescue() {
     assert!(
         !f.notices().contains("the kernel will not arm another"),
         "the steered turn is not told its wait was already rescued: {}",
+        f.notices()
+    );
+}
+
+/// The supported busy path queues a nonurgent backstop and still offers it in
+/// the inbox. Reading it does not turn it into the independent turn's origin.
+#[tokio::test]
+async fn a_pending_backstop_read_during_an_independent_turn_keeps_its_own_rescue() {
+    let f = fixture("row-554-backstop-busy-inbox", true).await;
+    let waiting = f.begin("turn-waiting");
+    f.runtime.owned.arm_wakes_at_turn_end(
+        &f.room,
+        &f.agent,
+        "turn-waiting",
+        &f.run,
+        "Waiting for the review.",
+    );
+    assert_eq!(backstops(&f).len(), 1, "the earlier task armed its rescue");
+    let wake_id = backstops(&f)[0].id.clone();
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: waiting.prompt_id,
+            run: f.run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    let fired = now + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS + 1_000;
+    let Outcome::Wakes(wakes) = f
+        .store()
+        .agent_lifecycle(Operation::FireWakes { now: fired })
+        .unwrap()
+    else {
+        panic!("fire returns wakes");
+    };
+    assert!(wakes
+        .iter()
+        .any(|wake| wake.id == wake_id && wake.last_sequence.is_some()));
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    let firing = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.source_id == wake_id)
+        .unwrap();
+    assert_eq!(
+        firing.state, "pending",
+        "ordinary timer does not interrupt busy work"
+    );
+    assert!(!firing.urgent);
+    assert_eq!(firing.payload["after_turn"], true);
+    assert!(firing.prompt_id.is_none() && firing.target_prompt_id.is_none());
+    let independent = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned()
+    };
+    let read = call(
+        &f,
+        &token,
+        "chariox.events.inbox",
+        &independent,
+        serde_json::json!({"sequence": firing.sequence}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        read.ok,
+        "the authenticated running turn can read its timer outcome"
+    );
+    assert_eq!(read.payload["events"][0]["sequence"], firing.sequence);
+    let (shown, was_read) = f
+        .store()
+        .agent_inbox_event(firing.sequence)
+        .unwrap()
+        .unwrap();
+    assert!(was_read, "the real inbox entry marks the timer shown");
+    assert_eq!(shown.state, "pending");
+    assert!(f
+        .store()
+        .agent_event_for_prompt(&f.room, &f.agent, &f.prompt_id)
+        .unwrap()
+        .is_none());
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(
+        f.runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &f.agent)
+            .unwrap()
+            .id(),
+        f.prompt_id
+    );
+    f.runtime.owned.arm_wakes_at_turn_end(
+        &f.room,
+        &f.agent,
+        &f.prompt_id,
+        &f.run,
+        "Still waiting for the review.",
+    );
+    assert_eq!(
+        backstops(&f).len(),
+        2,
+        "a firing read during independently started work did not start it: {}",
+        f.notices()
+    );
+    assert!(
+        !f.notices().contains("the kernel will not arm another"),
+        "the independent turn keeps its rescue: {}",
         f.notices()
     );
 }

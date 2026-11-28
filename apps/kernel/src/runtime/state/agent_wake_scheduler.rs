@@ -71,6 +71,14 @@ pub(crate) struct AgentWakeMonitor {
 }
 
 impl AgentWakeMonitor {
+    #[cfg(test)]
+    pub(super) fn deadman_status_for_test(&self) -> (bool, bool) {
+        (
+            self.deadman_outstanding.load(Ordering::Acquire),
+            self.deadman_degraded.load(Ordering::Acquire),
+        )
+    }
+
     pub(super) fn new() -> Self {
         let monitor = Self {
             started_at_ms: crate::session::unix_epoch_ms(),
@@ -466,45 +474,54 @@ impl KernelRuntimeState {
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
-        // The checks run in their own work with their own admission. Everything in them is
-        // cancellable, so a check that runs out of its own time clears its mark
-        // here and the next pass runs a fresh one —
-        // one stalled step never wedges the gate (review P1, 11-28).
+        // Durable store operations can block inside a single future poll.
+        // Supervise that physical worker independently and retain admission
+        // until it exits, even after reporting its existing deadline.
         if !monitor.deadman_outstanding.swap(true, Ordering::AcqRel) {
             let state = self.clone();
             tokio::spawn(async move {
                 let monitor = &state.owned.agent_wakes;
-                match tokio::time::timeout(WAKE_CHECK_LIMIT, state.sweep_agent_wakes(now)).await {
-                    Ok(outcome) => {
-                        monitor.deadman_outstanding.store(false, Ordering::Release);
-                        match outcome {
-                            Ok(()) => {
-                                if monitor.deadman_degraded.swap(false, Ordering::AcqRel) {
-                                    crate::logging::warn_with_fields(
-                                        "runtime.agent_lifecycle",
-                                        "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check recovered; wake delivery checks run again",
-                                        serde_json::json!({"held_check": true}),
-                                    );
-                                }
-                            }
-                            Err(error) => {
-                                if !monitor.deadman_degraded.swap(true, Ordering::AcqRel) {
-                                    crate::logging::warn_with_fields(
-                                        "runtime.agent_lifecycle",
-                                        "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is degraded; it runs apart from the sweep and is retried until it recovers",
-                                        serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
-                                    );
-                                }
-                            }
-                        }
-                    }
+                let checking = state.clone();
+                let runtime = tokio::runtime::Handle::current();
+                let mut worker = tokio::task::spawn_blocking(move || {
+                    runtime.block_on(checking.sweep_agent_wakes(now))
+                });
+                let result = match tokio::time::timeout(WAKE_CHECK_LIMIT, &mut worker).await {
+                    Ok(result) => result,
                     Err(_) => {
-                        monitor.deadman_outstanding.store(false, Ordering::Release);
                         if !monitor.deadman_degraded.swap(true, Ordering::AcqRel) {
                             crate::logging::warn_with_fields(
                                 "runtime.agent_lifecycle",
-                                "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check stalled and is retried by the next pass; due-timer rescue and receipt alerts continue on their own admission",
+                                "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check stalled; its physical worker retains admission until it exits",
                                 serde_json::json!({"held_check": true}),
+                            );
+                        }
+                        worker.await
+                    }
+                };
+                monitor.deadman_outstanding.store(false, Ordering::Release);
+                let result = result
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "supervise wake dead-man check",
+                        message: error.to_string(),
+                    })
+                    .and_then(|result| result);
+                match result {
+                    Ok(()) => {
+                        if monitor.deadman_degraded.swap(false, Ordering::AcqRel) {
+                            crate::logging::warn_with_fields(
+                                "runtime.agent_lifecycle",
+                                "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check recovered; wake delivery checks run again",
+                                serde_json::json!({"held_check": true}),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if !monitor.deadman_degraded.swap(true, Ordering::AcqRel) {
+                            crate::logging::warn_with_fields(
+                                "runtime.agent_lifecycle",
+                                "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is degraded; it runs apart from the sweep and is retried until it recovers",
+                                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
                             );
                         }
                     }

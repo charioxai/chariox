@@ -15,6 +15,10 @@ use crate::durable_state::agent_lifecycle::{
 
 /// What a backstop timer's label starts with; the delivery of its firing reads it.
 pub(super) const BACKSTOP_LABEL: &str = "backstop for a stated wait";
+
+fn is_kernel_backstop(wake: &AgentWake) -> bool {
+    wake.kind == "timer" && wake.detail["kernel_origin"] == "stated_wait_backstop"
+}
 /// How much of the end of a turn's answer is read for a stated wait.
 const ANSWER_TAIL_CHARS: usize = 1200;
 /// The longest stated wait quoted back to the agent.
@@ -177,7 +181,7 @@ impl KernelRuntimeOwnedState {
                     // An adopted command may never end (a server the agent left up): the agent is
                     // idle all the same, and a message must not wait for that command.
                     && wake.kind != adopted::KIND
-                    && !(wake.label.starts_with(BACKSTOP_LABEL)
+                    && !(is_kernel_backstop(wake)
                         && Some(wake.task_id.as_str()) != latest)
             })
             .map(|wake| {
@@ -335,18 +339,16 @@ impl KernelRuntimeOwnedState {
                 // row 554: ~30 lanes looping on exactly that). The binding is the firing's
                 // own delivery of THIS prompt; a backstop steered into a turn that started
                 // on its own did not start it, so that turn keeps its rescue.
-                let rescued = store
-                    .agent_event_for_prompt(room, agent, &task.prompt_id)?
-                    .is_some_and(|event| {
-                        event.target_prompt_id.is_none()
-                            && [
-                                &event.payload["public_answer"]["label"],
-                                &event.payload["label"],
-                            ]
-                            .into_iter()
-                            .filter_map(|label| label.as_str())
-                            .any(|label| label.starts_with(BACKSTOP_LABEL))
-                    });
+                let rescued = match store.agent_event_for_prompt(room, agent, &task.prompt_id)? {
+                    Some(event) if event.target_prompt_id.is_none() => {
+                        store.agent_wake(&event.source_id)?.is_some_and(|wake| {
+                            wake.room_id == room
+                                && wake.agent_id == agent
+                                && is_kernel_backstop(&wake)
+                        })
+                    }
+                    _ => false,
+                };
                 if rescued {
                     told.push(format!(
                         "your turn ended saying \"{phrase}\"; this turn was the backstop the kernel armed for it, so the kernel will not arm another; register a wake yourself, or start a turn when it changes"
@@ -355,6 +357,7 @@ impl KernelRuntimeOwnedState {
                     let due = now + DEFAULT_WAIT_TIMEOUT_MS;
                     let mut wake =
                         kernel_wake(&task, "timer", format!("{BACKSTOP_LABEL}: {phrase}"), now);
+                    wake.detail = serde_json::json!({"kernel_origin": "stated_wait_backstop"});
                     wake.state = "scheduled".into();
                     wake.next_due_ms = Some(due);
                     match self.arm_wake_source(&task, &wake) {

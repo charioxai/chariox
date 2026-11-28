@@ -1677,9 +1677,22 @@ impl KernelRuntimeState {
             // The settlement runs apart from the pass: it takes its own copy of the task,
             // not a borrow of this pass's list.
             let owned = task.clone();
+            // Completion and timeout publish the backoff under the same lock:
+            // a detached success cannot be followed by a stale timeout write.
+            let completed = Arc::new(std::sync::Mutex::new(false));
+            let finished = Arc::clone(&completed);
+            let completed_task = task_id.clone();
             match self
                 .sweep_task_within(key, &mut patience, move |state| async move {
-                    state.sweep_task(owned, now).await
+                    let result = state.sweep_task(owned, now).await;
+                    if result.is_ok() {
+                        let mut completed = finished
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state.owned.agent_wakes.task_settled(&completed_task);
+                        *completed = true;
+                    }
+                    result
                 })
                 .await
             {
@@ -1690,6 +1703,12 @@ impl KernelRuntimeState {
                 }
                 super::task_work_flight::TaskStep::Busy => {}
                 super::task_work_flight::TaskStep::TimedOut => {
+                    let completed = completed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if *completed {
+                        continue;
+                    }
                     let backoff = monitor.task_did_not_settle(&task_id, now);
                     crate::logging::warn_with_fields(
                         "runtime.agent_lifecycle",
@@ -1717,9 +1736,22 @@ impl KernelRuntimeState {
             // The settlement runs apart from the pass: it takes its own copy of the task,
             // not a borrow of this pass's list.
             let owned = task.clone();
+            // Completion and timeout publish the backoff under the same lock:
+            // a detached success cannot be followed by a stale timeout write.
+            let completed = Arc::new(std::sync::Mutex::new(false));
+            let finished = Arc::clone(&completed);
+            let completed_task = task_id.clone();
             match self
                 .sweep_task_within(key, &mut patience, move |state| async move {
-                    state.sweep_task(owned, now).await
+                    let result = state.sweep_task(owned, now).await;
+                    if result.is_ok() {
+                        let mut completed = finished
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state.owned.agent_wakes.task_settled(&completed_task);
+                        *completed = true;
+                    }
+                    result
                 })
                 .await
             {
@@ -1730,6 +1762,12 @@ impl KernelRuntimeState {
                 }
                 super::task_work_flight::TaskStep::Busy => {}
                 super::task_work_flight::TaskStep::TimedOut => {
+                    let completed = completed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if *completed {
+                        continue;
+                    }
                     let backoff = monitor.task_did_not_settle(&task_id, now);
                     crate::logging::warn_with_fields(
                         "runtime.agent_lifecycle",
