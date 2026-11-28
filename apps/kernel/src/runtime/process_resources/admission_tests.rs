@@ -223,7 +223,9 @@ fn a_fast_many_file_copy_is_stopped_while_the_disk_still_has_room() {
                 .map_or(0, |at| at.elapsed().as_millis() as u64 * 200 * MIB / 1000);
             Some(admission::Space {
                 id: std::fs::metadata(path).ok()?.dev(),
-                free: (512 * MIB).saturating_sub(lost),
+                // Keep free space at or above half the floor: only the
+                // predictive fill-horizon branch may stop this copy.
+                free: (512 * MIB).saturating_sub(lost).max(256 * MIB),
                 total: 100 * GIB,
             })
         }),
@@ -305,10 +307,11 @@ end=time.time()+8"#,
         "copy loop never wrote a file"
     );
     writer.assert_told("copy", "was filling it");
+    writer.assert_told("copy", "at the rate it fills");
     assert!(
         take_wait_events().iter().any(|event| matches!(
             &event.change,
-            WaitChange::Stopped { reason, .. } if reason.contains("was filling it")
+            WaitChange::Stopped { reason, .. } if reason.contains("was filling it") && reason.contains("at the rate it fills")
         )),
         "the room was not told why the copy ended"
     );
