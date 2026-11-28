@@ -86,7 +86,7 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
         serde_json::from_value::<crate::transport::runtime_tools::RequestPopupUntilArgs>(unknown)
             .is_err()
     );
-    let interaction = serde_json::json!({
+    let interaction = serde_json::json!({"surface":"card", "card_type":"popup_browser_region",
         "closes_with_wake": "wake-1",
         "id": "interaction-1",
         "agent_id": "agent-1",
@@ -130,14 +130,14 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
                 serde_json::to_vec(&serde_json::json!([arguments, interaction])).unwrap()
             )
         ),
-        "cb56dc70bbfc839aace0d66435a827cdc080b1b64cc30756c7d091724c32196d"
+        "92b6d73cdbf21a0c9ee69f01d17f3c3048b20ae6ed686fe3b20dbb1bd34c4426"
     );
 }
 
 // Person cards (protocol 1006): a sub-agent's card names the panel that shows it and its asker.
 #[test]
 fn a_sub_agent_card_carries_its_panel_and_asker_name() {
-    let interaction = serde_json::json!({
+    let interaction = serde_json::json!({"surface":"card", "card_type":"Question", "custom_choice":{"id":"reply","label":"","min_length":1},
         "shown_in_agent_id": "agent-room",
         "asker_name": "worker-1",
         "id": "interaction-2",
@@ -164,7 +164,7 @@ fn a_sub_agent_card_carries_its_panel_and_asker_name() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&interaction).unwrap())
         ),
-        "445199b2803142f0936fb2a5d18d929e14995d9969c23f8f674395426106af24"
+        "da6628226f789834461b2e47912e3d11d1a0a0b4833c3aeb99a4e388f8ac62eb"
     );
 }
 
