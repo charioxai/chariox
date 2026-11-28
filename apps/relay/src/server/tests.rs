@@ -120,6 +120,42 @@ pub(super) fn signed_register(
     }
 }
 
+/// The identity key a test kernel registers with: one per kernel id.
+pub(super) fn test_identity_key(daemon_id: &str) -> p256::SecretKey {
+    p256::SecretKey::from_slice(&<Sha256 as sha2::Digest>::digest(daemon_id.as_bytes()))
+        .expect("a digest is a valid key")
+}
+
+pub(super) fn test_public_key(daemon_id: &str) -> String {
+    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+    base64::engine::general_purpose::STANDARD.encode(
+        test_identity_key(daemon_id)
+            .public_key()
+            .to_encoded_point(false)
+            .as_bytes(),
+    )
+}
+
+/// Registers as a kernel does: signed with its identity key for this connection's challenge.
+pub(super) fn signed_register(
+    url: &str,
+    handshake: &tokio_tungstenite::tungstenite::handshake::client::Response,
+    registration: DaemonRegistration,
+) -> RelayEnvelope {
+    let challenge = crate::registration_proof::offered_challenge(handshake)
+        .expect("the relay offers a registration challenge");
+    let proof = crate::registration_proof::prove(
+        &test_identity_key(&registration.daemon_id),
+        &crate::registration_proof::dialed_address(url).expect("relay url names a host"),
+        &registration,
+        challenge,
+    );
+    RelayEnvelope::DaemonRegister {
+        registration,
+        proof,
+    }
+}
+
 fn scoped_claim(
     token_id: &str,
     subject: &str,

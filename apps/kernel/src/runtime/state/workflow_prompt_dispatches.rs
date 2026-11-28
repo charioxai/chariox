@@ -5,6 +5,8 @@ pub(super) struct WorkflowPromptDispatches {
     pub(super) project_queue_promotions: Vec<(String, String)>,
     pub(super) provider_auth_failures: Vec<crate::provider::FinishedProviderPromptSubmitJob>,
     pub(super) local: Vec<crate::app::KernelPromptDispatch>,
+    /// Started prompts that already failed on their run; each settles failed with its error.
+    pub(super) failed_local: Vec<(crate::app::KernelPromptDispatch, crate::error::DaemonError)>,
     pub(super) remote: Vec<crate::app::KernelRemotePromptDispatch>,
     pub(super) starting_provider_runs: Vec<String>,
     pub(super) provider_run_retirements: std::collections::BTreeMap<String, Vec<String>>,
@@ -32,6 +34,7 @@ impl WorkflowPromptDispatches {
         self.project_queue_promotions.is_empty()
             && self.provider_auth_failures.is_empty()
             && self.local.is_empty()
+            && self.failed_local.is_empty()
             && self.remote.is_empty()
             && self.starting_provider_runs.is_empty()
             && self.provider_run_retirements.is_empty()
@@ -45,6 +48,7 @@ impl WorkflowPromptDispatches {
         self.provider_auth_failures
             .extend(other.provider_auth_failures);
         self.local.extend(other.local);
+        self.failed_local.extend(other.failed_local);
         self.remote.extend(other.remote);
         self.starting_provider_runs
             .extend(other.starting_provider_runs);

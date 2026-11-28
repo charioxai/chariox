@@ -268,6 +268,9 @@ impl KernelRuntimeState {
         if provider_runs.len() == 1 && self.skills_v2_runtime_available() {
             specs.extend(crate::transport::runtime_tools::skill_runtime_tool_specs());
         }
+        if provider_runs.len() == 1 && self.skills_v2_runtime_available() {
+            specs.extend(crate::transport::runtime_tools::skill_runtime_tool_specs());
+        }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
             specs.extend(

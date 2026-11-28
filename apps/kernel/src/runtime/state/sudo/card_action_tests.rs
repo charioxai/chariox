@@ -116,6 +116,42 @@ async fn a_read_of_the_agents_own_room_runs_without_a_card() {
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
 
+// A read that reaches past the agent's Room (another Room, every Room, a name lookup across
+// Rooms, the daemon) is the person's to allow, like the writes a card carries: it waits for the
+// passkey card, and Cancel returns nothing.
+#[tokio::test]
+async fn a_read_beyond_the_agents_room_waits_for_the_persons_card() {
+    let f = fixture_with_options(None, true);
+    let other_room = {
+        let mut app = f.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "other-workspace",
+                "other-worktree",
+            ))
+            .unwrap()
+            .0
+    };
+    let other = other_room.id().to_string();
+    let reads = [
+        serde_json::json!({"ListSessions": null}),
+        serde_json::json!({"GetSessionState": {"session_id": other}}),
+        serde_json::json!({"ListAgents": {"session_id": other}}),
+        serde_json::json!({"ListSessionMembers": {"session_id": other}}),
+        serde_json::json!({"ResolveSession": {"session_ref": other}}),
+        serde_json::json!({"GetDaemonHealth": null}),
+    ];
+    for read in reads {
+        let call = raise(&f, "Look around", read.clone());
+        let prompt = card(&f).await;
+        answer(&f, &prompt, "cancel", None).await.unwrap();
+        let result = call.await.unwrap().unwrap();
+        assert_eq!(result["ran"], false, "{read}: {result}");
+        assert_eq!(result["status"], "cancelled", "{read}: {result}");
+        assert!(result.get("response").is_none(), "{read}: {result}");
+    }
+}
+
 #[tokio::test]
 async fn a_card_cannot_carry_a_request_the_persons_terminal_keeps() {
     let f = fixture_with_options(None, true);
