@@ -688,6 +688,13 @@ fn receipt_explicit_read_before_ack_is_delivered_on_local_urgent_resend() {
         )
         .await;
         let sequence = sent["sequence"].as_u64().unwrap();
+        let rejected = rooms.router.runtime_state.read_agent_inbox(
+            &rooms.peer_room,
+            idle.id(),
+            &serde_json::json!({"sequence":sequence,"offset":1_000_000}),
+        );
+        assert!(rejected.is_err(), "invalid payload windows are not reads");
+        assert!(!rooms.inline_message_row(sequence).await.1);
         rooms
             .router
             .runtime_state
@@ -718,7 +725,7 @@ fn receipt_explicit_read_before_ack_is_delivered_on_local_urgent_resend() {
 fn receipt_explicit_promotions_report_failed_and_blocked_deliveries() {
     run_peer_test("receipt-terminal-promotions", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        let idle = spawn_waiting(&rooms).await;
+        let _idle = spawn_waiting(&rooms).await;
         for (state, expected) in [("failed", "undelivered"), ("blocked", "queued")] {
             let sent = send_to(&rooms, "idle", serde_json::json!({"idempotency_key":state})).await;
             let sequence = sent["sequence"].as_u64().unwrap();

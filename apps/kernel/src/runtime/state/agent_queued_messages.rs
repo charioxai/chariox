@@ -166,6 +166,21 @@ enum Promotion {
     Unconfirmed,
     /// The person cancelled it before its recipient read it.
     Withdrawn,
+    /// Delivery ended without reaching the recipient.
+    Undelivered,
+}
+
+fn promotion_state(event: &InboxEvent, shown: bool, read: bool) -> Option<Promotion> {
+    Some(match event.state.as_str() {
+        "expired" => Promotion::Withdrawn,
+        "failed" => Promotion::Undelivered,
+        "accepted" | "acknowledged" | "handled" => Promotion::Delivered,
+        "pending" if read => Promotion::Delivered,
+        "pending" if shown => Promotion::Unconfirmed,
+        "pending" if event.urgent => Promotion::Urgent,
+        "pending" => return None,
+        _ => Promotion::Unconfirmed,
+    })
 }
 
 fn promotion_result(
@@ -189,6 +204,10 @@ fn promotion_result(
             "queued",
             "The message is saved. Delivery has not been confirmed.",
         ),
+        Promotion::Undelivered => (
+            "undelivered",
+            "the message was not delivered; nothing was sent",
+        ),
         Promotion::Withdrawn => (
             "withdrawn",
             "the person cancelled the message before it was delivered; nothing was sent",
@@ -207,20 +226,13 @@ impl KernelRuntimeState {
         self.owned
             .ensure_agent_before_deadline(&event.room_id, &event.agent_id)?;
         let store = &self.owned.durable_state_store;
-        let Some((event, read)) = store.agent_inbox_event(event.sequence)? else {
-            return Ok(Promotion::Delivered);
-        };
-        if event.state == "expired" {
-            return Ok(Promotion::Withdrawn);
-        }
-        if matches!(event.state.as_str(), "submitting" | "uncertain") {
+        let Some((event, shown)) = store.agent_inbox_event(event.sequence)? else {
             return Ok(Promotion::Unconfirmed);
-        }
-        if event.state != "pending" || read {
-            return Ok(Promotion::Delivered);
-        }
-        if event.urgent {
-            return Ok(Promotion::Urgent);
+        };
+        if let Some(promotion) =
+            promotion_state(&event, shown, store.agent_inbox_was_read(event.sequence)?)
+        {
+            return Ok(promotion);
         }
         let released = store.agent_lifecycle(Operation::ReleaseQueuedMessage {
             room: event.room_id.clone(),
@@ -231,8 +243,15 @@ impl KernelRuntimeState {
             if crate::error::is_agent_deadline_refusal(&error) {
                 return Err(error);
             }
-            // The recipient read it, or the person cancelled it, between the look and the change.
-            return Ok(Promotion::Delivered);
+            // Re-read a racing read, cancellation or delivery outcome before claiming success.
+            if let Some((current, shown)) = store.agent_inbox_event(event.sequence)? {
+                if let Some(promotion) =
+                    promotion_state(&current, shown, store.agent_inbox_was_read(event.sequence)?)
+                {
+                    return Ok(promotion);
+                }
+            }
+            return Err(error);
         }
         Box::pin(self.deliver_agent_inbox(&event.room_id, &event.agent_id)).await?;
         self.publish_task_change(&event.room_id);
@@ -256,7 +275,11 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_inbox_event(submitted.sequence)?;
-        // The read flag also records inline text staged before provider acceptance.
+        // Shown also includes inline text staged before provider acceptance.
+        let read = self
+            .owned
+            .durable_state_store
+            .agent_inbox_was_read(submitted.sequence)?;
         let event = current.as_ref().map_or(submitted, |(event, _)| event);
         Ok(match event.state.as_str() {
             "accepted" | "acknowledged" | "handled" => {
@@ -268,6 +291,7 @@ impl KernelRuntimeState {
                     (AlreadyDelivered, None)
                 }
             }
+            "pending" if read => (AlreadyDelivered, None),
             "failed" | "expired" => (Undelivered, None),
             _ => (Queued, None),
         })
