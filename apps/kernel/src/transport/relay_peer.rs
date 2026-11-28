@@ -2561,7 +2561,7 @@ mod native_approval_protocol_tests {
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
-            "interaction": {"id":"approval", "agent_id":"worker-agent", "kind":"permission", "level":"warning",
+            "interaction": {"surface":"card", "card_type":"provider_native_permission", "id":"approval", "agent_id":"worker-agent", "kind":"permission", "level":"warning",
                 "message":"Allow?", "choices":[], "native_origin":{"scope":"prompt", "provider_run_id":"run", "prompt_id":"worker-prompt-A"},
                 "requested_at_ms":1}
         });
@@ -2573,7 +2573,7 @@ mod native_approval_protocol_tests {
         let encoded = serde_json::to_vec(&snapshot).unwrap();
         assert_eq!(
             format!("{:x}", Sha256::digest(encoded)),
-            "dee36b9bf4d4a4e4877a46ea81e1be63d696f78ebc07ebf90d964606c6d93084"
+            "e5bf67a5bce541db7e9117c14e7a588cfa3b6c5fb4412c6fd1971a9a440c19f3"
         );
     }
 }
