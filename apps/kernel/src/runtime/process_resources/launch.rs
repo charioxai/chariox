@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{admission, pool::Pool, MIB};
 
+mod accounting;
 #[cfg(test)]
 mod tests;
 
@@ -15,10 +16,15 @@ pub struct LaunchWait {
     pub reason: admission::WaitReason,
     pub need_bytes: u64,
     pub free_bytes: u64,
+    // The general process/exec wire view must not expose machine-wide accounting.
+    // Only jobs.status explicitly projects it after checking the authenticated owner.
+    #[serde(skip)]
+    pub(crate) memory_accounting: Option<Arc<accounting::MemoryAccounting>>,
 }
 
 pub(super) struct Reservation {
     pub(super) memory: u64,
+    pub(super) declared_memory: u64,
     /// Predicted writes not yet consumed by this domain.
     pub(super) writes: u64,
     pub(super) volume: u64,
@@ -260,7 +266,11 @@ impl LaunchAdmission {
             let mut launches = pool.launches.lock().unwrap_or_else(|e| e.into_inner());
             let light = admission::light(pool.ceiling);
             let launch_memory = room.remaining(&launches);
-            let reserved = ledger.reserved_memory(&members, light, &launch_memory);
+            let growth_by_unit = ledger.reserved_memory_by_unit(&members, light, &launch_memory);
+            let reserved = growth_by_unit
+                .values()
+                .copied()
+                .fold(0, u64::saturating_add);
             let disk_reserved = ledger.reserved_disk(&members, light, &launches, &*pool.volume);
             // Consumption is observed before free space. A completion or write
             // observation since the memory sample requires a fresh snapshot.
@@ -319,6 +329,20 @@ impl LaunchAdmission {
                     reason: admission::WaitReason::Memory,
                     need_bytes: memory,
                     free_bytes: free,
+                    memory_accounting: Some(Arc::new(accounting::MemoryAccounting::capture(
+                        pool,
+                        &room,
+                        &launches,
+                        &launch_memory,
+                        &growth_by_unit,
+                        accounting::Decision {
+                            id,
+                            declared: minimum_memory,
+                            learned: expected.memory,
+                            need: memory,
+                            free,
+                        },
+                    ))),
                 });
             }
             if let Some(disk) = disk {
@@ -334,6 +358,7 @@ impl LaunchAdmission {
                         reason: admission::WaitReason::Disk,
                         need_bytes: expected_writes,
                         free_bytes: free,
+                        memory_accounting: None,
                     });
                 }
             }
@@ -361,6 +386,7 @@ impl LaunchAdmission {
                 id.to_string(),
                 Reservation {
                     memory,
+                    declared_memory: minimum_memory,
                     writes: expected_writes,
                     volume: disk.map_or(0, |d| d.id),
                 },

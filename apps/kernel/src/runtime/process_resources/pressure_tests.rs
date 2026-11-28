@@ -682,6 +682,7 @@ fn a_pause_held_by_a_launch_reservation_ends_with_the_room_and_need_that_decided
     pool.launches.lock().unwrap().insert(
         "binary".into(),
         super::launch::Reservation {
+            declared_memory: 0,
             memory: 1200 * MIB,
             writes: 0,
             volume: 1,

@@ -112,7 +112,7 @@ impl KernelRuntimeState {
                 self.cancel_agent_wake(&wake, &task.task_id, Some(&task.prompt_id))
                     .await?;
             }
-            let mut value = self.job_response(driver.read(id)?)?;
+            let mut value = self.job_response(driver.read(id)?, &task.owner_user_id)?;
             if let Some(error) = collection_error {
                 value["return_error"] = error.into();
             }
@@ -235,7 +235,7 @@ impl KernelRuntimeState {
         loop {
             let record = driver.read(id)?;
             if record.state == "finished" || tokio::time::Instant::now() >= deadline {
-                return self.job_response(record);
+                return self.job_response(record, &task.owner_user_id);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

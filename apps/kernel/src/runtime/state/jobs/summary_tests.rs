@@ -250,6 +250,23 @@ async fn job_summary_own_list_and_status_explain_memory_pressure_and_next_step()
     let list = state
         .dispatch_job_tool(None, "chariox.jobs.list", &serde_json::json!({}), &task)
         .await;
+    let record = state.job_wake_driver.as_ref().unwrap().read(id).unwrap();
+    let non_owner = state.job_response(record, "unrelated-user").unwrap();
+    assert!(
+        non_owner["waiting"].get("memory_accounting").is_none(),
+        "non-owner received machine-wide accounting: {non_owner}"
+    );
+    let mut foreign = task.clone();
+    foreign.agent_id = "unrelated-agent".into();
+    assert!(state
+        .dispatch_job_tool(
+            None,
+            "chariox.jobs.status",
+            &serde_json::json!({"job_id":id}),
+            &foreign
+        )
+        .await
+        .is_err());
     drop(busy);
     state
         .dispatch_job_tool(

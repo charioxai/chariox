@@ -223,6 +223,7 @@ fn reserved_binary(prediction: u64) -> (pool::Pool, Arc<Mutex<Observation>>) {
     pool.launches.lock().unwrap().insert(
         "binary".into(),
         super::super::launch::Reservation {
+            declared_memory: 0,
             memory: prediction,
             writes: 0,
             volume: 1,
@@ -2749,6 +2750,7 @@ fn a_pause_only_the_room_to_continue_keeps_does_not_name_a_memory_shortage() {
     let launches = BTreeMap::from([(
         "binary".to_string(),
         super::super::launch::Reservation {
+            declared_memory: 0,
             memory: GIB,
             writes: 0,
             volume: 1,
@@ -3452,6 +3454,7 @@ fn a_command_that_peaked_heavy_waits_while_a_job_of_unknown_peak_holds_the_pool(
     let launches = BTreeMap::from([(
         "job-1".to_string(),
         super::super::launch::Reservation {
+            declared_memory: 0,
             memory: 16 * MIB,
             writes: 0,
             volume: 0,

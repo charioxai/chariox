@@ -255,3 +255,32 @@ The native protected-parent case reports a plain capability skip when
 `CAP_SYS_RESOURCE` is absent. Its positive-policy case always runs on Linux.
 A root execution of both positive-policy probes drops to nobody after setting
 the inherited minimum, so privilege cannot hide a forbidden decrease.
+
+## Explaining a declared job's memory hold
+
+A declared job reserves its capacity before its process starts. The reservation
+stays while an admitted controller waits for a build slot. The admission sample
+subtracts predicted growth and the unconsumed part of live launch reservations
+from the physical headroom available to this kernel. Consumed memory credits its
+launch reservation once, and completion releases the remaining reservation.
+
+For the kernel owner, `chariox.jobs.status` adds `waiting.memory_accounting` to a
+local job's memory wait. This is the sample used by that reserve transaction,
+with its sample time, pool ceiling, margin, physical/accounting room, effective
+need, declared need, learned peak, predicted growth, remaining launch capacity
+and resulting free bytes. `hold_cause=reserved_capacity` means the job fits the
+sampled room but capacity is promised to other work. `physical_headroom` means
+the effective need exceeds the sampled room before those promises are deducted;
+this can happen for a large request on a healthy machine too.
+
+Domain details contain opaque unit digests, declared/reserved/observed bytes,
+remaining capacity, predicted growth, and whether a launch reservation and an
+observed domain exist. The waiting job carries its own unit digest for correlation.
+The largest 64 reservations are detailed; omitted counts and byte totals account
+for the remainder. Process arguments, paths, identities and history are absent.
+The existing job/ancestor authorization still applies; machine-wide detail is
+projected only for a caller acting for the kernel owner. General exec/process
+serialization omits the sample. A recovered queued launch gets a fresh sample on
+its next admission attempt; an old sample is never reconstructed from newer room
+measurements. Remote jobs whose execution kernel does not provide the sample
+continue to return their existing wait information.

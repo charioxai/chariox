@@ -598,12 +598,12 @@ impl Ledger {
     }
 
     /// Growth beyond each domain's already-reserved binary prediction.
-    pub(super) fn reserved_memory(
+    pub(super) fn reserved_memory_by_unit(
         &self,
         members: &[Arc<Mutex<Observation>>],
         light: u64,
         launch_memory: &BTreeMap<String, u64>,
-    ) -> u64 {
+    ) -> BTreeMap<String, u64> {
         let mut units = BTreeMap::<String, u64>::new();
         for member in members {
             let member = member.lock().unwrap_or_else(|e| e.into_inner());
@@ -625,9 +625,12 @@ impl Ledger {
         units
             .iter()
             .map(|(unit, reserved)| {
-                reserved.saturating_sub(launch_memory.get(unit).copied().unwrap_or(0))
+                (
+                    unit.clone(),
+                    reserved.saturating_sub(launch_memory.get(unit).copied().unwrap_or(0)),
+                )
             })
-            .fold(0, u64::saturating_add)
+            .collect()
     }
 
     /// Read consumed writes before the caller samples filesystem free space.

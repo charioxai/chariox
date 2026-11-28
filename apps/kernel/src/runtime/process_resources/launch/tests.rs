@@ -733,3 +733,172 @@ fn a_known_heavy_launch_waits_for_an_admitted_predicted_heavy_command_before_it_
         .for_each(|member| member.lock().unwrap().admission.clear());
     assert!(admission.reserve("heavy", &heavy, cwd, false).is_ok());
 }
+
+#[test]
+fn memory_wait_explains_declared_reservations_and_releases_without_double_counting() {
+    let gib = 1024 * MIB;
+    let admission = LaunchAdmission::limited(10 * gib, u64::MAX);
+    let command = vec!["binary-with-private-argv".into()];
+    let first = admission
+        .reserve_with_memory(
+            "private-owner-one",
+            &command,
+            Path::new("/private-cwd"),
+            false,
+            4 * gib,
+        )
+        .unwrap();
+    let second = admission
+        .reserve_with_memory(
+            "private-owner-two",
+            &command,
+            Path::new("/private-cwd"),
+            false,
+            4 * gib,
+        )
+        .unwrap();
+    let wait = admission
+        .reserve_with_memory(
+            "waiting",
+            &command,
+            Path::new("/private-cwd"),
+            false,
+            4 * gib,
+        )
+        .err()
+        .unwrap();
+    let explanation = serde_json::to_value(wait.memory_accounting.as_ref().unwrap()).unwrap();
+    assert_eq!(explanation["hold_cause"], "reserved_capacity");
+    assert_eq!(explanation["launch_remaining_bytes"], 8 * gib);
+    assert_eq!(explanation["predicted_growth_bytes"], 0);
+    assert_eq!(
+        explanation["room_bytes"]
+            .as_u64()
+            .unwrap()
+            .saturating_sub(8 * gib),
+        wait.free_bytes
+    );
+    assert_eq!(explanation["declared_bytes"], 4 * gib);
+    let text = explanation.to_string();
+    for private in [
+        "private-owner-one",
+        "private-owner-two",
+        "binary-with-private-argv",
+        "private-cwd",
+    ] {
+        assert!(
+            !text.contains(private),
+            "private text reached accounting: {text}"
+        );
+    }
+    assert!(
+        serde_json::to_value(&wait)
+            .unwrap()
+            .get("memory_accounting")
+            .is_none(),
+        "general exec serialization must not expose machine accounting"
+    );
+    let observed = Arc::new(Mutex::new(Observation {
+        unit: "private-owner-one".into(),
+        samples: vec![sample(2 * gib)],
+        ..Observation::default()
+    }));
+    admission.0.join(&observed);
+    let consumed = admission
+        .reserve_with_memory(
+            "waiting",
+            &command,
+            Path::new("/private-cwd"),
+            false,
+            4 * gib,
+        )
+        .err()
+        .unwrap();
+    let consumed = serde_json::to_value(consumed.memory_accounting.unwrap()).unwrap();
+    assert_eq!(consumed["launch_remaining_bytes"], 6 * gib);
+    assert_eq!(
+        consumed["free_bytes"], wait.free_bytes,
+        "consumed reservation was charged twice"
+    );
+    drop(observed);
+    drop(first);
+    let third = admission
+        .reserve_with_memory(
+            "waiting",
+            &command,
+            Path::new("/private-cwd"),
+            false,
+            4 * gib,
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(wait.memory_accounting.unwrap()).unwrap(),
+        explanation,
+        "status sample was recomputed after its decision"
+    );
+    drop(third);
+    drop(second);
+    assert!(admission
+        .reserve_with_memory("after-release", &command, Path::new("/"), false, 9 * gib)
+        .is_ok());
+}
+
+#[test]
+fn memory_wait_distinguishes_physical_room_from_promised_capacity() {
+    let admission = LaunchAdmission::limited(512 * MIB, u64::MAX);
+    let wait = admission
+        .reserve_with_memory(
+            "waiting",
+            &["binary".into()],
+            Path::new("/"),
+            false,
+            1024 * MIB,
+        )
+        .err()
+        .unwrap();
+    let explanation = serde_json::to_value(wait.memory_accounting.unwrap()).unwrap();
+    assert_eq!(explanation["hold_cause"], "physical_headroom");
+    assert_eq!(explanation["launch_remaining_bytes"], 0);
+    assert!(explanation["room_bytes"].as_u64().unwrap() < wait.need_bytes);
+}
+
+#[test]
+fn memory_wait_bounds_domain_details_without_hiding_reserved_totals() {
+    let gib = 1024 * MIB;
+    let admission = LaunchAdmission::limited(10 * gib, u64::MAX);
+    let argv = ["binary".into()];
+    let permits: Vec<_> = (0..70)
+        .map(|id| {
+            admission
+                .reserve_with_memory(
+                    &format!("owner-{id}"),
+                    &argv,
+                    Path::new("/"),
+                    false,
+                    16 * MIB,
+                )
+                .unwrap()
+        })
+        .collect();
+    let wait = admission
+        .reserve_with_memory("waiting", &argv, Path::new("/"), false, 9 * gib)
+        .err()
+        .unwrap();
+    let explanation = serde_json::to_value(wait.memory_accounting.unwrap()).unwrap();
+    let details = explanation["domains"].as_array().unwrap();
+    assert_eq!(details.len(), 64);
+    assert_eq!(explanation["omitted_domains"], 6);
+    let listed: u64 = details
+        .iter()
+        .map(|row| row["launch_remaining_bytes"].as_u64().unwrap())
+        .sum();
+    assert_eq!(
+        listed
+            + explanation["omitted_launch_remaining_bytes"]
+                .as_u64()
+                .unwrap(),
+        70 * 16 * MIB
+    );
+    assert_eq!(explanation["launch_remaining_bytes"], 70 * 16 * MIB);
+    drop(permits);
+}

@@ -102,7 +102,7 @@ pub(super) struct MemoryRoom {
     /// The machine's free memory, not the ceiling, set `memory`.
     pub host_bound: bool,
     pub growing: u64,
-    observed: BTreeMap<String, u64>,
+    pub(super) observed: BTreeMap<String, u64>,
 }
 
 impl MemoryRoom {

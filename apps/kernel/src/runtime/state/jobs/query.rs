@@ -1,7 +1,7 @@
 //! Read-only job discovery for the authenticated agent, without command or sudo authority.
 use super::*;
 
-const WAIT_ACTION: &str = "Wait for memory or disk pressure to clear; queued work starts automatically. To release your own running work, use chariox.jobs.list, then chariox.jobs.cancel with that job_id.";
+const WAIT_ACTION: &str = "Wait for enough unreserved memory or disk space; queued work starts automatically. To release your own running work, use chariox.jobs.list, then chariox.jobs.cancel with that job_id.";
 
 impl KernelRuntimeState {
     pub(super) fn own_job_list(&self, task: &AgentTaskExecution) -> serde_json::Value {
@@ -22,11 +22,15 @@ impl KernelRuntimeState {
             "jobs": jobs,
             "waiting": waiting,
             "running_job_ids": jobs.iter().filter(|job| job.state == "running").map(|job| &job.job_id).collect::<Vec<_>>(),
-            "next_action": "Use chariox.jobs.status with job_id to open a result; chariox.jobs.cancel with job_id stops your job. Queued jobs start automatically when memory or disk pressure clears."
+            "next_action": "Use chariox.jobs.status with job_id to open a result; chariox.jobs.cancel with job_id stops your job. Queued jobs start automatically when enough unreserved memory or disk space is available."
         })
     }
 
-    pub(super) fn job_response(&self, record: Record) -> Result<serde_json::Value, DaemonError> {
+    pub(super) fn job_response(
+        &self,
+        record: Record,
+        caller: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
         let wait = record.exec_id.as_ref().and_then(|id| {
             self.owned
                 .room_execs
@@ -64,7 +68,15 @@ impl KernelRuntimeState {
             value["cancelled_by"] = limit;
         }
         if let Some(wait) = wait {
+            let accounting = self
+                .acts_for_kernel_owner(caller)
+                .then(|| wait.memory_accounting.clone())
+                .flatten();
             value["waiting"] = serde_json::to_value(wait).expect("launch wait");
+            if let Some(accounting) = accounting {
+                value["waiting"]["memory_accounting"] =
+                    serde_json::to_value(accounting).expect("redacted memory accounting");
+            }
             value["running_job_ids"] = serde_json::json!(running);
             value["next_action"] = WAIT_ACTION.into();
         }
@@ -117,7 +129,7 @@ impl KernelRuntimeState {
             return Ok(None);
         }
         let agent = serde_json::json!({"id": owner.id(), "alias": owner.alias()});
-        let mut value = self.job_response(record)?;
+        let mut value = self.job_response(record, &task.owner_user_id)?;
         value["agent"] = agent;
         Ok(Some(value))
     }
