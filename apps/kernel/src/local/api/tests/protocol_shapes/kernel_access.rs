@@ -10,6 +10,7 @@ fn sudo_protocol_487_window_extension_and_session_status_shapes() {
         crate::test_support::expected_local_protocol_version()
     );
     let turn = crate::local::KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:one".into(),
         session_id: "s".into(),
         agent_id: "a".into(),

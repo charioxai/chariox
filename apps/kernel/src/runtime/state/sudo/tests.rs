@@ -553,6 +553,7 @@ pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
         .submit_prepared_prompt_with_queue_policy(&session, prompt, false, false)
         .unwrap();
     let turn = KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:fixture".into(),
         session_id: session.id().into(),
         agent_id: agent.into(),
@@ -1015,6 +1016,7 @@ async fn sudo_rotation_cancels_authorized_queue_before_idle_dispatch() {
 async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content() {
     let f = fixture();
     let entry = KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:restart-pending".into(),
         session_id: f.request.session_id.clone(),
         agent_id: f.request.target_agent_id.clone().unwrap(),

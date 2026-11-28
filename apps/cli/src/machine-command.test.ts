@@ -92,6 +92,45 @@ test("machine needs a known verb and a class", async () => {
   assert.deepEqual(noClass.requests, [])
 })
 
+const reading = { limits: { account: { machines_at_once: 4, spend_per_day_micros: 10_000_000, currency: "EUR", version: 1 }, no_ask: { enabled: true, machines_at_once: 3, spend_per_day_micros: null, classes: null, effective_machines_at_once: 3, effective_spend_per_day_micros: 10_000_000, clamped: true } } }
+
+test("machine limits reads the account's limits and the no-ask limits", async () => {
+  const result = await run(["machine", "limits"], answer(reading))
+  assert.deepEqual(result.requests, [{ MachineAcquisition: { action: "limits" } }])
+  assert.deepEqual(JSON.parse(result.out), reading)
+})
+
+test("machine limits with a change sends the named changes, in millionths for spend", async () => {
+  const account = await run(["machine", "limits", "--machines", "3", "--spend", "7.5"], answer(reading))
+  assert.deepEqual(account.requests, [{ MachineAcquisition: { action: "set_limits", scope: "account", machines_at_once: 3, spend_per_day_micros: 7_500_000 } }])
+  const classes = await run(["machine", "limits", "--scope", "no-ask", "--classes", "small, medium"], answer(reading))
+  assert.deepEqual(classes.requests, [{ MachineAcquisition: { action: "set_limits", scope: "no_ask", classes: ["small", "medium"] } }])
+  const smallest = await run(["machine", "limits", "--scope", "no-ask", "--classes", "smallest"], answer(reading))
+  assert.deepEqual(smallest.requests, [{ MachineAcquisition: { action: "set_limits", scope: "no_ask", classes: [] } }])
+  const noAsk = await run(["machine", "limits", "--scope", "no-ask", "--machines", "2"], answer(reading))
+  assert.deepEqual(noAsk.requests, [{ MachineAcquisition: { action: "set_limits", scope: "no_ask", machines_at_once: 2 } }])
+})
+
+test("machine limits refuses an empty or malformed change before the kernel is asked", async () => {
+  for (const argv of [["--scope", "account"], ["--machines", "0"], ["--machines", "two"], ["--spend", "-1"], ["--spend", "1.2345678"], ["--scope", "all", "--machines", "2"], ["--classes", "small"], ["--scope", "no-ask", "--classes", "a b"]]) {
+    const result = await run(["machine", "limits", ...argv], answer(reading))
+    assert.deepEqual(result.requests, [], argv.join(" "))
+    assert.notEqual(result.exit, undefined, argv.join(" "))
+  }
+})
+
+test("machine limits reports the exact owner step without polling for a new card", async () => {
+  const step = "/sudo raise account limits to 15 EUR a day"
+  const result = await run(["machine", "limits", "--spend", "15"], (socket, frame) => {
+    replyWith(socket, frame, { error: { code: "owner_action_required", message: `The person must name this change: ${step}`, retryable: false } })
+  })
+  assert.ok(result.exit && result.exit > 0)
+  assert.equal(result.out, "")
+  assert.ok(result.err.includes(step))
+  assert.doesNotMatch(result.err, /Waiting for the owner to approve/)
+  assert.deepEqual(result.requests, [{ MachineAcquisition: { action: "set_limits", scope: "account", spend_per_day_micros: 15_000_000 } }])
+})
+
 test("machine status without an allocation ref asks for the owner's allocations with no allocation_ref and prints them", async () => {
   const listed = { kind: "machines", machines: [{ allocation_ref: "alloc-1", name: "Cloud 1", state: "ready", revision: 1, since: "2026-11-26T00:00:00Z", kernel_id: null, machine_id: null, available_actions: ["delete"], class_id: "agent-small", region: "fsn1", created_at: "2026-11-26T00:00:00Z" }], saved_states: [] }
   const result = await run(["machine", "status"], answer(listed))

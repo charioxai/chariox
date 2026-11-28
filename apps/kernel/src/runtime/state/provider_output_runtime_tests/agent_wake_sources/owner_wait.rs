@@ -32,6 +32,8 @@ fn request() -> ControlPlaneRequest {
 
 fn capability() -> MachineAllocationCapability {
     MachineAllocationCapability {
+        account_machines: None,
+        account_spend: None,
         revision: "v1".into(),
         actions: vec!["acquire".into()],
         offer: None,

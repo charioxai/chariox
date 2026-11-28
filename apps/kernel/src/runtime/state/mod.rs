@@ -126,7 +126,7 @@ pub(super) use job_compute::stand_in_kernel;
 mod jobs;
 mod kernel_enrollment;
 mod leased_agent_file_serve;
-mod machine_acquisition;
+pub(crate) mod machine_acquisition;
 mod owner_wait;
 pub(crate) use machine_acquisition::Approval;
 mod machine_files_runtime;
@@ -157,6 +157,7 @@ pub(crate) use jobs::JobHandover;
 #[cfg(test)]
 pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
+pub(crate) use sudo::{LimitGrant, RequestedRaise};
 #[cfg(test)]
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
 pub(crate) use sudo::{

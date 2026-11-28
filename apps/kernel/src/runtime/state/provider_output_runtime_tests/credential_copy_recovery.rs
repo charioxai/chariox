@@ -270,6 +270,7 @@ async fn run_case(recovery: RecoveryCase) {
             .active_prompt_for_agent(&session, agent.id())
             .unwrap();
         let entry = crate::local::KernelSudoTurn {
+            limit_grant: None,
             entry_id: "sudo:login-recovery".into(),
             session_id: session.id().into(),
             agent_id: agent.id().into(),

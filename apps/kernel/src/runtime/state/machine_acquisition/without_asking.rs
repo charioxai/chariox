@@ -189,6 +189,7 @@ impl KernelRuntimeState {
         agent: &str,
         request: &ControlPlaneRequest,
         capability: Option<&MachineAllocationCapability>,
+        bound: &limits::AccountBound,
     ) -> Result<Admission, DaemonError> {
         let (request_id, job_ref) = match request {
             ControlPlaneRequest::Acquire { request_id, .. } => (request_id, None),
@@ -218,11 +219,30 @@ impl KernelRuntimeState {
         if settings.offload_without_asking != Some(true) {
             return Ok(Admission::Off);
         }
+        // The account's limits bound the owner's own: a read that failed allows nothing on a guess.
+        let account = match bound {
+            limits::AccountBound::None => None,
+            limits::AccountBound::Unread => {
+                return Ok(Admission::Outside(
+                    "the account's limits could not be read".into(),
+                ))
+            }
+            limits::AccountBound::Limits(account) => Some(account),
+        };
         let Some(capability) = capability else {
             return Ok(Admission::Outside(
                 "the connected service lists no machine options".into(),
             ));
         };
+        // A new attempt at an account with no room goes to the card path, which refuses it before the person is asked.
+        // A job is not asked about: at the limit it waits and runs where it is.
+        if let (ControlPlaneRequest::Acquire { .. }, Some(machines)) = (request, capability.account_machines) {
+            if machines.in_use >= machines.allowed {
+                return Ok(Admission::Outside(limits::account_allows_machines(
+                    machines.allowed,
+                )));
+            }
+        }
         let requested = match requested(request, capability) {
             Ok(requested) => requested,
             Err(reason) => return Ok(Admission::Outside(reason)),
@@ -243,9 +263,11 @@ impl KernelRuntimeState {
         }
         let now = crate::session::unix_epoch_ms();
         let day = now - now % DAY_MS;
-        let max = settings
+        let own_max = settings
             .offload_max_machines
             .unwrap_or(crate::config::DEFAULT_OFFLOAD_MAX_MACHINES);
+        let max = account.map_or(own_max, |a| own_max.min(a.values.machines_at_once));
+        let account_max = max < own_max;
         let machine = AcquiredMachine {
             agent_id: agent.into(),
             request_id: request_id.clone(),
@@ -257,11 +279,26 @@ impl KernelRuntimeState {
             started_ms: now,
             state: AcquiredState::Pending,
         };
-        let cap = settings.offload_daily_cap_micros;
+        // The account's spend is in its own currency; a rate in another is not compared with it.
+        let own_cap = settings.offload_daily_cap_micros;
+        let cap = match account.filter(|a| a.currency == requested.rate.currency) {
+            Some(a) => Some(own_cap.map_or(a.values.spend_per_day_micros, |own| {
+                own.min(a.values.spend_per_day_micros)
+            })),
+            None => own_cap,
+        };
+        let account_cap = cap != own_cap;
         match store.admit_attempt(machine, max, cap, day)? {
             Admitted::Registered(registered) => Ok(hold(registered)),
+            Admitted::AtMaximum if account_max => {
+                Ok(Admission::Outside(limits::account_allows_machines(max)))
+            }
             Admitted::AtMaximum => Ok(Admission::Outside(format!(
                 "the most machines acquired without asking at the same time ({max}) are already running"
+            ))),
+            Admitted::AtCap if account_cap => Ok(Admission::Outside(limits::account_allows_spend(
+                cap.unwrap_or_default(),
+                &requested.rate.currency,
             ))),
             Admitted::AtCap => {
                 let spent: u64 = store

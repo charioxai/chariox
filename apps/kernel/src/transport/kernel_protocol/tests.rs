@@ -566,6 +566,7 @@ fn session_metadata_only_changes_can_skip_session_snapshot() {
 fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
     let mut previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
     let window = crate::local::KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:window-a".into(),
         session_id: "session-a".into(),
         agent_id: "agent-a".into(),
