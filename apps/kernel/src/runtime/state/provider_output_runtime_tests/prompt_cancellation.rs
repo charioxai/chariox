@@ -813,30 +813,42 @@ async fn structured_abort_waiter_releases_provider_lane_after_external_owner_set
 // MP-08/MP-10/MP-11: a provider that never answers Stop cannot hold the next turn.
 #[tokio::test]
 async fn unresponsive_structured_abort_terminates_provider_and_settles_task() {
-    assert_unresponsive_abort_settles(false, false, false).await;
+    assert_unresponsive_abort_settles(false, false, AbortProviderExit::None).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn native_cancellation_reaps_a_tool_in_its_own_process_group() {
-    assert_unresponsive_abort_settles(true, false, false).await;
+    assert_unresponsive_abort_settles(true, false, AbortProviderExit::None).await;
 }
 
 #[tokio::test]
 async fn pending_provider_reap_keeps_cancellation_owned_until_retry_succeeds() {
-    assert_unresponsive_abort_settles(false, true, false).await;
+    assert_unresponsive_abort_settles(false, true, AbortProviderExit::None).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancellation_retains_detached_tool_ownership_after_provider_exit_is_cached() {
-    assert_unresponsive_abort_settles(true, false, true).await;
+    assert_unresponsive_abort_settles(true, false, AbortProviderExit::Observed).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cancellation_retains_detached_tool_ownership_for_an_already_ended_provider() {
+    assert_unresponsive_abort_settles(true, false, AbortProviderExit::AlreadyEnded).await;
+}
+
+enum AbortProviderExit {
+    None,
+    Observed,
+    AlreadyEnded,
 }
 
 async fn assert_unresponsive_abort_settles(
     detached_tool: bool,
     deferred_reap: bool,
-    provider_exits: bool,
+    provider_exit: AbortProviderExit,
 ) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     let worktree = crate::test_support::TestWorktree::new("unresponsive-stop");
@@ -952,7 +964,7 @@ async fn assert_unresponsive_abort_settles(
     // A hung provider call can hold this lane before the abort is even enqueued.
     let _held_lane = runtime.provider_runtime_lanes.acquire(run.id()).await;
     runtime.spawn_prompt_abort(dispatch, runtime.provider_runtime_lanes.clone());
-    if provider_exits {
+    if !matches!(provider_exit, AbortProviderExit::None) {
         // The provider lane stays occupied while another output pump observes
         // exit. Its detached tool must still belong to the cancelling turn.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -978,6 +990,46 @@ async fn assert_unresponsive_abort_settles(
         })
         .await
         .expect("provider must exit and cache its status before cleanup");
+        if matches!(provider_exit, AbortProviderExit::AlreadyEnded) {
+            let ended = runtime
+                .owned
+                .provider_store
+                .mark_run_ended_provider_only(session.id(), run.id())
+                .unwrap();
+            runtime
+                .owned
+                .provider_run_projection
+                .update(ended.into_run());
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match runtime
+                    .reconcile_provider_run_exit_for_output(session.id(), run.id())
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(DaemonError::PtyCleanup { .. }) => {
+                        let current = runtime.owned.session_snapshot(session.id()).unwrap();
+                        assert_eq!(
+                            current
+                                .active_prompt_for_agent(agent.id())
+                                .unwrap()
+                                .status(),
+                            crate::session::PromptStatus::Cancelling,
+                            "pending descendant cleanup released the turn"
+                        );
+                        assert!(
+                            app.lock().await.pty().has_process(run.id()),
+                            "pending exit reconciliation discarded the retained witnesses"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("exit reconciliation failed: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("exit reconciliation must settle its retained descendants");
     }
     if deferred_reap {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1112,5 +1164,141 @@ async fn assert_unresponsive_abort_settles(
     assert!(
         app.lock().await.pty().process_id(run.id()).is_err(),
         "Stop must terminate the owned provider process before releasing the turn"
+    );
+}
+
+#[tokio::test]
+async fn tool_updates_received_during_cancellation_cleanup_keep_their_final_status() {
+    let worktree = crate::test_support::TestWorktree::new("cancel-tool-completion");
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "tool-completion-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "tool-completion-provider",
+        session.id().into(),
+        Some(agent.id().into()),
+        "codex".into(),
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.prompt_owner_submit_prepared_prompt(
+        session.id(),
+        crate::session::PromptQueueItem::new(
+            "tool-completion-prompt",
+            attachment.id(),
+            agent.id(),
+            "finish a tool",
+            crate::session::PromptStatus::Queued,
+        ),
+        false,
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    runtime.owned.note_prompt_tool_output(
+        run.id(),
+        Some("tool-a"),
+        br#"{"id":"tool-a","tool":"bash","status":"running"}"#,
+    );
+    let dispatch = runtime
+        .owned
+        .cancel_local_prompt(session.id(), agent.id(), attachment.id())
+        .unwrap()
+        .unwrap()
+        .dispatch
+        .unwrap();
+    // The finisher has read its activity, but physical cleanup awaits this lock.
+    let entered = Arc::new(tokio::sync::Notify::new());
+    runtime.observe_app_lock_wait_for_test(entered.clone());
+    let held = app.lock().await;
+    let finishing = {
+        let state = runtime.clone();
+        tokio::spawn(async move { state.finish_owned_prompt_abort(&dispatch, false).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().into()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![
+                    crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                        merge_key: Some("tool-a".into()),
+                        bytes: br#"{"id":"tool-a","tool":"bash","status":"completed"}"#.to_vec(),
+                    },
+                    crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                        merge_key: Some("tool-b".into()),
+                        bytes: br#"{"id":"tool-b","tool":"bash","status":"running"}"#.to_vec(),
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    drop(held);
+    tokio::time::timeout(std::time::Duration::from_secs(2), finishing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let updates: Vec<serde_json::Value> = runtime
+        .owned
+        .terminal_stream
+        .output_records()
+        .into_iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderTool)
+        .map(|record| serde_json::from_slice(&record.bytes).unwrap())
+        .collect();
+    assert!(
+        !updates
+            .iter()
+            .any(|row| row["id"] == "tool-a" && row["status"] == "cancelled"),
+        "completion received during cleanup was overwritten: {updates:?}"
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|row| row["id"] == "tool-b" && row["status"] == "cancelled"),
+        "a tool started during cleanup was missed: {updates:?}"
+    );
+    let history = runtime
+        .owned
+        .operational_history_store
+        .query_events(crate::history::HistoryEventQuery {
+            session_id: Some(session.id().into()),
+            kind: Some("provider_tool".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let rows: Vec<serde_json::Value> = history
+        .iter()
+        .filter_map(|event| event.content.as_deref())
+        .map(|text| serde_json::from_str(text).unwrap())
+        .collect();
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row["id"] == "tool-a" && row["status"] == "cancelled"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row["id"] == "tool-b" && row["status"] == "cancelled"),
+        "{rows:?}"
     );
 }
