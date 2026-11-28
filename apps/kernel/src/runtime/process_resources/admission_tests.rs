@@ -210,21 +210,108 @@ fn a_fast_many_file_copy_is_stopped_while_the_disk_still_has_room() {
     take_wait_events();
     // 512 MiB free is above half the floor: only the rate says the disk is
     // seconds from full: the copy's 200 MiB/s is what the volume really loses.
-    let pool = losing_volume(512 * MIB, 200 * MIB, 100 * GIB);
-    let mut writer = Workload::run(
-        domain(&pool, "copy", false),
-        &[("copy", many_file_writer())],
+    // A between-files copy needs a destination observed once. Do not rely on
+    // a short-lived descriptor overlapping a monitor tick by chance.
+    let filling_at = Arc::new(std::sync::OnceLock::<std::time::Instant>::new());
+    let clock = filling_at.clone();
+    let pool = Arc::new(pool::Pool::with_volume(
+        1 << 40,
+        Box::new(move |path| {
+            use std::os::unix::fs::MetadataExt;
+            let lost = clock
+                .get()
+                .map_or(0, |at| at.elapsed().as_millis() as u64 * 200 * MIB / 1000);
+            Some(admission::Space {
+                id: std::fs::metadata(path).ok()?.dev(),
+                // Keep free space at or above half the floor: only the
+                // predictive fill-horizon branch may stop this copy.
+                free: (512 * MIB).saturating_sub(lost).max(256 * MIB),
+                total: 100 * GIB,
+            })
+        }),
+    ));
+    let command = many_file_writer().replace(
+        "end=time.time()+8",
+        r#"f=open(os.path.join(sys.argv[1],"first"),"r+b")
+until=time.monotonic()+10
+while not os.path.exists(os.path.join(sys.argv[1],"prime")):
+ assert time.monotonic()<until; time.sleep(0.01)
+f.write(chunk); f.flush(); os.fsync(f.fileno())
+while not os.path.exists(os.path.join(sys.argv[1],"copy")):
+ assert time.monotonic()<until; time.sleep(0.01)
+f.close(); os.unlink(os.path.join(sys.argv[1],"first"))
+end=time.time()+8"#,
+    ).replace(
+        "os.unlink(p); time.sleep(0.04)",
+        "os.unlink(p); open(os.path.join(sys.argv[1],\"copied\"),\"w\").close(); time.sleep(0.04)",
     );
+    let mut writer = Workload::gated(domain(&pool, "copy", false), &[("copy", command)]);
+    use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
+    let first = writer.dir.join("first");
+    let mut file = std::fs::File::create(&first).unwrap();
+    file.write_all(&vec![0; 8 * MIB as usize]).unwrap();
+    file.sync_all().unwrap();
+    let inode = file.metadata().unwrap().ino();
+    drop(file);
+    writer.go(&["copy"]);
+    let pid = writer.pid("copy") as u32;
+    let ready_by = std::time::Instant::now() + Duration::from_secs(5);
+    while !writer
+        .domain
+        .state
+        .lock()
+        .unwrap()
+        .commands
+        .iter()
+        .any(|c| c.pid == pid)
+    {
+        assert!(
+            std::time::Instant::now() < ready_by,
+            "copy was not sampled before setup"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::fs::write(writer.dir.join("prime"), "").unwrap();
+    while !writer
+        .domain
+        .state
+        .lock()
+        .unwrap()
+        .disk_writes
+        .get(&pid)
+        .is_some_and(|outputs| {
+            outputs
+                .iter()
+                .any(|o| o.receiving && o.open.contains(&inode) && o.files.is_empty())
+        })
+    {
+        assert!(
+            std::time::Instant::now() < ready_by,
+            "copy destination was not sampled"
+        );
+        assert!(writer.alive("copy"), "copy ended during setup");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The preallocated first output never grew; pressure and the unchanged
+    // four-second stop deadline start with the original short-lived copy loop.
+    filling_at.set(std::time::Instant::now()).unwrap();
+    std::fs::write(writer.dir.join("copy"), "").unwrap();
     settle(4);
     assert!(
         !writer.alive("copy"),
         "a copy filling the disk in seconds kept writing"
     );
+    assert!(
+        writer.dir.join("copied").exists(),
+        "copy loop never wrote a file"
+    );
     writer.assert_told("copy", "was filling it");
+    writer.assert_told("copy", "at the rate it fills");
     assert!(
         take_wait_events().iter().any(|event| matches!(
             &event.change,
-            WaitChange::Stopped { reason, .. } if reason.contains("was filling it")
+            WaitChange::Stopped { reason, .. } if reason.contains("was filling it") && reason.contains("at the rate it fills")
         )),
         "the room was not told why the copy ended"
     );
