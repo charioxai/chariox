@@ -553,14 +553,6 @@ fn repeats(rows: &[Row], earlier: &[String], slack: usize) -> bool {
             .all(|(row, earlier)| row.text == *earlier)
 }
 
-/// The rows of the block on the screen as one text, a row to a line.
-fn drawn_text(rows: &[Row]) -> String {
-    rows.iter()
-        .map(|row| row.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Whether the screen shows a block completed by `text` whose first rows the reader had taken: those rows exactly (a
 /// code symbol is a symbol), then more, drawn from the rendered Markdown with literal symbols intact.
 fn grown_from(rows: &[Row], taken: &[String], text: &str) -> bool {
@@ -596,13 +588,14 @@ fn rendered_prefix(rows: &[Row], markdown: &str) -> bool {
 fn rendered_text_prefix(mut drawn: &str, markdown: &str) -> bool {
     use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
-    fn take(drawn: &mut &str, character: char, code: bool) -> bool {
+    fn take(drawn: &mut &str, character: char, code: bool, row_ended: &mut bool) -> bool {
         if drawn.is_empty() {
             return true;
         }
         if character == '\n' && code {
             if let Some(tail) = drawn.strip_prefix(['\n', '\r']) {
                 *drawn = tail;
+                *row_ended = true;
                 return true;
             }
             return false;
@@ -612,6 +605,7 @@ fn rendered_text_prefix(mut drawn: &str, markdown: &str) -> bool {
         if !code && character.is_whitespace() {
             if let Some(first) = drawn.chars().next().filter(|c| c.is_whitespace()) {
                 *drawn = &drawn[first.len_utf8()..];
+                *row_ended = matches!(first, '\n' | '\r');
                 return true;
             }
             return false;
@@ -622,15 +616,35 @@ fn rendered_text_prefix(mut drawn: &str, markdown: &str) -> bool {
         }
         if let Some(tail) = drawn.strip_prefix(character) {
             *drawn = tail;
+            *row_ended = false;
             true
         } else {
             false
         }
     }
 
+    fn code_block_gap(mut drawn: &str, seen_content: bool, row_ended: bool) -> &str {
+        // Between rendered blocks Claude ends the previous row and adds one spacer row.
+        // A code text node may itself start with blank lines; those belong to the code.
+        let layout_rows = if seen_content {
+            1 + usize::from(!row_ended)
+        } else {
+            0
+        };
+        for _ in 0..layout_rows {
+            let Some(tail) = drawn.strip_prefix(['\n', '\r']) else {
+                break;
+            };
+            drawn = tail;
+        }
+        drawn
+    }
+
     if drawn.trim().is_empty() {
         return false;
     }
+    let mut row_ended = true;
+    let mut seen_content = false;
     let mut lists = Vec::new();
     let mut code_block = false;
     let mut boundary = true;
@@ -676,14 +690,14 @@ fn rendered_text_prefix(mut drawn: &str, markdown: &str) -> bool {
                 boundary = true;
             }
             Event::SoftBreak | Event::HardBreak => {
-                if !take(&mut drawn, ' ', false) {
+                if !take(&mut drawn, ' ', false, &mut row_ended) {
                     return false;
                 }
             }
             Event::Text(text) => {
                 if boundary {
                     drawn = if code_block {
-                        drawn.trim_start_matches(['\n', '\r'])
+                        code_block_gap(drawn, seen_content, row_ended)
                     } else {
                         drawn.trim_start()
                     };
@@ -693,23 +707,25 @@ fn rendered_text_prefix(mut drawn: &str, markdown: &str) -> bool {
                     if drawn.is_empty() {
                         return true;
                     }
-                    if !take(&mut drawn, character, code_block) {
+                    if !take(&mut drawn, character, code_block, &mut row_ended) {
                         return false;
                     }
+                    seen_content = true;
                 }
             }
             Event::Code(text) => {
                 if boundary {
-                    drawn = drawn.trim_start_matches(['\n', '\r']);
+                    drawn = code_block_gap(drawn, seen_content, row_ended);
                     boundary = false;
                 }
                 for character in text.chars() {
                     if drawn.is_empty() {
                         return true;
                     }
-                    if !take(&mut drawn, character, true) {
+                    if !take(&mut drawn, character, true, &mut row_ended) {
                         return false;
                     }
+                    seen_content = true;
                 }
             }
             _ => {}

@@ -922,3 +922,36 @@ fn code_redraw_matching_keeps_a_printed_space_at_a_full_terminal_row_boundary() 
         "a row boundary cannot erase the literal space"
     );
 }
+
+#[test]
+fn completed_code_prefix_separates_block_layout_from_leading_code_lines() {
+    for empty_lines in [1, 2] {
+        let code = format!(
+            "Result\n\n```text\n{}alpha\nbeta\n```\n\nDone.",
+            "\n".repeat(empty_lines)
+        );
+        let drawn = format!("Result\n\n{}alpha\nbeta\n\nDone.", "\n".repeat(empty_lines));
+        assert!(rendered_text_prefix(&drawn, &code));
+        let changed = format!(
+            "Result\n\n{}alpha\nbeta\n\nDone.",
+            "\n".repeat(empty_lines + 1)
+        );
+        assert!(
+            !rendered_text_prefix(&changed, &code),
+            "a further code line is not layout"
+        );
+        let changed = format!(
+            "Result\n\n{}alpha\nbeta\n\nDone.",
+            "\n".repeat(empty_lines - 1)
+        );
+        assert!(
+            !rendered_text_prefix(&changed, &code),
+            "a removed code line is not layout"
+        );
+    }
+    assert!(rendered_text_prefix("\nalpha", "```text\n\nalpha\n```"));
+    assert!(rendered_text_prefix(
+        "one\n\n\nalpha",
+        "```text\none\n```\n\n```text\n\nalpha\n```"
+    ));
+}
