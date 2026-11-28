@@ -90,6 +90,28 @@ async fn leased_worker_popup_keeps_both_shapes() {
     }
     // A leased provider cannot turn a popup view into user-domain browser authority.
     // These unresolved inputs must be refused before any browser lookup or card admission.
+    let worker_runtime = worker.router.runtime_state();
+    let worker_room = worker_runtime
+        .session_snapshot(run.session_id())
+        .await
+        .unwrap();
+    let worker_agent_id = run.agent_instance_id().unwrap();
+    let worker_agent = worker_room
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == worker_agent_id)
+        .unwrap();
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Running);
+    assert_eq!(worker_agent.session_id(), run.session_id());
+    assert_ne!(worker_room.status(), crate::session::SessionStatus::Ended);
+    assert!(worker_runtime.is_room_member(&worker_room, worker_agent.owner_user_id()));
+    // Browser admission records presence before it reaches the host. An unchanged
+    // absence proves the refusal did not come from browser lookup or an unloaded grant.
+    assert!(worker_runtime
+        .kernel_browser_host_for_test()
+        .running_agents()
+        .iter()
+        .all(|(_, id)| id.as_str() != worker_agent_id));
     let browser_refusal = worker
         .router
         .dispatch_authenticated_runtime_tool_call(
@@ -114,6 +136,11 @@ async fn leased_worker_popup_keeps_both_shapes() {
             reason: crate::error::UserDomainRefusalReason::NotGranted
         }
     ));
+    assert!(worker_runtime
+        .kernel_browser_host_for_test()
+        .running_agents()
+        .iter()
+        .all(|(_, id)| id.as_str() != worker_agent_id));
     for (runtime, session_id) in [
         (fixture.home.runtime_state(), room.as_str()),
         (worker.router.runtime_state(), run.session_id()),
