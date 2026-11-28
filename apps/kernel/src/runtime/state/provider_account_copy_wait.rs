@@ -244,6 +244,7 @@ impl KernelRuntimeState {
         let mut unlocks = super::vault_unlock_requests::vault_unlock_notifications(path);
         let answer = self
             .create_kernel_operation_interaction(
+                super::CardKind::VaultCredentialPayment,
                 "",
                 owner,
                 RuntimeInteraction::for_kernel_operation(
