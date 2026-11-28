@@ -324,7 +324,7 @@ def run(request, evidence):
                 client = launch_cli(['--relay-url', env['CHARIOX_RELAY_URL'], '--relay-token-env', 'CHARIOX_RELAY_TOKEN',
                                      '--target-daemon-id', target['daemon_id'], '--session', session_id], 'task')
                 snap = wait_owned(lambda: (s if (s := client.send('snapshot')).get('session', {}).get('id') == session_id else None), time.monotonic() + 60)
-                measurement['transport'] = 'encrypted self-host relay TUI to home kernel' 
+                measurement['transport'] = 'encrypted self-host relay TUI to home kernel'
         else:
             client = launch_cli(['--session', request['home_session_ref']], 'task')
             snap = wait_owned(lambda: (s if (s := client.send('snapshot')).get('session', {}).get('agents') else None), time.monotonic() + 60)
