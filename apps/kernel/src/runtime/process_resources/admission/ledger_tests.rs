@@ -2636,6 +2636,141 @@ fn r4_sampler_keeps_unchanged_inode_growth_across_rotation_and_repeated_timestam
     );
 }
 
+#[test]
+fn r5_new_stdout_bytes_in_an_excluded_interval_do_not_erase_prior_filler_writes() {
+    let (generator, mut usage, mut log) = stream_writer(1, 2, 600 * MIB);
+    usage.writes = 0;
+    log.written = 0;
+    log.rate = 0;
+    log.files.clear();
+    log.open = [11, 12].into();
+    log.written_by_inode = [(11, 0), (12, 0)].into();
+    let current = owner("agent", true, vec![usage], vec![(1, generator)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    let watched = [(1, (300 * MIB, PathBuf::from("/scratch")))].into();
+    let members = std::slice::from_ref(&current);
+    for (at, written, streamed, stderr) in [
+        (1000, 0, 0, 12),
+        (2000, 600 * MIB, 0, 12),
+        (3000, 1700 * MIB, 500 * MIB, 13),
+    ] {
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
+            output.open = [11, stderr].into();
+            output.written = streamed;
+            output.written_by_inode = [(11, streamed), (stderr, 0)].into();
+        }
+        drop(unplaced_writers(members, &watched));
+    }
+    assert_eq!(
+        unplaced_writers(members, &watched)
+            .iter()
+            .map(|writer| (writer.pid, writer.rate))
+            .collect::<Vec<_>>(),
+        vec![(1, 300 * MIB)],
+        "new stdout bytes consumed command bytes that were never credited"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r5_a_close_and_reopen_on_a_repeated_sample_does_not_make_the_logger_the_filler() {
+    use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
+    let dir = crate::test_support::TestTempDir::new("stream-repeat-reopen");
+    let path = dir.join("healthy.log");
+    let file = std::fs::File::create(&path).unwrap();
+    let inode = file.metadata().unwrap().ino();
+    let mut growth = disk_use::WriteGrowth::default();
+    let pids = [std::process::id()];
+    // Keep the test runner's stdout intact. Use a private regular descriptor
+    // for real inode-cache sampling, then mark that one file as a redirected
+    // stream in the ledger's existing synthetic two-volume fixture.
+    let stream = |rows: Vec<disk_use::VolumeWrites>| {
+        rows.into_iter()
+            .find_map(|mut output| {
+                let written = *output.written_by_inode.get(&inode)?;
+                output.id = 2;
+                output.path = "/log/out".into();
+                output.written = written;
+                output.rate = 0;
+                output.open = [inode].into();
+                output.files.clear();
+                output.written_by_inode = [(inode, written)].into();
+                output.receiving = false;
+                Some(vec![output])
+            })
+            .unwrap_or_default()
+    };
+    let first = stream(growth.sample(&pids, 1000));
+    assert_eq!(first[0].written_by_inode[&inode], 0);
+    let (logger, mut usage, _) = stream_writer(1, 2, 400 * MIB);
+    usage.writes = 0;
+    let current = owner("agent", true, vec![usage], vec![(1, logger)]);
+    {
+        let mut observation = current.lock().unwrap();
+        observation.samples = vec![write_sample(1, 1000)];
+        observation.disk_writes.insert(1, first);
+    }
+    let volume = stream_volumes();
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(ledger.take_fillers(&current).is_empty());
+    drop(file);
+    let closed = stream(growth.sample(&pids, 1000));
+    assert!(closed.is_empty());
+    current.lock().unwrap().disk_writes.remove(&1);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(ledger.take_fillers(&current).is_empty());
+    let mut reopened = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    assert_eq!(reopened.metadata().unwrap().ino(), inode);
+    reopened.write_all(&vec![1; 2 * MIB as usize]).unwrap();
+    reopened.sync_all().unwrap();
+    let fresh = stream(growth.sample(&pids, 3000));
+    assert_eq!(
+        fresh[0].written_by_inode[&inode], 0,
+        "the sampler rebaselines a reopened inode"
+    );
+    let (filler, filler_use, scratch) = stream_writer(2, 1, 300 * MIB);
+    {
+        let mut observation = current.lock().unwrap();
+        observation.commands[0].writes = 800 * MIB;
+        observation.samples = vec![write_sample(1, 3000), write_sample(2, 3000)];
+        observation.disk_writes.insert(1, fresh);
+        observation.commands.push(filler_use);
+        observation.admission.insert(2, filler);
+        observation.disk_writes.insert(2, vec![scratch]);
+    }
+    std::thread::sleep(Duration::from_millis(250));
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        ledger
+            .take_fillers(&current)
+            .iter()
+            .map(|(pid, _)| *pid)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+}
+
 /// A volume that starts with `free` and loses `per_second` from its first reading.
 fn losing(free: u64, per_second: u64) -> Box<Volume> {
     let started = Instant::now();
