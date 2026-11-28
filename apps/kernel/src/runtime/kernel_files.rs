@@ -374,7 +374,7 @@ fn open_staging(
     offset: u64,
     upload_id: Option<uuid::Uuid>,
 ) -> Result<std::fs::File, DaemonError> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let untrusted = || {
         fail(
             "file_staging_untrusted",
@@ -425,12 +425,7 @@ fn open_staging(
         Err(e) => return Err(io_failure(path, &e)),
     };
     let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let own_uid = unsafe { libc::geteuid() };
-    if !metadata.is_file()
-        || metadata.uid() != own_uid
-        || metadata.permissions().mode() & 0o077 != 0
-    {
+    if !trusted_staging(&metadata) {
         return Err(untrusted());
     }
     if metadata.len() != offset {
@@ -444,6 +439,13 @@ fn open_staging(
     Ok(file)
 }
 
+fn trusted_staging(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let own_uid = unsafe { libc::geteuid() };
+    metadata.is_file() && metadata.uid() == own_uid && metadata.permissions().mode() & 0o077 == 0
+}
+
 /// Holds a chunk that is ahead of the staged bytes until the chunks before it have landed. A chunk
 /// at a wrong offset still ends as `file_offset_mismatch`, after this wait.
 fn wait_for_turn(
@@ -455,6 +457,8 @@ fn wait_for_turn(
     let deadline = Instant::now() + TURN_WAIT;
     while offset > 0 && Instant::now() < deadline {
         match std::fs::symlink_metadata(partial) {
+            // Refuse an untrusted staging file at open, without waiting for its bytes.
+            Ok(metadata) if !trusted_staging(&metadata) => break,
             Ok(metadata)
                 if metadata.len() >= offset
                     && upload_id
@@ -1255,7 +1259,7 @@ mod tests {
                 std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
             }
             let partial = partial_of(&target);
-            let mut file = open_staging(&partial, &target, 0).unwrap();
+            let mut file = open_staging(&partial, &target, 0, None).unwrap();
             file.write_all(b"fresh").unwrap();
             std::fs::remove_file(&partial).unwrap();
             std::os::unix::fs::symlink(&victim, &partial).unwrap();
@@ -1283,7 +1287,7 @@ mod tests {
         std::fs::write(&target, b"old").unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
         let partial = partial_of(&target);
-        let mut file = open_staging(&partial, &target, 0).unwrap();
+        let mut file = open_staging(&partial, &target, 0, None).unwrap();
         file.write_all(b"fresh").unwrap();
         std::fs::remove_file(&partial).unwrap();
         std::os::unix::fs::symlink(&victim, &partial).unwrap();
@@ -1305,7 +1309,7 @@ mod tests {
         // The unraced path installs the new bytes and leaves no backup behind.
         let partial = partial_of(&target);
         std::fs::remove_file(&partial).ok();
-        let mut file = open_staging(&partial, &target, 0).unwrap();
+        let mut file = open_staging(&partial, &target, 0, None).unwrap();
         file.write_all(b"fresh").unwrap();
         replace(&file, &partial, &target).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"fresh");

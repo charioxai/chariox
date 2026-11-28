@@ -115,3 +115,45 @@ pub(super) fn forget(path: &Path, id: Option<Uuid>) {
         started.remove(path);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_established_attempt_keeps_its_identity_after_a_long_pause() {
+        use crate::local::WriteKernelFileRequest;
+        use crate::machine_files::StateGuard;
+        let dir = crate::test_support::TestTempDir::new("upload-attempt-age");
+        let target = dir.join("incoming/nested/file.bin");
+        let first = WriteKernelFileRequest {
+            upload_id: Uuid::new_v4(),
+            path: target.display().to_string(),
+            offset: 0,
+            data_base64: "YWJj".into(),
+            total_size: 6,
+            sha256: None,
+            overwrite: false,
+        };
+        super::super::write(&first, &StateGuard::default()).unwrap();
+        let staging = super::super::partial_of(&target);
+        STARTED.lock().unwrap().get_mut(&staging).unwrap().active_at = Instant::now()
+            .checked_sub(super::super::TURN_WAIT + std::time::Duration::from_secs(1))
+            .unwrap();
+        std::fs::remove_dir_all(dir.join("incoming")).unwrap();
+        let later = WriteKernelFileRequest {
+            offset: 3,
+            data_base64: "ZGVm".into(),
+            ..first
+        };
+        let error = super::super::write(&later, &StateGuard::default()).unwrap_err();
+        let crate::error::DaemonError::MachineRequest { code, .. } = error else {
+            panic!("a machine file error")
+        };
+        assert_eq!(
+            code, "file_destination_missing",
+            "time does not turn an established attempt into a new one"
+        );
+        assert!(!target.exists());
+    }
+}
