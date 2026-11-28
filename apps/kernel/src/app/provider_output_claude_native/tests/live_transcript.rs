@@ -1190,6 +1190,17 @@ fn a_completed_code_block_with_a_leading_blank_line_is_not_streamed_again() {
         turn.append_transcript(assistant_text("first", reply));
         turn.pass();
         assert_eq!(turn.live_rows(), [reply]);
+        let kept = super::reader_state::recall(
+            turn.run
+                .pty_env()
+                .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+                .unwrap(),
+        );
+        assert!(
+            kept.iter()
+                .any(|block| block.done && block.completed.as_deref() == Some(reply)),
+            "completed rows must survive redraw, lose_reader={lose_reader}: {kept:?}"
+        );
         let redrawn = screen(&[
             "● Result",
             "",
@@ -1206,7 +1217,7 @@ fn a_completed_code_block_with_a_leading_blank_line_is_not_streamed_again() {
         assert_eq!(
             turn.live_rows(),
             [reply],
-            "a completed fence keeps its leading empty line on redraw"
+            "a completed fence keeps its leading empty line on redraw, lose_reader={lose_reader}, kept={kept:?}"
         );
         assert_eq!(turn.stored_replies(), [reply], "redraw adds no history row");
     }

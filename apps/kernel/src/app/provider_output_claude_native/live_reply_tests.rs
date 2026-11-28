@@ -955,3 +955,33 @@ fn completed_code_prefix_separates_block_layout_from_leading_code_lines() {
         "```text\none\n```\n\n```text\n\nalpha\n```"
     ));
 }
+
+#[test]
+fn completed_code_prefix_retains_blank_terminal_rows() {
+    let bytes = draw(&[
+        "● Result",
+        "",
+        "",
+        "  alpha",
+        "  beta",
+        "",
+        "  Done.",
+        "",
+        "✻ Working (4s)",
+    ]);
+    let mut parser = vt100::Parser::new(SCREEN_ROWS, SCREEN_COLS, 0);
+    parser.process(&bytes);
+    let (_, rows) = reply_rows(&screen_rows(parser.screen()), false);
+    let text = "Result\n\n```text\n\nalpha\nbeta\n```\n\nDone.";
+    assert_eq!(
+        rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(),
+        ["Result", "", "", "alpha", "beta", "", "Done."]
+    );
+    assert!(
+        rendered_prefix(&rows, text),
+        "terminal rows {:?}",
+        rows.iter()
+            .map(|row| (&row.text, &row.trailing, row.width))
+            .collect::<Vec<_>>()
+    );
+}
