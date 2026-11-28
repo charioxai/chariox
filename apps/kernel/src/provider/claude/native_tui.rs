@@ -511,16 +511,27 @@ mod tests {
     #[test]
     fn hook_auto_allows_only_bypass_permissions() {
         let handler = claude_native_hook_handler();
+        let after_bypass_guard = handler
+            .split_once(
+                "  if (input.permission_mode === \"bypassPermissions\" && input.tool_name !== \"AskUserQuestion\") {\n",
+            )
+            .expect("ordinary tools bypass permission approval; questions must not")
+            .1;
+        let (ordinary_tools, permission_wait) = after_bypass_guard
+            .split_once("  clearTimeout(hookWatchdog)\n")
+            .expect("the decision wait follows the ordinary-tool bypass");
 
-        assert!(handler.contains(
-            "if (input.permission_mode === \"bypassPermissions\" && input.tool_name !== \"AskUserQuestion\")"
-        ));
-        assert!(handler.contains("behavior: \"allow\""));
+        assert!(ordinary_tools.starts_with("    if (eventName === \"PermissionRequest\") {\n"));
+        assert!(ordinary_tools.contains("\n          hookEventName: \"PermissionRequest\","));
+        assert!(ordinary_tools.contains("\n            behavior: \"allow\"\n"));
+        assert!(ordinary_tools.contains("\n    }\n    process.exit(0)\n  }\n"));
         assert!(!handler.contains("permissionDecision"));
         assert!(!handler.contains("toolName.startsWith"));
-        assert!(handler.contains("process.exit(0)"));
-        assert!(handler.contains(&format!(
-            "Date.now() + {}",
+        assert!(permission_wait.contains(&format!(
+            concat!(
+                "\n    const deadline = input.tool_name === \"AskUserQuestion\" ? Infinity : ",
+                "Date.now() + {}\n    while (Date.now() < deadline) {{\n",
+            ),
             super::CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS * 1000
         )));
     }
