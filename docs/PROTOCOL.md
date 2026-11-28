@@ -16,6 +16,21 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
+### Provider account copies waiting for a Vault
+
+The receiving kernel answers the encrypted install request with
+`provider_account_copy_target_vault_locked` and an expiry when it needs the
+owner to open its Vault. The owner's `vault_status` resource includes the
+pending unlock request. Unlocking, cancelling the request, or reaching its
+ten-minute deadline clears it.
+
+The copy request returns `ProviderAccountCopyWaiting` with the source and
+target kernel IDs, operation ID, and expiry. The source retries the original
+binding after that response and publishes the result on its
+`provider_account_copies` resource. Clients follow that resource on the source,
+including when they started the copy from the target. Copy progress and unlock
+requests carry no credential material.
+
 ### Relay registration proof (relay peer 449)
 
 A relay token and a kernel's public key do not make a kernel. The relay answers

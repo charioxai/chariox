@@ -120,7 +120,12 @@ pub(super) async fn handle_daemon_peer_request(
             )),
         };
         let response = match result {
-            Ok(receipt) => RelayPeerResponse::ProviderAccountCopyInstalled { receipt },
+            Ok(crate::provider_account_copy::ProviderAccountCopyOutcome::Installed(receipt)) => {
+                RelayPeerResponse::ProviderAccountCopyInstalled { receipt }
+            }
+            Ok(crate::provider_account_copy::ProviderAccountCopyOutcome::Waiting(wait)) => {
+                RelayPeerResponse::ProviderAccountCopyWaiting { wait }
+            }
             Err(error) => RelayPeerResponse::ProviderAccountCopyFailed {
                 code: map_relay_error(&error).code,
             },
@@ -130,6 +135,7 @@ pub(super) async fn handle_daemon_peer_request(
     if let RelayPeerRequest::InstallProviderAccountCopy {
         binding,
         credential,
+        resume_after_unlock,
     } = request
     {
         let result = match require_bound_managed_context_sender(
@@ -145,6 +151,7 @@ pub(super) async fn handle_daemon_peer_request(
                         identity,
                         binding,
                         credential,
+                        resume_after_unlock,
                     )
                     .await
             }
@@ -153,7 +160,7 @@ pub(super) async fn handle_daemon_peer_request(
             )),
         };
         let response = match result {
-            Ok(receipt) => RelayPeerResponse::ProviderAccountCopyInstalled { receipt },
+            Ok(response) => response,
             Err(error) => RelayPeerResponse::ProviderAccountCopyFailed {
                 code: map_relay_error(&error).code,
             },

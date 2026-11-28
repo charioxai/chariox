@@ -753,7 +753,9 @@ impl CommandRouter {
                     self.runtime_state
                         .copy_provider_account_to_kernel(&caller, request)
                         .await
-                        .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
+                        .map(
+                            crate::provider_account_copy::ProviderAccountCopyOutcome::into_response,
+                        )
                 })
             }
             request @ (LocalDaemonRequest::GetProviderUsageSnapshot(_)

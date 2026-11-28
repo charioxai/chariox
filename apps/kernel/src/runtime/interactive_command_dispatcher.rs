@@ -85,7 +85,7 @@ pub(crate) fn dispatch_interactive_command<'a>(
                 runtime_state
                     .copy_provider_account_from_kernel(&command, request)
                     .await
-                    .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
+                    .map(crate::provider_account_copy::ProviderAccountCopyOutcome::into_response)
             })
         }
         LocalDaemonRequest::RespondToHandoff(request) => {

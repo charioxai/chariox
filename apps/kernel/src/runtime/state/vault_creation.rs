@@ -65,9 +65,7 @@ impl KernelRuntimeState {
                 created
             }
         };
-        if lease != crate::secret::VaultUnlockLease::SingleUse {
-            notify_vault_unlocked(&path, crate::local::VaultUnlockSurface::VaultWindow);
-        }
+        notify_vault_unlocked(&path, crate::local::VaultUnlockSurface::VaultWindow);
         Ok(status)
     }
 
