@@ -321,21 +321,32 @@ impl KernelRuntimeState {
         kernel_id: &str,
         harness: &str,
     ) -> Result<Arc<dyn GrantedSend>, DaemonError> {
-        #[cfg(test)]
-        if let Some(kernel) = stand_in_kernel(kernel_id) {
-            return Ok(kernel);
-        }
         let owner = self.owned.config_projection.local_owner_user_id();
         let retained = Origin {
             grant_id: format!("{}{}", super::reach::OWNER_GRANT_PREFIX, owner),
             harness: harness.into(),
         };
+        self.machine_grant_for_origin(kernel_id, &retained)
+    }
+
+    pub(super) fn machine_grant_for_origin(
+        &self,
+        kernel_id: &str,
+        origin: &Origin,
+    ) -> Result<Arc<dyn GrantedSend>, DaemonError> {
+        #[cfg(test)]
+        if let Some(kernel) = stand_in_kernel(kernel_id) {
+            return Ok(kernel);
+        }
         let router = self.job_router.as_ref().ok_or_else(|| {
             acquisition_error("job_router_unavailable", "The job gateway is unavailable")
         })?;
         Ok(Arc::new(OriginGrant::new(
             (**router).clone(),
-            retained,
+            Origin {
+                grant_id: origin.grant_id.clone(),
+                harness: origin.harness.clone(),
+            },
             kernel_id,
         )))
     }

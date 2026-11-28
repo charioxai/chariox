@@ -6,6 +6,55 @@ use crate::local::{JobMachineRate, MachineOption};
 use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[tokio::test]
+async fn absence_from_visible_inventory_never_ends_a_private_acquisition() {
+    use crate::durable_state::acquired_machines::{AcquiredMachineWrite, AcquisitionKey};
+    let service = service().await;
+    let (state, room, _, _worktree) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(2), None)).await;
+    let store = &state.owned.durable_state_store;
+    for (allocation, inventory_visible) in [("visible", true), ("private", false)] {
+        store
+            .admit_attempt(
+                AcquiredMachine {
+                    agent_id: "agent".into(),
+                    request_id: allocation.into(),
+                    job_ref: None,
+                    inventory_visible,
+                    room_id: room.clone(),
+                    class_id: "small".into(),
+                    rate_micros: 1_000,
+                    currency: "EUR".into(),
+                    started_ms: crate::session::unix_epoch_ms(),
+                    state: AcquiredState::Pending,
+                },
+                2,
+                None,
+                0,
+            )
+            .unwrap();
+        assert!(store
+            .write_acquired_machine(AcquiredMachineWrite::Accept {
+                key: AcquisitionKey::Request {
+                    agent_id: "agent".into(),
+                    request_id: allocation.into()
+                },
+                allocation_ref: allocation.into(),
+            })
+            .unwrap());
+    }
+    let expected = state.acquired_machines_to_reconcile();
+    assert_eq!(expected, ["visible"]);
+    state.reconcile_acquired_machines(&expected, &[]);
+    assert!(matches!(
+        store.acquired_machine("visible").unwrap().unwrap().state,
+        AcquiredState::Ended { .. }
+    ));
+    let private = store.acquired_machine("private").unwrap().unwrap();
+    assert!(!private.inventory_visible);
+    assert!(matches!(private.state, AcquiredState::Running { .. }));
+}
+
 /// A connected service offering a small and a big class. It answers acquires as `script` says,
 /// replays a reused request_id with its first allocation, and lists each allocation with its state.
 struct Service {
@@ -1050,6 +1099,7 @@ async fn a_retry_that_fails_reauthorization_keeps_a_lost_answer_counted() {
         .agent_id
         .clone();
     let retry = ControlPlaneRequest::Acquire {
+        access_scope: None,
         capability_revision: "v1".into(),
         request_id: ledger_key(&state, &agent, "r1"),
         class_id: Some("small".into()),
@@ -1252,6 +1302,7 @@ async fn a_jobs_cleanup_settles_its_pending_acquisition() {
                         agent_id: "agent".into(),
                         request_id: format!("job:{job}"),
                         job_ref: Some(job.into()),
+                        inventory_visible: true,
                         room_id: room.clone(),
                         class_id: "small".into(),
                         rate_micros: 1_000,

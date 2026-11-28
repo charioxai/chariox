@@ -5,7 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 #[derive(Default)]
-pub(super) struct JobTargets(Mutex<BTreeMap<String, RelayKernelPresence>>);
+pub(super) struct JobTargets(Mutex<BTreeMap<String, PinnedTarget>>);
+
+struct PinnedTarget {
+    presence: RelayKernelPresence,
+    scope: Option<crate::local::ControlPlaneAccessScope>,
+}
 
 impl JobTargets {
     pub(super) fn bind(
@@ -37,15 +42,34 @@ impl JobTargets {
         }
         let mut targets = self.0.lock().expect("job targets");
         if targets.get(&target.kernel_id).is_some_and(|previous| {
-            previous.public_key != presence.public_key || previous.machine_id != presence.machine_id
+            previous.presence.public_key != presence.public_key
+                || previous.presence.machine_id != presence.machine_id
+                || previous.scope != target.access_scope
         }) {
             return Err(refused(&target.kernel_id, "control_plane_binding_invalid", "The pinned job machine identity changed; cancel this job and allocate a new machine"));
         }
-        targets.insert(target.kernel_id.clone(), presence.clone());
+        targets.insert(
+            target.kernel_id.clone(),
+            PinnedTarget {
+                presence: presence.clone(),
+                scope: target.access_scope.clone(),
+            },
+        );
         Ok(())
     }
     pub(super) fn get(&self, kernel_id: &str) -> Option<RelayKernelPresence> {
-        self.0.lock().expect("job targets").get(kernel_id).cloned()
+        self.0
+            .lock()
+            .expect("job targets")
+            .get(kernel_id)
+            .map(|target| target.presence.clone())
+    }
+    pub(super) fn scope(&self, kernel_id: &str) -> Option<crate::local::ControlPlaneAccessScope> {
+        self.0
+            .lock()
+            .expect("job targets")
+            .get(kernel_id)
+            .and_then(|target| target.scope.clone())
     }
     pub(super) fn remove(&self, kernel_id: &str) {
         self.0.lock().expect("job targets").remove(kernel_id);
@@ -91,6 +115,7 @@ mod tests {
                 &presence.public_key,
             ),
             presence: Some(presence),
+            access_scope: None,
         }
     }
     #[test]
@@ -126,5 +151,29 @@ mod tests {
             "job_target_pending"
         );
         assert!(targets.get("private-worker").is_none());
+    }
+
+    #[test]
+    fn scoped_target_keeps_its_agent_tree_and_cannot_be_downgraded_to_unscoped() {
+        let targets = JobTargets::default();
+        let mut target = target();
+        target.access_scope = Some(crate::local::ControlPlaneAccessScope::AgentTree {
+            agent_id: "worker".into(),
+            ancestor_agent_ids: vec!["parent".into()],
+        });
+        targets.bind(&target).unwrap();
+        let scope = targets.scope(&target.kernel_id).unwrap();
+        assert!(scope.allows(Some("worker")));
+        assert!(scope.allows(Some("parent")));
+        assert!(!scope.allows(Some("sibling")));
+        assert!(!scope.allows(None));
+        target.access_scope = None;
+        assert_eq!(
+            targets.bind(&target).unwrap_err().code(),
+            "control_plane_binding_invalid"
+        );
+        assert!(targets.scope(&target.kernel_id).is_some());
+        targets.remove(&target.kernel_id);
+        assert!(targets.scope(&target.kernel_id).is_none());
     }
 }

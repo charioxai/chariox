@@ -702,12 +702,39 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without it the first option in stock is acquired. A named option out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire without asking: within the owner's limits (allowed classes, machines at once, daily spending; service limits always apply) it goes ahead with no card (the Room records class, rate and cost); outside them the owner's card says why and the call waits up to 5 minutes for it. Returns allocation_ref, machine type and terms; poll status until access is available, then reach the kernel with Room commands. timeout_s is the machine's hard stop: the service stops the machine then; release earlier when done. Reuse request_id when retrying after a lost response, a timeout or a refusal: it keeps the first try's option and returns the allocation the service accepted. Use a new one only when a refusal says the service closed the old one. Say in purpose, in one line, what the machine is for; the card shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without it the first option in stock is acquired. A named option out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire without asking: within the owner's limits (allowed classes, machines at once, daily spending; service limits always apply) it goes ahead with no card (the Room records class, rate and cost); outside them the owner's card says why and the call waits up to 5 minutes for it. Returns allocation_ref, machine type and terms; poll status until access is available, then reach the kernel with Room commands. timeout_s is the machine's hard stop: the service stops the machine then; release earlier when done. Reuse request_id when retrying after a lost response, a timeout or a refusal: it keeps the first try's option and returns the allocation the service accepted. Use a new one only when a refusal says the service closed the old one. Say in purpose, in one line, what the machine is for; the card shows it. visibility=agent_tree explicitly requests a private target for you and your parents and requires timeout_s; omitted remains visible.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1},"purpose":{"type":"string"},"visibility":{"type":"string","enum":["owner","agent_tree"]}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
 }
 impl KernelRuntimeState {
+    pub(crate) fn private_machine_scope(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::local::ControlPlaneAccessScope, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id).map_err(|_| {
+            acquisition_error(
+                "not_allowed",
+                "Private acquisition requires an authenticated home agent",
+            )
+        })?;
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        if session.owner_user_id() != self.kernel_owner_user_id() {
+            return Err(acquisition_error(
+                "not_allowed",
+                "Private acquisition requires the kernel owner's agent",
+            ));
+        }
+        let agents = self.owned.agent_store.list_agents();
+        Ok(crate::local::ControlPlaneAccessScope::AgentTree {
+            agent_id: agent.id().to_owned(),
+            ancestor_agent_ids: crate::agent::authority_limit::ancestors(&agent, &agents)
+                .iter()
+                .map(|ancestor| ancestor.id().to_owned())
+                .collect(),
+        })
+    }
+
     pub(crate) async fn machine_tool(
         &self,
         token: &str,
@@ -723,11 +750,12 @@ impl KernelRuntimeState {
             region: Option<String>,
             timeout_s: Option<u64>,
             purpose: Option<String>,
+            visibility: Option<crate::local::MachineAcquisitionVisibility>,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use request_id, class_id, region, timeout_s and purpose for acquire, allocation_ref for status and release, and no arguments for options",
+                "Use request_id, class_id, region, timeout_s, purpose and visibility for acquire, allocation_ref for status and release, and no arguments for options",
             )
         })?;
         let runs = self
@@ -761,6 +789,7 @@ impl KernelRuntimeState {
                 region: args.region.clone(),
                 timeout_s: args.timeout_s,
                 purpose: args.purpose.clone(),
+                visibility: args.visibility,
             },
             "chariox.machines.status" => MachineAcquisitionRequest::Status {
                 allocation_ref: allocation_ref()?,
@@ -793,9 +822,8 @@ impl KernelRuntimeState {
         let mut payload = serde_json::to_value(result)
             .map_err(|e| acquisition_error("invalid_response", &e.to_string()))?;
         if let Some(target) = ready_target {
-            payload["build_toolchain"] = self
-                .target_build_toolchain(&target.kernel_id, &origin.harness)
-                .await;
+            payload["build_toolchain"] =
+                self.target_build_toolchain(&target.kernel_id, origin).await;
         }
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
@@ -839,7 +867,20 @@ impl KernelRuntimeState {
                 region,
                 timeout_s,
                 purpose,
+                visibility,
             } => {
+                let access_scope =
+                    if visibility == Some(crate::local::MachineAcquisitionVisibility::AgentTree) {
+                        if !timeout_s.is_some_and(|duration| duration > 0) {
+                            return Err(acquisition_error(
+                                "invalid_request",
+                                "Private machine acquisition requires timeout_s",
+                            ));
+                        }
+                        Some(self.private_machine_scope(key)?)
+                    } else {
+                        None
+                    };
                 let request_id = request_id
                     .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));
                 let option =
@@ -857,6 +898,7 @@ impl KernelRuntimeState {
                         class_id: option.class_id().map(str::to_owned),
                         region: option.region().map(str::to_owned),
                         timeout_s,
+                        access_scope,
                     },
                     format!("machine:{service_request_id}:acquire"),
                 )

@@ -44,11 +44,13 @@ struct Hold {
     link: Arc<Link>,
     subscription_id: String,
     renewal: JoinHandle<()>,
+    forwarding: JoinHandle<()>,
 }
 
 impl Drop for Hold {
     fn drop(&mut self) {
         self.renewal.abort();
+        self.forwarding.abort();
         self.link.unsubscribe(&self.subscription_id);
     }
 }
@@ -59,17 +61,27 @@ impl KernelGateway {
         target: &str,
         request: SubscribeRequest,
     ) -> Result<ForwardedSubscription, GatewayError> {
+        let origin = self
+            .runtime_state
+            .gateway_origin(&request.grant_id)
+            .ok_or_else(|| GatewayError::AccessEnded {
+                name: target.into(),
+            })?;
+        self.ensure_access_live(&origin, target)?;
         let kernel = self.resolve(target).await?;
+        self.ensure_access_live(&origin, target)?;
         self.register_for(&request.grant_id, target).await?;
+        self.ensure_access_live(&origin, target)?;
         // Its own connection: the relay token it renews is the one it was opened with,
         // not one shared with requests that may be minutes older.
         let link = self.open_link(target, &kernel).await?;
+        self.ensure_access_live(&origin, target)?;
         let subscription_id = format!(
             "gw-sub-{}-{}",
             crate::session::unix_epoch_ms(),
             SUBSCRIPTION_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        let (ack, events) = link
+        let (ack, mut remote_events) = link
             .subscribe(
                 subscription_id.clone(),
                 SubscribeParams {
@@ -82,6 +94,10 @@ impl KernelGateway {
             )
             .await
             .map_err(|failure| map_failure(target, failure))?;
+        if let Err(error) = self.ensure_access_live(&origin, target) {
+            link.unsubscribe(&subscription_id);
+            return Err(error);
+        }
         let ack = serde_json::from_slice(&ack).map_err(|error| GatewayError::Unreachable {
             name: target.into(),
             detail: format!("unreadable acknowledgement: {error}"),
@@ -91,6 +107,21 @@ impl KernelGateway {
             kernel,
             Arc::clone(&link),
         ));
+        let (sender, events) = mpsc::unbounded_channel();
+        let gateway = Arc::clone(self);
+        let stream_target = target.to_owned();
+        let stream_link = Arc::clone(&link);
+        let stream_id = subscription_id.clone();
+        let forwarding = tokio::spawn(async move {
+            while let Some(event) = remote_events.recv().await {
+                if gateway.ensure_access_live(&origin, &stream_target).is_err()
+                    || sender.send(event).is_err()
+                {
+                    break;
+                }
+            }
+            stream_link.unsubscribe(&stream_id);
+        });
         Ok(ForwardedSubscription {
             ack,
             events,
@@ -98,6 +129,7 @@ impl KernelGateway {
                 link,
                 subscription_id,
                 renewal,
+                forwarding,
             },
         })
     }

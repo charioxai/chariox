@@ -17,6 +17,8 @@ pub enum ControlPlaneRequest {
         /// The machine's hard stop in seconds; the service stops the machine then. Absent keeps it until released.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_s: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access_scope: Option<ControlPlaneAccessScope>,
     },
     AcquireJob {
         capability_revision: String,
@@ -220,6 +222,30 @@ pub struct ControlPlaneMachineTarget {
     pub key_thumbprint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<chariox_relay::protocol::RelayKernelPresence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_scope: Option<ControlPlaneAccessScope>,
+}
+
+/// Authority for a private allocation, attested by its enrolled home kernel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ControlPlaneAccessScope {
+    AgentTree {
+        agent_id: String,
+        ancestor_agent_ids: Vec<String>,
+    },
+}
+
+impl ControlPlaneAccessScope {
+    pub fn allows(&self, agent: Option<&str>) -> bool {
+        let Some(agent) = agent else { return false };
+        match self {
+            Self::AgentTree {
+                agent_id,
+                ancestor_agent_ids,
+            } => agent_id == agent || ancestor_agent_ids.iter().any(|id| id == agent),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

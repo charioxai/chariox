@@ -315,6 +315,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap(),
     );
     let request = ControlPlaneRequest::Acquire {
+        access_scope: None,
         capability_revision: "v1".into(),
         request_id: "manual".into(),
         class_id: None,
@@ -412,6 +413,7 @@ async fn the_owner_is_asked_about_the_option_the_agent_chose() {
     let (state, command, _, mut caps, _workspace) = fixture(false);
     caps.offers = vec![option("agent-vm-s", "auto", true)];
     let request = ControlPlaneRequest::Acquire {
+        access_scope: None,
         capability_revision: "v1".into(),
         request_id: "chosen".into(),
         class_id: Some("agent-vm-s".into()),
@@ -446,6 +448,7 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     // A retry of an accepted request must reach the service whatever the list says now.
     let (state, command, _, caps, _workspace) = fixture(false);
     let request = ControlPlaneRequest::Acquire {
+        access_scope: None,
         capability_revision: "v1".into(),
         request_id: "retry".into(),
         class_id: Some("gone".into()),

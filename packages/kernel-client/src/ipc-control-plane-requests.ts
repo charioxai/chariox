@@ -4,7 +4,7 @@ export const machineAllocationMinimumProtocolVersion = 1006
 /** Optional connected service data. An absent machine_allocation hides hosted actions. */
 export type ControlPlaneRequest =
   | { action: "capabilities" }
-  | { action: "acquire"; capability_revision: string; request_id: string; class_id?: string; region?: string; timeout_s?: number }
+  | { action: "acquire"; capability_revision: string; request_id: string; class_id?: string; region?: string; timeout_s?: number; access_scope?: ControlPlaneAccessScope }
   | { action: "acquire_job"; capability_revision: string; request_id: string; job_ref: string; needs: { memory_gib?: number; cpus?: number }; timeout_s: number }
   | { action: "get_job" | "cancel_job"; job_ref: string }
   | { action: "job_started"; allocation_ref: string; capability_revision: string }
@@ -18,8 +18,11 @@ export type ControlPlaneResponse =
   | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; offers?: MachineOption[]; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
   | { kind: "machines"; machines: ControlPlaneMachineRow[]; saved_states: ControlPlaneSavedStateRow[] }
   | { kind: "machine"; revision: number; available_actions: string[]; allocation_ref: string; state: string; access_state: string; access_reason: string | null; purpose?: string; machine_label?: string; address?: string | null; kernel_diagnostics?: MachineKernelDiagnostics; kernel_target: null | {
-      kernel_id: string; machine_id: string; relay_realm_id: string; key_thumbprint: string
+      kernel_id: string; machine_id: string; relay_realm_id: string; key_thumbprint: string; access_scope?: ControlPlaneAccessScope
     } }
+
+/** Derived from the authenticated home agent, never from an agent-supplied identity. */
+export type ControlPlaneAccessScope = { kind: "agent_tree"; agent_id: string; ancestor_agent_ids: string[] }
 
 export type MachineKernelDiagnostics = {
   relay_error?: string

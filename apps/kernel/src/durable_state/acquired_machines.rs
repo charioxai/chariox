@@ -61,6 +61,8 @@ pub(crate) struct AcquiredMachine {
     pub(crate) request_id: String,
     /// The job whose machine this is, so its cleanup can settle the row.
     pub(crate) job_ref: Option<String>,
+    /// Only a complete visible inventory can prove this allocation absent.
+    pub(crate) inventory_visible: bool,
     pub(crate) room_id: String,
     pub(crate) class_id: String,
     pub(crate) rate_micros: u64,
@@ -194,6 +196,7 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             allocation_ref TEXT UNIQUE
                 CHECK ((state IN ('pending', 'uncertain')) = (allocation_ref IS NULL)),
             started_ms INTEGER NOT NULL,
+            inventory_visible INTEGER NOT NULL DEFAULT 1 CHECK (inventory_visible IN (0, 1)),
             ended_ms INTEGER CHECK ((state = 'ended') = (ended_ms IS NOT NULL)),
             attempts INTEGER NOT NULL CHECK (CASE state WHEN 'pending' THEN attempts > 0
                 WHEN 'uncertain' THEN attempts >= 0 ELSE attempts = 0 END),
@@ -202,11 +205,19 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         -- The kernel is starting: no answer to an attempt sent before can still arrive.
         UPDATE durable_acquired_machines SET state = 'uncertain', attempts = 0
         WHERE state IN ('pending', 'uncertain');",
-    )
+    )?;
+    let has_visibility: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('durable_acquired_machines') WHERE name = 'inventory_visible')",
+        [], |row| row.get(0),
+    )?;
+    if !has_visibility {
+        connection.execute("ALTER TABLE durable_acquired_machines ADD COLUMN inventory_visible INTEGER NOT NULL DEFAULT 1 CHECK (inventory_visible IN (0, 1))", [])?;
+    }
+    Ok(())
 }
 
 const COLUMNS: &str = "agent_id, request_id, job_ref, room_id, class_id, rate_micros, currency,
-    state, allocation_ref, started_ms, ended_ms";
+    state, allocation_ref, started_ms, ended_ms, inventory_visible";
 
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcquiredMachine> {
     let state = match (
@@ -228,6 +239,7 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcquiredMachine> {
         agent_id: row.get(0)?,
         request_id: row.get(1)?,
         job_ref: row.get(2)?,
+        inventory_visible: row.get(11)?,
         room_id: row.get(3)?,
         class_id: row.get(4)?,
         rate_micros: row.get::<_, i64>(5)? as u64,
@@ -499,8 +511,8 @@ fn register(transaction: &Transaction<'_>, attempt: &AcquisitionAttempt) -> rusq
     transaction.execute(
         "INSERT INTO durable_acquired_machines
             (agent_id, request_id, job_ref, room_id, class_id, rate_micros, currency, state,
-                started_ms, attempts)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, 1)",
+                started_ms, attempts, inventory_visible)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, 1, ?9)",
         params![
             machine.agent_id,
             machine.request_id,
@@ -510,6 +522,7 @@ fn register(transaction: &Transaction<'_>, attempt: &AcquisitionAttempt) -> rusq
             machine.rate_micros as i64,
             machine.currency,
             machine.started_ms as i64,
+            machine.inventory_visible,
         ],
     )?;
     Ok(COUNTED)
@@ -548,6 +561,7 @@ mod tests {
                     agent_id: "agent".into(),
                     request_id: request_id.into(),
                     job_ref: job_ref.map(str::to_owned),
+                    inventory_visible: true,
                     room_id: "room".into(),
                     class_id: "small".into(),
                     rate_micros: 1_000,

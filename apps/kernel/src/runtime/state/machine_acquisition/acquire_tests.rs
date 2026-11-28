@@ -66,6 +66,7 @@ fn rent(
         region: region.map(str::to_owned),
         timeout_s: None,
         purpose: None,
+        visibility: None,
     }
 }
 

@@ -230,21 +230,18 @@ impl KernelGateway {
         command_id: &str,
     ) -> Result<(), GatewayError> {
         self.job_targets.bind(target)?;
-        let result = self
-            .send(
-                &target.kernel_id,
-                origin,
-                command_id,
-                &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
-                REQUEST_DEADLINE,
-                ForwardAccess::Granted(Some(target)),
-            )
-            .await
-            .map(|_| ());
-        if result.is_err() {
-            self.job_targets.remove(&target.kernel_id);
-        }
-        result
+        // The service's canonical pin remains valid when a probe loses its connection or
+        // caller grant. Removing it here would also erase a concurrent successful attach.
+        self.send(
+            &target.kernel_id,
+            origin,
+            command_id,
+            &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+            REQUEST_DEADLINE,
+            ForwardAccess::Granted(Some(target)),
+        )
+        .await
+        .map(|_| ())
     }
     pub(crate) async fn forget_job_machine(&self, kernel_id: &str) {
         self.job_targets.remove(kernel_id);
@@ -399,6 +396,14 @@ impl KernelGateway {
     /// Resolving the kernel, registering and opening the link wait on the network; access that
     /// ended meanwhile must not start a request on the target. Checked before and after.
     fn ensure_access_live(&self, origin: &Origin, target: &str) -> Result<(), GatewayError> {
+        if let Some(scope) = self.job_targets.scope(target) {
+            let caller = self.runtime_state.reach_for_id(&origin.grant_id);
+            if !scope.allows(caller.as_ref().map(|caller| caller.agent_id.as_str())) {
+                return Err(GatewayError::AccessEnded {
+                    name: target.into(),
+                });
+            }
+        }
         if self
             .runtime_state
             .gateway_origin(&origin.grant_id)
@@ -716,6 +721,74 @@ mod tests {
         assert!(error.message().contains("nothing was sent"));
     }
 
+    #[tokio::test]
+    async fn an_owner_session_cannot_forward_to_an_agent_scoped_pinned_target() {
+        let app = crate::test_support::bootstrap_authenticated_app(
+            crate::config::DaemonConfig::for_tests(),
+        )
+        .unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(Mutex::new(app)),
+            32,
+        );
+        let gateway = router.kernel_gateway();
+        let public_key = "private-target-public-key";
+        let target: crate::local::ControlPlaneMachineTarget = serde_json::from_value(serde_json::json!({
+            "kernel_id": "private-worker", "machine_id": "private-machine", "relay_realm_id": "realm",
+            "key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(public_key),
+            "access_scope": {"kind":"agent_tree", "agent_id":"worker", "ancestor_agent_ids":["parent"]},
+            "presence": {"kernel_id":"private-worker", "machine_id":"private-machine", "public_key":public_key,
+                "capabilities":["kernel_gateway_v1", "room_terminal_v1", "room_exec_v1"],
+                "available_providers":[], "provider_accounts":[], "accepting_remote_leases":false,
+                "leased_agent_count":0, "local_session_count":0}
+        })).unwrap();
+        gateway.job_targets.bind(&target).unwrap();
+        let origin = Origin {
+            grant_id: format!("owner:{}", gateway.runtime_state.kernel_owner_user_id()),
+            harness: "Chariox".into(),
+        };
+        assert!(gateway
+            .runtime_state
+            .gateway_origin(&origin.grant_id)
+            .is_some());
+        let error = gateway
+            .forward(
+                &target.kernel_id,
+                &origin,
+                "private-owner-denied",
+                &LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "kernel_access_ended");
+        let subscription_error = gateway
+            .subscribe(
+                &target.kernel_id,
+                SubscribeRequest {
+                    grant_id: origin.grant_id.clone(),
+                    session_id: "private-room".into(),
+                    attachment_id: "private-subscription".into(),
+                    scope: None,
+                    resume_from_event_id: None,
+                },
+            )
+            .await
+            .err()
+            .expect("owner subscription must be refused");
+        assert_eq!(subscription_error.code(), "kernel_access_ended");
+        assert!(gateway
+            .attach_job_machine(&target, &origin, "failed-private-reattach")
+            .await
+            .is_err());
+        assert!(
+            gateway.job_targets.get(&target.kernel_id).is_some(),
+            "a failed reattach must retain the established canonical pin"
+        );
+        assert!(gateway.job_targets.scope(&target.kernel_id).is_some());
+        assert!(gateway.directory.kernels().await.unwrap().is_empty());
+    }
+
     // Revoking a gateway ends its event streams too, not only its requests.
     #[tokio::test]
     async fn a_revoked_gateway_key_gets_no_event_stream() {
@@ -838,6 +911,7 @@ mod machine_binding_tests {
                 &kernel.public_key,
             ),
             presence: None,
+            access_scope: None,
         };
         validate_machine_target(&expected, &kernel).unwrap();
         for field in ["kernel_id", "machine_id", "key_thumbprint"] {

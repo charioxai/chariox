@@ -250,6 +250,13 @@ impl KernelRuntimeState {
             agent_id: agent.into(),
             request_id: request_id.clone(),
             job_ref: job_ref.cloned(),
+            inventory_visible: !matches!(
+                request,
+                ControlPlaneRequest::Acquire {
+                    access_scope: Some(_),
+                    ..
+                }
+            ),
             room_id: room.into(),
             class_id: requested.class_id.into(),
             rate_micros: requested.rate.amount_micros,
@@ -368,6 +375,7 @@ impl KernelRuntimeState {
             .acquired_machines(i64::MAX as u64)
             .unwrap_or_default()
             .into_iter()
+            .filter(|machine| machine.inventory_visible)
             .filter_map(|machine| match machine.state {
                 AcquiredState::Running { allocation_ref }
                 | AcquiredState::Deleting { allocation_ref } => Some(allocation_ref),
@@ -376,6 +384,23 @@ impl KernelRuntimeState {
                 }
             })
             .collect()
+    }
+
+    pub(crate) fn private_acquired_machines_to_reconcile(
+        &self,
+    ) -> Result<Vec<String>, DaemonError> {
+        Ok(self
+            .owned
+            .durable_state_store
+            .acquired_machines(i64::MAX as u64)?
+            .into_iter()
+            .filter(|machine| !machine.inventory_visible)
+            .filter_map(|machine| match machine.state {
+                AcquiredState::Running { allocation_ref }
+                | AcquiredState::Deleting { allocation_ref } => Some(allocation_ref),
+                _ => None,
+            })
+            .collect())
     }
 
     /// Settles each of `expected` against the service's whole list `machines`, sent after they
@@ -524,6 +549,7 @@ mod tests {
             agent_id: "agent".into(),
             request_id: "r".into(),
             job_ref: None,
+            inventory_visible: true,
             room_id: "room".into(),
             class_id: "small".into(),
             rate_micros: 1_000,
