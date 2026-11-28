@@ -813,9 +813,43 @@ pub enum LeasedPromptReceiptPhase {
     WaitingForMemory,
     Active,
     Completed,
+    AdmissionRejected(LeasedPromptRejection),
     SteerDispatching,
     SteerAccepted,
     SteerRejected,
+}
+
+/// A rejection receipt can outlive the original reply. Keep only the cause
+/// needed for recovery, without the provider's diagnostic or filesystem paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeasedPromptRejection {
+    AccountMissing,
+    AccountUnusable,
+    ExecutableMissing,
+    VaultLocked,
+    Other,
+}
+
+impl LeasedPromptRejection {
+    pub(crate) fn from_error(error: &crate::error::DaemonError) -> Self {
+        use crate::error::DaemonError;
+        match error {
+            DaemonError::ProviderExecutableNotFound { .. } => Self::ExecutableMissing,
+            DaemonError::LocalTransport {
+                operation: REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION | "resolve account profile",
+                ..
+            } => Self::AccountMissing,
+            DaemonError::LocalTransport {
+                operation: ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION,
+                ..
+            }
+            | DaemonError::ProviderProfileRefused { .. } => Self::AccountUnusable,
+            DaemonError::VaultUnlock { .. } => Self::VaultLocked,
+            error if crate::secret::is_chariox_vault_locked_error(error) => Self::VaultLocked,
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2363,9 +2397,14 @@ mod tests {
             ),
             (
                 LeasedPromptReceiptPhase::SteerDispatching,
-                "steer_dispatching",
+                serde_json::json!("steer_dispatching"),
             ),
-            (LeasedPromptReceiptPhase::SteerRejected, "steer_rejected"),
+            (
+                LeasedPromptReceiptPhase::AdmissionRejected(
+                    LeasedPromptRejection::ExecutableMissing,
+                ),
+                serde_json::json!({ "admission_rejected": "executable_missing" }),
+            ),
         ] {
             let original_prompt = RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(LeasedPromptReceipt {
