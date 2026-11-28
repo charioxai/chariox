@@ -706,4 +706,6 @@ pub use workspace::*;
 /// acquired a machine its transfer ticket. Capabilities `managed_context_all_providers_v1`, `agent_machine_install_v1`.
 /// 1017 adds a read of the gateway receipt for a caller's original command ID: `GetGatewayCommandStatus` answers
 /// `GatewayCommandStatus` (`not_run`, `running`, `ran` with the original result, `interrupted`, `expired`).
+/// Local 1016 (additive, row 652): the owner view's `Publish` may carry `browser` (the viewer's delivered frames/s, path and input-to-paint
+/// per Room Browser pane) and `snapshot` (one JPEG answering `snapshot_wanted`, a new count on `OwnerViewStatus`).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1017;
