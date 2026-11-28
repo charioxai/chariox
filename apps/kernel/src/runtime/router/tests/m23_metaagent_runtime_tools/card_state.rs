@@ -50,7 +50,7 @@ async fn raised(label: &str, id: &str) -> World {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.room,
             browser_card(id, &world.ids["a"]),
         )
@@ -171,7 +171,7 @@ async fn plain() {
         .router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &world.room,
             question,
         )

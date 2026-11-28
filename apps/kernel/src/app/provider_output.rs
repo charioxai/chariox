@@ -21,7 +21,8 @@ mod tests;
 use background::pump_session_active_prompt_outputs;
 pub(crate) use structured_store::{
     structured_output_batch_should_poll_immediately, StructuredOutputRecordStore,
-    STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
+    STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, STRUCTURED_OUTPUT_IDLE_POLL_BACKOFF_MS,
+    STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
 };
 
 pub(crate) struct ProviderOutputPumpRequest<'a> {
@@ -76,6 +77,17 @@ impl<'a> ProviderOutputPump<'a> {
         Self {
             context: ProviderOutputPumpContext::new(app),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_structured_output_metadata_for_tests(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        batch: ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        self.context
+            .apply_structured_output_metadata(session_id, provider_run_id, &batch)
     }
 
     pub(crate) fn pump_provider_output(
@@ -474,6 +486,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .provider_store
             .drain_finished_structured_output_poll_jobs()
         {
+            let publication = finished.publication;
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let provider_run_id = finished.provider_run_id.clone();
             let prompt_identity = finished.prompt_identity;
@@ -745,6 +758,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                                 prompt_identity,
                                 provider_run_id: provider_run_id.clone(),
                                 result: Ok(Some(retry_poll_result)),
+                                publication,
                                 settlement_retry_attempt,
                             },
                         );
@@ -761,6 +775,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 }
                 Err(error) => return Err(error),
             };
+            // This consumer publishes synchronously while the app lock is held.
+            drop(publication);
             let records = self.apply_prepared_structured_output_batch(
                 &session_id,
                 &provider_run_id,
@@ -823,6 +839,36 @@ impl<'a> ProviderOutputPumpContext<'a> {
         Ok(poll_result)
     }
 
+    fn apply_structured_output_metadata(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        poll_result: &ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10: leased drains use this pump too. Persist the current
+        // batch's prompt-bound usage before applying metadata or settling it.
+        if crate::usage_accounting::record::should_record(poll_result) {
+            let run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+            if let Some(agent_id) = run.agent_instance_id() {
+                if let Some(prompt) = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+                {
+                    crate::usage_accounting::record::provider_batch(
+                        &self.app.operational_history,
+                        &run,
+                        &self.app.agents.get_agent(agent_id)?,
+                        &prompt,
+                        poll_result,
+                    )?;
+                }
+            }
+        }
+        self.provider_store
+            .apply_structured_output_metadata(provider_run_id, poll_result)?;
+        Ok(())
+    }
+
     fn apply_prepared_structured_output_batch(
         &mut self,
         session_id: &str,
@@ -830,8 +876,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         recipient_attachment_ids: Vec<String>,
         poll_result: ProviderPromptSignalBatch,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        self.provider_store
-            .apply_structured_output_metadata(provider_run_id, &poll_result)?;
+        self.apply_structured_output_metadata(session_id, provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if let Some(agent) = provider_run.agent_instance_id() {
             if let Some(prompt) = self
@@ -1229,6 +1274,21 @@ impl DaemonApp {
                 provider_run,
                 interaction_bridge,
             )
+    }
+
+    pub(crate) fn stream_claude_reply_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+        terminal_bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self).stream_reply(
+            session_id,
+            provider_run_id,
+            provider_run,
+            terminal_bytes,
+        )
     }
 
     pub(crate) fn finish_deferred_claude_native_stop_for_runtime(

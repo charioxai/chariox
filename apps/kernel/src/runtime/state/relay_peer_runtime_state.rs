@@ -4,7 +4,7 @@ use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnCont
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayPromptAttachment, RemoteGitObservation, RemoteGitTurnContext,
+    LeasedPromptRejection, RelayPeerEvent, RelayPromptAttachment, RemoteGitObservation, RemoteGitTurnContext,
     RemoteMcpAvailability, RemoteMcpCheckContext, RemoteSkillMaterialization,
     RemoteSkillSyncContext, RequiredRemoteMcp,
 };
@@ -665,7 +665,7 @@ impl KernelRuntimeState {
             self.update_relay_leased_prompt_admission_receipt(
                 leased_agent_id,
                 home_prompt_id,
-                WorkerPromptReceiptPhase::Rejected,
+                WorkerPromptReceiptPhase::Rejected(LeasedPromptRejection::from_error(&error)),
                 None,
             )
             .await?;
@@ -757,7 +757,7 @@ impl KernelRuntimeState {
                             .to_string(),
                     });
                 }
-                WorkerPromptReceiptPhase::Rejected => {
+                WorkerPromptReceiptPhase::Rejected(_) => {
                     return Err(DaemonError::LocalTransport {
                         operation: "submit remote leased prompt",
                         message: "worker rejection receipt fences this home prompt from retry"
@@ -815,7 +815,7 @@ impl KernelRuntimeState {
                         runtime.update_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,
-                            WorkerPromptReceiptPhase::Rejected,
+                            WorkerPromptReceiptPhase::Rejected(LeasedPromptRejection::from_error(&error)),
                             None,
                         )?;
                     }
@@ -885,7 +885,9 @@ impl KernelRuntimeState {
                     self.update_relay_leased_prompt_admission_receipt(
                         &leased_agent_id,
                         home_prompt_id,
-                        WorkerPromptReceiptPhase::Rejected,
+                        WorkerPromptReceiptPhase::Rejected(LeasedPromptRejection::from_error(
+                            &error,
+                        )),
                         None,
                     )
                     .await?;
@@ -921,7 +923,7 @@ impl KernelRuntimeState {
                 self.update_relay_leased_prompt_admission_receipt(
                     &leased_agent_id,
                     home_prompt_id,
-                    WorkerPromptReceiptPhase::Rejected,
+                    WorkerPromptReceiptPhase::Rejected(LeasedPromptRejection::from_error(&error)),
                     None,
                 )
                 .await?;
@@ -963,7 +965,9 @@ impl KernelRuntimeState {
                             self.update_relay_leased_prompt_admission_receipt(
                                 &leased_agent_id,
                                 home_prompt_id,
-                                WorkerPromptReceiptPhase::Rejected,
+                                WorkerPromptReceiptPhase::Rejected(
+                                    LeasedPromptRejection::from_error(&error),
+                                ),
                                 None,
                             )
                             .await?;
@@ -1029,7 +1033,9 @@ impl KernelRuntimeState {
                     self.update_relay_leased_prompt_admission_receipt(
                         &finish_leased_agent_id,
                         home_prompt_id,
-                        WorkerPromptReceiptPhase::Rejected,
+                        WorkerPromptReceiptPhase::Rejected(LeasedPromptRejection::from_error(
+                            &error,
+                        )),
                         None,
                     )
                     .await?;

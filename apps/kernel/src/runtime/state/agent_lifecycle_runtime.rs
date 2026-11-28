@@ -723,16 +723,20 @@ impl KernelRuntimeState {
             .ensure_agent_before_deadline(target_room, target.id())
         {
             if crate::error::is_agent_deadline_refusal(&error) {
-                self.show_deadline_refusal(target_room, target.id()).await;
+                self.tell_parent_limit_ended(target_room, target.id()).await;
+                self.show_deadline_status(target_room, target.id()).await;
             }
             return Err(error);
         }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
-        if let Err(error) =
+        let waiting_for_usage = target.usage_limit_wait().is_some();
+        if let Err(error) = if waiting_for_usage {
+            Ok(())
+        } else {
             self.owned
                 .require_agent_account_authenticated(target, None, "send agent message")
-        {
+        } {
             // The refusal is definite: a delegate that cannot start never completes, so nothing
             // may keep the sender's turn waiting on it.
             self.owned.settle_failed_delegate_start(
@@ -808,6 +812,13 @@ impl KernelRuntimeState {
                 if args.urgent { "urgent" } else { "next turn" }
             ),
         );
+        if waiting_for_usage {
+            self.publish_task_change(target_room);
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested,"held":true,"note":"Waiting for usage; this message is queued for the agent's next turn."}),
+            });
+        }
         // Only an urgent message acts on its recipient's turn; any other waits for the next one.
         if !event.urgent {
             // Row 554: an idle recipient with nothing armed has no next turn coming: this message starts it.
@@ -840,15 +851,8 @@ impl KernelRuntimeState {
             }
             return Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload });
         }
-        // The message is stored; the sender never waits for the receiver's provider to take it.
-        // The receiver reads it at its next possible point and a following sender gets the
-        // delivery event then.
-        self.spawn_agent_inbox_delivery(
-            target_room.to_owned(),
-            target.id().to_owned(),
-            event.sequence,
-        );
-        let mut payload = serde_json::json!({"status":"steering","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested});
+        self.attempt_urgent_agent_message(&event).await;
+        let mut payload = self.urgent_agent_message_receipt(&event)?;
         if let Some(note) =
             self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
         {
@@ -857,9 +861,32 @@ impl KernelRuntimeState {
         }
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
+    pub(super) async fn attempt_urgent_agent_message(&self, event: &ledger::InboxEvent) {
+        // A held receiver lane already tells us delivery cannot be confirmed yet.
+        let lane_held = self
+            .owned
+            .provider_store
+            .get_run_for_agent(&event.room_id, &event.agent_id)
+            .is_some_and(|run| self.provider_runtime_lanes.try_acquire(run.id()).is_none());
+        // Keep delivery independent of both the sender and its receipt deadline.
+        let delivery = self.spawn_agent_inbox_delivery(
+            event.room_id.clone(),
+            event.agent_id.clone(),
+            event.sequence,
+        );
+        if !lane_held {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(750), delivery).await;
+        }
+    }
+
     /// The stored message belongs to the receiver now: its delivery runs on the kernel's own account,
     /// so a change to the sender (a new provider run, an archive) cannot fail a healthy receiver.
-    pub(super) fn spawn_agent_inbox_delivery(&self, room: String, agent: String, sequence: u64) {
+    pub(super) fn spawn_agent_inbox_delivery(
+        &self,
+        room: String,
+        agent: String,
+        sequence: u64,
+    ) -> tokio::task::JoinHandle<()> {
         let state = self.as_kernel();
         tokio::spawn(async move {
             if let Err(error) = Box::pin(state.deliver_agent_inbox(&room, &agent)).await {
@@ -877,7 +904,7 @@ impl KernelRuntimeState {
                     ),
                 );
             }
-        });
+        })
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
     /// Nothing waits here for its answer: a reply comes back the same way, as a message.
@@ -899,7 +926,7 @@ impl KernelRuntimeState {
         if request_id.trim().is_empty() || request_id.len() > 128 {
             return Err(ledger::error("invalid message occurrence"));
         }
-        let (target, duplicate) = self
+        let (target, duplicate, delivery) = self
             .relay_peer_agent(
                 sender,
                 kernel,
@@ -916,7 +943,10 @@ impl KernelRuntimeState {
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: if args.urgent {
-                serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":true,"reply_requested":args.reply_requested})
+                let delivery = delivery.ok_or_else(|| {
+                    ledger::error("The receiving kernel did not report a message disposition.")
+                })?;
+                serde_json::json!({"status":delivery,"duplicate":duplicate,"message_id":format!("peer:{}:{}:{}:{request_id}", target.kernel_id, target.room_id, target.agent_id),"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":true,"reply_requested":args.reply_requested})
             } else {
                 serde_json::json!({"status":if duplicate {"duplicate"} else {"queued"},"message_id":format!("peer:{}:{}:{}:{request_id}", target.kernel_id, target.room_id, target.agent_id),"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":false,"reply_requested":args.reply_requested,"note":super::agent_queued_messages::queued_note(&args.agent)})
             },
@@ -1169,7 +1199,10 @@ impl KernelRuntimeState {
         self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
-        if changed && task.state == ExecutionState::Blocked {
+        if changed
+            && task.state == ExecutionState::Blocked
+            && self.owned.task_usage_wait(&task).is_none()
+        {
             // Every card a task raises says, in the log, which task and why.
             crate::logging::warn_with_fields(
                 "runtime.agent_lifecycle",
@@ -1185,7 +1218,11 @@ impl KernelRuntimeState {
         }
         if changed {
             let name = self.agent_notice_name(&task.agent_id);
-            let message = super::agent_task_projection::task_status_notice(&task, &name);
+            let message = self
+                .owned
+                .task_usage_wait(&task)
+                .map(|wait| format!("{name}: {wait}."))
+                .unwrap_or_else(|| super::agent_task_projection::task_status_notice(&task, &name));
             self.owned.record_notice_for_agent(
                 &task.room_id,
                 None,
@@ -1318,11 +1355,17 @@ impl KernelRuntimeState {
     ) {
         for task in tasks {
             let notice = match task.state {
-                ExecutionState::Blocked => format!(
-                    "{}: Needs your help. {}",
-                    self.agent_notice_name(&task.agent_id),
-                    task.reason
-                ),
+                ExecutionState::Blocked => self
+                    .owned
+                    .task_usage_wait(&task)
+                    .map(|wait| format!("{}: {wait}.", self.agent_notice_name(&task.agent_id)))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}: Needs your help. {}",
+                            self.agent_notice_name(&task.agent_id),
+                            task.reason
+                        )
+                    }),
                 ExecutionState::Cancelled => format!(
                     "{}: Stopped. Its provider turn ended without an answer.",
                     self.agent_notice_name(&task.agent_id)
@@ -1555,9 +1598,9 @@ impl KernelRuntimeState {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
         step.enter("the wake dead-man check");
-        if let Err(error) = self.sweep_agent_wakes(now).await {
-            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
-        }
+        // The check runs apart from the pass: a source or a store that does not answer degrades
+        // wake delivery checks, reported once, and never holds this pass.
+        self.spawn_wake_deadman_check(now);
         step.enter("peer follow settlement");
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
@@ -1609,25 +1652,129 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         let mut patience = super::task_work_flight::SWEEP_PATIENCE;
-        for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
+        let mut tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
+        // Live work first: the task with the freshest progress is the newest turn's, and a
+        // restored backlog (20A7 11-27: 2466 old tasks of 612 agents) never asks before it.
+        tasks.sort_by(|a, b| b.last_progress_at_ms.cmp(&a.last_progress_at_ms));
+        // A pass that always restarts at the newest task starves the oldest under sustained
+        // arrivals (review, 11-28), so the last wait of the budget is reserved for a walk
+        // from the oldest end: a finished task that still owes its outcome is reconciled
+        // even while newer work keeps arriving.
+        let mut asked = std::collections::BTreeSet::new();
+        for task in &tasks {
+            // Do not mark a task as offered until this walk can actually ask it:
+            // the oldest walk must still reach the task at the cutoff.
+            if patience <= super::task_work_flight::SWEEP_OLDEST_RESERVE {
+                break;
+            }
+            let monitor = &self.owned.agent_wakes;
+            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
+                continue;
+            }
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let key = format!("sweep-task:{}", task.task_id);
             let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
+            // The settlement runs apart from the pass: it takes its own copy of the task,
+            // not a borrow of this pass's list.
+            let owned = task.clone();
+            // Completion and timeout publish the backoff under the same lock:
+            // a detached success cannot be followed by a stale timeout write.
+            let completed = Arc::new(std::sync::Mutex::new(false));
+            let finished = Arc::clone(&completed);
+            let completed_task = task_id.clone();
             match self
                 .sweep_task_within(key, &mut patience, move |state| async move {
-                    state.sweep_task(task, now).await
+                    let result = state.sweep_task(owned, now).await;
+                    if result.is_ok() {
+                        let mut completed = finished
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state.owned.agent_wakes.task_settled(&completed_task);
+                        *completed = true;
+                    }
+                    result
                 })
                 .await
             {
                 super::task_work_flight::TaskStep::Done(Err(error)) => return Err(error),
-                super::task_work_flight::TaskStep::Done(Ok(ended)) => blocked.extend(ended),
+                super::task_work_flight::TaskStep::Done(Ok(ended)) => {
+                    monitor.task_settled(&task_id);
+                    blocked.extend(ended);
+                }
                 super::task_work_flight::TaskStep::Busy => {}
                 super::task_work_flight::TaskStep::TimedOut => {
+                    let completed = completed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if *completed {
+                        continue;
+                    }
+                    let backoff = monitor.task_did_not_settle(&task_id, now);
                     crate::logging::warn_with_fields(
                         "runtime.agent_lifecycle",
-                        "supervision sweep moved on from a task that did not settle in time; the next sweep asks again",
+                        "supervision sweep moved on from a task that did not settle in time; it is not asked again until its backoff expires",
                         serde_json::json!({"task_id": task_id, "agent_id": agent_id,
-                            "step": step.current().map(|(name, _)| name)}),
+                            "step": step.current().map(|(name, _)| name),
+                            "ask_backoff_s": backoff / 1000}),
+                    );
+                }
+            }
+        }
+        // The oldest walk: the reserved budget reaches the tasks the newest walk never
+        // offered a place to, oldest first, until the pass's patience is spent.
+        for task in tasks.iter().rev() {
+            if patience.is_zero() {
+                break;
+            }
+            let monitor = &self.owned.agent_wakes;
+            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
+                continue;
+            }
+            step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
+            let key = format!("sweep-task:{}", task.task_id);
+            let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
+            // The settlement runs apart from the pass: it takes its own copy of the task,
+            // not a borrow of this pass's list.
+            let owned = task.clone();
+            // Completion and timeout publish the backoff under the same lock:
+            // a detached success cannot be followed by a stale timeout write.
+            let completed = Arc::new(std::sync::Mutex::new(false));
+            let finished = Arc::clone(&completed);
+            let completed_task = task_id.clone();
+            match self
+                .sweep_task_within(key, &mut patience, move |state| async move {
+                    let result = state.sweep_task(owned, now).await;
+                    if result.is_ok() {
+                        let mut completed = finished
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state.owned.agent_wakes.task_settled(&completed_task);
+                        *completed = true;
+                    }
+                    result
+                })
+                .await
+            {
+                super::task_work_flight::TaskStep::Done(Err(error)) => return Err(error),
+                super::task_work_flight::TaskStep::Done(Ok(ended)) => {
+                    monitor.task_settled(&task_id);
+                    blocked.extend(ended);
+                }
+                super::task_work_flight::TaskStep::Busy => {}
+                super::task_work_flight::TaskStep::TimedOut => {
+                    let completed = completed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if *completed {
+                        continue;
+                    }
+                    let backoff = monitor.task_did_not_settle(&task_id, now);
+                    crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "supervision sweep moved on from a task that did not settle in time; it is not asked again until its backoff expires",
+                        serde_json::json!({"task_id": task_id, "agent_id": agent_id,
+                            "step": step.current().map(|(name, _)| name),
+                            "ask_backoff_s": backoff / 1000}),
                     );
                 }
             }

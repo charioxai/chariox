@@ -84,6 +84,8 @@ where
 mod catalog_changes;
 mod permission_prompt;
 mod retired_reach;
+mod skill_contract;
+mod skill_publication;
 mod slice_tools;
 mod tool_loading;
 

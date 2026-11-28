@@ -16,6 +16,21 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
+### Provider account copies waiting for a Vault
+
+The receiving kernel answers the encrypted install request with
+`provider_account_copy_target_vault_locked` and an expiry when it needs the
+owner to open its Vault. The owner's `vault_status` resource includes the
+pending unlock request. Unlocking, cancelling the request, or reaching its
+ten-minute deadline clears it.
+
+The copy request returns `ProviderAccountCopyWaiting` with the source and
+target kernel IDs, operation ID, and expiry. The source retries the original
+binding after that response and publishes the result on its
+`provider_account_copies` resource. Clients follow that resource on the source,
+including when they started the copy from the target. Copy progress and unlock
+requests carry no credential material.
+
 ### Relay registration proof (relay peer 449)
 
 A relay token and a kernel's public key do not make a kernel. The relay answers
@@ -309,6 +324,19 @@ row's UTF-8 byte length, in order. A single row omits both fields. Clients split
 the range at these byte boundaries before replay deduplication, preserving
 unseen rows when history hydration overlaps only part of a range. Gaps and
 unsequenced bytes never join a persisted range.
+
+MP-08 / MP-10, local protocol 1016: a terminal output record with
+`replaces: true` takes the place of the row under its `merge_key` instead of
+being added to it; the field is left out otherwise. The kernel streams a
+Claude reply from its terminal as plain text under one merge key, and once the
+transcript's block lands it sends the block's text once with `replaces: true`,
+so every client's row ends as exactly the transcript text. The stored history
+row is replaced the same way. A replacing record never coalesces into the
+records before it. A replacement longer than one record (16 KiB) goes out in
+pieces in one batch: the first has `replaces: true`, each later one has
+`continues_replacement: true` and the same `merge_key`, and a client adds it to
+the row the first piece set, wherever that row now is (after a tool row, or in
+a later turn), never as a new row. A piece with no row to join starts one.
 
 `GetSessionHistoryOutline.include_prefetched_content=true` returns optional
 `prefetched_blobs` on each requested agent, including an explicit empty array
@@ -782,10 +810,36 @@ so an answer from any client reaches every terminal within a second or two.
 `ReportPaneSettings` records what a provider's own terminal changed (its model picker, Claude's
 "always allow" or "auto mode" as the person's choice) so every client shows it. Only an agent a
 provider terminal runs takes it; nothing is applied to the run, which already runs with it.
+The optional `effort` field has three states: absent leaves the recorded effort unchanged,
+null clears it, and a string sets it. This lets a terminal report an explicit clear to every client.
 
 While a provider's own terminal runs the pane's agent, a provider permission card has no
 deadline: the person sits at that terminal. Its timeout applies again within 5 s of the
 terminal's run ending. Peers are unchanged: the feed is read on the home kernel.
+
+### Claude Code's terminal
+
+The kernel is Claude Code's adapter; nothing runs in the launcher. A `chariox claude` run (never
+a Chariox-run `claude-headless` one) reads its own pane feed on the run's MCP notification
+stream (the authenticated `GET /mcp` Claude Code keeps open) as the run's owner:
+
+- Status line: the kernel writes at most three lines that the settings' `statusLine` command
+  prints, refreshed every 2 s: Room, agent path, account, model, effort, mode and
+  permissions (`Ask first` or `Full access`); the state and `N cards waiting` with the first
+  card's `open_elsewhere`; stripes and notices. Claude hides it while a dialog is open.
+- Cards, oldest first and one at a time, as Claude's own `elicitation/create` dialog: a
+  `text_terminal` card is a form (one choice from a titled enum, a text field for the reply);
+  any other is URL mode with `link`, or the status line only when there is no link. Accept
+  sends the usual `RespondToInteraction`. Decline or Esc means "not now": the card stays open
+  for every client, and this terminal does not open it again. A card settled elsewhere closes
+  the dialog with `notifications/cancelled`. Claude's own permission prompt is its own dialog
+  (the card's native origin is this run) and gets no second one.
+- Settings: the status line command writes the model and effort Claude runs with, every hook
+  the permission mode; the kernel reads them every second and sends `ReportPaneSettings` for a
+  change. Claude's first model reading is the launch choice under its full name. A mode switch
+  shows on the next hook (Claude runs none for Shift+Tab alone); `plan` is mode `plan`,
+  `default` is `build` with `required`, `bypassPermissions` is `build` with `yolo`, and Claude's
+  finer modes (`acceptEdits`, `auto`) keep the recorded permissions.
 
 ## 3.3.3 Metaagent Event Prompts
 
@@ -3020,6 +3074,22 @@ owner terminal's `end` operation revokes the agent's grant in the kernel's
 durable state. The agent's request vocabulary supports observation and detach.
 The relay carries encrypted messages as it does for other kernel resources.
 
+Local 1016 (additive): while an agent watches, the owner tab also publishes
+`browser`, what its viewer delivers for each Room Browser pane it shows:
+frames/s received, painted (video plus region video), dropped and mirrored
+still updates, the pane's paint mode, input-to-paint (p50/max) for the owner's
+own pointer and key input on that pane, the connection path (`direct`, `relay`,
+`blocked`, `down`, `none`), and the viewer (`owner_tab` or `headless`, and its
+device pixel ratio). The tab counts the viewer's existing display timing
+events; nothing new is measured on the kernel. An agent's `read` with
+`snapshot: true` raises `snapshot_wanted` on the status feed; the owner tab
+answers the newest request with one JPEG of at most 512 KiB, from the pane's
+video canvas (`viewer_canvas`) or the page picture it holds for a mirrored page
+(`document_picture`), with the region videos it presents drawn at their places
+(`region_video`). The read returns the latest picture as an image. The
+vocabulary stays `watch`, `read` and `leave`; any other field or operation is
+refused and logged.
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.
@@ -4841,17 +4911,21 @@ Injection retains the original durable admission until steering acceptance, join
 ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
 or multiple active workflow runs. Subscribers always belong to workflows.
 
-### Waiting gated entry (MP-08 / MP-09 / MP-10 / MP-11)
+### Waiting entry (MP-08 / MP-09 / MP-10 / MP-11)
 
-A gated handoff whose entry node dispatch is refused for a provider account the
-user can fix stays `Ready` and is retried, so it resumes once the account is
-fixed. Its `WorkflowNodeRun.waiting_reason` names why, as a fixed kernel class:
+A workflow entry, gated or not, whose entry node dispatch is refused for a
+provider account the user can fix, and for which no configured substitute can
+run, stays `Ready` and is retried, so it resumes once an account is fixed or its
+usage resets. `WorkflowNodeRun.waiting_account` names the account and
+`waiting_until_ms` is the earliest reset any of the agent's profiles names; both
+are absent while nothing waits or no time is known. The Room gets one notice
+when the wait starts or changes, not one per retry. Its `WorkflowNodeRun.waiting_reason` names why, as a fixed kernel class:
 `provider_profile_unavailable`, `provider_profile_unverified`,
 `provider_profile_unauthenticated` or `provider_profile_usage_exhausted`. It is
 never error or provider text; clients show their own phrase for each class. The
 field is absent while nothing waits and is cleared on dispatch. The wait ends at
-the gate entry's own `deadline_ms`: the run then fails with the same refusal an
-ungated invoke returns. The shared Landing 7 protocol pair carries the field.
+the gate entry's own `deadline_ms`, if it has one: the run then fails with the
+same refusal an ungated invoke returns. The shared Landing 7 protocol pair carries the field.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
@@ -5778,7 +5852,13 @@ authority for its own sessions, agents, terminals and files.
   heartbeat for the caller's own attachments; any other id is reported lapsed). A `DetachFromSession` stops it; a
   grant that ends or three missed beats stop it, and the target sweeps the attachment after 30 s.
 - `ListGatewayKernels {}` -> `GatewayKernelsListed { kernels: [{name, kernel_id, label, machine_id, machine_alias,
-  status: online|offline|unpaired, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
+  status: online|offline|unpaired, last_seen_ms, gateway_ready, via: hosted|self_hosted, protocol: number|null,
+  update: current|update_needed}] }`. `protocol` is what the kernel last reported (its relay registration, or its status
+  answer when paired; null for a kernel too old to report one) and stays on an offline kernel. `update` is the kernel's
+  own verdict, the rule behind `kernel_update_needed`: `update_needed` when `protocol` is null or below the protocol this
+  gateway needs. It says whether this gateway can use the kernel, not whether a client can open it (the web keeps its own,
+  lower minimum). A kernel the relay refuses for its age (relay peer 450) is listed `offline` and `update_needed` with the
+  protocol it reported. The list comes from one
   inventory source (the relay inventory, filtered to the account's fresh Cloud targets when hosted). An offline
   kernel stays listed with its last-seen time. A self-hosted kernel that answers but refuses this gateway (its owner revoked it there) is `unpaired`, not `offline`; hosted lists cannot tell and keep `online` until a call answers `kernel_unpaired`.
 - Origin decision: the local kernel checks that the grant is live and that the request shape is not human-only
@@ -5819,10 +5899,16 @@ authority for its own sessions, agents, terminals and files.
   requests only. `KernelAccessGrant.holder_harness` (`codex`, `claude`, `opencode`; absent when unknown) names the
   provider harness the kernel recognised, for display.
 - At most once: every non-read request (repeatable means a variant that starts with List, Get, Search, Stat or Heartbeat)
-  is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 512 entries)
+  is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 4096 entries)
   before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an
   interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
+  Local protocol **1017** (relay peer 454) adds `GetGatewayCommandStatus { command_id }` on the same gateway route and access grant.
+  Run `chariox request --kernel NAME` with that request on stdin. It reads the target's receipt without resending the
+  command. `GatewayCommandStatus { command_id, status }` reports `not_run` for an unreserved ID, `running` for a live
+  reservation, or `ran` with its original `result.response` or `result.error`. After the target restarts, a reservation
+  without a result reports `interrupted`. An evicted one reports `expired`. Both give a next step and fence the original ID.
+  A different gateway or access grant cannot read the receipt.
 - Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
   `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed` (the target runs protocol N and needs M), `kernel_request_timeout` (30 s),
   `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to
@@ -5830,21 +5916,28 @@ authority for its own sessions, agents, terminals and files.
   target keeps running.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
-  size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
+  size, modified_ms, revision, mode, sha256, partial_size, partial_upload_id} }`; `ListKernelDirectory { path, offset }` ->
   `KernelDirectoryListed { path, entries: [{name, kind, target_kind?, size, modified_ms, revision, mode}], truncated }` (2000
   entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005;
   a link has `kind: "symlink"`, which transfers skip, and local 1011 adds `target_kind`, what it points to, so a window opens it as that; a link to nothing has none); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
-  `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
-  total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
+  `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, upload_id, offset, data_base64,
+  total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 30 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
   only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
+  Local 1017 / peer 454 require `upload_id`, a UUID shared by every chunk of one attempt. A fresh
+  offset-zero attempt uses a fresh UUID. To resume, read stat and send its current non-null
+  `partial_upload_id` with `offset: partial_size`; stat returns null when no partial can be resumed.
+  A stale ID fails with `file_upload_changed`: read stat again before retrying. Admission, append and
+  publication on one staging inode are serialized, so an already admitted chunk cannot append into a
+  resumed attempt's completed file. A fresh nonzero-first chunk waits for its own offset-zero opener,
+  including when the opener must replace a stale untrusted staging name.
   The first chunk replaces whatever is at the staging name; later chunks continue only a private regular file of the
   kernel's user, never a link or another user's file (`file_staging_untrusted`: remove it and upload again).
   A file is at most 2 GiB (`file_too_large`). Reads and write chunks name their offset, so a retry is safe and they
   skip the at-most-once ledger. Typed errors: `file_path_invalid`, `file_not_found`, `file_permission_denied`,
   `file_not_a_file`, `file_too_large`, `file_chunk_too_large`, `file_offset_mismatch`, `file_hash_mismatch`,
-  `file_staging_untrusted`, `file_exists`, `file_io_failed`; each message already says what to do next.
+  `file_staging_untrusted`, `file_upload_changed`, `file_exists`, `file_io_failed`; each message already says what to do next.
 - Self-hosted kernels (no Cloud profile): the kernels are the kernels this kernel paired with. Human-only requests,
   refused for grant holders and forwarded requests: `JoinKernelLink { link, relay_token? }` -> `GatewayKernelJoined
   { kernel }` (the gateway key asks the kernel that made a terminal pairing link, over the operator relay, to admit
@@ -6691,19 +6784,25 @@ Older history without `size_bytes` remains readable. The protocol fixtures and
 shape/hash tests cover both changes under this shared pair.
 
 
-### Binary Room exec (local 995 / peer 434)
+### Run a command
 
-MP-08 / MP-09 / MP-10 / MP-11: `RoomTerminal` also carries non-PTY commands.
-The existing Room owner, external-grant and worker-lease checks apply unchanged;
-a caller unable to open that Room's terminal cannot exec there. `room_exec_v1`
-advertises this additive contract. The relay still carries opaque encrypted
-requests and responses, using its existing bounded framing and flow control.
+`RunCommand` carries pipe operations on an explicit target. `kernel` runs on the
+selected kernel with no Room or attachment. `room_workspace { session_id }`
+runs in the Room's workspace. `agent_slice { session_id, agent_id }` runs where
+the Room agent runs, including on a leased worker. The owner or a grant covering
+the target authorizes each operation. `run_command_v1` advertises this contract.
+The relay carries opaque encrypted requests and responses.
 
-- `exec_open { command: [program, ...args] }` validates the original argv and
-  canonical Room directory, then allocates `exec_opened { exec_id }` before
-  spawning a user program. Its immutable intent contains only the launch ID,
-  Room/owner/acting-agent identity, argv and cwd. It contains no resolved Vault
-  values, inherited environment, provider account configuration or descriptors.
+- `exec_open { command: [program, ...args], directory?, timeout_ms? }` validates
+  argv and the working directory and allocates `exec_opened { exec_id }` before
+  spawning. The kernel target defaults to the kernel user's home. A Room or
+  agent target confines a supplied directory to its workspace. The launch
+  intent carries no resolved Vault values, environment or descriptors.
+- A time limit is enforced by the kernel running the process. It reports
+  `timed_out { timeout_ms, exit }` after stopping and reaping the command.
+  `exit` is `not_started` for a launch that expired before spawning, or the
+  observed `exited { code }` or `signaled { signal }` state.
+  Output continues through the same independent pipes.
 - MP-08 / MP-09 / MP-10 / MP-11: resource admission holds a binary launch before
   spawn when its predicted memory or disk need does not fit. Concurrent binary
   decisions reserve capacity in the existing resource pool. `exec_list` returns
@@ -6728,7 +6827,7 @@ requests and responses, using its existing bounded framing and flow control.
   refused `exec_not_queued`; the launch then keeps running where it is. The caller
   is the owner's person (under the owner's own gateway grant, `owner:<user>`) or
   the agent that started the launch (under its own live reach, so ending the run
-  ends the placement); another agent, a stranger, a worker host (`host_agent`) and a
+  ends the placement); another agent, a stranger, an agent slice target and a
   request that arrives through a gateway are refused (`exec_not_yours`,
   `exec_place_not_here`, ownership errors). `kernel` is a name `chariox kernels`
   lists; an unknown, ambiguous, offline, unpaired or too old kernel is refused with
@@ -6747,7 +6846,7 @@ requests and responses, using its existing bounded framing and flow control.
   the owner's other online, gateway-ready kernels, for a caller that may place that
   launch (the owner's person, or the agent that started it). Absent otherwise,
   and when the kernel list cannot be had; clients offer placement only from it.
-- `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
+- `exec_list {}` returns `exec_listed { execs }` for the selected target. Each entry
   has `exec_id`, tagged `state`, `age_ms`, `buffered_bytes`, `command` and `owner`.
   It uses the same Room authority and worker forwarding as all exec operations.
 - `exec_write { exec_id, offset, data_base64 }` accepts at most 256 KiB at the
@@ -7332,6 +7431,29 @@ move to the element when it gains area and back to the page when it loses it. A 
 still never moves the card under the pointer. The card carries one Cancel: an agent choice labelled Cancel under
 another id is the card's own Cancel (`choice_id: "cancel"`, status `cancelled`).
 
+Row 655/666 (11-26 evening, no shape change): the region takes in the visible frames of the anchor's widget (direct
+child frames of the page's own origin-separated widget: from the page's frame tree and from the renderers whose parent is
+the page). An anchor hidden inside a widget (a closed challenge's Verify) shows the widget's visible part (its checkbox),
+and the agent still gets `page_note`. One card per Tab: a plain browser card raised on a Tab where the same agent's plain
+card is open replaces it. The older card ends `unavailable` ("Replaced by the agent's newer card on the same page")
+and the new card's result (wait:false or waiting) names it as `replaced`. Hand-off, App confirmation, verification, page-text
+and `until` cards are never replaced.
+
+Row 666 (no shape change): an open card whose Tab closed (a sign-in popup closing itself when the person is done)
+ends at once with reason `Browser tab closed`: a plain card as `condition_met`, a card waiting for page text or a proof
+as `unavailable`. A card on a page shows the sign-in popup or new tab that page opens while it is open (also one already
+in front when the card opens), and the person's input there needs no Take over while the card is pending.
+
+Row 655 frame lifetime (no shape change): a card raised on an observed child document root is
+bound to its iframe owner in the original top document. Reloading or replacing that child
+document preserves the card and its crop. A card on a child element follows the same owner
+if the child document or element disappears. The owner must come from the agent's observed
+snapshot; a foreign reference still refuses. Losing the owner or navigating the top document
+uses the ordinary person-card page rebind described above. A host restart preserves the observed iframe
+identity in its Tab registry: only a unique iframe with the same origin, id, name and title on the same
+page origin supplies the crop again, including when it appears after the page loads. Renderer node IDs
+are never reused across the restart, and releasing the card removes this saved identity.
+
 Rows 574/655 (additive, no shape change): a plain browser card (no `done_text`, no `verification`) has no condition
 that ends it, so the kernel adds a `Done` choice (`choice_id: "done"`, primary) unless the agent offered one (by that
 id or a choice labelled Done). The agent hears `status: "answered"`, `choice_id: "done"`: the person's word, which
@@ -7715,7 +7837,12 @@ its own Vault under the Project scope, so presence differs per machine and is co
   Project's Secret inside the kernel (no value crosses the wire), through the entry's ordinary use check and
   audit. The entry must have been made for the environment variable of the same name
   (`command_environment` use). The kernel keeps the link, invisible to clients: a later Replace of the entry
-  re-fills the Secret, a removed entry leaves the copy as a normal Secret, and a typed value ends the link.
+  re-fills the Secret (so does a raw write of the entry's Vault key with `SetCredentialSecret`), a removed entry
+  leaves the copy as a normal Secret, and a typed value ends the link. Another machine that copied a linked
+  Secret by Update follows it: the source's peer `ProjectEnvironmentRead` names its `linked` Secrets (names
+  only), and each later Update from that source brings their current value. A value typed on
+  the other machine ends its link there and is never replaced; a Secret the source no longer links stays as a
+  normal Secret.
   Agents do the same with the Room tool `chariox.environment.use_vault_entry { name, credential_id }`.
 - `RunProjectEnvironmentSetup { projectId, operationId, checkoutPath? }` runs the script in the checkout with
   Variables and the present Secrets in its environment. `GetEnvironmentOperation` returns the state and the
@@ -8570,7 +8697,7 @@ skills again. Only the focused run decides how a skill reaches a turn: the
 them.
 
 `resolve_repository` (the home owner from Skills, or an agent through
-`chariox.manage_skills` action `resolve_repository`) fetches a public git
+`chariox.manage_skills` request action `resolve_repository`) fetches a public git
 repository with the machine's `git` and answers its current commit and every
 SKILL.md directory (`repository` response: `locator`, `revision`, `skills`,
 `skipped`). Nothing is installed. The owner then reviews a batch of `install`
@@ -8586,9 +8713,19 @@ its repository URL must be a public `https` host that resolves only to public
 addresses, the boundary of agent URL downloads, so an agent cannot reach a
 local path or a private network host through the home kernel's `git`.
 
+Every `chariox.manage_skills` call has an outer `origin_prompt_id` naming the
+current turn and a `request` object containing `action` and its fields. For
+example: `{"origin_prompt_id":"<current prompt_id>","request":{"action":"resolve_repository","url":"https://github.com/org/skills"}}`.
+`preview` takes `request.mutation`; `publish` takes the identical mutation and
+`request.review_receipt_id`. The two repository actions take `request.url` or
+`request.package_id`. These four alternatives keep their field constraints
+inside `request`, so the tool root is an ordinary object accepted by providers
+that reject root schema composition. Extra fields and the former flat action
+shape are rejected; owner, turn identity, review and approval checks are unchanged.
+
 MP-08 / MP-10 / MP-11: the unpublished Skills allocation 571/179 also carries
 `resolve_repository_update { package_id }` for the home owner (an agent:
-`manage_skills` action `resolve_repository_update`). Its
+`manage_skills` request action `resolve_repository_update`). Its
 `repository_update` response contains the old and resolved commits, changed,
 added, removed, unchanged and skipped members, plus one revision-bound mutation.
 The owner reviews and confirms that mutation through the usual path; confirmation
@@ -8919,6 +9056,11 @@ serves all three, so the option choice, request-id handling, refusals and owner 
   answer for up to 300 s (`acquisition_denied` when refused or expired).
 - `status { allocation_ref }` and `release { allocation_ref }` answer the allocation's `Machine` state; a release is
   confirmed when `status` reads `deleted`.
+- `status {}` without `allocation_ref` (local 1017, provisional; the L15 landing renumbers) answers `Machine(Machines)`: every
+  allocation of the owner that is not deleted, whoever made it, each row with `class_id`, `region`, `created_at` and
+  `hard_stop_at` when the service lists them (the same optional fields a `ControlPlane` `list` machine row now carries);
+  `saved_states` is empty. The agent tool is the same mode: `chariox.machines.status` with no `allocation_ref`. Release stays
+  with the owner's authority. The shape is pinned by the `machine_list_1017_shapes_and_hash` protocol test.
 
 `machine-acquire-1014.json` and its SHA-256 test pin the shapes. The CLI verbs are `chariox machine options | acquire |
 status | release`.

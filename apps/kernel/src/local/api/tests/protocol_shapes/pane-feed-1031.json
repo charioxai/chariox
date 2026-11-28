@@ -1,0 +1,228 @@
+{
+  "local": 1032,
+  "requests": [
+    {
+      "GetPaneFeed": {
+        "session_id": "room-1",
+        "agent_id": "agent-1"
+      }
+    },
+    {
+      "ReportPaneSettings": {
+        "session_id": "room-1",
+        "agent_id": "agent-1",
+        "model": "claude-haiku-5-5",
+        "execution_mode": "plan",
+        "permission_level": "required"
+      }
+    },
+    {
+      "ReportPaneSettings": {
+        "session_id": "room-1",
+        "agent_id": "agent-1",
+        "effort": "high"
+      }
+    },
+    {
+      "ReportPaneSettings": {
+        "session_id": "room-1",
+        "agent_id": "agent-1",
+        "effort": null
+      }
+    }
+  ],
+  "responses": [
+    {
+      "PaneFeed": {
+        "feed": {
+          "title": "Release · writer · 2 cards waiting · Ship the notes",
+          "identity": {
+            "room_id": "room-1",
+            "room_name": "Release",
+            "agent_id": "agent-1",
+            "agent_name": "writer",
+            "parents": [],
+            "project_id": "project-1",
+            "placement": null
+          },
+          "settings": {
+            "provider": "claude",
+            "account": "default",
+            "model": "claude-haiku-5-5",
+            "effort": null,
+            "execution_mode": "build",
+            "permission_level": "yolo"
+          },
+          "state": "waiting_for_answer",
+          "goal": "Ship the notes",
+          "cards": [
+            {
+              "id": "q-1",
+              "asker_name": "helper",
+              "title": null,
+              "message": "Which branch?",
+              "choices": [
+                {
+                  "id": "main",
+                  "label": "main"
+                },
+                {
+                  "id": "next",
+                  "label": "next"
+                }
+              ],
+              "reply": null,
+              "text_terminal": true,
+              "requested_at_ms": 1795000000000,
+              "open_elsewhere": "Open in Chariox: https://chariox.example/terminal?session=room-1&agent=agent-1"
+            },
+            {
+              "id": "vault-unlock-1",
+              "asker_name": null,
+              "title": "Unlock the Vault",
+              "message": "writer needs the Vault.",
+              "choices": [
+                {
+                  "id": "unlock-15m",
+                  "label": "15 minutes"
+                }
+              ],
+              "reply": {
+                "id": "passphrase",
+                "label": "Passphrase",
+                "placeholder": null,
+                "secret": true
+              },
+              "text_terminal": true,
+              "requested_at_ms": 1795000001000,
+              "open_elsewhere": "Open in Chariox: https://chariox.example/terminal?session=room-1&agent=agent-1"
+            }
+          ],
+          "stripes": [
+            {
+              "id": "job:proc-1",
+              "kind": "Queued",
+              "text": "cargo build · waiting for memory, needs 9 GB",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "queue:p-2",
+              "kind": "Queued",
+              "text": "Then tag it",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "trigger:t-1",
+              "kind": "Schedule",
+              "text": "0 9 * * 1 · Europe/Berlin",
+              "detail": "3 fired · 1 skipped",
+              "at_ms": 1795300000000
+            },
+            {
+              "id": "trigger:t-2",
+              "kind": "Notification",
+              "text": "GitHub pull requests",
+              "detail": "Offline",
+              "at_ms": null
+            },
+            {
+              "id": "goal:g-1",
+              "kind": "/goal · WORKING",
+              "text": "Ship the notes",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "wake:w-1",
+              "kind": "/wait-in",
+              "text": "check CI",
+              "detail": null,
+              "at_ms": 1795000600000
+            },
+            {
+              "id": "meta:m-1",
+              "kind": "/meta · ACTIVE",
+              "text": "Review the release",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "attention:wf-1:run-4",
+              "kind": "Workflow",
+              "text": "Run #4 waiting on Claude usage limit",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "usage-limit:p-1",
+              "kind": "Usage limit",
+              "text": "Usage limit reached on work",
+              "detail": null,
+              "at_ms": 1795003600000
+            }
+          ],
+          "notices": [
+            {
+              "id": "n-1",
+              "title": "Draft ready",
+              "body": null,
+              "at_ms": 1795000002000
+            }
+          ],
+          "link": "https://chariox.example/terminal?session=room-1&agent=agent-1"
+        }
+      }
+    },
+    {
+      "PaneFeed": {
+        "feed": {
+          "title": "room-2 · helper · 1 card waiting",
+          "identity": {
+            "room_id": "room-2",
+            "room_name": "room-2",
+            "agent_id": "agent-2",
+            "agent_name": "helper",
+            "parents": [
+              "writer"
+            ],
+            "project_id": "project-1",
+            "placement": "machine-7"
+          },
+          "settings": {
+            "provider": "codex",
+            "account": null,
+            "model": null,
+            "effort": null,
+            "execution_mode": "build",
+            "permission_level": "required"
+          },
+          "state": "waiting_for_answer",
+          "goal": null,
+          "cards": [
+            {
+              "id": "pay-1",
+              "asker_name": null,
+              "title": "Approve a payment",
+              "message": "12.00 EUR to Example",
+              "choices": [
+                {
+                  "id": "approve",
+                  "label": "Approve"
+                }
+              ],
+              "reply": null,
+              "text_terminal": false,
+              "requested_at_ms": 1795000003000,
+              "open_elsewhere": "Open the Room room-2, agent helper, in Chariox"
+            }
+          ],
+          "stripes": [],
+          "notices": [],
+          "link": null
+        }
+      }
+    }
+  ]
+}

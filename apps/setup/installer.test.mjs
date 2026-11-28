@@ -7,7 +7,7 @@ import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, read
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
-import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
+import { cliCompletionText, installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
 import { command, runMachine, requireUserManager } from "./machine/remote.mjs"
@@ -376,4 +376,12 @@ test("MP-07 requireUserManager proceeds with a live manager and names a manager 
   await requireUserManager(async program => { live.push(program); return "" }, 1000, "u", async () => true)
   assert.deepEqual(live, ["systemctl"])
   await assert.rejects(requireUserManager(async () => { throw new Error("down") }, 1000, "u", async () => true), /exists, but this shell cannot reach the user manager there.*Nothing was changed/)
+})
+
+test("Setup's completion text names the full CLI path, the PATH step and the first agent commands", () => {
+  const text = cliCompletionText("/home/ada", "local")
+  assert.match(text, /^Chariox CLI: \/home\/ada\/\.local\/bin\/chariox$/m)
+  assert.match(text, /add \/home\/ada\/\.local\/bin to PATH/)
+  assert.match(text, /`chariox guide`, then `chariox access request --no-wait`/)
+  assert.match(cliCompletionText("/home/ada", "md"), /^Chariox CLI: \/home\/ada\/\.local\/bin\/chariox-md$/m)
 })

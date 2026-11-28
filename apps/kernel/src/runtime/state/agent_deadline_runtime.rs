@@ -33,8 +33,6 @@ impl KernelRuntimeState {
             .await
     }
 
-    /// `expected_expired_limit`: the limit a recovery card was raised for; the edit is refused when
-    /// the agent's limit is no longer that one, so a late answer cannot overwrite a newer limit.
     pub(super) async fn set_agent_deadline_inner(
         &self,
         caller_user_id: &str,
@@ -101,7 +99,7 @@ impl KernelRuntimeState {
                         && current.deadline_ms > crate::session::unix_epoch_ms()
                 })
         }) {
-            self.owned.close_deadline_card(&previous)?;
+            self.owned.close_deadline_status(&previous)?;
         }
         self.publish_changed_agent_trees();
         Ok(LocalDaemonResponse::AgentDeadline { deadline })
@@ -227,7 +225,7 @@ impl KernelRuntimeState {
                     stopped: false,
                 })?;
             if retires_messages {
-                self.show_deadline_refusal(&deadline.session_id, &deadline.agent_id)
+                self.show_deadline_status(&deadline.session_id, &deadline.agent_id)
                     .await;
             }
             due.push((deadline, work));
@@ -243,6 +241,10 @@ impl KernelRuntimeState {
                 .await
                 {
                     Ok(Ok(())) => {
+                        // Every expiry tells the parent, even with no pending message. Stop
+                        // the child first; a failed parent delivery must not keep it running.
+                        // Leave the receipt unfinished on failure so the next tick retries.
+                        self.send_limit_ended_notice(deadline).await?;
                         let stopped = self
                             .owned
                             .durable_state_store
@@ -256,6 +258,7 @@ impl KernelRuntimeState {
                         // The Room hears of it once: when the first cleanup finishes.
                         if stopped.is_ok() && deadline.stopped_at_ms.is_none() {
                             self.announce_deadline_stop(deadline, work);
+                            self.show_deadline_status(room, agent).await;
                         }
                         stopped
                     }

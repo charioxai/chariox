@@ -163,3 +163,11 @@ test("a program's stdin is refused before sending to a kernel that would ignore 
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1014))
   assert.doesNotThrow(() => requireKernelFeatureProtocol(requests.openRoomTerminalRequest({ kernelTerminal: true }, { cols: 80, rows: 24 }, { command: ["ls"] }), 1013))
 })
+
+test("provider account copies require the receiving-Vault wait protocol", () => {
+  const offer = { source_kernel_id: "source", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "target", provider: "claude", account_profile: "work", label: "Work" }
+  for (const request of [requests.listProviderAccountCopyOffersRequest(), requests.copyProviderAccountFromKernelRequest(offer, "operation")]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 1016), /Provider account copy needs protocol ≥1017/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1017))
+  }
+})

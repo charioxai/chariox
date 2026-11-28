@@ -13,7 +13,7 @@ const url = "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b
   + "&code_challenge=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefg&code_challenge_method=S256&state=ZyXwVuTsRqPoNmLkJiHg"
 
 const interaction: RuntimeInteraction = {
-  id: "provider-auth-recovery:login-1", agent_id: "agent-1", kind: "choice", level: "warning",
+  id: "provider-auth-recovery:login-1", surface: "card", card_type: "provider_auth_recovery", agent_id: "agent-1", kind: "choice", level: "warning",
   title: "Authenticate provider account",
   message: "Open the Claude authorization link to sign in. If Claude gives you a code, paste it below.",
   choices: [{ id: "cancel", label: "Cancel", reply: "cancel", style: "secondary" }],

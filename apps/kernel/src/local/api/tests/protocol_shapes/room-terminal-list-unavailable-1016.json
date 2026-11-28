@@ -1,0 +1,72 @@
+{
+  "local": 1017,
+  "relayPeer": 454,
+  "partial_list": {
+    "RoomTerminal": {
+      "result": {
+        "result": "listed",
+        "terminals": [
+          {
+            "terminal_id": "term-1",
+            "scope": "room",
+            "session_id": "room-1",
+            "title": "Terminal 1",
+            "program": "/bin/bash",
+            "working_directory": "/work",
+            "cols": 80,
+            "rows": 24,
+            "status": {
+              "state": "running"
+            },
+            "driver": {
+              "state": "free"
+            },
+            "opened_by": {
+              "kind": "user"
+            },
+            "user_interacted": true,
+            "created_at_ms": 7,
+            "output_offset": 12
+          }
+        ],
+        "unavailable": [
+          {
+            "host_agent": "worker-agent",
+            "message": "worker kernel `k9` is too old to list its terminals, which may still be running there; update it"
+          }
+        ]
+      }
+    }
+  },
+  "full_list": {
+    "RoomTerminal": {
+      "result": {
+        "result": "listed",
+        "terminals": [
+          {
+            "terminal_id": "term-1",
+            "scope": "room",
+            "session_id": "room-1",
+            "title": "Terminal 1",
+            "program": "/bin/bash",
+            "working_directory": "/work",
+            "cols": 80,
+            "rows": 24,
+            "status": {
+              "state": "running"
+            },
+            "driver": {
+              "state": "free"
+            },
+            "opened_by": {
+              "kind": "user"
+            },
+            "user_interacted": true,
+            "created_at_ms": 7,
+            "output_offset": 12
+          }
+        ]
+      }
+    }
+  }
+}

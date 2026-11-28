@@ -52,6 +52,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
     KernelSudoRequesterRenewed { renewed: bool, },
     GatewayKernelsListed { kernels: Vec<GatewayKernel>, },
+    GatewayCommandStatus { command_id: String, status: GatewayCommandStatus, },
     /// Protocol 568: the attachments that no longer exist on this kernel.
     AttachmentsHeartbeated { lapsed: Vec<String>, },
     /// Protocol 568: the gateway paired with a self-hosted kernel.
@@ -290,7 +291,12 @@ pub enum LocalDaemonResponse {
     OwnerVault { result: OwnerVaultResult },
     CredentialSecretStored { key: String, },
     CredentialSecretDeleted { key: String, },
-    CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, unlock: crate::local::VaultUnlockOptions, },
+    CredentialVaultStatus {
+        status: crate::secret::CharioxVaultUnlockStatus,
+        unlock: crate::local::VaultUnlockOptions,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copy_unlock_requests: Vec<crate::provider_account_copy::ProviderAccountCopyUnlockRequest>,
+    },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultUnlocked { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     CredentialVaultKeySealed { seed: crate::secret::VaultKeySeed, },
@@ -334,6 +340,9 @@ pub enum LocalDaemonResponse {
         generation: String,
         tab_id: Option<String>,
         watchers: Vec<OwnerViewWatcher>,
+        /// Local 1016 (additive): how many pictures the watching agents asked for; the owner tab answers the newest.
+        #[serde(default)]
+        snapshot_wanted: u64,
     },
     PaneFeed {
         feed: PaneFeed,
@@ -407,16 +416,28 @@ pub enum LocalDaemonResponse {
     ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
-    ProviderLoggedOut { provider: String, account_profile: String, },
-    ProviderAccountProfilesListed { profiles: Vec<crate::account_profile::ProviderAccountProfile>, },
+    ProviderLoggedOut {
+        provider: String,
+        account_profile: String,
+        /// The login is shared with other machines, so only this machine's copy was removed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        local_only: bool,
+    },
+    ProviderAccountProfilesListed {
+        profiles: Vec<crate::account_profile::ProviderAccountProfile>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copies: Vec<crate::provider_account_copy::ProviderAccountCopyProgress>,
+    },
     ProviderAccountProfile { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileRemoved { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileDataDeleted { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountCopyOffers { offers: Vec<crate::provider_account_copy::ProviderAccountCopyOffer>, },
+    ProviderAccountCopyWaiting { wait: crate::provider_account_copy::ProviderAccountCopyWait, },
     ProviderAccountCopied { receipt: crate::provider_account_copy::ProviderAccountCopyReceipt, },
     ProviderAccountCredentialStored { provider: String, account_profile: String, credential_id: String, replaced: bool, },
     ProviderProcessesListed { processes: Vec<ProviderProcessInfo>, },
     ProviderProcessesTornDown { processes: Vec<ProviderProcessInfo>, },
+    SessionUsage { report: crate::usage_accounting::report::SessionUsageReport },
     SessionHistoryOutline { agents: Vec<SessionHistoryOutlineAgent>, },
     SessionHistoryBlobContent { blob_id: String, entries: Vec<SessionHistoryPageEntry>, },
     SessionHistoryBlobContents { blobs: Vec<SessionHistoryBlobContentPage>, },
@@ -492,7 +513,7 @@ pub enum LocalDaemonResponse {
     TerminalResized { session_id: String, cols: u16, rows: u16, },
     TerminalInputSent { session_id: String, attachment_id: String, byte_count: usize, },
     TerminalOutput { records: Vec<TerminalOutputRecord>, },
-    ShellCommandCompleted { result: RunShellCommandResult, },
+    RunCommand { result: RunCommandResult, },
     DirectoryTreeRead { result: ReadDirectoryTreeResult, },
     FileRead { result: ReadFileResult, },
     FileEdited { result: EditFileResult, },

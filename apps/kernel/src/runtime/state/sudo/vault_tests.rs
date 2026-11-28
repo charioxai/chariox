@@ -545,8 +545,9 @@ async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
 #[tokio::test]
 async fn vflag_blocking_popup_card_ends_before_the_provider_cut() {
     crate::test_support::isolated_env_test!();
-    // Row 405: an action card of the owner's agent runs at once, so only plain cards block.
-    for action in [false] {
+    // An action card blocks like a plain one: the agent asked the person (review of the L15
+    // squash, Mac D174 (b)); restored from before row 405.
+    for action in [false, true] {
         for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
             let f = fixture();
             let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
@@ -3466,7 +3467,7 @@ async fn a_withdrawn_payment_card_closes_the_popup(withdrawal: PaymentWithdrawal
     let _other = f
         .state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.request.session_id,
             "local",
             RuntimeInteraction::for_kernel_operation(

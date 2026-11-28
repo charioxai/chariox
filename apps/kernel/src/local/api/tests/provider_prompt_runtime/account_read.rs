@@ -65,7 +65,7 @@ fn amfix_r13_account_read_resolves_owned_replica_without_exposing_foreign_profil
             caller.clone(),
         )
         .unwrap();
-    let LocalDaemonResponse::ProviderAccountProfilesListed { profiles } = listed else {
+    let LocalDaemonResponse::ProviderAccountProfilesListed { profiles, .. } = listed else {
         panic!("expected inventory");
     };
     assert!(profiles.iter().all(|p| p.profile_id != replica.profile_id));

@@ -56,6 +56,9 @@ enum StreamEvent<'a> {
     /// The Room's terminals, on the first page and whenever any but their offsets changed.
     RoomTerminalsListed {
         terminals: &'a [RoomTerminalSummary],
+        /// Machines the list could not ask: their terminals may exist and are not in `terminals`.
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        unavailable: &'a [crate::local::UnavailableTerminals],
     },
     /// The stream sent nothing for a heartbeat interval.
     Heartbeat,
@@ -215,7 +218,10 @@ impl Stream {
         reached: &mut u64,
     ) -> Result<(), DaemonError> {
         let mut shown: Option<RoomTerminalSummary> = None;
-        let mut tabs: Option<Vec<RoomTerminalSummary>> = None;
+        let mut tabs: Option<(
+            Vec<RoomTerminalSummary>,
+            Vec<crate::local::UnavailableTerminals>,
+        )> = None;
         let mut listed_at: Option<Instant> = None;
         let mut sent_at = Instant::now();
         let mut page = first;
@@ -227,8 +233,13 @@ impl Stream {
                 listed_at = Some(Instant::now());
                 // A Room-wide list fails while a worker is away: the viewer keeps the tabs it has.
                 if let Ok(listed) = reader.list(&self.router).await {
-                    if tabs.as_ref().is_none_or(|tabs| !same_tabs(tabs, &listed)) {
-                        let event = StreamEvent::RoomTerminalsListed { terminals: &listed };
+                    if tabs.as_ref().is_none_or(|(tabs, unavailable)| {
+                        !same_tabs(tabs, &listed.0) || *unavailable != listed.1
+                    }) {
+                        let event = StreamEvent::RoomTerminalsListed {
+                            terminals: &listed.0,
+                            unavailable: &listed.1,
+                        };
                         self.send(&event, page.next_offset, &[]).await?;
                         sent_at = Instant::now();
                         tabs = Some(listed);
@@ -376,14 +387,27 @@ impl Reader {
     }
 
     /// The Room-wide list a polling viewer sends: this kernel's terminals and its workers'.
-    async fn list(&self, router: &CommandRouter) -> Result<Vec<RoomTerminalSummary>, DaemonError> {
+    async fn list(
+        &self,
+        router: &CommandRouter,
+    ) -> Result<
+        (
+            Vec<RoomTerminalSummary>,
+            Vec<crate::local::UnavailableTerminals>,
+        ),
+        DaemonError,
+    > {
         match self
             .request(router, None, RoomTerminalOperation::List)
             .await?
         {
             crate::local::LocalDaemonResponse::RoomTerminal {
-                result: RoomTerminalResult::Listed { terminals },
-            } => Ok(terminals),
+                result:
+                    RoomTerminalResult::Listed {
+                        terminals,
+                        unavailable,
+                    },
+            } => Ok((terminals, unavailable)),
             other => Err(crate::room_terminal::refusal(format!(
                 "unexpected answer to a Room terminal list: {other:?}"
             ))),
@@ -427,7 +451,7 @@ mod protocol_shape {
             include_bytes!("../../local/api/tests/protocol_shapes/room-terminal-stream-1006.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "55714b2bccf678a95e21554de24d7597bff388eadf38ff089121c2de8942b830"
+            "de88177f1a05e30bba8d2c897e0194e5e52bb229a0011837599fe30e843eb98a"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
@@ -475,8 +499,19 @@ mod protocol_shape {
             terminal: None,
         };
         assert_eq!(header(&gap, &[]), fixture["gap_header"]);
-        let listed = StreamEvent::RoomTerminalsListed { terminals: &[] };
+        let listed = StreamEvent::RoomTerminalsListed {
+            terminals: &[],
+            unavailable: &[],
+        };
         assert_eq!(serde_json::to_value(listed).unwrap(), fixture["listed"]);
+        let wire = &fixture["listed_unavailable"];
+        let unavailable: Vec<crate::local::UnavailableTerminals> =
+            serde_json::from_value(wire["unavailable"].clone()).unwrap();
+        let named = StreamEvent::RoomTerminalsListed {
+            terminals: &[],
+            unavailable: &unavailable,
+        };
+        assert_eq!(serde_json::to_value(named).unwrap(), *wire);
         assert_eq!(
             serde_json::to_value(StreamEvent::Heartbeat).unwrap(),
             fixture["heartbeat"]

@@ -53,6 +53,12 @@ impl StoredNotice {
     pub(crate) fn is_workflow_relink(&self) -> bool {
         self.is_workflow_start_refusal() && self.agent_id == WORKFLOW_RELINK_ORIGIN
     }
+
+    /// A notice the kernel itself sends about the whole kernel (row 678: it restarted itself, or
+    /// it is held up): no Room is its origin.
+    pub(crate) fn is_kernel_notice(&self) -> bool {
+        self.session_id == WORKFLOW_RELINK_ORIGIN && self.agent_id == WORKFLOW_RELINK_ORIGIN
+    }
 }
 
 #[derive(Serialize, Deserialize)]

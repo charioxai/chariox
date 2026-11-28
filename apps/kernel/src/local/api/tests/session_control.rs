@@ -464,6 +464,9 @@ fn session_attach_clears_a_missing_active_provider_run() {
             },
         ))
         .expect("initial attachment should succeed");
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "opencode", &["kimi-k2.6"])
+    });
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             initial_task: None,

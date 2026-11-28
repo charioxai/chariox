@@ -32,7 +32,7 @@ const wordOf = (node: AgentTreeNode): Exclude<SubAgentWord, "needs you"> => {
   switch (node.state) {
     case "starting": case "running": return "running"
     case "waiting": case "unreachable": return "waiting"
-    case "idle": case "ended": case "error": return "done"
+    case "idle": case "ended": case "error": case "time_limit_ended": return "done"
   }
 }
 

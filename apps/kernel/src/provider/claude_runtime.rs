@@ -30,6 +30,7 @@ mod model_usage;
 mod plan_exit;
 mod process;
 pub(crate) use plan_exit::publish_claude_plan;
+pub(crate) use process::ClaudeRuntimeProcess;
 mod runtime_tool_wait;
 mod session_restart;
 mod state;
@@ -47,7 +48,7 @@ use events::apply_claude_message;
 pub(crate) use events::claude_rate_limit_snapshot;
 pub(crate) use handover::ClaudeHandover;
 use input::claude_user_content;
-use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
+use process::{spawn_claude_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use runtime_tool_wait::{
     begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
 };
@@ -108,8 +109,13 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
                 &handover,
             )?;
             // SAFETY: the handover names the pipes this program inherited for this run.
-            let (child, stdin, output, adopted) =
-                unsafe { handover::adopt(handover, &output_notifier) };
+            let (child, stdin, output, adopted) = unsafe {
+                handover::adopt(handover, &output_notifier)
+            }
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "adopt_claude_runtime",
+                message: format!("failed to set up inherited Claude Code output: {error}"),
+            })?;
             (child, stdin, output, resources, Some(adopted))
         }
         None => {
@@ -129,8 +135,13 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
         }
     };
 
+    let child = ClaudeRuntimeProcess::new(child).map_err(|error| DaemonError::LocalTransport {
+        operation: "claude_capture_process_ownership",
+        message: error.to_string(),
+    })?;
     let mut binding = ClaudeRuntimeBinding {
         state: ClaudeRuntimeState {
+            run_context: run.clone(),
             program,
             args,
             env,
@@ -161,6 +172,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             resources: Some(resources),
             stdin,
             output,
+            pending_cancelled_output: Vec::new(),
             output_notifier,
             active_model: run.model().to_string(),
             active_variant: run.variant().map(str::to_string),
@@ -246,6 +258,7 @@ pub(crate) fn submit_claude_prompt(
     state: &mut ClaudeRuntimeState,
     envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
+    state.run_context = run.clone();
     if let Some(adopted) = state.adopted_turn.take() {
         // The process already runs this prompt's turn: a hot reload handed it
         // over. Continue reading it instead of sending the prompt again.
@@ -314,12 +327,16 @@ pub(crate) fn abort_claude_turn(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
 ) -> Result<(), DaemonError> {
+    state.run_context = run.clone();
     let message = json!({
         "type": "control_request",
         "request_id": format!("chariox-claude-interrupt-{}", run.id()),
         "request": { "subtype": "interrupt" }
     });
     let _ = write_json_line(&mut state.stdin, &message);
+    state.child.stop();
+    let output = drain_stopped_claude_events(run, state)?;
+    state.pending_cancelled_output.push(output);
     clear_active_claude_turn(state);
     state.cancelled_turn_pending_settlement = true;
     restart_claude_runtime(run, state, "claude_restart_after_abort")
@@ -329,6 +346,10 @@ pub(crate) fn drain_claude_events(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
 ) -> Result<ProviderPromptSignalBatch, DaemonError> {
+    state.run_context = run.clone();
+    if !state.pending_cancelled_output.is_empty() {
+        return Ok(state.pending_cancelled_output.remove(0));
+    }
     let mut batch = ProviderPromptSignalBatch::default();
     batch.chunks.append(&mut state.unsent_chunks);
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
@@ -460,7 +481,7 @@ fn end_turn_without_runtime_tools(
     let Some(status) = state.runtime_tools_unavailable.take() else {
         return false;
     };
-    stop_child(&mut state.child);
+    state.child.stop();
     clear_active_claude_turn(state);
     let reason = format!(
         "Claude Code could not connect to this kernel's Chariox tools (status: {status}), so the turn was stopped before it ran without them. A new Claude process connects again; if this repeats, the kernel is overloaded."
@@ -521,7 +542,7 @@ fn apply_claude_turn_stall_policy(
             retry_stalled_claude_turn(run, state, batch)
         }
         ClaudeTurnStallAction::Restart | ClaudeTurnStallAction::Fail => {
-            stop_child(&mut state.child);
+            state.child.stop();
             clear_active_claude_turn(state);
             batch.terminal_failure = Some(
                 "Claude Code stopped emitting runtime events; the active turn was ended after its bounded recovery attempt"
@@ -531,7 +552,7 @@ fn apply_claude_turn_stall_policy(
             Ok(())
         }
         ClaudeTurnStallAction::FailStart => {
-            stop_child(&mut state.child);
+            state.child.stop();
             clear_active_claude_turn(state);
             let reason = format!(
                 "Claude Code did not finish starting within {} s: it had not connected this kernel's Chariox tools or reported its start. The turn was stopped; send the request again to start a new Claude process. If this repeats, the kernel is overloaded.",
@@ -745,7 +766,7 @@ fn restart_claude_runtime(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     release_detached_jobs(run, state, identity);
-    stop_child(&mut state.child);
+    state.child.stop();
     state.runtime_tools_unavailable = None;
     state.turn_watchdog.record_process_spawn();
     // A new process may start a new conversation: it needs the run base again.
@@ -767,30 +788,32 @@ fn restart_claude_runtime(
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
     let child_started_at_ms = crate::session::unix_epoch_ms();
-    let (child, stdin, output, resources) = spawn_claude_child(
-        run.id(),
-        run.agent_instance_id().unwrap_or(run.id()),
-        &state.program,
-        &args,
-        &env,
-        &state.provider_credential_env,
-        &env_remove,
-        working_directory.as_ref(),
-        operation,
-        &output_notifier,
-    )?;
+    let (stdin, output, resources) = state.child.replace_with(|| {
+        let (child, stdin, output, resources) = spawn_claude_child(
+            run.id(),
+            run.agent_instance_id().unwrap_or(run.id()),
+            &state.program,
+            &args,
+            &env,
+            &state.provider_credential_env,
+            &env_remove,
+            working_directory.as_ref(),
+            operation,
+            &output_notifier,
+        )?;
+        Ok((child, (stdin, output, resources)))
+    })?;
     *state
         .process_identity
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        crate::runtime::kernel_access::process::inspect(child.id())
+        crate::runtime::kernel_access::process::inspect(state.child.id())
             .ok()
             .map(|(identity, _)| identity);
     state.child_started_at_ms = Some(child_started_at_ms);
     if let Some(start) = &state.run_process_start {
         start.record(child_started_at_ms);
     }
-    state.child = child;
     state.resources = Some(resources);
     state.stdin = stdin;
     state.output = output;
@@ -924,7 +947,8 @@ mod tests {
         apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
         handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
         new_claude_session_id, restart_claude_runtime, submit_claude_prompt,
-        write_claude_hidden_context, ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch,
+        write_claude_hidden_context, ClaudeRuntimeProcess, ClaudeRuntimeState, PromptEnvelope,
+        ProviderPromptSignalBatch,
     };
 
     pub(super) fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -937,10 +961,16 @@ mod tests {
             .spawn()
             .expect("fixture child should spawn");
         let stdin = child.stdin.take().expect("fixture stdin should exist");
-        let child = super::process::ClaudeChild::Started(child);
+        let child = ClaudeRuntimeProcess::new(super::process::ClaudeChild::Started(child)).unwrap();
         let output = super::process::ClaudeOutput::detached();
         (
             ClaudeRuntimeState {
+                run_context: RuntimeProviderRun::from_control_capability_inference(
+                    "run-1",
+                    "session-1".into(),
+                    None,
+                    "claude".into(),
+                ),
                 program: "/bin/sh".to_string(),
                 args: vec!["-c".to_string(), "cat >/dev/null".to_string()],
                 env: Default::default(),
@@ -967,6 +997,7 @@ mod tests {
                 resources: None,
                 stdin,
                 output,
+                pending_cancelled_output: Vec::new(),
                 output_notifier: Default::default(),
                 active_model: "sonnet".to_string(),
                 active_variant: Some("low".to_string()),
@@ -1466,7 +1497,7 @@ cat >/dev/null
         let Some(delivered) =
             std::time::Instant::now().checked_sub(stall + std::time::Duration::from_secs(1))
         else {
-            super::stop_child(&mut binding.state.child);
+            binding.state.child.stop();
             return;
         };
         binding.state.turn_watchdog.begin(delivered);
@@ -1486,7 +1517,7 @@ cat >/dev/null
             std::time::Instant::now() + super::CLAUDE_START_BUDGET - stall,
             stall,
         );
-        super::stop_child(&mut binding.state.child);
+        binding.state.child.stop();
 
         policy.expect("stall policy should run");
         assert!(
@@ -1543,7 +1574,7 @@ cat >/dev/null
             serde_json::from_value(written).expect("an L12 handover is read");
         crate::hot_reload::adopt_claude_for_tests(run.id(), handover);
         let mut binding = initialize_claude_runtime(&run).unwrap();
-        super::stop_child(&mut binding.state.child);
+        binding.state.child.stop();
     }
 
     #[test]
@@ -3138,3 +3169,60 @@ mod background_continuation;
 #[cfg(all(test, unix))]
 #[path = "claude_runtime/tests/cold_restart.rs"]
 mod cold_restart;
+
+pub(crate) fn drain_stopped_claude_events(
+    run: &RuntimeProviderRun,
+    state: &mut ClaudeRuntimeState,
+) -> Result<ProviderPromptSignalBatch, DaemonError> {
+    let mut batch = ProviderPromptSignalBatch::default();
+    batch.chunks.append(&mut state.unsent_chunks);
+    state.output.release();
+    while let Ok(message) = state.output.receiver.recv() {
+        match message {
+            ClaudeRuntimeMessage::Stdout(value) => {
+                handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
+                // The child has exited; feedback cannot be written to it.
+
+                apply_claude_message(run.id(), state, value, &mut batch);
+            }
+            ClaudeRuntimeMessage::StdoutParseError(error) => {
+                batch
+                    .notices
+                    .push(format!("Claude stdout parse warning: {error}"));
+            }
+            ClaudeRuntimeMessage::Stderr(line) => {
+                batch.notices.push(format!("Claude stderr: {line}"));
+            }
+        }
+    }
+    apply_claude_usage_capture(run, state, &mut batch);
+    Ok(batch)
+}
+pub(crate) fn take_cancelled_claude_output(
+    state: &mut ClaudeRuntimeState,
+) -> Vec<ProviderPromptSignalBatch> {
+    let mut output = std::mem::take(&mut state.pending_cancelled_output);
+    if !state.unsent_chunks.is_empty() {
+        output.push(ProviderPromptSignalBatch {
+            chunks: std::mem::take(&mut state.unsent_chunks),
+            ..Default::default()
+        });
+    }
+    output
+}
+
+pub(crate) fn drain_retired_claude_output(
+    provider_run_id: &str,
+    state: &mut ClaudeRuntimeState,
+) -> Result<Vec<ProviderPromptSignalBatch>, DaemonError> {
+    if state.run_context.id() != provider_run_id {
+        return Err(DaemonError::LocalTransport {
+            operation: "claude_retired_run_context",
+            message: "the retired Claude receiver belongs to a different provider run".to_string(),
+        });
+    }
+    let run = state.run_context.clone();
+    let mut output = take_cancelled_claude_output(state);
+    output.push(drain_stopped_claude_events(&run, state)?);
+    Ok(output)
+}

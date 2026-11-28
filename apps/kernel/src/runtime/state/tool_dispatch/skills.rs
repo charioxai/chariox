@@ -2,7 +2,7 @@
 use super::*;
 use crate::skill::v2::{SkillCatalogMutation, SkillsV2Request};
 use crate::transport::runtime_tools::{
-    ListSkillsArgs, LoadSkillArgs, ManageSkillsArgs, RuntimeToolResult,
+    ListSkillsArgs, LoadSkillArgs, ManageSkillsArgs, ManageSkillsRequest, RuntimeToolResult,
 };
 
 fn failure(message: &str) -> DaemonError {
@@ -50,21 +50,21 @@ impl KernelRuntimeState {
             }
             crate::transport::runtime_tools::MANAGE_SKILLS_TOOL => {
                 let args: ManageSkillsArgs = serde_json::from_value(arguments)
-                    .map_err(|_| failure("invalid manage_skills arguments: action and origin_prompt_id are required at the top level; use the current prompt_id as origin_prompt_id on every action. preview and publish take mutation, resolve_repository takes url, resolve_repository_update takes package_id. mutation.actions entries require action (for example install), source.kind and collision.action; preview omits review_receipt_id, publish requires it"))?;
-                match args {
-                    ManageSkillsArgs::Preview {
-                        mutation,
-                        origin_prompt_id: current_origin,
-                    } => {
+                    .map_err(|_| failure("invalid manage_skills arguments: origin_prompt_id and request are required at the top level; use the current prompt_id as origin_prompt_id. request.action is preview or publish with mutation, resolve_repository with url, or resolve_repository_update with package_id. Only publish takes review_receipt_id. Use the typed mutation action/source/collision fields from the schema"))?;
+                let ManageSkillsArgs {
+                    origin_prompt_id: current_origin,
+                    request,
+                } = args;
+                match request {
+                    ManageSkillsRequest::Preview { mutation } => {
                         self.current_skill_tool_prompt(session.id(), agent.id(), &current_origin)?;
                         self.ensure_skill_mutation_owner(&mutation, agent.owner_user_id())?;
                         origin_prompt_id = current_origin;
                         SkillsV2Request::Preview { mutation }
                     }
-                    ManageSkillsArgs::Publish {
+                    ManageSkillsRequest::Publish {
                         mutation,
                         review_receipt_id,
-                        origin_prompt_id: current_origin,
                     } => {
                         self.current_skill_tool_prompt(session.id(), agent.id(), &current_origin)?;
                         self.ensure_skill_mutation_owner(&mutation, agent.owner_user_id())?;
@@ -93,18 +93,12 @@ impl KernelRuntimeState {
                             review_receipt_id,
                         }
                     }
-                    ManageSkillsArgs::ResolveRepository {
-                        url,
-                        origin_prompt_id: current_origin,
-                    } => {
+                    ManageSkillsRequest::ResolveRepository { url } => {
                         self.current_skill_tool_prompt(session.id(), agent.id(), &current_origin)?;
                         origin_prompt_id = current_origin;
                         SkillsV2Request::ResolveRepository { url }
                     }
-                    ManageSkillsArgs::ResolveRepositoryUpdate {
-                        package_id,
-                        origin_prompt_id: current_origin,
-                    } => {
+                    ManageSkillsRequest::ResolveRepositoryUpdate { package_id } => {
                         self.current_skill_tool_prompt(session.id(), agent.id(), &current_origin)?;
                         origin_prompt_id = current_origin;
                         SkillsV2Request::ResolveRepositoryUpdate { package_id }
@@ -251,7 +245,7 @@ impl KernelRuntimeState {
         );
         let resolution = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::RuntimeGrant,
+                crate::runtime::state::InteractionSurface::named("skill_catalog_permission"),
                 session.id(),
                 interaction,
             )

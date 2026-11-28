@@ -71,14 +71,29 @@ async fn revoked_capability(kind: &str) {
     std::fs::write(&source, "transfer fixture").unwrap();
     let transfer_root =
         crate::app::attachment_artifact_root(session.id(), attachment.id(), "transfers");
+    use crate::local::{
+        CommandTarget, RunCommandOperation as Op, RunCommandRequest, RunCommandResult,
+    };
+    let command_request = |operation| {
+        LocalDaemonRequest::RunCommand(RunCommandRequest {
+            target: CommandTarget::RoomWorkspace {
+                session_id: session.id().into(),
+            },
+            acting_agent: None,
+            operation,
+        })
+    };
     let request = match kind {
-        "shell" => LocalDaemonRequest::RunShellCommand(crate::local::RunShellCapabilityRequest {
-            session_id: session.id().into(),
-            attachment_id: attachment.id().into(),
-            command: "/bin/sh".into(),
-            args: vec!["-c".into(), "printf effect > effect.txt".into()],
-            working_directory: None,
+        "shell" => command_request(Op::ExecOpen {
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf effect > effect.txt".into(),
+            ],
+            directory: None,
             timeout_ms: Some(1000),
+            deadline_unix_ms: None,
+            stdin_file: None,
         }),
         "edit" => LocalDaemonRequest::EditFile(crate::local::EditFileCapabilityRequest {
             session_id: session.id().into(),
@@ -104,6 +119,38 @@ async fn revoked_capability(kind: &str) {
     });
     ready.await.unwrap();
     let pending = router.dispatch(external_command(&request, &grant), request.clone());
+    if kind == "shell" {
+        let crate::local::LocalDaemonResponse::RunCommand {
+            result: RunCommandResult::ExecOpened { exec_id },
+        } = pending.await.unwrap()
+        else {
+            panic!("expected command ID")
+        };
+        state
+            .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+            .unwrap();
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        let read = command_request(Op::ExecRead {
+            exec_id,
+            after_cursor: 0,
+            wait_ms: 2_000,
+        });
+        let owner =
+            crate::runtime::command::KernelCommand::from_local_request("read", None, None, &read);
+        let crate::local::LocalDaemonResponse::RunCommand {
+            result: RunCommandResult::ExecOutput { output },
+        } = router.dispatch(owner, read).await.unwrap()
+        else {
+            panic!("expected command output")
+        };
+        let Some(crate::room_exec::ExecOutcome::Failed { message }) = output.outcome else {
+            panic!("expected the command's revocation failure");
+        };
+        assert!(message.contains("grant revoked or expired"), "{message}");
+        assert!(!marker.exists(), "revoked command wrote its marker");
+        return;
+    }
     tokio::pin!(pending);
     // The current-thread runtime polls dispatch through spawn_blocking; the only
     // blocking thread is held, so the capability closure cannot have started.

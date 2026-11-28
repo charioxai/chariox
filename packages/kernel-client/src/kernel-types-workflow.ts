@@ -1027,6 +1027,8 @@ export type WorkflowNodeRun = {
   status: string
   workspace_claim_holding_run_id?: string
   waiting_reason?: "provider_profile_unavailable" | "provider_profile_unverified" | "provider_profile_unauthenticated" | "provider_profile_usage_exhausted"
+  waiting_account?: string
+  waiting_until_ms?: number
   summary: string | null
   completion?: {
     summary: string

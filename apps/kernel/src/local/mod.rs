@@ -35,11 +35,15 @@ pub use api::{
 pub use api::{
     ListNotificationSubscriptionsRequest, NotificationSubscriptionChange,
     NotificationSubscriptionHealth, NotificationSubscriptionRow, NotificationTraceLine,
-    NotificationTraceTurn, PersonInboxFlag, PersonInboxWorkflowRun, PersonResponsibilityRow,
-    ReadNotificationTraceRequest, RemoveNotificationSubscriptionRequest,
-    TestNotificationSubscriptionRequest, UpdateNotificationSubscriptionRequest,
+    NotificationTraceTurn, PersonResponsibilityRow, ReadNotificationTraceRequest,
+    RemoveNotificationSubscriptionRequest, TestNotificationSubscriptionRequest,
+    UpdateNotificationSubscriptionRequest,
 };
-pub use api::{OwnerViewRequest, OwnerViewRows, OwnerViewWatcher};
+pub use api::{
+    OwnerViewBrowser, OwnerViewLatency, OwnerViewPane, OwnerViewPaneTotals, OwnerViewPath,
+    OwnerViewRequest, OwnerViewRows, OwnerViewSnapshot, OwnerViewSnapshotSource, OwnerViewViewer,
+    OwnerViewViewerKind, OwnerViewWatcher,
+};
 mod api;
 #[doc(hidden)]
 pub use api::PeerSpawnOrigin;
@@ -86,7 +90,7 @@ pub use api::{
     CaptureScreenshotCapabilityRequest, CheckProjectEnvironmentRequest,
     ClearWorkflowPromptQueueRequest, ClearWorkflowRunAttentionRequest, ClientCatalogRevisions,
     ClientCatalogSnapshot, CloudRelayLoginPoll, CloudRelayLoginPollStatus, CloudRelayLoginStart,
-    CloudRelayProfile, CloudRelayRuntimeToken, CloudRelayStatusRequest,
+    CloudRelayProfile, CloudRelayRuntimeToken, CloudRelayStatusRequest, CommandTarget,
     CommitWorkspaceChangesRequest, CompletePromptRequest, ConfigureRelayIssuerRequest,
     ConfigureRelayRequest, ConnectCloudRelayRequest, ControlRoomWorkflowRunsRequest,
     ControlWorkflowPublicationRuntimeRequest, CopyProviderAccountFromKernelRequest,
@@ -221,8 +225,8 @@ pub use api::{
     RoomListSessionPage, RoomListSessionSummary, RoomListSnapshot, RoomListWorkflowEdgeSummary,
     RoomListWorkflowEndpointSummary, RoomListWorkflowNodeSummary, RoomListWorkflowSummary,
     RoomWorkflowRunAction, RoomWorkflowRunControlOutcome, RoomWorkflowRunControlResult,
-    RunAgentUtilityRequest, RunProjectEnvironmentSetupRequest,
-    RunRemoteProjectEnvironmentSetupRequest, RunShellCapabilityRequest,
+    RunAgentUtilityRequest, RunCommandOperation, RunCommandRequest, RunCommandResult,
+    RunProjectEnvironmentSetupRequest, RunRemoteProjectEnvironmentSetupRequest,
     RunWorkflowCodeArtifactRequest, RunWorkflowCodeRequest, RunWorkflowRegistryEntryRequest,
     SaveProjectEnvironmentRequest, SealCredentialVaultKeyRequest,
     SearchEventGeneratorCatalogRequest, SearchMetaagentCommandsRequest, SearchRecallRequest,
@@ -324,13 +328,14 @@ pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
     KernelTerminalRequest, ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
-    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
+    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult, UnavailableTerminals,
 };
 pub use api::{
     CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest, FileTransferConflict,
     FileTransferEndpoint, FileTransferJob, FileTransferRef, FileTransferState,
-    ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
-    GatewayKernelVia, GetKernelAccessStatusRequest, GetVaultSecretStatusRequest,
+    ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayCommandResult, GatewayCommandStatus,
+    GatewayKernel, GatewayKernelStatus, GatewayKernelUpdate, GatewayKernelVia,
+    GetGatewayCommandStatusRequest, GetKernelAccessStatusRequest, GetVaultSecretStatusRequest,
     HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant, KernelAccessHolderState,
     KernelAccessStatus, KernelAccessStatusReason, KernelDirectoryEntry, KernelFileFailure,
     KernelFileKind, KernelFileStat, KernelSudoTurn, ListGatewayKernelsRequest,
@@ -387,6 +392,11 @@ pub use api::{
 };
 
 pub use api::{
+    AccountLimitValues, AccountMachines, AccountSpend, AccountLimitsReading, LimitApproval, LimitApprovalKind, LimitScope,
+    MachineLimitsReading, NoAskLimitsReading,
+};
+
+pub use api::{
     ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse, MachineAcquisitionChoice,
     MachineAcquisitionEstimate, MachineAcquisitionOffer, MachineAcquisitionPeriod,
     MachineAcquisitionRequest, MachineAcquisitionResult, MachineAcquisitionTerms,
@@ -395,7 +405,7 @@ pub use api::{
 
 pub use api::{
     AccountKernel, AccountKernelStatus, AccountKernelsRequest, ControlPlaneMachineRow,
-    ControlPlaneSavedStateRow,
+    ControlPlaneSavedStateRow, MachineEventReason,
 };
 
 pub use api::{

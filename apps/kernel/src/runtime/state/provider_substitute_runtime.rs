@@ -16,6 +16,8 @@ impl KernelRuntimeState {
         active_prompt: &crate::session::PromptQueueItem,
     ) -> Result<SubstituteRerun, DaemonError> {
         let failed_run = attempt.provider_run;
+        self.owned
+            .mark_account_refused_by_provider(failed_run, attempt.failure);
         if active_prompt.status() == crate::session::PromptStatus::Cancelling
             || !attempt.failure.is_error()
             || active_prompt.is_external()
@@ -175,6 +177,46 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// A provider that refused a turn because the account's usage is used up
+    /// says so for every later turn on that account: admission skips it until
+    /// the reset the provider named, or until a reading of its usage says otherwise.
+    pub(super) fn mark_account_refused_by_provider(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        failure: &crate::provider::TurnOutcome,
+    ) {
+        if failure.kind != crate::provider::TurnOutcomeKind::UsageLimit || failure.retryable {
+            return;
+        }
+        let Some(provider) = crate::provider::canonical_provider_family(run.provider()) else {
+            return;
+        };
+        let config = self.config_projection.snapshot();
+        let marked = crate::account_profile::provider_account_authority_for_run(
+            &config,
+            &self.provider_account_profiles,
+            run,
+        )
+        .and_then(|owner| {
+            self.provider_account_profiles.mark_usage_refused(
+                &owner,
+                provider,
+                run.account_profile(),
+                crate::provider::usage_limit_reset_at_ms(
+                    &failure.reason,
+                    crate::session::unix_epoch_ms(),
+                ),
+            )
+        });
+        if let Err(error) = marked {
+            crate::logging::warn_with_fields(
+                "daemon.provider",
+                "could not record the provider's usage refusal on the account",
+                serde_json::json!({"provider_run_id": run.id(), "error": error.to_string()}),
+            );
+        }
+    }
+
     /// Hands a conversational turn answered by a substitute to the agent's
     /// configured profile, which starts the next turn.
     pub(super) fn prepare_turn_substitute_return_handoff(
@@ -208,66 +250,35 @@ impl KernelRuntimeOwnedState {
         );
     }
 
-    /// The first configured substitute not in `tried` whose saved account is
-    /// still usable for its model.
+    /// The first configured substitute not in `tried` whose saved account can
+    /// run its model now.
     pub(super) fn next_untried_substitute_index(
         &self,
         agent: &crate::agent::AgentInstance,
         tried: &[crate::agent::AgentSubstituteProfile],
     ) -> Result<Option<usize>, DaemonError> {
         let config = self.config_projection.snapshot();
-        let owner = crate::account_profile::provider_account_authority_owner_user_id(
-            &config,
-            agent.owner_user_id(),
-        );
-        let now_ms = crate::session::unix_epoch_ms();
-        for (index, candidate) in agent.substitutes().iter().enumerate() {
-            if tried.contains(candidate) {
-                continue;
-            }
-            let skipped = if candidate
-                .kernel_id
-                .as_deref()
-                .is_some_and(|kernel_id| kernel_id != config.daemon_id)
-            {
-                Some("it runs on another kernel".to_string())
-            } else if crate::provider::canonical_provider_family(&candidate.provider).is_some() {
-                match self.provider_account_profiles.find(
-                    &owner,
-                    &candidate.provider,
-                    candidate.account_profile.as_deref().unwrap_or("default"),
-                )? {
-                    None => Some(format!(
-                        "its saved {} account is no longer available",
-                        candidate.provider
-                    )),
-                    Some(account) if account.has_confirmed_exhaustion(&candidate.model, now_ms) => {
-                        Some(format!(
-                            "account `{}` has exhausted capacity for `{}`",
-                            account.label, candidate.model
-                        ))
-                    }
-                    Some(_) => None,
-                }
-            } else {
-                None
-            };
-            let Some(skipped) = skipped else {
-                return Ok(Some(index));
-            };
+        let crate::substitute_admission::SubstituteChoice { index, skipped } =
+            crate::substitute_admission::first_usable_substitute(
+                &self.provider_account_profiles,
+                &config,
+                agent,
+                tried,
+            )?;
+        for (skipped_index, reason) in skipped {
             self.record_notice(
                 agent.session_id(),
                 None,
                 self.attachment_store
                     .list_session_attachment_ids(agent.session_id()),
                 format!(
-                    "Skipping substitute {} for agent `{}`: {skipped}.",
-                    index + 1,
+                    "Skipping substitute {} for agent `{}`: {reason}.",
+                    skipped_index + 1,
                     agent.id()
                 ),
             );
         }
-        Ok(None)
+        Ok(index)
     }
 }
 

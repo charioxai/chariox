@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use super::*;
 use crate::local::{
-    LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
+    KernelConnectionClass, LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest,
+    RoomTerminalResult,
 };
-use crate::room_terminal::{OpenRoomTerminal, TerminalActor, TerminalScope, MAX_WAIT};
+use crate::room_terminal::{OpenRoomTerminal, TerminalActor, TerminalScope};
 use crate::runtime::command::{KernelCaller, KernelCallerKind};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
@@ -20,17 +21,16 @@ impl KernelRuntimeState {
         caller: &KernelCaller,
         request: RoomTerminalRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let origin_agent = request.operation.is_exec()
-            && request
-                .acting_agent
-                .as_deref()
-                .is_some_and(|agent| self.names_origin_agent(agent));
-        let actor = self.authorize_room_terminal(caller, &request, origin_agent)?;
-        // An agent of the origin kernel runs nowhere in this Room: it only labels the process.
+        let actor = self.authorize_room_terminal(caller, &request)?;
+        let owner_shell = request.acting_agent.is_none()
+            && request.host_agent.is_none()
+            && actor == TerminalActor::User
+            && opens_login_shell(&request.operation);
+        let session_id = request.session_id.clone();
         let host = request
             .host_agent
             .as_deref()
-            .or(request.acting_agent.as_deref().filter(|_| !origin_agent));
+            .or(request.acting_agent.as_deref());
         let everywhere = host.is_none() && matches!(request.operation, RoomTerminalOperation::List);
         let result = self
             .route_room_terminal(
@@ -41,6 +41,10 @@ impl KernelRuntimeState {
                 request.operation,
             )
             .await?;
+        if owner_shell {
+            self.cover_owner_shell(caller, &TerminalScope::room(&session_id), &result)
+                .await;
+        }
         Ok(LocalDaemonResponse::RoomTerminal { result })
     }
 
@@ -89,15 +93,20 @@ impl KernelRuntimeState {
     }
 
     /// A Room-wide list also shows the terminals running on the workers its
-    /// agents are leased to. A worker that cannot be reached fails the list: a
-    /// missing tab must not look like a closed one.
+    /// agents are leased to. A worker that cannot be asked (too old, or away) is
+    /// named in `unavailable` and the other terminals are still listed: a missing
+    /// tab must not look like a closed one, and must not hide the rest.
     async fn add_worker_terminals(
         &self,
         session_id: &str,
         actor: TerminalActor,
         listed: &mut RoomTerminalResult,
     ) -> Result<(), DaemonError> {
-        let RoomTerminalResult::Listed { terminals } = listed else {
+        let RoomTerminalResult::Listed {
+            terminals,
+            unavailable,
+        } = listed
+        else {
             return Ok(());
         };
         let mut seen = std::collections::BTreeSet::new();
@@ -105,11 +114,39 @@ impl KernelRuntimeState {
             let Some(binding) = agent.remote_execution().cloned() else {
                 continue;
             };
+            // This kernel cannot ask a worker on an older peer protocol, so its terminals cannot be
+            // listed; failing the list would hide every other tab for as long as that agent is leased
+            // there. The list says which machine was not asked and what to do about it.
+            if !binding.relay_peer_protocol_compatible() {
+                unavailable.push(crate::local::UnavailableTerminals {
+                    host_agent: agent.id().to_string(),
+                    message: format!(
+                        "worker kernel `{}` is too old to list its terminals, which may still be running there; update it",
+                        binding.worker_kernel_id
+                    ),
+                });
+                continue;
+            }
             let worker = binding.worker_kernel_id.clone();
-            let RoomTerminalResult::Listed { terminals: remote } = self
+            // A worker that is away (stopped, or off the relay) answers with a sentence the person can act on:
+            // like a worker too old to ask, it is named, and the Room's other terminals stay listed.
+            let remote = match self
                 .forward_room_terminal(binding, actor.clone(), RoomTerminalOperation::List)
-                .await?
-                .hosted_by(agent.id())
+                .await
+            {
+                Ok(result) => result.hosted_by(agent.id()),
+                Err(DaemonError::MachineRequest { message, .. }) => {
+                    unavailable.push(crate::local::UnavailableTerminals {
+                        host_agent: agent.id().to_string(),
+                        message,
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let RoomTerminalResult::Listed {
+                terminals: remote, ..
+            } = remote
             else {
                 continue;
             };
@@ -150,16 +187,6 @@ impl KernelRuntimeState {
     ) -> Result<RoomTerminalResult, DaemonError> {
         let service = &self.owned.room_terminals;
         Ok(match operation {
-            operation if operation.is_exec() => {
-                let Some(session_id) = scope.room_id() else {
-                    return Err(refused(
-                        "commands with their own stdout and stderr belong to a Room: open a terminal on the kernel, or use a Room"
-                            .to_string(),
-                    ));
-                };
-                self.run_room_exec_operation(session_id, &working_directory, actor, operation)
-                    .await?
-            }
             RoomTerminalOperation::Open {
                 cols,
                 rows,
@@ -198,6 +225,7 @@ impl KernelRuntimeState {
             }
             RoomTerminalOperation::List => RoomTerminalResult::Listed {
                 terminals: service.list(scope),
+                unavailable: Vec::new(),
             },
             RoomTerminalOperation::Snapshot { terminal_id } => RoomTerminalResult::Snapshot {
                 snapshot: service.snapshot(scope, &terminal_id)?,
@@ -255,7 +283,6 @@ impl KernelRuntimeState {
                 service.close(scope, &terminal_id, &actor)?;
                 RoomTerminalResult::Closed
             }
-            _ => unreachable!("exec operations handled above"),
         })
     }
 
@@ -268,50 +295,28 @@ impl KernelRuntimeState {
         operation: RoomTerminalOperation,
     ) -> Result<RoomTerminalResult, DaemonError> {
         if !binding.relay_peer_protocol_compatible() {
-            return Err(refused(format!(
-                "worker kernel `{}` is too old for Room terminals; update it",
+            return Err(crate::room_terminal::refusal(format!(
+                "worker kernel `{}` is too old for Room terminals; update it, or open the terminal on this Room's own kernel",
                 binding.worker_kernel_id
             )));
         }
-        let mut relay_config = self.owned.config_projection.snapshot();
-        if let (Some(relay_url), Some(relay_token)) =
-            (binding.relay_url.clone(), binding.relay_token.clone())
-        {
-            relay_config.apply_remote_relay_override(relay_url, relay_token);
-        }
-        let blocking = match &operation {
-            RoomTerminalOperation::Wait { timeout_ms, .. } => {
-                (*timeout_ms).min(MAX_WAIT.as_millis() as u64)
-            }
-            RoomTerminalOperation::ReadOutput { wait_ms, .. }
-            | RoomTerminalOperation::ExecRead { wait_ms, .. } => {
-                (*wait_ms).min(MAX_WAIT.as_millis() as u64)
-            }
+        let wait_ms = match &operation {
+            RoomTerminalOperation::Wait { timeout_ms, .. } => *timeout_ms,
+            RoomTerminalOperation::ReadOutput { wait_ms, .. } => *wait_ms,
             _ => 0,
         };
-        let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms)
-            .max(Duration::from_millis(blocking) + Duration::from_secs(20));
-        let worker_kernel_id = binding.worker_kernel_id.clone();
         let response = self
-            .enqueue_leased_worker_request_authorized(
-                &relay_config,
-                chariox_relay::protocol::ClientTarget {
-                    daemon_id: Some(binding.worker_kernel_id),
-                    daemon_alias: None,
-                },
+            .send_leased_worker_operation(
+                &binding,
                 RelayPeerRequest::RoomTerminal {
-                    leased_agent_id: binding.leased_agent_id,
+                    leased_agent_id: binding.leased_agent_id.clone(),
                     actor,
                     operation,
                 },
-                timeout,
-                || self.authorize_current_external_command(),
+                wait_ms,
             )
             .await
-            .map_err(|error| worker_unreachable(&worker_kernel_id, error))?
-            .wait()
-            .await
-            .map_err(|error| worker_unreachable(&worker_kernel_id, error))?;
+            .map_err(|error| worker_unreachable(&binding.worker_kernel_id, error))?;
         match response {
             RelayPeerResponse::RoomTerminal { result } => Ok(result),
             other => Err(refused(format!(
@@ -386,6 +391,7 @@ impl KernelRuntimeState {
             Some(directory) => PathBuf::from(directory),
             None => crate::room_terminal::kernel_user_home()?,
         };
+        let owner_shell = opens_login_shell(&request.operation);
         let result = self
             .run_terminal_operation(
                 &TerminalScope::Kernel,
@@ -394,7 +400,49 @@ impl KernelRuntimeState {
                 request.operation,
             )
             .await?;
+        if owner_shell {
+            self.cover_owner_shell(caller, &TerminalScope::Kernel, &result)
+                .await;
+        }
         Ok(LocalDaemonResponse::RoomTerminal { result })
+    }
+
+    /// A login shell the owner opened from their own client (web or app: the `Terminal` connection
+    /// class) is the owner at their keyboard: what runs in it runs with the owner's access until the
+    /// shell exits, with no request to approve. A shell an agent opened, or one opened through an
+    /// agent's grant, gets nothing: its processes need their own grant.
+    async fn cover_owner_shell(
+        &self,
+        caller: &KernelCaller,
+        scope: &TerminalScope,
+        result: &RoomTerminalResult,
+    ) {
+        let RoomTerminalResult::Opened { terminal } = result else {
+            return;
+        };
+        if caller.connection_class != Some(KernelConnectionClass::Terminal) {
+            return;
+        }
+        let Some((pid, program)) = self
+            .owned
+            .room_terminals
+            .shell_process(scope, &terminal.terminal_id)
+        else {
+            return;
+        };
+        // The launch starts through wrappers that exec the shell: the grant is bound to the shell's
+        // identity, which includes its executable, so it is taken once the shell itself runs.
+        if !shell_has_started(pid, &program).await {
+            tracing::warn!(
+                pid,
+                program,
+                "an owner's terminal shell did not settle into its program, so it gets no access"
+            );
+            return;
+        }
+        if let Err(error) = self.admit_owner_shell_access(pid) {
+            tracing::warn!(%error, pid, "an owner's terminal shell could not be given the owner's access");
+        }
     }
 
     pub(crate) fn end_room_terminals(&self, session_id: &str) {
@@ -404,25 +452,43 @@ impl KernelRuntimeState {
         crate::agent_temp::clear_room(session_id);
     }
 
-    pub(super) fn authorize_room_terminal(
+    fn authorize_room_terminal(
         &self,
         caller: &KernelCaller,
         request: &RoomTerminalRequest,
+    ) -> Result<TerminalActor, DaemonError> {
+        self.authorize_room_operation(
+            caller,
+            &request.session_id,
+            request.host_agent.as_deref(),
+            request.acting_agent.as_deref(),
+            false,
+            OPERATION,
+        )
+    }
+
+    pub(super) fn authorize_room_operation(
+        &self,
+        caller: &KernelCaller,
+        session_id: &str,
+        host_agent: Option<&str>,
+        acting_agent: Option<&str>,
         origin_agent: bool,
+        operation: &'static str,
     ) -> Result<TerminalActor, DaemonError> {
         if !matches!(
             caller.caller_kind,
             KernelCallerKind::LocalClient | KernelCallerKind::RemoteClient
         ) {
             return Err(refused(
-                "only the Room owner's clients can use its terminals".to_string(),
+                "only the Room owner or an agent with access can use its workspace".to_string(),
             ));
         }
         let user_id = caller
             .user_id
             .as_deref()
             .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
-        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let session = self.owned.session_store.get_session(session_id)?;
         if !self
             .owned
             .acts_for_owner(session.id(), user_id, session.owner_user_id())
@@ -430,21 +496,21 @@ impl KernelRuntimeState {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: user_id.to_string(),
                 owner_user_id: session.owner_user_id().to_string(),
-                resource: request.session_id.clone(),
-                operation: OPERATION,
+                resource: session_id.to_string(),
+                operation,
             });
         }
         // The worker trusts the home kernel's lease, not the end user, so the
         // agent whose placement is used must belong to this Room too.
-        if let Some(host_agent) = &request.host_agent {
-            self.ensure_room_agent(&request.session_id, host_agent)?;
+        if let Some(host_agent) = host_agent {
+            self.ensure_room_agent(session_id, host_agent)?;
         }
-        match &request.acting_agent {
+        match acting_agent {
             None => Ok(TerminalActor::User),
-            Some(agent_id) if origin_agent => Ok(TerminalActor::Agent(agent_id.clone())),
+            Some(agent_id) if origin_agent => Ok(TerminalActor::Agent(agent_id.to_string())),
             Some(agent_id) => {
-                self.ensure_room_agent(&request.session_id, agent_id)?;
-                Ok(TerminalActor::Agent(agent_id.clone()))
+                self.ensure_room_agent(session_id, agent_id)?;
+                Ok(TerminalActor::Agent(agent_id.to_string()))
             }
         }
     }
@@ -487,6 +553,27 @@ impl KernelRuntimeState {
         let session = self.owned.session_store.get_session(session_id)?;
         Ok(PathBuf::from(session.worktree_id()))
     }
+}
+
+/// Whether process `pid` runs `program` now (the launch wrappers have exec'd), waiting a little for it.
+async fn shell_has_started(pid: u32, program: &str) -> bool {
+    let same = |left: &str, right: &str| {
+        left == right
+            || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)), (Ok(left), Ok(right)) if left == right)
+    };
+    for _ in 0..300 {
+        match crate::runtime::kernel_access::process::inspect(pid) {
+            Ok((identity, _)) if same(&identity.executable, program) => return true,
+            Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// An open with no program named runs the account's login shell.
+fn opens_login_shell(operation: &RoomTerminalOperation) -> bool {
+    matches!(operation, RoomTerminalOperation::Open { command: None, .. })
 }
 
 fn refused(message: String) -> DaemonError {

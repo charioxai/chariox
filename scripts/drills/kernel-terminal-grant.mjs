@@ -2,7 +2,7 @@
 // Real kernel (disposable home, vault and passkey), the real built CLI as the scripted holder. Proves, in order:
 //   grant     `chariox access request --until-exit` is approved by the owner's terminal (a passkey answer);
 //   one-shot  `chariox exec -- argv` (no --session, no --workspace) runs on the kernel, prints its output and returns the
-//             program's exit code (7), starting in the home folder, and `--directory` starts elsewhere;
+//             program's exit code (7), starting in the home folder, and `--workspace` starts elsewhere;
 //   terminal  `chariox terminal open | list | send --wait-ms | close` with no --session: two terminals, typed input is
 //             answered, the list shows both with scope "kernel", close ends one;
 //   no Room   the kernel lists exactly the sessions it had before (the drill's own), none made by the holder;
@@ -137,7 +137,7 @@ cd "$(dirname "$0")"
 run() { local name=$1; shift; "$@" > "$name.out" 2> "$name.err"; echo $? > "$name.rc"; }
 run grant chariox access request --until-exit
 run oneshot chariox exec -- sh -c 'echo OUT-ONE; pwd; exit 7'
-run indir chariox exec --directory /tmp -- pwd
+run indir chariox exec --workspace /tmp -- pwd
 run open1 chariox terminal open --title first
 run open2 chariox terminal open --title second
 id1=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("open1.out","utf8")).terminal.terminal_id)')

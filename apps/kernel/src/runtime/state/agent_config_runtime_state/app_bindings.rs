@@ -620,7 +620,7 @@ impl KernelRuntimeState {
         );
         let resolution = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::RuntimeGrant,
+                crate::runtime::state::InteractionSurface::named("app_binding_permission"),
                 session.id(),
                 interaction,
             )

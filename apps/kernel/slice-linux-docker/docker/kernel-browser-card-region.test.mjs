@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -11,6 +11,7 @@ import { KernelBrowserHost, scheduleHostRequest } from './kernel-browser-host.mj
 import { PassThrough } from 'node:stream';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { BrowserControllerStdioServer } from './browser-controller.mjs';
+import { BrowserControllerError } from './browser-controller-cdp.mjs';
 
 async function withHost(run) {
   const root = await mkdtemp(path.join(tmpdir(), 'card-region-'));
@@ -20,6 +21,7 @@ async function withHost(run) {
   const tab = { tab_id: 'one', target_id: 'target', document_id: 'doc', url: 'https://user:pass@example.com/login?token=private#fragment' };
   const connection = { subscribe: () => () => {}, async send(method, params) {
     calls.push(method);
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: state.document_id } } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'element' } };
     if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function trackCardElement')) return {result:{objectId:'resolver'}};
@@ -242,6 +244,50 @@ test('MP-08/MP-11 removing the element or replacing its document settles conditi
   assert.deepEqual(await region({ generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser document changed' });
 }));
 
+test('666 a card whose Tab closed (a sign-in popup closing itself when the person is done) ends at once: a plain card as done, a card waiting for page text as unavailable', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'popup-plain' })).state, 'present');
+  assert.equal((await region({ card_id: 'popup-text', done_text: 'Signed in' })).state, 'present');
+  const closed = () => { throw new UserDomainRefusal('stale_reference', 'display_retired'); };
+  host.tabs.delete('one'); host.tabs.set('opener', { tab_id: 'opener', target_id: 'opener-target', document_id: 'o' }); host.displayTarget = closed;
+  assert.deepEqual(await region({ card_id: 'popup-plain', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
+  assert.deepEqual(await region({ card_id: 'popup-text', done_text: 'Signed in', generation: 1, document_id: 'doc' }), { state: 'unavailable', reason: 'Browser tab closed' });
+  await assert.rejects(region({ card_id: 'new-card' }), error => error instanceof UserDomainRefusal, 'a new card on a closed Tab is still refused');
+}));
+
+test('666 review: the card\'s Tab was the last tracked Tab (the keepalive page is not one): its closing still ends the card as closed', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'last-tab' })).state, 'present');
+  host.tabs.delete('one'); host.displayTarget = () => { throw new UserDomainRefusal('stale_reference', 'display_retired'); };
+  assert.equal(host.tabs.size, 0);
+  assert.deepEqual(await region({ card_id: 'last-tab', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
+}));
+
+test('666 review: the person closes the card\'s Tab through the host (its anchor is retired first): the open card still ends as closed; a new card there is refused', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'closed-by-host' })).state, 'present');
+  host.browser.manageTab = async () => {}; host.rebindWindows = async () => {};
+  host.reconcile = async () => { host.tabs.delete('one'); return host.tabState(); };
+  await host.request({ op: 'close', tab_id: 'one', generation: 1 });
+  assert.equal(host.tabs.has('one'), false);
+  host.displayTarget = () => { throw new UserDomainRefusal('stale_reference', 'display_retired'); };
+  assert.deepEqual(await region({ card_id: 'closed-by-host', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
+  assert.deepEqual(await region({ card_id: 'closed-by-host', done_text: 'Signed in', generation: 1, document_id: 'doc' }), { state: 'unavailable', reason: 'Browser tab closed' });
+  await assert.rejects(region({ card_id: 'fresh-card' }), error => error instanceof UserDomainRefusal);
+}));
+
+test('666 review: a popup that closed itself is still listed until the next inventory read: its gone browser target ends the open card as closed', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  assert.equal((await region({ card_id: 'self-closed' })).state, 'present');
+  const live = host.displayTarget;
+  host.displayTarget = () => { throw new BrowserControllerError('browser_target_not_found', 'browser target "target" is not available'); };
+  assert.equal(host.tabs.has('one'), true, 'the Tab is still listed');
+  assert.deepEqual(await region({ card_id: 'self-closed', generation: 1, document_id: 'doc' }), { state: 'condition_met', reason: 'Browser tab closed' });
+  host.displayTarget = () => { throw new BrowserControllerError('browser_cdp_timeout', 'slow'); };
+  await assert.rejects(region({ card_id: 'other-error' , generation: 1, document_id: 'doc' }), error => error.code === 'browser_cdp_timeout', 'another failure is not a closed Tab');
+  host.displayTarget = live;
+}));
+
 test('546 an element that went away with a navigation is a changed document, not a removed element', () => withHost(async ({ snapshot, region, node, state }) => {
   await snapshot();
   node.isConnected = false; state.document_id = 'replacement';
@@ -263,6 +309,7 @@ test('MP-08/MP-11 an isolated-frame reference maps its owned quad into the Tab v
       ? { model: { content: [100, 120, 300, 120, 300, 220, 100, 220] } }
       : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
     return original(method, params, session);
   };
@@ -439,7 +486,8 @@ function childFrameConnection(host, state, frame) {
       if (method === 'DOM.resolveNode' && params.backendNodeId === 99) return { object: { objectId: 'owner' } };
       if (method === 'Runtime.callFunctionOn' && params.objectId === 'owner') return { result: { value: !frame.ownerHidden } };
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
-      if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
+      if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
+    if (method === 'Runtime.evaluate') return { result: { value: session === 'child-session' ? [200, 100] : [800, 600] } };
       return original(method, params, session);
     };
   });
@@ -516,6 +564,7 @@ test('666 a card on a challenge widget grows to the widget\'s visible frames of 
       return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
     }
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate' && params.expression === 'document.baseURI') return {result:{value:state.baseURI ?? 'https://example.com/base/'}};
     if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
     return original(method, params, session);
   };
@@ -552,9 +601,10 @@ test('666 a reCAPTCHA-style widget: a page element holding the anchor frame grow
     if (method === 'DOM.getBoxModel') { const f = Object.values(frames).find(v => v.owner === params.backendNodeId); if (f) return { model: { content: f.box, border: f.box } }; }
     return original(method, params, session);
   };
-  state.box = { left: 30, top: 90, right: 354, bottom: 188 };
+  state.box = { left: 0, top: 0, right: 1280, bottom: 790 };
   await snapshot();
   let last = (await region({ card_id: 'r' })).region;
+  assert.ok(last.rect.width < 400 && last.rect.height < 200, `a page-wide element holding the widget is framed on the widget: ${JSON.stringify(last.rect)}`);
   const after = r => ({ generation: 1, document_id: 'doc', card_id: 'r', after: { rect: r.rect, viewport_width: r.viewport_width, viewport_height: r.viewport_height } });
   for (let round = 0; round < 3; round++) {
     open = true;
@@ -615,4 +665,164 @@ test('666 review: a widget whose frames render in the page\'s own process (no if
     last = (await region(after(grown))).region;
     assert.ok(last.rect.x + last.rect.width < 400, `round ${round}: closed again, only the anchor: ${JSON.stringify(last.rect)}`);
   }
+}));
+
+test('666 final rerun: cross-process widget frames missing from the page\'s own frame tree (real Chrome) still grow the card', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  const widget = 'https://widget.example', frames = {
+    child: { frame: { id: 'child', parentId: 'frame', loaderId: 'child-doc', securityOrigin: widget, url: widget + '/checkbox' }, owner: 99, box: [20, 80, 320, 80, 320, 154, 20, 154] },
+    challenge: { frame: { id: 'challenge', parentId: 'frame', loaderId: 'c-doc', securityOrigin: widget, url: widget + '/challenge' }, owner: 98, box: [330, 60, 730, 60, 730, 660, 330, 660] },
+    ad: { frame: { id: 'ad', parentId: 'frame', loaderId: 'a-doc', securityOrigin: 'https://ads.example', url: 'https://ads.example/' }, owner: 97, box: [0, 700, 1280, 700, 1280, 790, 0, 790] },
+  };
+  const hidden = new Set(['challenge']);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://page.example', url: 'https://page.example/' }, childFrames: [] } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: Object.keys(frames).map(id => ({ type: 'iframe', targetId: id, parentFrameId: 'frame' })) };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && params.backendNodeId >= 97 && params.backendNodeId <= 99) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) {
+      const id = Object.keys(frames).find(k => 'owner-' + frames[k].owner === params.objectId);
+      return { result: { value: !hidden.has(id) } };
+    }
+    if (method === 'DOM.getBoxModel') {
+      const f = Object.values(frames).find(v => v.owner === params.backendNodeId);
+      return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
+    }
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
+    return original(method, params, session);
+  };
+  await snapshot();
+  const closed = await region({ ref, card_id: 'w' });
+  const r = closed.region.rect;
+  assert.ok(r.x <= 20 && r.x + r.width >= 320 && r.height < 200, `only the checkbox frame while the challenge is hidden: ${JSON.stringify(r)}`);
+  hidden.delete('challenge');
+  const open = (await region({ ref, card_id: 'w', generation: 1, document_id: 'doc', after: { rect: r, viewport_width: 1280, viewport_height: 800 } })).region.rect;
+  assert.ok(open.x <= 20 && open.x + open.width >= 730 && open.y <= 60 && open.y + open.height >= 660, `the challenge with its bottom bar is in: ${JSON.stringify(open)}`);
+  assert.ok(open.y + open.height < 700, 'the page\'s ad frame of another origin is not');
+}));
+
+test('655 a hidden anchor inside a widget (the closed challenge\'s Verify) shows the widget\'s visible checkbox, not the whole page, and says the anchor is hidden', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:challenge:c-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  const widget = 'https://widget.example', frames = {
+    child: { frame: { id: 'child', parentId: 'frame', loaderId: 'child-doc', securityOrigin: widget, url: widget + '/checkbox' }, owner: 99, box: [20, 80, 320, 80, 320, 154, 20, 154] },
+    challenge: { frame: { id: 'challenge', parentId: 'frame', loaderId: 'c-doc', securityOrigin: widget, url: widget + '/challenge' }, owner: 98, box: [330, 60, 730, 60, 730, 660, 330, 660] },
+    ad: { frame: { id: 'ad', parentId: 'frame', loaderId: 'a-doc', securityOrigin: 'https://ads.example', url: 'https://ads.example/' }, owner: 97, box: [0, 700, 1280, 700, 1280, 790, 0, 790] },
+  };
+  const hidden = new Set(['challenge']);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://page.example', url: 'https://page.example/' }, childFrames: Object.values(frames).map(f => ({ frame: f.frame })) } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: Object.keys(frames).map(id => ({ type: 'iframe', targetId: id, parentFrameId: 'frame' })) };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && params.backendNodeId >= 97 && params.backendNodeId <= 99) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) {
+      const id = Object.keys(frames).find(k => 'owner-' + frames[k].owner === params.objectId);
+      return { result: { value: !hidden.has(id) } };
+    }
+    if (method === 'DOM.getBoxModel') {
+      const f = Object.values(frames).find(v => v.owner === params.backendNodeId);
+      return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
+    }
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
+    return original(method, params, session);
+  };
+  await snapshot();
+  const parked = await region({ ref, card_id: 'h' });
+  assert.equal(parked.state, 'present');
+  assert.equal(parked.anchor_hidden, true, 'the host says the named element itself is hidden');
+  assert.ok(parked.region.rect.x <= 20 && parked.region.rect.x + parked.region.rect.width >= 320 && parked.region.rect.width < 400, `the visible checkbox frame, not the whole page: ${JSON.stringify(parked.region.rect)}`);
+}));
+
+test('655 a card on a child document keeps its frame owner across a child reload', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', node_type: 1 },
+    { node_ref: ref, document_index: 1, node_name: '#document', node_type: 9 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await childFrameConnection(host, state, { owner: [100, 120, 300, 120, 300, 220, 100, 220] });
+  await snapshot();
+  assert.equal((await region({ ref, card_id: 'frame-card' })).state, 'present');
+  const connection = await host.browser.ensureConnection(), original = connection.send;
+  connection.send = async (method, params, session) => {
+    const result = await original(method, params, session);
+    if (method === 'Page.getFrameTree') {
+      const change = tree => { if (tree.frame.id === 'child') tree.frame.loaderId = 'new-child-doc'; for (const child of tree.childFrames ?? []) change(child); };
+      change(result.frameTree);
+    }
+    return result;
+  };
+  const followed = await region({ ref, card_id: 'frame-card', generation: 1, document_id: 'doc' });
+  assert.equal(followed.state, 'present', 'the child document changing does not retire the frame card');
+  assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+  assert.equal((await region({ ref, card_id: 'new-frame-card' })).state, 'present', 'a recently observed frame root still attaches after its document reload');
+}));
+
+test('655 a missing child backend node follows its observed iframe owner', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', node_type: 1 },
+    { node_ref: ref, document_index: 1, node_name: 'BUTTON', node_type: 1 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await childFrameConnection(host, state, { owner: [100, 120, 300, 120, 300, 220, 100, 220] });
+  await snapshot();
+  assert.equal((await region({ ref, card_id: 'child-card' })).state, 'present');
+  const connection = await host.browser.ensureConnection(), original = connection.send;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.resolveNode' && params.backendNodeId === 43) throw new Error('No node with given id');
+    return original(method, params, session);
+  };
+  const followed = await region({ ref, card_id: 'child-card', generation: 1, document_id: 'doc' });
+  assert.equal(followed.state, 'present', 'a removed child node does not retire its live iframe card');
+  assert.deepEqual(followed.region.rect, { x: 64, y: 74, width: 132, height: 82 });
+}));
+
+test('655 a restarted frame card restores its observed iframe crop from the Tab registry', () => withHost(async ({ host, snapshot, region, state }) => {
+  host.browser.ensureFocusWorld = async (connection, session, target, frame) => { assert.equal(frame?.loaderId, state.document_id, 'the world is bound to the observed live frame'); return {contextId:7}; };
+  state.baseURI = 'https://challenge.example/base/';
+  const ref = 'frame:child:loader:backend:1';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [
+    { node_ref: 'backend:42', document_index: 0, node_name: 'IFRAME', attributes: { src: '/widget#random=before', title: 'Challenge' } },
+    { node_ref: ref, document_index: 1, node_type: 9 },
+  ], dom_documents: [{ document_index: 0 }, { document_index: 1, owner_node_ref: 'backend:42' }] });
+  await snapshot();
+  const first = await region({ ref, card_id: 'restore-frame' });
+  const saved = JSON.parse(await readFile(path.join(host.root, 'tabs.json'), 'utf8'));
+  assert.equal(saved.card_frames[0][1].frame.frame_origin, 'https://challenge.example', 'relative src uses the live cross-origin base URI');
+  assert.equal(saved.card_frames.length, 1, 'the observed iframe identity is saved before registering the card');
+  assert.equal(JSON.stringify(saved.card_frames).includes('random=before'), false, 'frame addresses are reduced to origins');
+  // A new host has no renderer refs or card anchors. Only its saved Tab registry survives.
+  host.cardReferences.clear(); host.cardAnchors.clear();
+  host.cardFrames = new Map(saved.card_frames); host.generation = 2; state.document_id = 'restored-doc';
+  const connection = await host.browser.ensureConnection(), base = connection.send, resolved = [];
+  let frameReady = false;
+  connection.send = async (method, params, session) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: params.objectId === 'restored-frame' ? 42 : 77 } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function findCardFrame')) return { result: frameReady ? { objectId: 'restored-frame' } : { subtype: 'null' } };
+    if (method === 'DOM.resolveNode') resolved.push(params.backendNodeId);
+    return base(method, params, session);
+  };
+  const rebound = await region({ card_id: 'restore-frame', ref: undefined, rebind: true });
+  assert.equal(rebound.state, 'present');
+  frameReady = true; resolved.length = 0;
+  const followed = await region({ card_id: 'restore-frame', ref: rebound.region.ref, generation: 2, document_id: 'restored-doc' });
+  assert.equal(followed.state, 'present');
+  assert.deepEqual(followed.region.rect, first.region.rect);
+  assert.deepEqual(resolved, [42], 'the restored iframe supplies geometry instead of the page body');
+  await region({ card_id: 'restore-frame', release: true });
+  assert.deepEqual(JSON.parse(await readFile(path.join(host.root, 'tabs.json'), 'utf8')).card_frames, []);
 }));

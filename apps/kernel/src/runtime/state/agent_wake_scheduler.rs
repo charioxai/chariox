@@ -19,6 +19,20 @@ const STALL_FAULT_ENV: &str = "CHARIOX_WAKE_SCHEDULER_STALL_FILE";
 /// settlement of that agent's tasks does not end.
 const TASK_STALL_FAULT_ENV: &str = "CHARIOX_SWEEP_TASK_STALL_FILE";
 
+/// First re-ask of a task the sweep waited for and that did not settle, doubling per further miss
+/// up to `ASK_BACKOFF_MAX_MS`. A task that cannot settle is warned once per miss, not once per
+/// pass: the restored backlog of a whole fleet (20A7 11-27: 2466 tasks of 612 agents, 43887
+/// "did not settle" warns in 50 min) must not flood the pass that asks it.
+const ASK_BACKOFF_MS: u64 = 5 * 60_000;
+const ASK_BACKOFF_MAX_MS: u64 = 60 * 60_000;
+/// How long the wake dead-man check may run before the pass reports it degraded. The check
+/// probes sources that may not answer; the pass never waits on it. Tests hold a probe to
+/// prove the degradation is reported while it is still held.
+#[cfg(test)]
+const WAKE_CHECK_LIMIT: Duration = Duration::from_secs(2);
+#[cfg(not(test))]
+const WAKE_CHECK_LIMIT: Duration = Duration::from_secs(180);
+
 /// What a report of a lost watch tells its agent to do: the kernel never starts the work again, the agent does.
 const LOST_NEXT_STEP: &str = "what it watched is gone: start it again and watch the new one";
 
@@ -29,8 +43,24 @@ pub(crate) struct AgentWakeMonitor {
     scheduler_stall_alerted: AtomicBool,
     sweep_stall_alerted: AtomicBool,
     tick_failure_alerted: AtomicBool,
+    /// The wake dead-man check is degraded: reported once when it starts, again when it recovers,
+    /// never per pass.
+    deadman_degraded: AtomicBool,
+    /// Timer rescue and receipt checks have their own admission, independent
+    /// of source probes and deadline upkeep.
+    deadman_outstanding: AtomicBool,
+    /// A source-liveness probe is outstanding: a new one starts only when this one's own
+    /// body has ended. The probes park their own threads and run apart from the dead-man
+    /// check's deadline retries, due-timer rescue and receipt alerts.
+    probe_outstanding: AtomicBool,
+    /// The source probes are degraded: reported once when it starts, again when they
+    /// recover, never per pass.
+    probe_degraded: AtomicBool,
     stall_fault: Option<PathBuf>,
     task_stall_fault: std::sync::Mutex<Option<PathBuf>>,
+    /// Per task the sweep asked and waited for: when it may be asked again, and how many times in
+    /// a row it has not settled. Tasks absent from it are asked by the next pass that finds them.
+    task_asks: std::sync::Mutex<BTreeMap<String, TaskAsk>>,
     /// What the scheduler loop and the lifecycle sweep wait on, named in their stall reports.
     pub(super) scheduler_step: super::supervision_step::SupervisionStep,
     pub(super) sweep_step: super::supervision_step::SupervisionStep,
@@ -41,6 +71,14 @@ pub(crate) struct AgentWakeMonitor {
 }
 
 impl AgentWakeMonitor {
+    #[cfg(test)]
+    pub(super) fn deadman_status_for_test(&self) -> (bool, bool) {
+        (
+            self.deadman_outstanding.load(Ordering::Acquire),
+            self.deadman_degraded.load(Ordering::Acquire),
+        )
+    }
+
     pub(super) fn new() -> Self {
         let monitor = Self {
             started_at_ms: crate::session::unix_epoch_ms(),
@@ -49,10 +87,15 @@ impl AgentWakeMonitor {
             scheduler_stall_alerted: AtomicBool::new(false),
             sweep_stall_alerted: AtomicBool::new(false),
             tick_failure_alerted: AtomicBool::new(false),
+            deadman_degraded: AtomicBool::new(false),
+            deadman_outstanding: AtomicBool::new(false),
+            probe_outstanding: AtomicBool::new(false),
+            probe_degraded: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
             task_stall_fault: std::sync::Mutex::new(
                 std::env::var_os(TASK_STALL_FAULT_ENV).map(PathBuf::from),
             ),
+            task_asks: std::sync::Mutex::new(BTreeMap::new()),
             processes: Default::default(),
             scheduler_step: Default::default(),
             sweep_step: Default::default(),
@@ -62,6 +105,9 @@ impl AgentWakeMonitor {
         monitor
             .drivers
             .register(Arc::new(super::wake_driver::TimerDriver));
+        monitor
+            .drivers
+            .register(Arc::new(super::owner_wait::OwnerWaitDriver));
         monitor
     }
 
@@ -106,6 +152,45 @@ impl AgentWakeMonitor {
         };
         format!("Kernel supervision sweep stalled since {}: {held}; wake delivery checks are degraded; timers still fire", iso(since))
     }
+
+    /// True while the task's ask backoff holds: the pass skips it without a claim, a spawn or a
+    /// warn.
+    pub(super) fn task_ask_held(&self, task: &str, now: u64) -> bool {
+        self.task_asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(task)
+            .is_some_and(|ask| ask.next_ask_ms > now)
+    }
+
+    /// Records a task the sweep waited for and that did not settle: warned once for this miss,
+    /// not asked again until a doubling backoff expires.
+    pub(super) fn task_did_not_settle(&self, task: &str, now: u64) -> u64 {
+        let mut asks = self.task_asks.lock().unwrap_or_else(|e| e.into_inner());
+        let ask = asks.entry(task.to_owned()).or_default();
+        ask.misses = ask.misses.saturating_add(1);
+        let backoff = ASK_BACKOFF_MS
+            .saturating_mul(1_u64 << ask.misses.saturating_sub(1).min(4))
+            .min(ASK_BACKOFF_MAX_MS);
+        ask.next_ask_ms = now.saturating_add(backoff);
+        backoff
+    }
+
+    /// A task the sweep settled: the next pass that finds it undone asks it again at once.
+    pub(super) fn task_settled(&self, task: &str) {
+        self.task_asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(task);
+    }
+}
+
+/// One task the sweep asked and waited for: when it may be asked again, and how many times in a
+/// row it has not settled.
+#[derive(Default)]
+struct TaskAsk {
+    next_ask_ms: u64,
+    misses: u32,
 }
 
 fn armed(w: &AgentWake) -> bool {
@@ -151,6 +236,12 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(%error, "usage limit resume retained for retry");
             }
+            step.enter("usage resets");
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.tick_provider_usage_resets(crate::session::unix_epoch_ms()),
+            )
+            .await;
             while orphan_sweep.try_join_next().is_some() {}
             if orphan_sweep.is_empty() {
                 let state = self.clone();
@@ -312,18 +403,6 @@ impl KernelRuntimeState {
 
     /// Dead-man switch run by the 30 s lifecycle sweep.
     pub(super) async fn sweep_agent_wakes(&self, now: u64) -> Result<(), DaemonError> {
-        // A deadline whose sources are still stopping retries on its own; it
-        // must not hold back supervision of every other wake.
-        if let Err(error) = self.tick_agent_deadlines(now).await {
-            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
-        }
-        // Every worker is asked at once with its own 5 s bound; this bound only keeps a stuck
-        // relay from holding the sweep. An unanswered worker's entry stays for the next one.
-        match tokio::time::timeout(Duration::from_secs(10), self.rearm_leased_agent_deadlines()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(%error, "a worker still holds a leased agent's deadline from before the pause; retrying at the next sweep"),
-            Err(_) => tracing::warn!("telling the workers the shifted deadlines took too long; retrying at the next sweep"),
-        }
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
@@ -353,7 +432,6 @@ impl KernelRuntimeState {
         }) {
             self.tick_timer_wakes(now, false)?;
         }
-        self.sweep_driver_liveness(now)?;
         let wakes: BTreeMap<_, _> = store
             .agent_wakes(None, None)?
             .into_iter()
@@ -386,6 +464,162 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// The pass's own dead-man heartbeat, and the check apart from it. The heartbeat says the
+    /// sweep passed; the check (deadline cleanup, due-timer rescue, receipt alerts, source
+    /// probes) runs in its own work, so a source that does not answer — or a store that does
+    /// not — degrades wake delivery checks without ever holding the pass (20A7 11-27: the pass
+    /// waited on this check from 12:32:57Z). A degraded check is reported once, on the
+    /// transition, and again when it recovers; never per pass.
+    pub(super) fn spawn_wake_deadman_check(&self, now: u64) {
+        let monitor = &self.owned.agent_wakes;
+        monitor.sweep_ms.store(now, Ordering::Release);
+        monitor.sweep_stall_alerted.store(false, Ordering::Release);
+        // Durable store operations can block inside a single future poll.
+        // Supervise that physical worker independently and retain admission
+        // until it exits, even after reporting its existing deadline.
+        if !monitor.deadman_outstanding.swap(true, Ordering::AcqRel) {
+            let state = self.clone();
+            tokio::spawn(async move {
+                let monitor = &state.owned.agent_wakes;
+                let checking = state.clone();
+                let runtime = tokio::runtime::Handle::current();
+                let mut worker = tokio::task::spawn_blocking(move || {
+                    runtime.block_on(checking.sweep_agent_wakes(now))
+                });
+                let result = match tokio::time::timeout(WAKE_CHECK_LIMIT, &mut worker).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        if !monitor.deadman_degraded.swap(true, Ordering::AcqRel) {
+                            crate::logging::warn_with_fields(
+                                "runtime.agent_lifecycle",
+                                "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check stalled; its physical worker retains admission until it exits",
+                                serde_json::json!({"held_check": true}),
+                            );
+                        }
+                        worker.await
+                    }
+                };
+                monitor.deadman_outstanding.store(false, Ordering::Release);
+                let result = result
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "supervise wake dead-man check",
+                        message: error.to_string(),
+                    })
+                    .and_then(|result| result);
+                match result {
+                    Ok(()) => {
+                        if monitor.deadman_degraded.swap(false, Ordering::AcqRel) {
+                            crate::logging::warn_with_fields(
+                                "runtime.agent_lifecycle",
+                                "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check recovered; wake delivery checks run again",
+                                serde_json::json!({"held_check": true}),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if !monitor.deadman_degraded.swap(true, Ordering::AcqRel) {
+                            crate::logging::warn_with_fields(
+                                "runtime.agent_lifecycle",
+                                "MP-08/MP-09/MP-10/MP-11 A03: the wake dead-man check is degraded; it runs apart from the sweep and is retried until it recovers",
+                                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                            );
+                        }
+                    }
+                }
+            });
+        }
+        // Deadline upkeep has its own existing task-work admission and time
+        // limit. Waiting for its edit lock must not hold timer rescue or receipts.
+        self.spawn_task_work("wake-deadline-upkeep".into(), move |state| async move {
+            state.sweep_wake_deadlines(now).await
+        });
+        self.spawn_wake_driver_probes(now);
+    }
+
+    async fn sweep_wake_deadlines(&self, now: u64) -> Result<(), DaemonError> {
+        // A deadline whose sources are still stopping retries on its own; it
+        // must not hold back supervision of every other wake.
+        if let Err(error) = self.tick_agent_deadlines(now).await {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
+        }
+        // Every worker is asked at once with its own 5 s bound; this bound only keeps a stuck
+        // relay from holding the sweep. An unanswered worker's entry stays for the next one.
+        match tokio::time::timeout(Duration::from_secs(10), self.rearm_leased_agent_deadlines()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "a worker still holds a leased agent's deadline from before the pause; retrying at the next sweep"),
+            Err(_) => tracing::warn!("telling the workers the shifted deadlines took too long; retrying at the next sweep"),
+        }
+        Ok(())
+    }
+
+    /// The source liveness probes, apart from the check: a probe may park its thread and
+    /// never return (20A7 11-27), so their own admission holds one probe worker at a time and
+    /// is cleared by the probe's own body — one degraded source costs one parked thread, and
+    /// the deadline retries, due-timer rescue and receipt alerts of the check keep running
+    /// regardless of it.
+    fn spawn_wake_driver_probes(&self, now: u64) {
+        let monitor = &self.owned.agent_wakes;
+        if monitor.probe_outstanding.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let state = self.clone();
+        tokio::spawn(async move {
+            let monitor = &state.owned.agent_wakes;
+            let probing = state.clone();
+            let probed = tokio::task::spawn_blocking(move || {
+                let probed = probing.sweep_driver_liveness(now);
+                probing
+                    .owned
+                    .agent_wakes
+                    .probe_outstanding
+                    .store(false, Ordering::Release);
+                probed
+            });
+            match tokio::time::timeout(WAKE_CHECK_LIMIT, probed).await {
+                Ok(Ok(Ok(()))) => {
+                    if monitor.probe_degraded.swap(false, Ordering::AcqRel) {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake source probes recovered",
+                            serde_json::json!({"held_check": true}),
+                        );
+                    }
+                }
+                // A probe that failed, or one whose blocking body never answered cleanly,
+                // still cleared its own outstanding mark on its way out.
+                Ok(Ok(Err(error))) => {
+                    if !monitor.probe_degraded.swap(true, Ordering::AcqRel) {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake source probes are degraded; they run apart from the sweep and are retried until they recover",
+                            serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                        );
+                    }
+                }
+                Ok(Err(error)) => {
+                    if !monitor.probe_degraded.swap(true, Ordering::AcqRel) {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake source probes are degraded; they run apart from the sweep and are retried until they recover",
+                            serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                        );
+                    }
+                }
+                Err(_) => {
+                    // The probe's own body clears the outstanding mark when it ends, and a
+                    // fresh probe then starts. Only this report leaves the timeout itself.
+                    if !monitor.probe_degraded.swap(true, Ordering::AcqRel) {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "MP-08/MP-09/MP-10/MP-11 A03: the wake source probes are held by a source that does not answer; due-timer rescue and receipt alerts continue; a fresh probe starts when this one ends",
+                            serde_json::json!({"held_check": true}),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     /// Proof of life: wait for the scheduler's arm receipt of a new timer.
     pub(super) async fn await_wake_verification(&self, id: &str) -> Option<u64> {
         let deadline = Instant::now() + Duration::from_millis(VERIFY_WAIT_MS);
@@ -401,14 +635,6 @@ impl KernelRuntimeState {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         None
-    }
-
-    #[cfg(test)]
-    pub(crate) fn agent_wakes_last_swept_for_test(&self, at_ms: u64) {
-        self.owned
-            .agent_wakes
-            .sweep_ms
-            .store(at_ms, Ordering::Release);
     }
 
     pub(super) fn wake_scheduler_health(&self, now: u64) -> serde_json::Value {
@@ -516,6 +742,7 @@ impl KernelRuntimeState {
                 Err(error) => Recovery::Lost(error.to_string()),
             };
             if let Recovery::Lost(reason) = recovery {
+                self.withdraw_owner_wait_card(&wake);
                 self.report_lost_wake(&wake, now, &format!("the kernel restarted: {reason}"))?;
             }
         }

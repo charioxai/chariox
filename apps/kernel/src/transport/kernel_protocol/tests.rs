@@ -98,6 +98,8 @@ fn terminal_output_event_batches_stay_under_json_byte_cap() {
             pending_recipient_attachment_ids: vec!["attachment-1".to_string()],
             bytes: vec![b'x'; 16 * 1024],
             external_observation_metadata: None,
+            replaces: false,
+            continues_replacement: false,
         })
         .collect::<Vec<_>>();
 
@@ -173,6 +175,8 @@ fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
             pending_recipient_attachment_ids: vec!["attachment-1".to_string()],
             bytes: vec![b'x'; 256 + index],
             external_observation_metadata: None,
+            replaces: false,
+            continues_replacement: false,
         })
         .collect::<Vec<_>>();
     let accounted_bytes =
@@ -562,6 +566,7 @@ fn session_metadata_only_changes_can_skip_session_snapshot() {
 fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
     let mut previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
     let window = crate::local::KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:window-a".into(),
         session_id: "session-a".into(),
         agent_id: "agent-a".into(),

@@ -93,6 +93,115 @@ test("transcript stream state keeps text after a tool call below it even with a 
   ])
 })
 
+// MP-08 / MP-10 (#1425): a reply streamed live as plain text gets its finished
+// markdown as one record that replaces the row; nothing is added to it.
+test("a replacing chunk sets its row's text instead of adding to it", () => {
+  const key = "claude-transcript:run:assistant:live-prompt-1-1:0"
+  const streamed = applyTranscriptProviderChunk([entry(1, "user", "prompt", { turnId: 4 })], {
+    role: "assistant", chunk: "Run:\n\n$ sh", mergeKey: key, providerRunId: "run",
+  })
+  const finished = "Run:\n\n```sh\n$ sh\n```\n\nDone."
+  const replaced = applyTranscriptProviderChunk(streamed.entries, {
+    role: "assistant", chunk: finished, mergeKey: key, providerRunId: "run", metadata: { replaces: true },
+  })
+  assert.equal(replaced.kind, "merged")
+  assert.equal(replaced.updatedEntryId, 2)
+  assert.deepEqual(replaced.entries.map((item) => [item.role, item.text]), [["user", "prompt"], ["assistant", finished]])
+  const again = applyTranscriptProviderChunk(replaced.entries, {
+    role: "assistant", chunk: finished, mergeKey: key, providerRunId: "run", metadata: { replaces: true },
+  })
+  assert.equal(again.kind, "noop", "the same replacement twice changes nothing")
+})
+
+test("a replacement finds its row behind a later tool row and in a later turn", () => {
+  const key = "claude-transcript:run:assistant:live-prompt-1-1:0"
+  const streamed = applyTranscriptProviderChunk([entry(1, "user", "prompt", { turnId: 4 })], {
+    role: "assistant", chunk: "Listing", mergeKey: key, providerRunId: "run",
+  })
+  const tool = applyTranscriptToolUpdate(streamed.entries, JSON.stringify({
+    id: "tool-1", tool: "Bash", status: "completed", input: { command: "ls" },
+  }), new Map<string, ToolTranscriptUpdate>(), {}, { providerRunId: "run" })
+  const nextTurn = [...tool.entries, entry(4, "user", "next", { turnId: 5 })]
+  const replaced = applyTranscriptProviderChunk(nextTurn, {
+    role: "assistant", chunk: "**Listing** the files.", mergeKey: key, providerRunId: "run", metadata: { replaces: true },
+  })
+  assert.equal(replaced.kind, "merged")
+  assert.deepEqual(replaced.entries.map((item) => [item.role, item.text]), [
+    ["user", "prompt"],
+    ["assistant", "**Listing** the files."],
+    ["tool", tool.entries.at(-1)?.text],
+    ["user", "next"],
+  ])
+})
+
+// #1425 review (replacement continuations): a replacement longer than one record goes out in pieces, the first
+// replacing the row and the others continuing it. The row may already have a tool row after it, and a later turn
+// may have begun: the pieces still end in the replaced row, not in a new row after the tool or in the later turn.
+test("the pieces of a long replacement end in the replaced row, behind a tool row and a later turn", () => {
+  const key = "claude-transcript:run:assistant:live-prompt-1-1:0"
+  const streamed = applyTranscriptProviderChunk([entry(1, "user", "prompt", { turnId: 4 })], {
+    role: "assistant", chunk: "Listing", mergeKey: key, providerRunId: "run",
+  })
+  const tool = applyTranscriptToolUpdate(streamed.entries, JSON.stringify({
+    id: "tool-1", tool: "Bash", status: "completed", input: { command: "ls" },
+  }), new Map<string, ToolTranscriptUpdate>(), {}, { providerRunId: "run" })
+  const nextTurn = [...tool.entries, entry(4, "user", "next", { turnId: 5 })]
+  const pieces = ["**Listing** the files, ", "and then the rest, ", "and the end."]
+  let rows: readonly TranscriptStreamEntry[] = nextTurn
+  pieces.forEach((piece, index) => {
+    rows = applyTranscriptProviderChunk(rows, {
+      role: "assistant", chunk: piece, mergeKey: key, providerRunId: "run",
+      metadata: index === 0 ? { replaces: true } : { continuesReplacement: true },
+    }).entries
+  })
+  assert.deepEqual(rows.map((item) => [item.role, item.text]), [
+    ["user", "prompt"],
+    ["assistant", pieces.join("")],
+    ["tool", tool.entries.at(-1)?.text],
+    ["user", "next"],
+  ])
+  // The same batch delivered again ends in the same row.
+  pieces.forEach((piece, index) => {
+    rows = applyTranscriptProviderChunk(rows, {
+      role: "assistant", chunk: piece, mergeKey: key, providerRunId: "run",
+      metadata: index === 0 ? { replaces: true } : { continuesReplacement: true },
+    }).entries
+  })
+  assert.deepEqual(rows.filter(item => item.role === "assistant").map(item => item.text), [pieces.join("")])
+})
+
+test("a continuation with no row to join starts one", () => {
+  const result = applyTranscriptProviderChunk([entry(1, "user", "prompt", { turnId: 4 })], {
+    role: "assistant", chunk: "rest", mergeKey: "k", providerRunId: "run", metadata: { continuesReplacement: true },
+  })
+  assert.deepEqual(result.entries.map(item => [item.role, item.text]), [["user", "prompt"], ["assistant", "rest"]])
+})
+
+// #1425 review 5975163585: assistant text after a tool row starts a second
+// fragment under the same key; the replacement must leave one row.
+test("a replacement folds every fragment of its row into one", () => {
+  const key = "claude-transcript:run:assistant:live-prompt-1-1:0"
+  const first = applyTranscriptProviderChunk([entry(1, "user", "prompt", { turnId: 4 })], {
+    role: "assistant", chunk: "First", mergeKey: key, providerRunId: "run",
+  })
+  const tool = applyTranscriptToolUpdate(first.entries, JSON.stringify({
+    id: "tool-1", tool: "Bash", status: "completed", input: { command: "ls" },
+  }), new Map<string, ToolTranscriptUpdate>(), {}, { providerRunId: "run" })
+  const second = applyTranscriptProviderChunk(tool.entries, {
+    role: "assistant", chunk: " second", mergeKey: key, providerRunId: "run",
+  })
+  assert.equal(second.entries.filter((item) => item.role === "assistant").length, 2, "the stream split the row")
+  const replaced = applyTranscriptProviderChunk(second.entries, {
+    role: "assistant", chunk: "First second. Done.", mergeKey: key, providerRunId: "run", metadata: { replaces: true },
+  })
+  assert.equal(replaced.kind, "merged")
+  assert.deepEqual(replaced.entries.map((item) => [item.role, item.text]), [
+    ["user", "prompt"],
+    ["assistant", "First second. Done."],
+    ["tool", tool.entries.at(-1)?.text],
+  ])
+})
+
 test("transcript stream state can use an explicit current turn id before visible entries exist", () => {
   const result = applyTranscriptProviderChunk([], {
     role: "assistant",

@@ -1724,7 +1724,7 @@ mod receipt_reconciliation {
                         home_prompt_id: prompt_id,
                         worker_provider_run_id: String::new(),
                         phase:
-                            crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+                            crate::transport::relay_peer::LeasedPromptReceiptPhase::AdmissionRejected(crate::transport::relay_peer::LeasedPromptRejection::ExecutableMissing),
                         target_home_prompt_id: None,
                         execution_lease_id: Some("lease-receipt-rejected".to_string()),
                     }),
@@ -1785,19 +1785,23 @@ mod receipt_reconciliation {
                 i64::MAX as u64,
             )
             .expect("durable home history should load");
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| {
-                    event.prompt_id.as_deref() == Some(fixture.dispatch.prompt_id.as_str())
-                        && event
-                            .metadata
-                            .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
-                })
-                .count(),
-            1,
+        let mut settlements = events.iter().filter(|event| {
+            event.prompt_id.as_deref() == Some(fixture.dispatch.prompt_id.as_str())
+                && event
+                    .metadata
+                    .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
+        });
+        let settlement = settlements
+            .next()
+            .expect("definitive rejection should settle the exact prompt");
+        assert!(
+            settlements.next().is_none(),
             "definitive rejection should settle the exact prompt once"
         );
+        let reason = settlement.metadata[crate::history::TURN_OUTCOME_METADATA_KEY]["reason"]
+            .as_str()
+            .expect("the failed admission should save its turn outcome reason");
+        assert!(reason.contains("Install it on that machine."));
     }
 
     #[tokio::test]
@@ -2194,13 +2198,17 @@ mod receipt_reconciliation {
         let rejected = crate::transport::relay_peer::LeasedPromptReceipt {
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: String::new(),
-            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::AdmissionRejected(
+                crate::transport::relay_peer::LeasedPromptRejection::ExecutableMissing,
+            ),
             target_home_prompt_id: None,
             execution_lease_id: Some("lease-1".to_string()),
         };
         assert_eq!(
             remote_prompt_receipt_action("home-prompt-1", "lease-1", Some(rejected.clone())),
-            Ok(RemotePromptReceiptAction::RejectUnadmitted)
+            Ok(RemotePromptReceiptAction::RejectUnadmitted(
+                crate::transport::relay_peer::LeasedPromptRejection::ExecutableMissing
+            ))
         );
         assert_eq!(
             remote_prompt_receipt_action(

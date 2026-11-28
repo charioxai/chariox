@@ -155,7 +155,9 @@ async fn a_filled_secret_follows_a_rotated_entry_until_a_typed_value_ends_the_li
     assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RotatedValue77"));
 
     // A typed value ends the link: a later change of the entry no longer reaches the Secret.
-    links.remove(&project_id(&f), "GH_TOKEN").unwrap();
+    links
+        .write_linked(&project_id(&f), "GH_TOKEN", None, || Ok(true))
+        .unwrap();
     assert!(links.filled_from(&handle).unwrap().is_empty());
     f.state.shutdown_cleanup().await.unwrap();
 }
@@ -206,7 +208,12 @@ async fn a_replace_names_the_linked_secrets_that_could_not_take_the_new_value() 
     // A Secret the entry was not made for cannot be refreshed from it.
     f.state
         .secret_links()
-        .set(&project_id(&f), "OTHER", &handle)
+        .write_linked(
+            &project_id(&f),
+            "OTHER",
+            Some(crate::project_environment::SecretLink::Entry(handle.clone())),
+            || Ok(true),
+        )
         .unwrap();
 
     let failure = owner_replaces(&f, &handle, "ghp_RotatedValue77")
@@ -225,7 +232,7 @@ async fn a_replace_names_the_linked_secrets_that_could_not_take_the_new_value() 
     // A replace with every link refreshable succeeds.
     f.state
         .secret_links()
-        .remove(&project_id(&f), "OTHER")
+        .write_linked(&project_id(&f), "OTHER", None, || Ok(true))
         .unwrap();
     owner_replaces(&f, &handle, "ghp_SecondRotation88")
         .await
@@ -234,5 +241,176 @@ async fn a_replace_names_the_linked_secrets_that_could_not_take_the_new_value() 
         held(&f, "GH_TOKEN").as_deref(),
         Some("ghp_SecondRotation88")
     );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+async fn owner_sends(f: &Fixture, request: crate::local::LocalDaemonRequest) {
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    let command = KernelCommand::from_local_request_with_caller(
+        "owner-request",
+        KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    f.router.dispatch(command, request).await.unwrap();
+}
+
+async fn filled_entry(f: &Fixture) -> (String, String) {
+    save_secret_names(f, &["GH_TOKEN"]);
+    let handle = capture_for(f, "GH_TOKEN").await;
+    call(f, FILL, json!({"name": "GH_TOKEN", "credential_id": handle}))
+        .await
+        .unwrap();
+    let key = match &f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .credential(&handle)
+        .unwrap()
+        .source
+    {
+        crate::config::UserCredentialSourceConfig::Vault { key } => key.clone(),
+        other => panic!("a captured entry lives in the Vault: {other:?}"),
+    };
+    (handle, key)
+}
+
+#[tokio::test]
+async fn a_raw_write_of_the_entry_value_refills_its_linked_secrets_like_a_replace() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let (_, key) = filled_entry(&f).await;
+    assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some(SECRET));
+    owner_sends(
+        &f,
+        crate::local::LocalDaemonRequest::SetCredentialSecret(
+            crate::local::SetCredentialSecretRequest {
+                session_id: None,
+                agent_id: None,
+                key,
+                value: "ghp_RawKeyWrite91".into(),
+            },
+        ),
+    )
+    .await;
+    assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RawKeyWrite91"));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_raw_write_reports_a_failed_link_and_still_refreshes_a_later_entry() {
+    use crate::local::{LocalDaemonRequest, SetCredentialSecretRequest};
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    save_secret_names(&f, &["AA_BROKEN", "GH_TOKEN"]);
+    let handle = capture_for(&f, "GH_TOKEN").await;
+    call(&f, FILL, json!({"name": "GH_TOKEN", "credential_id": handle}))
+        .await
+        .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let entry = registry.get(&handle).unwrap().unwrap();
+    let key = match &entry.source {
+        crate::config::UserCredentialSourceConfig::Vault { key } => key.clone(),
+        other => panic!("a captured entry lives in the Vault: {other:?}"),
+    };
+    for id in ["raw-refill-a", "raw-refill-z"] {
+        let mut sibling = entry.clone();
+        sibling.id = id.to_owned();
+        registry.upsert(sibling).unwrap();
+    }
+    let links = f.state.secret_links();
+    // The earlier entry is bound to GH_TOKEN, so this deliberately stale link cannot refresh.
+    links
+        .write_linked(
+            &project_id(&f),
+            "AA_BROKEN",
+            Some(crate::project_environment::SecretLink::Entry("raw-refill-a".into())),
+            || Ok(true),
+        )
+        .unwrap();
+    links
+        .write_linked(
+            &project_id(&f),
+            "GH_TOKEN",
+            Some(crate::project_environment::SecretLink::Entry("raw-refill-z".into())),
+            || Ok(true),
+        )
+        .unwrap();
+    let matching: Vec<_> = registry
+        .list()
+        .unwrap()
+        .into_iter()
+        .filter(|entry| matches!(&entry.source, crate::config::UserCredentialSourceConfig::Vault { key: at } if at == &key))
+        .map(|entry| entry.id)
+        .collect();
+    assert!(
+        matching.iter().position(|id| id == "raw-refill-a").unwrap()
+            < matching.iter().position(|id| id == "raw-refill-z").unwrap()
+    );
+    assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some(SECRET));
+    assert_eq!(held(&f, "AA_BROKEN"), None);
+
+    let request = LocalDaemonRequest::SetCredentialSecret(SetCredentialSecretRequest {
+        session_id: None,
+        agent_id: None,
+        key,
+        value: "ghp_RawPartialRefresh91".into(),
+    });
+    let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    let command = KernelCommand::from_local_request_with_caller(
+        "raw-refill-failure",
+        KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    let failure = f
+        .router
+        .dispatch(command, request)
+        .await
+        .expect_err("a raw write must not report Stored when a linked refresh failed");
+    let message = failure.to_string();
+    assert!(message.contains("AA_BROKEN"), "{message}");
+    assert!(!message.contains("ghp_"), "no value in the message: {message}");
+    // This entry is attempted after the failed one; the committed raw write is not rolled back.
+    assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RawPartialRefresh91"));
+    assert_eq!(held(&f, "AA_BROKEN"), None);
+    assert_eq!(
+        links.filled_from("raw-refill-a").unwrap(),
+        vec![(project_id(&f), "AA_BROKEN".into())]
+    );
+    assert_eq!(
+        links.filled_from("raw-refill-z").unwrap(),
+        vec![(project_id(&f), "GH_TOKEN".into())]
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_the_entry_keeps_the_copy_as_a_normal_secret() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let (handle, _) = filled_entry(&f).await;
+    owner_sends(
+        &f,
+        crate::local::LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Delete {
+            id: handle.clone(),
+        }),
+    )
+    .await;
+    assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some(SECRET));
+    // Nothing stands behind it any more, so a kernel copying it no longer follows it.
+    assert!(f.state.secret_links().filled_from(&handle).unwrap().is_empty());
     f.state.shutdown_cleanup().await.unwrap();
 }

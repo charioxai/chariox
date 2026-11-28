@@ -469,6 +469,28 @@ impl PromptStateOwner {
         Ok(Some(settled))
     }
 
+    /// Keep a successor from replacing this cancellation during physical teardown.
+    /// The callback must not reenter the prompt owner.
+    pub(crate) fn with_cancelling_prompt_if_matches<R>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        finish: impl FnOnce() -> Result<R, DaemonError>,
+    ) -> Result<Option<R>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        if !state.active_prompt.as_ref().is_some_and(|prompt| {
+            prompt.id() == prompt_id && prompt.status() == PromptStatus::Cancelling
+        }) {
+            return Ok(None);
+        }
+        finish().map(Some)
+    }
+
     pub(crate) fn try_claim_active_prompt_delivery_settlement(
         &self,
         session: &RuntimeSession,
@@ -970,6 +992,29 @@ impl PromptStateOwner {
         if expected_prompt_id.is_some_and(|expected_prompt_id| {
             state.active_prompt.as_ref().map(PromptQueueItem::id) != Some(expected_prompt_id)
         }) {
+            return None;
+        }
+        let mut completed = state.take_active_prompt()?;
+        completed.set_status(PromptStatus::Completed);
+        Some(completed)
+    }
+
+    /// Failure cannot take a turn whose physical cancellation owns settlement.
+    pub(crate) fn fail_active_prompt_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+    ) -> Option<PromptQueueItem> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let current = state.active_prompt.as_ref()?;
+        if current.status() == PromptStatus::Cancelling
+            || expected_prompt_id.is_some_and(|id| current.id() != id)
+        {
             return None;
         }
         let mut completed = state.take_active_prompt()?;
@@ -2433,6 +2478,60 @@ impl PromptStateOwnerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stale_failure_cannot_take_cancellation_or_its_queued_successor() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "failure-cancellation",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        let PromptSubmissionOutcome::Started { prompt } = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new("first", "client", "agent", "first", PromptStatus::Queued),
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("the first prompt starts")
+        };
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new("next", "client", "agent", "next", PromptStatus::Queued),
+                false,
+            )
+            .unwrap();
+        owner
+            .begin_cancelling_active_prompt(&session, "agent")
+            .unwrap();
+        assert!(owner
+            .fail_active_prompt_if_matches(&session, "agent", Some(prompt.id()))
+            .is_none());
+        assert_eq!(
+            owner
+                .active_prompt_for_agent(&session, "agent")
+                .unwrap()
+                .status(),
+            PromptStatus::Cancelling
+        );
+        assert_eq!(owner.queued_prompt_count_for_agent(&session, "agent"), 1);
+        assert_eq!(
+            owner
+                .complete_active_prompt_if_matches(&session, "agent", Some(prompt.id()))
+                .unwrap()
+                .id(),
+            prompt.id(),
+            "the existing completion owner keeps its completion behavior",
+        );
+        assert_eq!(owner.queued_prompt_count_for_agent(&session, "agent"), 1);
+    }
 
     #[test]
     fn no_queue_admission_rejects_a_busy_target_without_mutation() {

@@ -91,7 +91,7 @@ async function cycle(measure = false, remove = false) {
   const made = await create(measure)
   const sessionId = made.session.id
   const attached = (await rpc({ AttachToSession: { session_id: sessionId, client_id: 'responsiveness', capability_level: 'FullTerminal' } }, measure)).SessionAttached
-  await rpc({ RunShellCommand: { session_id: sessionId, attachment_id: attached.attachment.id, command: '/bin/true', args: [], timeout_ms: 1000 } }, measure)
+  await rpc({ RunCommand: { target: { kind: 'room_workspace', session_id: sessionId }, operation: { operation: 'exec_open', command: ['/bin/true'], timeout_ms: 1000 } } }, measure)
   await rpc({ DetachFromSession: { session_id: sessionId, attachment_id: attached.attachment.id } }, measure)
   await rpc(remove ? { DeleteSession: { session_ref: sessionId, workspace_id: null } } : { EndSession: { session_id: sessionId } }, measure)
   return sessionId

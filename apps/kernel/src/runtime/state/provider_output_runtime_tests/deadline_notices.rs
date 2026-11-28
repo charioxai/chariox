@@ -39,6 +39,74 @@ fn notices(team: &super::child_finished::Team, agent: &str) -> Vec<String> {
     team.runtime.agent_notices_for_test(&team.room, agent)
 }
 
+#[tokio::test]
+async fn a_deadline_notice_requires_handled_for_single_and_bulk_ack() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let team = team_with("deadline-explicit-handling", None, true).await;
+    let store = &team.runtime.owned.durable_state_store;
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            &team.room,
+            &team.parent,
+            "deadline:child",
+            "100:ended",
+            "child_time_limit_ended",
+            serde_json::json!({"child_agent_id": team.child, "deadline_ms": 100}),
+        )))
+        .unwrap()
+    else {
+        panic!("deadline occurrence")
+    };
+    store
+        .agent_lifecycle(Operation::MarkShown {
+            room: team.room.clone(),
+            agent: team.parent.clone(),
+            sequences: vec![event.sequence],
+        })
+        .unwrap();
+    let bulk = team
+        .runtime
+        .ack_agent_inbox(
+            &team.room,
+            &team.parent,
+            &serde_json::json!({"through": event.sequence}),
+            11,
+        )
+        .await
+        .unwrap();
+    assert_eq!(bulk["acknowledged"], serde_json::json!([]));
+    assert_eq!(bulk["skipped"][0]["reason"], "needs_handling");
+    assert!(
+        team.runtime
+            .ack_agent_inbox(
+                &team.room,
+                &team.parent,
+                &serde_json::json!({"sequence": event.sequence}),
+                12,
+            )
+            .await
+            .is_err(),
+        "reading the notice is not handling it"
+    );
+    assert_eq!(
+        store.agent_inbox(&team.room, &team.parent, 0).unwrap()[0].state,
+        "pending"
+    );
+    team.runtime
+        .ack_agent_inbox(
+            &team.room,
+            &team.parent,
+            &serde_json::json!({"sequence": event.sequence, "handled": true}),
+            13,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.agent_inbox(&team.room, &team.parent, 0).unwrap()[0].state,
+        "handled"
+    );
+}
+
 // TL1: the Room and the agent hear of a limit 10 minutes and 1 minute before it ends, once each.
 #[tokio::test]
 async fn a_limit_is_announced_ten_minutes_and_one_minute_ahead_once_each() {
@@ -92,6 +160,171 @@ async fn a_limit_is_announced_ten_minutes_and_one_minute_ahead_once_each() {
             .filter(|notice| notice.contains("ends in about 1 minute"))
             .count(),
         2
+    );
+}
+
+// Row 754 (D189, T1): a time limit is the parent agent's setting. An ended limit with work the
+// agent owed tells the PARENT agent alone — one urgent event per ended limit that names the two
+// things the parent can do — and the person's interaction list never sees a card for it. The
+// sweep that retires the work re-reads the same occurrence: a reload or a restart hands the
+// parent the one notice it still has (T6).
+#[tokio::test]
+async fn an_ended_limit_with_a_parent_tells_the_parent_agent_once_and_never_the_person() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let team = team_with("deadline-parent-notice", None, true).await;
+    let store = &team.runtime.owned.durable_state_store;
+    // An urgent message queued to the child before the limit ends: an active turn takes it
+    // first, so the delivery attempt is the one the ended limit refuses.
+    let Outcome::Event(_queued) = store
+        .agent_lifecycle(Operation::Occur({
+            let mut message = occurrence(
+                &team.room,
+                &team.child,
+                "queued-work",
+                "m1",
+                "message",
+                serde_json::json!({"message":"queued before the limit ended"}),
+            );
+            message.urgent = true;
+            message
+        }))
+        .unwrap()
+    else {
+        panic!("the message queues")
+    };
+    set_deadline(&team, &team.child, crate::session::unix_epoch_ms() - 1).await;
+    // A delivery the ended limit refuses tells the parent first, with the extend command.
+    let refused = team
+        .runtime
+        .deliver_agent_inbox(&team.room, &team.child)
+        .await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| crate::error::is_agent_deadline_refusal(error)),
+        "{refused:?}"
+    );
+    // The sweep then retires the still-queued message; the notice stays the one occurrence.
+    for _ in 0..2 {
+        team.runtime
+            .tick_agent_deadlines(crate::session::unix_epoch_ms())
+            .await
+            .unwrap();
+    }
+    let told: Vec<_> = store
+        .agent_inbox(&team.room, &team.parent, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "child_time_limit_ended")
+        .collect();
+    assert_eq!(told.len(), 1, "one notice per ended limit: {told:?}");
+    assert!(told[0].urgent, "the notice reaches a running parent turn");
+    assert_eq!(
+        told[0].payload["child_agent_id"],
+        serde_json::json!(team.child)
+    );
+    let message = told[0].payload["message"].as_str().unwrap();
+    assert!(
+        message.contains("time limit ended") && message.contains("`agent deadline"),
+        "the notice names the extend command: {message}"
+    );
+    assert!(
+        message.contains("or let it stay stopped"),
+        "the notice says the parent may also do nothing: {message}"
+    );
+    // The person's card list stays empty: a time limit is the parent agent's setting.
+    let owner = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    assert!(
+        team.runtime.list_owner_interactions(&owner).is_empty(),
+        "no card for the person"
+    );
+    // The sweep that retired the message re-read the same occurrence, never a second one.
+    let again: Vec<_> = store
+        .agent_inbox(&team.room, &team.parent, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "child_time_limit_ended")
+        .collect();
+    assert_eq!(
+        again.len(),
+        1,
+        "still one notice per ended limit: {again:?}"
+    );
+}
+
+// A deadline ending needs no incoming message to tell the parent.
+#[tokio::test]
+async fn an_ended_limit_tells_the_parent_without_an_incoming_message() {
+    for (label, settled, parent_running) in [
+        ("deadline-running-parent", None, true),
+        ("deadline-idle-parent", None, false),
+        ("deadline-idle-child", Some(false), true),
+    ] {
+        let team = team_with(label, settled, parent_running).await;
+        set_deadline(&team, &team.child, crate::session::unix_epoch_ms() - 1).await;
+        for _ in 0..2 {
+            team.runtime
+                .tick_agent_deadlines(crate::session::unix_epoch_ms())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            kinds(&team, &team.parent)
+                .iter()
+                .filter(|kind| kind.as_str() == "child_time_limit_ended")
+                .count(),
+            1,
+            "{label}: the parent hears once without a refused delivery or queued message"
+        );
+    }
+}
+
+// Row 754 (T3): a top-level agent has no parent to ask, so its ended limit tells no agent: the
+// Room's stop notice is the whole story, and the owner's external agent may extend or clear the
+// limit itself (D190b). No person card exists to clear.
+#[tokio::test]
+async fn an_ended_limit_without_a_parent_tells_no_agent_and_raises_no_card() {
+    let team = team_with("deadline-orphan-notice", None, true).await;
+    set_deadline(&team, &team.parent, crate::session::unix_epoch_ms() - 1).await;
+    for _ in 0..2 {
+        team.runtime
+            .tick_agent_deadlines(crate::session::unix_epoch_ms())
+            .await
+            .unwrap();
+    }
+    let store = &team.runtime.owned.durable_state_store;
+    assert!(
+        store
+            .agent_inbox(&team.room, &team.parent, 0)
+            .unwrap()
+            .into_iter()
+            .all(|event| event.kind != "child_time_limit_ended"),
+        "no parent to ask: no notice event"
+    );
+    let owner = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    assert!(
+        team.runtime.list_owner_interactions(&owner).is_empty(),
+        "no card for the person"
+    );
+    let room = notices(&team, &team.parent);
+    assert!(
+        room.iter()
+            .any(|notice| notice.contains("time limit ended at")),
+        "the Room notice is the whole story: {room:?}"
     );
 }
 
@@ -378,4 +611,66 @@ async fn a_parents_limit_leaves_three_sub_agents_running_and_each_is_told() {
     for alias in ["child", "child2", "child3"] {
         assert!(text.contains(alias), "{alias} is named: {text}");
     }
+}
+
+#[tokio::test]
+async fn taxonomy_actual_deadline_transition_is_a_tree_warning_and_pane_status_without_a_card() {
+    let team = team_with("taxonomy-deadline-transition", None, true).await;
+    let deadline = crate::session::unix_epoch_ms() + 30;
+    set_deadline(&team, &team.child, deadline).await;
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    team.runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    let response = team
+        .runtime
+        .list_descendants(
+            session.owner_user_id(),
+            crate::local::ListDescendantsRequest {
+                session_id: team.room.clone(),
+                agent_id: team.parent.clone(),
+            },
+        )
+        .unwrap();
+    let tree = serde_json::to_value(response).unwrap();
+    let node = tree["AgentTree"]["tree"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["agent_id"] == team.child)
+        .unwrap();
+    assert_eq!(node["state"], "time_limit_ended");
+    let status = session
+        .active_interactions()
+        .iter()
+        .find(|interaction| {
+            interaction.related_agent_id() == Some(team.child.as_str())
+                && interaction.is_pane_status()
+        })
+        .expect("owning pane warning after the actual transition");
+    assert_eq!(
+        status.level(),
+        crate::session::RuntimeInteractionLevel::Warning
+    );
+    assert_eq!(status.shown_in_agent_id(), Some(team.child.as_str()));
+    assert!(session
+        .active_interactions()
+        .iter()
+        .all(|interaction| interaction.card_type().is_empty()));
+    let reached = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_deadline(&team.room, &team.child)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reached.state, crate::local::AgentDeadlineState::Reached);
+    assert!(reached.stopped_at_ms.is_some());
 }

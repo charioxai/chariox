@@ -200,10 +200,16 @@ impl KernelRuntimeState {
         let (response, remote_execution) =
             super::remote_native_provider_launch::launch_with_one_binding_refresh(
                 remote_execution,
-                move || {
+                move |recover_missing| {
                     let state = account_state.clone();
                     let agent_id = account_agent_id.clone();
-                    Box::pin(async move { state.ensure_agent_account_on_worker(&agent_id).await })
+                    Box::pin(async move {
+                        if recover_missing {
+                            state.reinstall_remote_native_account(&agent_id).await
+                        } else {
+                            state.ensure_agent_account_on_worker(&agent_id).await
+                        }
+                    })
                 },
                 move |binding| {
                     let state = send_state.clone();

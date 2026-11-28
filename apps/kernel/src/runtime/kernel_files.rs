@@ -29,6 +29,10 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
+#[cfg(test)]
+mod test_write_pause;
+mod upload_attempts;
+
 pub(super) fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -86,6 +90,10 @@ pub(super) fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonE
 fn folder_failure(folder: &Path, error: &std::io::Error) -> DaemonError {
     use std::io::ErrorKind;
     let (code, reason) = match error.kind() {
+        ErrorKind::NotFound => return fail(
+            "file_destination_missing",
+            format!("Destination folder {} no longer exists. Recreate it or choose another folder, then upload again.", folder.display()),
+        ),
         ErrorKind::NotADirectory | ErrorKind::AlreadyExists => {
             ("file_not_a_file", "a file blocks the path")
         }
@@ -195,7 +203,11 @@ pub(crate) fn stat(
     guard: &StateGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let path = resolve(&request.path, guard)?;
-    let partial_size = std::fs::metadata(partial_of(&path)).ok().map(|m| m.len());
+    let partial = std::fs::symlink_metadata(partial_of(&path))
+        .ok()
+        .filter(trusted_staging);
+    let partial_size = partial.as_ref().map(std::fs::Metadata::len);
+    let partial_upload_id = partial.as_ref().map(upload_attempts::resumable_id);
     let stat = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => {
             let followed = std::fs::metadata(&path).unwrap_or_else(|_| metadata.clone());
@@ -218,6 +230,7 @@ pub(crate) fn stat(
                     None
                 },
                 partial_size,
+                partial_upload_id,
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => KernelFileStat {
@@ -230,6 +243,7 @@ pub(crate) fn stat(
             mode: None,
             sha256: None,
             partial_size,
+            partial_upload_id,
         },
         Err(error)
             if matches!(
@@ -340,11 +354,31 @@ pub(crate) fn read(
     })
 }
 
+fn missing_destination(path: &Path) -> Option<DaemonError> {
+    let folder = path.parent()?;
+    let error = std::fs::metadata(folder).err()?;
+    (error.kind() == std::io::ErrorKind::NotFound).then(|| folder_failure(folder, &error))
+}
+
+fn upload_failure(path: &Path, error: &std::io::Error) -> DaemonError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        if let Some(error) = missing_destination(path) {
+            return error;
+        }
+    }
+    io_failure(path, error)
+}
+
 /// Opens the upload's staging file without trusting what is already at the predictable name:
 /// a first chunk replaces whatever is there, a later chunk continues only the private regular
 /// file this user made (another user of a shared directory may have planted a link or a file).
-fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::File, DaemonError> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+fn open_staging(
+    partial: &Path,
+    path: &Path,
+    offset: u64,
+    upload_id: Option<uuid::Uuid>,
+) -> Result<std::fs::File, DaemonError> {
+    use std::os::unix::fs::OpenOptionsExt;
     let untrusted = || {
         fail(
             "file_staging_untrusted",
@@ -369,7 +403,19 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(partial)
-            .map_err(|e| io_failure(path, &e));
+            .map_err(|e| upload_failure(path, &e))
+            .and_then(|file| {
+                // The descriptor holds its exclusive lock through admission, append and
+                // publication; a resumed ID cannot overtake an admitted chunk on this inode.
+                fs2::FileExt::lock_exclusive(&file).map_err(|e| io_failure(path, &e))?;
+                if let Some(id) = upload_id {
+                    let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
+                    if !upload_attempts::begin(partial, id, &metadata) {
+                        return Err(upload_changed(path));
+                    }
+                }
+                Ok(file)
+            });
     }
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -379,34 +425,84 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(offset_mismatch(path, 0));
+            upload_attempts::forget(partial, upload_id);
+            return Err(missing_destination(path).unwrap_or_else(|| offset_mismatch(path, 0)));
         }
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(untrusted()),
         Err(e) => return Err(io_failure(path, &e)),
     };
     let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let own_uid = unsafe { libc::geteuid() };
-    if !metadata.is_file()
-        || metadata.uid() != own_uid
-        || metadata.permissions().mode() & 0o077 != 0
-    {
+    if !trusted_staging(&metadata) {
+        return Err(untrusted());
+    }
+    fs2::FileExt::lock_exclusive(&file).map_err(|e| io_failure(path, &e))?;
+    let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
+    if !trusted_staging(&metadata) {
         return Err(untrusted());
     }
     if metadata.len() != offset {
         return Err(offset_mismatch(path, metadata.len()));
     }
+    if let Some(id) = upload_id {
+        if !upload_attempts::claim(partial, id, &metadata) {
+            return Err(upload_changed(path));
+        }
+    }
     Ok(file)
+}
+
+fn trusted_staging(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let own_uid = unsafe { libc::geteuid() };
+    metadata.is_file() && metadata.uid() == own_uid && metadata.permissions().mode() & 0o077 == 0
 }
 
 /// Holds a chunk that is ahead of the staged bytes until the chunks before it have landed. A chunk
 /// at a wrong offset still ends as `file_offset_mismatch`, after this wait.
-fn wait_for_turn(partial: &Path, offset: u64) {
-    let staged = || std::fs::symlink_metadata(partial).map_or(0, |metadata| metadata.len());
+fn wait_for_turn(
+    partial: &Path,
+    path: &Path,
+    offset: u64,
+    upload_id: Option<uuid::Uuid>,
+) -> Result<(), DaemonError> {
     let deadline = Instant::now() + TURN_WAIT;
-    while offset > 0 && staged() < offset && Instant::now() < deadline {
+    while offset > 0 && Instant::now() < deadline {
+        match std::fs::symlink_metadata(partial) {
+            // An established attempt refuses a replaced staging file at open. A new
+            // attempt still waits for its opener to replace any stale untrusted name.
+            Ok(metadata)
+                if !trusted_staging(&metadata) && upload_id.is_none_or(upload_attempts::known) =>
+            {
+                break
+            }
+            Ok(metadata)
+                if metadata.len() >= offset
+                    && upload_id
+                        .is_none_or(|id| upload_attempts::matches(partial, id, &metadata)) =>
+            {
+                break
+            }
+            // The first chunk creates the folders and may still be on its way: only an upload
+            // already started here has lost its folder.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if upload_id.is_some_and(|id| upload_attempts::known(id)) {
+                    if let Some(error) = missing_destination(path) {
+                        // This attempt ends here; a retry to the same path starts over.
+                        upload_attempts::forget(partial, upload_id);
+                        return Err(error);
+                    }
+                }
+            }
+            _ => {}
+        }
         std::thread::sleep(TURN_POLL);
     }
+    Ok(())
+}
+
+fn upload_changed(path: &Path) -> DaemonError {
+    fail("file_upload_changed", format!("The unfinished upload for {} belongs to another attempt or changed. Run the upload again to read its current resumable state.", path.display()))
 }
 
 fn offset_mismatch(path: &Path, have: u64) -> DaemonError {
@@ -450,6 +546,7 @@ pub(crate) fn write(
         &target,
         &staging,
         &StagedChunk {
+            upload_id: Some(request.upload_id),
             offset: request.offset,
             total_size: request.total_size,
             data: &data,
@@ -467,6 +564,8 @@ pub(crate) fn write(
 
 /// One chunk of an upload into an already resolved path.
 pub(crate) struct StagedChunk<'a> {
+    /// External windowed uploads carry an attempt ID; internal workspace slices are serial.
+    pub upload_id: Option<uuid::Uuid>,
     pub offset: u64,
     pub total_size: u64,
     pub data: &'a [u8],
@@ -520,11 +619,23 @@ pub(crate) fn write_at(
             ),
         ));
     }
-    wait_for_turn(&partial, chunk.offset);
-    let mut file = open_staging(&partial, path, chunk.offset)?;
+    wait_for_turn(&partial, path, chunk.offset, chunk.upload_id)?;
+    let mut file = open_staging(&partial, path, chunk.offset, chunk.upload_id)?;
+    #[cfg(test)]
+    test_write_pause::after_admission(&partial, chunk.upload_id);
     file.write_all(chunk.data)
         .map_err(|e| io_failure(path, &e))?;
     file.flush().map_err(|e| io_failure(path, &e))?;
+    if let Some(id) = chunk.upload_id {
+        let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
+        let current = std::fs::symlink_metadata(&partial).map_err(|_| staging_replaced(path))?;
+        if current.dev() != metadata.dev()
+            || current.ino() != metadata.ino()
+            || !upload_attempts::progress(&partial, id, &metadata)
+        {
+            return Err(upload_changed(path));
+        }
+    }
     if end < chunk.total_size {
         return Ok(StagedWrite {
             received: end,
@@ -532,6 +643,8 @@ pub(crate) fn write_at(
         });
     }
     let sha256 = publish(&file, &partial, path, chunk.overwrite, chunk.sha256)?;
+    // Published: this upload is over. A refused publish keeps its staged bytes, so it stays known.
+    upload_attempts::forget(&partial, chunk.upload_id);
     Ok(StagedWrite {
         received: end,
         sha256: Some(sha256),
@@ -548,10 +661,14 @@ pub(crate) fn staged_bytes(staging: &Path) -> u64 {
 
 /// Drops the staging file `staging` of an unfinished upload.
 pub(crate) fn discard_staging(staging: &Path) {
+    upload_attempts::forget(staging, None);
     let _ = std::fs::remove_file(staging);
 }
 
 fn staging_replaced(path: &Path) -> DaemonError {
+    if let Some(error) = missing_destination(path) {
+        return error;
+    }
     fail(
         "file_staging_untrusted",
         format!(
@@ -586,7 +703,7 @@ fn replace(file: &std::fs::File, partial: &Path, path: &Path) -> Result<(), Daem
         if kept {
             let _ = std::fs::remove_file(&previous);
         }
-        return Err(io_failure(path, &error));
+        return Err(upload_failure(path, &error));
     }
     if names_the_open_file(path, file) {
         if kept {
@@ -643,7 +760,7 @@ fn publish(
                     ),
                 )
             } else {
-                io_failure(path, &error)
+                upload_failure(path, &error)
             }
         })?;
         if !names_the_open_file(path, file) {
@@ -685,6 +802,11 @@ mod tests {
         sha: Option<&str>,
     ) -> WriteKernelFileRequest {
         WriteKernelFileRequest {
+            upload_id: uuid::Uuid::from_bytes(
+                Sha256::digest(path.to_string_lossy().as_bytes())[..16]
+                    .try_into()
+                    .unwrap(),
+            ),
             path: path.display().to_string(),
             offset,
             data_base64: STANDARD.encode(bytes),
@@ -759,6 +881,282 @@ mod tests {
             let message = error.to_string();
             assert!(message.contains(&target.display().to_string()));
             assert!(!message.contains(PARTIAL_SUFFIX));
+        }
+    }
+
+    #[test]
+    fn continuing_an_upload_names_the_destination_folder_that_disappeared() {
+        let dir = scratch();
+        let folder = dir.join("incoming");
+        let target = folder.join("upload.txt");
+        write(&chunk(&target, 0, b"a", 2, None)).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        let error = write(&chunk(&target, 1, b"b", 2, None)).unwrap_err();
+        let message = error.to_string();
+        assert_eq!(code(error), "file_destination_missing");
+        assert!(message.contains(&format!(
+            "Destination folder {} no longer exists",
+            folder.display()
+        )));
+        assert!(message.contains("Recreate it or choose another folder"));
+        assert!(!message.contains(PARTIAL_SUFFIX));
+        assert!(!folder.exists());
+    }
+
+    // The record of an upload that failed (its folder was removed) must not make a retried
+    // upload to the same path reject its own out-of-order startup.
+    #[test]
+    fn a_retried_upload_after_a_removed_folder_still_waits_for_its_first_chunk() {
+        let dir = scratch();
+        let target = dir.join("incoming/nested/retry.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        write(&chunk(&target, 0, b"abc", 6, Some(&sha))).unwrap();
+        std::fs::remove_dir_all(dir.join("incoming")).unwrap();
+        let error = write(&chunk(&target, 3, b"def", 6, Some(&sha))).unwrap_err();
+        assert_eq!(code(error), "file_destination_missing");
+
+        // The retry starts from offset 0, but its later chunk runs first and the folders are gone.
+        let mut first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        first.upload_id = uuid::Uuid::new_v4();
+        let mut second = chunk(&target, 3, b"def", 6, Some(&sha));
+        second.upload_id = first.upload_id;
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
+    // The record of an abandoned upload must not make a retried
+    // upload to the same path reject its own out-of-order startup.
+    #[test]
+    fn an_abandoned_upload_without_a_reported_error_does_not_reject_the_retry() {
+        let dir = scratch();
+        let target = dir.join("incoming/nested/retry.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        write(&chunk(&target, 0, b"abc", 6, Some(&sha))).unwrap();
+        std::fs::remove_dir_all(dir.join("incoming")).unwrap();
+
+        // The retry starts from offset 0, but its later chunk runs first and the folders are gone.
+        let mut first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        first.upload_id = uuid::Uuid::new_v4();
+        let mut second = chunk(&target, 3, b"def", 6, Some(&sha));
+        second.upload_id = first.upload_id;
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
+    #[test]
+    fn a_new_attempt_waits_for_its_opener_even_when_the_old_partial_has_enough_bytes() {
+        let dir = scratch();
+        let target = dir.join("replace-partial.bin");
+        write(&chunk(&target, 0, b"abc", 6, None)).unwrap();
+        let mut first = chunk(&target, 0, b"xyz", 6, None);
+        first.upload_id = uuid::Uuid::new_v4();
+        let mut second = chunk(&target, 3, b"uvw", 6, None);
+        second.upload_id = first.upload_id;
+        let opener = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        assert!(written(write(&second).unwrap()).1);
+        assert_eq!(written(opener.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"xyzuvw");
+    }
+
+    #[test]
+    fn a_late_chunk_of_an_old_attempt_cannot_append_or_publish_the_new_one() {
+        let dir = scratch();
+        let target = dir.join("late-old-attempt.bin");
+        write(&chunk(&target, 0, b"abc", 9, None)).unwrap();
+        let mut first = chunk(&target, 0, b"xyz", 9, None);
+        first.upload_id = uuid::Uuid::new_v4();
+        write(&first).unwrap();
+        assert_eq!(
+            code(write(&chunk(&target, 3, b"defghi", 9, None)).unwrap_err()),
+            "file_upload_changed"
+        );
+        assert!(
+            !target.exists(),
+            "the old attempt must not publish the new partial"
+        );
+        assert_eq!(std::fs::read(partial_of(&target)).unwrap(), b"xyz");
+        let mut last = chunk(&target, 3, b"uvw123", 9, None);
+        last.upload_id = first.upload_id;
+        assert!(written(write(&last).unwrap()).1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"xyzuvw123");
+    }
+
+    #[test]
+    fn stat_resumes_a_partial_after_the_kernel_forgot_the_attempt() {
+        let dir = scratch();
+        let target = dir.join("resumed-after-restart.bin");
+        write(&chunk(&target, 0, b"abc", 9, None)).unwrap();
+        upload_attempts::forget(&partial_of(&target), None);
+        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
+            path: target.display().to_string(),
+            with_sha256: false,
+        })
+        .unwrap() else {
+            panic!("a stat response")
+        };
+        assert_eq!(stat.partial_size, Some(3));
+        let mut next = chunk(&target, 3, b"def", 9, None);
+        next.upload_id = stat
+            .partial_upload_id
+            .expect("a partial has its current identity");
+        assert_eq!(written(write(&next).unwrap()).0, 6);
+        let mut last = chunk(&target, 6, b"ghi", 9, None);
+        last.upload_id = next.upload_id;
+        assert!(written(write(&last).unwrap()).1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdefghi");
+    }
+
+    #[test]
+    fn an_upload_through_a_directory_alias_keeps_its_attempt_identity() {
+        for early in [false, true] {
+            let dir = scratch();
+            let real = dir.join("real");
+            std::fs::create_dir(&real).unwrap();
+            let alias = dir.join("alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let target = alias.join("nested/file.bin");
+            if !early {
+                std::fs::create_dir(real.join("nested")).unwrap();
+            }
+            let mut first = chunk(&target, 0, b"abc", 6, None);
+            first.upload_id = uuid::Uuid::new_v4();
+            let mut second = chunk(&target, 3, b"def", 6, None);
+            second.upload_id = first.upload_id;
+            let opener = if early {
+                Some(std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(100));
+                    write(&first)
+                }))
+            } else {
+                assert_eq!(written(write(&first).unwrap()).0, 3);
+                None
+            };
+            let result = write(&second);
+            if let Some(opener) = opener {
+                assert_eq!(written(opener.join().unwrap().unwrap()).0, 3);
+            }
+            assert!(
+                written(result.expect("a directory alias does not change the upload attempt")).1
+            );
+            assert_eq!(
+                std::fs::read(real.join("nested/file.bin")).unwrap(),
+                b"abcdef"
+            );
+        }
+    }
+
+    #[test]
+    fn a_resumed_attempt_cannot_publish_bytes_from_an_already_admitted_old_chunk() {
+        let dir = scratch();
+        let target = dir.join("admitted-resume.bin");
+        let first = chunk(&target, 0, b"abc", 9, None);
+        write(&first).unwrap();
+        let original_id = first.upload_id;
+        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
+            path: target.display().to_string(),
+            with_sha256: false,
+        })
+        .unwrap() else {
+            panic!("a stat response")
+        };
+        let mut original = chunk(&target, 3, b"OLD", 9, None);
+        original.upload_id = original_id;
+        let mut resumed = chunk(&target, 3, b"defghi", 9, None);
+        resumed.upload_id = stat.partial_upload_id.unwrap();
+        let (original_result, resumed_result) = std::thread::scope(|scope| {
+            let pause = test_write_pause::pause(&partial_of(&target), original_id);
+            let original = scope.spawn(move || write(&original));
+            pause.wait_until_admitted();
+            let (done, completed) = std::sync::mpsc::channel();
+            let resumed = scope.spawn(move || {
+                let result = write(&resumed);
+                let _ = done.send(());
+                result
+            });
+            // Before the fix the resumed writer can finish while the old one is admitted.
+            // The fixed writer waits for that admission to finish before checking its offset.
+            let _ = completed.recv_timeout(Duration::from_secs(3));
+            drop(pause);
+            (original.join().unwrap(), resumed.join().unwrap())
+        });
+        if !target.exists() {
+            let mut last = chunk(&target, 6, b"ghi", 9, None);
+            last.upload_id = original_id;
+            write(&last).unwrap();
+        }
+        let bytes = std::fs::read(&target).unwrap();
+        assert_eq!(
+            bytes.len(),
+            9,
+            "a resumed upload must not install an old admitted append"
+        );
+        assert_eq!(bytes, b"abcOLDghi");
+        assert!(
+            original_result.is_ok(),
+            "the admitted original chunk finishes first"
+        );
+        assert_eq!(code(resumed_result.unwrap_err()), "file_offset_mismatch");
+    }
+
+    #[test]
+    fn a_fresh_windowed_upload_waits_for_its_opener_to_replace_stale_untrusted_staging() {
+        use std::os::unix::fs::PermissionsExt;
+        for stale_link in [true, false] {
+            let dir = scratch();
+            let target = dir.join("stale-name.bin");
+            let partial = partial_of(&target);
+            let untouched = dir.join("absent-target");
+            if stale_link {
+                std::os::unix::fs::symlink(&untouched, &partial).unwrap();
+            } else {
+                std::fs::write(&partial, b"old").unwrap();
+                std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
+                path: target.display().to_string(),
+                with_sha256: false,
+            })
+            .unwrap() else {
+                panic!("a stat response")
+            };
+            assert_eq!(
+                stat.partial_size, None,
+                "untrusted staging is not resumable"
+            );
+            assert_eq!(stat.partial_upload_id, None);
+            let mut first = chunk(&target, 0, b"abc", 6, None);
+            first.upload_id = uuid::Uuid::new_v4();
+            let mut later = chunk(&target, 3, b"def", 6, None);
+            later.upload_id = first.upload_id;
+            let opener = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                write(&first)
+            });
+            let result = write(&later);
+            let opened = opener.join().unwrap();
+            assert_eq!(written(opened.unwrap()).0, 3);
+            assert!(written(result.expect("a fresh attempt waits for its own private opener")).1);
+            assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+            assert!(
+                !untouched.exists(),
+                "the stale symlink's target is never written"
+            );
         }
     }
 
@@ -918,19 +1316,23 @@ mod tests {
     #[test]
     fn a_chunk_that_starts_ahead_of_the_one_before_it_waits_for_it() {
         let dir = scratch();
-        let target = dir.join("early.bin");
-        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
-        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
-        let second = chunk(&target, 3, b"def", 6, Some(&sha));
-        let late = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            write(&first)
-        });
-        let outcome = written(write(&second).unwrap());
-        assert_eq!(outcome.0, 6);
-        assert!(outcome.1);
-        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
-        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+        // The second target sits under folders that only the first chunk creates.
+        for target in [dir.join("early.bin"), dir.join("new/nested/early.bin")] {
+            let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+            let mut first = chunk(&target, 0, b"abc", 6, Some(&sha));
+            first.upload_id = uuid::Uuid::new_v4();
+            let mut second = chunk(&target, 3, b"def", 6, Some(&sha));
+            second.upload_id = first.upload_id;
+            let late = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                write(&first)
+            });
+            let outcome = written(write(&second).unwrap());
+            assert_eq!(outcome.0, 6);
+            assert!(outcome.1);
+            assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+            assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+        }
     }
 
     // On a slow uplink the chunk ahead can land seconds after the one behind it.
@@ -939,8 +1341,10 @@ mod tests {
         let dir = scratch();
         let target = dir.join("late.bin");
         let sha = format!("{:x}", Sha256::digest(b"abcdef"));
-        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
-        let second = chunk(&target, 3, b"def", 6, Some(&sha));
+        let mut first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        first.upload_id = uuid::Uuid::new_v4();
+        let mut second = chunk(&target, 3, b"def", 6, Some(&sha));
+        second.upload_id = first.upload_id;
         let late = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(2500));
             write(&first)
@@ -1016,7 +1420,7 @@ mod tests {
                 std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
             }
             let partial = partial_of(&target);
-            let mut file = open_staging(&partial, &target, 0).unwrap();
+            let mut file = open_staging(&partial, &target, 0, None).unwrap();
             file.write_all(b"fresh").unwrap();
             std::fs::remove_file(&partial).unwrap();
             std::os::unix::fs::symlink(&victim, &partial).unwrap();
@@ -1044,7 +1448,7 @@ mod tests {
         std::fs::write(&target, b"old").unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
         let partial = partial_of(&target);
-        let mut file = open_staging(&partial, &target, 0).unwrap();
+        let mut file = open_staging(&partial, &target, 0, None).unwrap();
         file.write_all(b"fresh").unwrap();
         std::fs::remove_file(&partial).unwrap();
         std::os::unix::fs::symlink(&victim, &partial).unwrap();
@@ -1066,7 +1470,7 @@ mod tests {
         // The unraced path installs the new bytes and leaves no backup behind.
         let partial = partial_of(&target);
         std::fs::remove_file(&partial).ok();
-        let mut file = open_staging(&partial, &target, 0).unwrap();
+        let mut file = open_staging(&partial, &target, 0, None).unwrap();
         file.write_all(b"fresh").unwrap();
         replace(&file, &partial, &target).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"fresh");

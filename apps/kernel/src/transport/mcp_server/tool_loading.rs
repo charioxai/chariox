@@ -4,46 +4,43 @@
 //! lists only their names. The tools below are marked to load upfront with the
 //! documented `anthropic/alwaysLoad` tool metadata; every other tool costs a
 //! name until the agent asks for it.
-use crate::transport::runtime_tools::{
-    RuntimeToolSpec, ACK_WORKFLOW_TURN_TOOL, AGENTS_RUN_TOOL, PERMISSION_PROMPT_TOOL,
-    READ_WORKFLOW_TURN_CONTEXT_TOOL, VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
-    VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL, VALIDATE_WORKFLOW_HANDOFF_TOOL,
-    WORKFLOW_CONSOLE_CLEAR_TOOL, WORKFLOW_CONSOLE_READ_TOOL, WORKFLOW_CONSOLE_WRITE_TOOL,
-};
+use std::sync::OnceLock;
+
+use crate::transport::runtime_tools::RuntimeToolSpec;
 
 pub(super) const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
-/// What an agent needs when a wake reaches it (inbox, acknowledge), the one call that
-/// delegates work and answers in place, and what Claude Code needs to run a permission
-/// prompt. Every other tool is used by a minority of runs: loaded on demand it costs a name,
-/// loaded upfront it costs its schema on every call.
-const AGENT_UPFRONT_TOOLS: [&str; 4] = [
-    AGENTS_RUN_TOOL,
-    "chariox.events.ack",
-    "chariox.events.inbox",
-    PERMISSION_PROMPT_TOOL,
-];
+/// The one list of tools a provider's agent holds before its first call
+/// (`scripts/checks/agent-tools-on-demand.mjs` holds it to that list: a tool added
+/// to it needs a reviewed `budget raised:` line). `agent` is what an agent needs when a wake
+/// reaches it plus delegation and the permission prompt; a `sub_agent` reads its task, answers
+/// and asks for help; a workflow node must not have to search for the tools its turn ends with.
+const UPFRONT_TOOLS: &str = include_str!("../../../agent_upfront_tools.json");
 
-/// An agent another agent started reads its task, answers and asks for help;
-/// waiting, messaging and Vault-filled commands load when it needs them.
-const SUB_AGENT_UPFRONT_TOOLS: [&str; 4] = [
-    "chariox.events.ack",
-    "chariox.events.blocked",
-    "chariox.events.inbox",
-    PERMISSION_PROMPT_TOOL,
-];
-
-/// A workflow node must not have to search for the tools its turn ends with.
-const WORKFLOW_TURN_UPFRONT_TOOLS: [&str; 8] = [
-    ACK_WORKFLOW_TURN_TOOL,
-    VALIDATE_WORKFLOW_HANDOFF_TOOL,
-    VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
-    VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
-    READ_WORKFLOW_TURN_CONTEXT_TOOL,
-    WORKFLOW_CONSOLE_READ_TOOL,
-    WORKFLOW_CONSOLE_WRITE_TOOL,
-    WORKFLOW_CONSOLE_CLEAR_TOOL,
-];
+/// Names `provider` holds upfront in `role`; empty for a provider or role the list does not name
+/// as a list of names (`"*"` means the whole catalog).
+pub(super) fn upfront_names(provider: &str, role: &str) -> &'static [String] {
+    type Lists =
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>;
+    static LISTS: OnceLock<std::collections::BTreeMap<(String, String), Vec<String>>> =
+        OnceLock::new();
+    LISTS
+        .get_or_init(|| {
+            let lists: Lists =
+                serde_json::from_str(UPFRONT_TOOLS).expect("agent_upfront_tools.json is JSON");
+            lists
+                .into_iter()
+                .flat_map(|(provider, roles)| {
+                    roles.into_iter().filter_map(move |(role, names)| {
+                        let names: Vec<String> = serde_json::from_value(names).ok()?;
+                        Some(((provider.clone(), role), names))
+                    })
+                })
+                .collect()
+        })
+        .get(&(provider.to_owned(), role.to_owned()))
+        .map_or(&[], Vec::as_slice)
+}
 
 /// Shown to Claude Code at session start, before any tool is loaded: it says
 /// that more tools exist and how to load them.
@@ -92,12 +89,13 @@ impl ClaudeLoading {
     }
 
     pub(super) fn loads_upfront(self, tool_name: &str) -> bool {
-        let own: &[&str] = if self.sub_agent {
-            &SUB_AGENT_UPFRONT_TOOLS
-        } else {
-            &AGENT_UPFRONT_TOOLS
-        };
-        own.contains(&tool_name) || WORKFLOW_TURN_UPFRONT_TOOLS.contains(&tool_name)
+        let role = if self.sub_agent { "sub_agent" } else { "agent" };
+        [
+            upfront_names("claude", role),
+            upfront_names("claude", "workflow_turn"),
+        ]
+        .iter()
+        .any(|names| names.iter().any(|name| name == tool_name))
     }
 }
 

@@ -126,7 +126,8 @@ pub(super) use job_compute::stand_in_kernel;
 mod jobs;
 mod kernel_enrollment;
 mod leased_agent_file_serve;
-mod machine_acquisition;
+pub(crate) mod machine_acquisition;
+mod owner_wait;
 pub(crate) use machine_acquisition::Approval;
 mod machine_files_runtime;
 pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
@@ -156,6 +157,7 @@ pub(crate) use jobs::JobHandover;
 #[cfg(test)]
 pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
+pub(crate) use sudo::{LimitGrant, RequestedRaise};
 #[cfg(test)]
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
 pub(crate) use sudo::{
@@ -262,6 +264,8 @@ pub(crate) struct KernelRuntimeState {
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
+    prompt_abort_flush_probe: Option<Arc<prompt_abort_settlement_runtime::PromptAbortFlushProbe>>,
+    #[cfg(test)]
     disk_volume_probe: Option<DiskVolumeProbe>,
     #[cfg(test)]
     queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
@@ -280,6 +284,8 @@ pub(crate) struct KernelRuntimeState {
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
     /// File transfers whose destination is this kernel.
     file_transfers: Arc<crate::machine_files::TransferJobs>,
+    account_copy_waits: provider_account_copy_wait::AccountCopyWaits,
+    kernel_resource_changes: crate::transport::kernel_resource_feed::KernelResourceChanges,
     peer_file_watches: Arc<file_watch_runtime::PeerFileWatches>,
     /// One pass at a time deletes the peers whose creator ended.
     created_peer_release: Arc<tokio::sync::Mutex<()>>,
@@ -486,6 +492,8 @@ struct KernelRuntimeOwnedState {
     pending_settings_notices: agent_settings_change::PendingSettingsNotices,
     /// When the kernel last sent a usage-limit resume, to stagger the next one.
     usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
+    /// Which accounts were blocked at the last look, to see one come back.
+    usage_reset_watch: Arc<std::sync::Mutex<usage_reset_runtime::UsageResetWatch>>,
     /// The agents whose claimed resume this kernel is still sending.
     usage_limit_sends: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// The agents whose last resume failed, so the pane says why once.
@@ -505,6 +513,9 @@ struct KernelRuntimeOwnedState {
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
     provider_decisions_closed: tokio::sync::watch::Sender<bool>,
+    /// Set when the kernel starts to stop (a restart or a hot reload): a card that ends from then on
+    /// ended because of the stop, not because the owner or the clock decided.
+    kernel_stopping: Arc<std::sync::atomic::AtomicBool>,
     browser_region_cards: Arc<std::sync::Mutex<BTreeSet<String>>>,
     handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
@@ -634,12 +645,14 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod notification_pane_status;
 mod notification_subscriptions;
 mod owner_action_notifications;
 mod run_finished_notifications;
 mod usage_limit_interactions;
 mod usage_limit_runtime;
 mod usage_limit_stop_transitions;
+mod usage_reset_runtime;
 mod wake_driver;
 mod watchers;
 #[cfg(test)]
@@ -679,6 +692,7 @@ mod gateway_requester;
 mod project_runtime_state;
 pub(crate) use project_runtime_state::{ManagedContextRegistrationFailure, RetainedProjects};
 mod prompt;
+mod prompt_abort_settlement_runtime;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
@@ -695,10 +709,12 @@ mod provider_account_admission;
 mod provider_account_authority;
 mod provider_account_copy;
 mod provider_account_copy_offer;
+mod provider_account_copy_wait;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 pub(crate) mod provider_launch_owned_state;
 mod provider_launch_runtime;
+mod provider_usage_owned_state;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod claude_setup_token_capture;
 mod provider_liveness_runtime;
@@ -756,7 +772,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
-pub(crate) use runtime_interaction_owned_state::{CardKind, LiveRoomCard};
+pub(crate) use runtime_interaction_owned_state::{InteractionSurface, LiveRoomInteraction};
 mod browser_input_log;
 mod browser_region_card;
 mod disk_pressure;
@@ -1020,6 +1036,7 @@ impl KernelRuntimeState {
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
         let (
+            kernel_resource_changes,
             completed_git_turn_snapshots,
             provider_process_projection,
             provider_launch_failure_retries,
@@ -1044,6 +1061,7 @@ impl KernelRuntimeState {
             loop {
                 if let Ok(app) = app.try_lock() {
                     break (
+                        app.kernel_resource_changes(),
                         app.completed_git_turn_snapshot_store(),
                         app.provider_process_projection_store(),
                         app.provider_launch_failure_retry_store(),
@@ -1258,6 +1276,8 @@ impl KernelRuntimeState {
             #[cfg(test)]
             app_lock_wait_probe: None,
             #[cfg(test)]
+            prompt_abort_flush_probe: None,
+            #[cfg(test)]
             disk_volume_probe: None,
             #[cfg(test)]
             queue_promotion_exit_probe: None,
@@ -1271,6 +1291,8 @@ impl KernelRuntimeState {
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
             file_transfers: Default::default(),
+            account_copy_waits: Default::default(),
+            kernel_resource_changes,
             peer_file_watches: Default::default(),
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
@@ -1302,6 +1324,14 @@ impl KernelRuntimeState {
                         provider_run_projection.clone(),
                         session_projection.clone(),
                         config_projection.clone(),
+                        Box::new({
+                            let agents = agent_store.clone();
+                            move || agents.list_agents().into_iter().filter(|agent| !agent.archived())
+                                .filter_map(|agent| agent.usage_limit_stop().filter(|stop| matches!(stop.state,
+                                    crate::agent::UsageLimitStopState::Armed { .. } | crate::agent::UsageLimitStopState::Asking))
+                                    .map(|stop| (stop.provider.clone(), stop.account_profile.clone())))
+                                .collect()
+                        }),
                     ),
                 app_control,
                 dev_app_bindings: Default::default(),
@@ -1437,6 +1467,7 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs,
                 pending_settings_notices: Default::default(),
                 usage_limit_resumes: Default::default(),
+                usage_reset_watch: Default::default(),
                 usage_limit_sends: Default::default(),
                 usage_limit_resume_failures: Default::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
@@ -1452,6 +1483,7 @@ impl KernelRuntimeState {
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 provider_decisions_closed: tokio::sync::watch::channel(false).0,
+                kernel_stopping: Arc::default(),
                 browser_region_cards: Arc::default(),
                 handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
@@ -1535,11 +1567,14 @@ impl KernelRuntimeState {
         if let Some(probe) = &self.app_lock_wait_probe {
             probe.notify_one();
         }
+        let holder = crate::runtime::app_lock::operation_name(&operation);
         let (result, dispatches) = {
             let mut app =
                 crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                     .await;
+            let held = crate::runtime::app_lock::mark_holder(holder);
             let result = operation(&mut app);
+            drop(held);
             let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
             (result, dispatches)
         };
@@ -1563,8 +1598,11 @@ impl KernelRuntimeState {
             if let Some(probe) = probe {
                 probe.notify_one();
             }
+            let holder = crate::runtime::app_lock::operation_name(&operation);
             let mut app = app.blocking_lock();
+            let held = crate::runtime::app_lock::mark_holder(holder);
             let result = operation(&mut app);
+            drop(held);
             let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
             (result, dispatches)
         })
@@ -1613,8 +1651,11 @@ impl KernelRuntimeState {
     ) -> Option<R> {
         let can_spawn_dispatches = tokio::runtime::Handle::try_current().is_ok();
         let (result, dispatches) = {
+            let holder = crate::runtime::app_lock::operation_name(&operation);
             let mut app = self.app.try_lock().ok()?;
+            let held = crate::runtime::app_lock::mark_holder(holder);
             let result = operation(&mut app);
+            drop(held);
             let dispatches = if can_spawn_dispatches {
                 app.take_deferred_workflow_remote_prompt_dispatches()
             } else {
@@ -1816,9 +1857,9 @@ mod room_agent_admission;
 mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
-mod agent_deadline_cards;
 mod agent_deadline_notices;
 mod agent_deadline_runtime;
+mod agent_deadline_status;
 mod leased_agent_deadline_rearm;
 mod provider_terminal_pane;
 mod spawned_agent_facts;

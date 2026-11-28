@@ -252,6 +252,10 @@ impl InboxEvent {
             || (self.kind == "child_finished"
                 && self.payload["child_task_id"].as_str() == Some(source))
     }
+    /// A loss or ended child limit needs handling, not only a transport receipt.
+    pub(crate) fn needs_handling(&self) -> bool {
+        self.is_loss() || self.kind == "child_time_limit_ended"
+    }
     /// The source did not finish its work.
     pub(crate) fn is_loss(&self) -> bool {
         self.kind == "source_lost"
@@ -614,6 +618,12 @@ pub(crate) enum Operation {
     },
     /// An inbox read returned these rows to the agent: only shown rows can be acknowledged through a range.
     MarkShown {
+        room: String,
+        agent: String,
+        sequences: Vec<u64>,
+    },
+    /// The explicit inbox tool successfully returned these rows to their recipient.
+    MarkRead {
         room: String,
         agent: String,
         sequences: Vec<u64>,

@@ -93,6 +93,25 @@ impl OwnedProcessSignals {
         Self::capture_pid(pid, false, None)
     }
 
+    /// The retained PTY child reserves this PID until its manager reaps it.
+    pub(crate) fn for_pty_child(child: &dyn portable_pty::Child) -> io::Result<Self> {
+        let pid = child
+            .process_id()
+            .ok_or_else(|| io::Error::other("PTY child PID unavailable"))?;
+        Self::capture_pid(pid, false, None)
+    }
+
+    pub(crate) fn has_running_owned_processes(&self) -> io::Result<bool> {
+        #[cfg(target_os = "linux")]
+        return self.all_exited().map(|exited| !exited);
+        #[cfg(not(target_os = "linux"))]
+        Ok(snapshot()?.iter().any(|row| {
+            self.owned
+                .get(&row.pid)
+                .is_some_and(|start| !start.is_empty() && row.start == *start)
+        }))
+    }
+
     fn capture(
         child: &Child,
         launched_exclusive_session: bool,

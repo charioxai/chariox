@@ -9,6 +9,8 @@ use std::future::Future;
 use crate::agent::RemoteAgentBinding;
 use crate::error::DaemonError;
 
+// The account callback receives true only after a definitive missing-account response;
+// ordinary cold preparation reuses a recorded copy, while recovery replaces a lost one.
 pub(super) async fn launch_with_one_binding_refresh<
     Response,
     EnsureAccount,
@@ -24,7 +26,7 @@ pub(super) async fn launch_with_one_binding_refresh<
     mut refresh: Refresh,
 ) -> Result<(Response, RemoteAgentBinding), DaemonError>
 where
-    EnsureAccount: FnMut() -> EnsureAccountFuture,
+    EnsureAccount: FnMut(bool) -> EnsureAccountFuture,
     EnsureAccountFuture: Future<Output = Result<(), DaemonError>>,
     Send: FnMut(RemoteAgentBinding) -> SendFuture,
     SendFuture: Future<Output = Result<Response, DaemonError>>,
@@ -33,20 +35,31 @@ where
 {
     ensure_compatible_binding(&initial_binding)?;
     account_for_binding(&initial_binding, &mut ensure_account).await?;
-    match send(initial_binding.clone()).await {
-        Ok(response) => Ok((response, initial_binding)),
-        Err(error)
-            if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(
-                &error,
-            ) =>
-        {
-            let refreshed_binding = refresh().await?;
-            ensure_compatible_binding(&refreshed_binding)?;
-            account_for_binding(&refreshed_binding, &mut ensure_account).await?;
-            let response = send(refreshed_binding.clone()).await?;
-            Ok((response, refreshed_binding))
+    let mut binding = initial_binding;
+    let mut account_reinstall_used = false;
+    let mut binding_refresh_used = false;
+    loop {
+        match send(binding.clone()).await {
+            Ok(response) => return Ok((response, binding)),
+            Err(error)
+                if !account_reinstall_used
+                    && super::remote_prompt_worker_submission_runtime::remote_prompt_error_is_account_missing(&error) =>
+            {
+                // Only this definitive pre-admission refusal permits account repair and replay.
+                account_reinstall_used = true;
+                ensure_account(true).await?;
+            }
+            Err(error)
+                if !binding_refresh_used
+                    && super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(&error) =>
+            {
+                binding_refresh_used = true;
+                binding = refresh().await?;
+                ensure_compatible_binding(&binding)?;
+                account_for_binding(&binding, &mut ensure_account).await?;
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) => Err(error),
     }
 }
 
@@ -70,13 +83,13 @@ async fn account_for_binding<EnsureAccount, EnsureAccountFuture>(
     ensure_account: &mut EnsureAccount,
 ) -> Result<(), DaemonError>
 where
-    EnsureAccount: FnMut() -> EnsureAccountFuture,
+    EnsureAccount: FnMut(bool) -> EnsureAccountFuture,
     EnsureAccountFuture: Future<Output = Result<(), DaemonError>>,
 {
     if binding.active_worker_provider_run_id.is_some() {
         return Ok(());
     }
-    ensure_account().await
+    ensure_account(false).await
 }
 
 #[cfg(test)]
@@ -117,7 +130,7 @@ mod tests {
                 binding(protocol, None),
                 {
                     let account_calls = Arc::clone(&account_calls);
-                    move || {
+                    move |_recover_missing| {
                         account_calls.fetch_add(1, Ordering::SeqCst);
                         std::future::ready(Ok(()))
                     }
@@ -157,7 +170,7 @@ mod tests {
             ),
             {
                 let account_calls = Arc::clone(&account_calls);
-                move || {
+                move |_recover_missing| {
                     account_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Err(DaemonError::InvalidConfig {
                         field: "provider account",
@@ -188,7 +201,7 @@ mod tests {
                 Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
                 None,
             ),
-            || {
+            |_recover_missing| {
                 std::future::ready(Err(DaemonError::InvalidConfig {
                     field: "provider account",
                     message: "the account could not be copied to the worker",
@@ -213,6 +226,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_native_hint_repairs_missing_copy_once_before_retry() {
+        let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+        for repeated_missing in [false, true] {
+            let account_calls = Arc::new(AtomicUsize::new(0));
+            let send_calls = Arc::new(AtomicUsize::new(0));
+            let result = launch_with_one_binding_refresh(
+                binding(Some(current), Some("gone-worker-run")),
+                {
+                    let calls = Arc::clone(&account_calls);
+                    move |recover_missing| {
+                        assert!(recover_missing, "stale hints must force repair of an installed copy");
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        std::future::ready(Ok(()))
+                    }
+                },
+                {
+                    let calls = Arc::clone(&send_calls);
+                    move |_| {
+                        let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+                        std::future::ready(if first || repeated_missing {
+                            Err(DaemonError::RelayTransport {
+                                operation: "read relay peer response",
+                                code: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE.into(),
+                                message: "worker no longer holds the selected account".into(),
+                                retryable: false,
+                            })
+                        } else {
+                            Ok("launched-from-copy")
+                        })
+                    }
+                },
+                || std::future::ready(Err(DaemonError::InternalInvariant {
+                    operation: "refresh test binding",
+                    message: "a missing account does not require a new lease".into(),
+                })),
+            ).await;
+            assert_eq!(account_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(send_calls.load(Ordering::SeqCst), 2);
+            if repeated_missing {
+                assert!(
+                    result.is_err(),
+                    "a repeated missing response must stop, not loop"
+                );
+            } else {
+                assert_eq!(result.unwrap().0, "launched-from-copy");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn stale_remote_native_lease_refreshes_once_and_revalidates_the_account() {
         let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
         let account_calls = Arc::new(AtomicUsize::new(0));
@@ -222,7 +285,7 @@ mod tests {
             binding(Some(current), Some("stale-worker-run")),
             {
                 let account_calls = Arc::clone(&account_calls);
-                move || {
+                move |_recover_missing| {
                     account_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Ok(()))
                 }
@@ -272,7 +335,7 @@ mod tests {
             binding(Some(current), Some("stale-worker-run")),
             {
                 let account_calls = Arc::clone(&account_calls);
-                move || {
+                move |_recover_missing| {
                     account_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Ok(()))
                 }
@@ -308,7 +371,7 @@ mod tests {
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let result = launch_with_one_binding_refresh(
             binding(Some(current), Some("stale-worker-run")),
-            || std::future::ready(Ok(())),
+            |_recover_missing| std::future::ready(Ok(())),
             {
                 let send_calls = Arc::clone(&send_calls);
                 move |_| {

@@ -31,9 +31,13 @@ fn node_state(
     agent: &AgentInstance,
     pending: bool,
     turn: NodeTurn,
+    deadline_reached: bool,
 ) -> AgentTreeState {
     if agent.archived() {
         return AgentTreeState::Ended;
+    }
+    if deadline_reached {
+        return AgentTreeState::TimeLimitEnded;
     }
     if agent.state() == crate::agent::AgentState::Error {
         return AgentTreeState::Error;
@@ -62,7 +66,10 @@ fn totals_of(nodes: &[AgentTreeNode]) -> AgentTreeTotals {
             .filter(|node| {
                 !matches!(
                     node.state,
-                    AgentTreeState::Idle | AgentTreeState::Ended | AgentTreeState::Error
+                    AgentTreeState::Idle
+                        | AgentTreeState::Ended
+                        | AgentTreeState::Error
+                        | AgentTreeState::TimeLimitEnded
                 )
             })
             .count() as u32,
@@ -168,7 +175,7 @@ pub(crate) fn project_agent_tree(
     agents: &[AgentInstance],
     root: &str,
     held_by_agent: &dyn Fn(&RuntimeSession, &str) -> bool,
-    deadline_ms: &dyn Fn(&AgentInstance) -> Option<u64>,
+    deadline_of: &dyn Fn(&AgentInstance) -> Option<(u64, crate::local::AgentDeadlineState)>,
     turn_of: &dyn Fn(&AgentInstance) -> Option<NodeTurn>,
     liveness_of: &dyn Fn(&AgentInstance) -> Option<crate::runtime::projection::AgentLiveness>,
     find_room: &dyn Fn(&str) -> Option<RuntimeSession>,
@@ -218,7 +225,10 @@ pub(crate) fn project_agent_tree(
             .any(|interaction| !held_by_agent(room, interaction.id()));
         let turn = turn_of(agent).unwrap_or_default();
         let liveness = liveness_of(agent).and_then(node_liveness);
-        let mut state = node_state(room, agent, !pending.is_empty(), turn);
+        let deadline = deadline_of(agent);
+        let deadline_reached =
+            deadline.is_some_and(|(_, state)| state == crate::local::AgentDeadlineState::Reached);
+        let mut state = node_state(room, agent, !pending.is_empty(), turn, deadline_reached);
         // A live process, job or timer outlives its turn (the task settled, the agent is idle): the node is waiting
         // on it, and a client that counts live nodes keeps the node.
         if state == AgentTreeState::Idle
@@ -275,8 +285,11 @@ pub(crate) fn project_agent_tree(
             state,
             outcome: turn.outcome,
             needs_user: user_holds
-                && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
-            deadline_ms: deadline_ms(agent),
+                && !matches!(
+                    state,
+                    AgentTreeState::Ended | AgentTreeState::Error | AgentTreeState::TimeLimitEnded
+                ),
+            deadline_ms: deadline.map(|(ms, _)| ms),
             created_at_ms: agent.created_at_ms(),
             usage_limit_stop: agent.usage_limit_wait().cloned(),
             liveness,
@@ -306,7 +319,9 @@ mod tests {
             agents,
             root,
             &|_, interaction| held_by_agent(interaction),
-            &|agent| deadline_ms(agent.id()),
+            &|agent| {
+                deadline_ms(agent.id()).map(|ms| (ms, crate::local::AgentDeadlineState::Armed))
+            },
             &|agent| turn_of(agent.id()),
             &|_| None,
             &|_| None,

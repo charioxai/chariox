@@ -53,7 +53,7 @@ async fn get_session_state_reconciles_a_stale_projection_without_app_lock_access
     let _resolution = router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session_id,
             interaction,
         )
@@ -149,7 +149,7 @@ async fn runtime_interaction_registration_and_resolution_wake_terminal_subscribe
     let receiver = router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session_id,
             interaction,
         )
@@ -215,7 +215,7 @@ async fn runtime_interaction_rejects_agent_outside_session() {
     let error = router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &first_session_id,
             interaction,
         )
@@ -292,7 +292,7 @@ async fn subscription_snapshot_includes_runtime_interaction_projection() {
     let _resolution = router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session_id,
             interaction,
         )

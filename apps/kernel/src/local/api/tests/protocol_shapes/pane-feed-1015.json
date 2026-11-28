@@ -1,5 +1,5 @@
 {
-  "local": 1016,
+  "local": 1017,
   "requests": [
     {
       "GetPaneFeed": {
@@ -21,6 +21,13 @@
         "session_id": "room-1",
         "agent_id": "agent-1",
         "effort": "high"
+      }
+    },
+    {
+      "ReportPaneSettings": {
+        "session_id": "room-1",
+        "agent_id": "agent-1",
+        "effort": null
       }
     }
   ],

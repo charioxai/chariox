@@ -300,6 +300,26 @@ impl ProviderProcessService {
         })
     }
 
+    pub(crate) fn bind_turn_substitute_to_admitted_prompt(
+        &mut self,
+        run_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        requested_prompt_id: &str,
+        admitted_prompt_id: &str,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        if run.session_id() != session_id || run.agent_instance_id() != Some(agent_id) {
+            return Err(DaemonError::InternalInvariant {
+                operation: "bind admitted substitute turn",
+                message: "The provider run does not match the prompt admission".into(),
+            });
+        }
+        Ok(run
+            .bind_turn_substitute_to_admitted_prompt(requested_prompt_id, admitted_prompt_id)?
+            .then(|| run.clone()))
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.runs
             .get(run_id)

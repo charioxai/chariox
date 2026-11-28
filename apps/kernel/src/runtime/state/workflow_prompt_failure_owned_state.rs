@@ -1545,7 +1545,7 @@ mod tests {
         let answer = fixture
             .runtime
             .create_runtime_interaction_with_forwarding(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &fixture.session_id,
                 interaction,
                 None,
@@ -1614,7 +1614,7 @@ mod tests {
         let _pending = fixture
             .runtime
             .create_runtime_interaction_with_forwarding(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &fixture.session_id,
                 interaction,
                 None,

@@ -443,6 +443,11 @@ impl RuntimeProviderRun {
     pub fn pty_env(&self) -> &BTreeMap<String, String> {
         &self.pty_env
     }
+    #[cfg(test)]
+    pub(crate) fn with_pty_env(mut self, pty_env: BTreeMap<String, String>) -> Self {
+        self.pty_env = pty_env;
+        self
+    }
 
     /// Only the provider process receives the agent credential. Keeping it out
     /// of the stored launch environment also keeps it out of snapshots.
@@ -571,6 +576,25 @@ impl RuntimeProviderRun {
 
     pub(crate) fn mark_settings_stale(&mut self) {
         self.settings_stale = true;
+    }
+
+    /// Owner admission may replace a draft id before the first dispatch.
+    pub(crate) fn bind_turn_substitute_to_admitted_prompt(
+        &mut self,
+        requested_prompt_id: &str,
+        admitted_prompt_id: &str,
+    ) -> Result<bool, crate::error::DaemonError> {
+        let Some(turn) = self.turn_substitute.as_mut() else {
+            return Ok(false);
+        };
+        if turn.prompt_id != requested_prompt_id {
+            return Err(crate::error::DaemonError::InternalInvariant {
+                operation: "bind admitted substitute turn",
+                message: "The substitute turn does not match the prompt admission".into(),
+            });
+        }
+        turn.prompt_id = admitted_prompt_id.to_string();
+        Ok(true)
     }
 
     pub(crate) fn turn_substitute(&self) -> Option<&super::TurnSubstitute> {
@@ -1126,6 +1150,10 @@ fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderRunTokenUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<crate::usage_accounting::Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_accounting: Option<crate::usage_accounting::Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tokens: Option<u64>,
@@ -1138,6 +1166,8 @@ pub struct ProviderRunTokenUsage {
 impl ProviderRunTokenUsage {
     pub fn from_total_tokens(total_tokens: u64) -> Self {
         Self {
+            accounting: None,
+            turn_accounting: None,
             total_tokens: Some(total_tokens),
             last_tokens: None,
             context_tokens: None,
@@ -1146,7 +1176,9 @@ impl ProviderRunTokenUsage {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.total_tokens.is_none()
+        self.accounting.is_none()
+            && self.turn_accounting.is_none()
+            && self.total_tokens.is_none()
             && self.last_tokens.is_none()
             && self.context_tokens.is_none()
             && self.context_window.is_none()

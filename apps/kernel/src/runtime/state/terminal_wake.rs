@@ -239,7 +239,7 @@ impl KernelRuntimeState {
             )
             .await
             .map_err(|error| ledger::error(error.to_string()))?;
-        let RoomTerminalResult::Listed { terminals } = listed else {
+        let RoomTerminalResult::Listed { terminals, .. } = listed else {
             return Err(ledger::error(
                 "the worker answered a terminal list with something else",
             ));

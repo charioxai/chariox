@@ -587,7 +587,7 @@ pub(super) fn remote_prompt_error_is_reconciliation_pending(error: &DaemonError)
     )
 }
 
-fn remote_prompt_error_is_account_missing(error: &DaemonError) -> bool {
+pub(super) fn remote_prompt_error_is_account_missing(error: &DaemonError) -> bool {
     matches!(
         error,
         DaemonError::RelayTransport { operation, code, .. }

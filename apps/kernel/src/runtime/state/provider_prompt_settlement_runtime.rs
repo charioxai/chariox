@@ -440,6 +440,33 @@ impl KernelRuntimeState {
                     started_next_prompt: false,
                 });
             }
+            if owned
+                .provider_store
+                .run_uses_structured_prompt_io(&provider_run)
+            {
+                self.finish_owned_prompt_abort(
+                    &crate::app::KernelPromptAbortDispatch {
+                        session_id: session_id.into(),
+                        provider_run_id: provider_run_id.into(),
+                        prompt_id: active_prompt.id().into(),
+                        source_attachment_id: active_prompt.source_attachment_id().into(),
+                        pty_input: b"\x03",
+                    },
+                    false,
+                )
+                .await?;
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: true,
+                    cancelled_prompt: true,
+                    started_next_prompt: owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(
+                            &owned.session_store.get_session(session_id)?,
+                            &agent_id,
+                        )
+                        .is_some(),
+                });
+            }
             let task_settlement = owned.settle_agent_task(
                 session_id,
                 &agent_id,
@@ -926,12 +953,19 @@ impl KernelRuntimeState {
             owned.prepare_turn_substitute_return_handoff(&provider_run);
         }
         let started_next_on_run = completion.completion.started_next.is_some();
-        if let Some(dispatch) = completion.dispatch {
-            if let Err(error) = self
-                .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-                .await
-            {
-                let _ = self.fail_prompt_dispatch(dispatch, error).await;
+        if let Some(next) = completion.dispatch {
+            match next {
+                super::owned::NextPromptDispatch::Submit(dispatch) => {
+                    if let Err(error) = self
+                        .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                        .await
+                    {
+                        let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                    }
+                }
+                super::owned::NextPromptDispatch::Failed(dispatch, error) => {
+                    let _ = self.fail_unprepared_prompt(dispatch, error).await;
+                }
             }
         } else if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
             owned

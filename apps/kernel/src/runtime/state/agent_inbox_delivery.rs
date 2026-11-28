@@ -269,6 +269,19 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        // Usage recovery owns the next turn. Preserve notes until it claims the stop or an
+        // accepted prompt clears it, rather than trying the exhausted account for every note.
+        if active.is_none()
+            && event.kind == "message"
+            && self
+                .owned
+                .agent_store
+                .get_agent(agent)?
+                .usage_limit_wait()
+                .is_some()
+        {
+            return Ok(());
+        }
         // An explicitly stopped agent stays stopped: messages, urgent ones too,
         // stay pending and visible until the owner prompts it again.
         if active.is_none()
@@ -453,7 +466,8 @@ impl KernelRuntimeState {
             Err(error) => {
                 // A message queued before the limit ended is refused here, before any start.
                 if crate::error::is_agent_deadline_refusal(&error) {
-                    self.show_deadline_refusal(room, agent).await;
+                    self.tell_parent_limit_ended(room, agent).await;
+                    self.show_deadline_status(room, agent).await;
                 }
                 return Err(error);
             }
@@ -602,10 +616,11 @@ impl KernelRuntimeState {
                         self.owned
                             .settle_failed_delegate_start(room, agent, &e.to_string())?;
                     }
-                    // The owner is told once that the ended limit refused this work, with the way to
+                    // The parent is told once that the ended limit refused this work, with the way to
                     // extend it; the refused delivery itself stays retired.
                     if crate::error::is_agent_deadline_refusal(&e) {
-                        self.show_deadline_refusal(room, agent).await;
+                        self.tell_parent_limit_ended(room, agent).await;
+                        self.show_deadline_status(room, agent).await;
                     }
                     self.publish_task_change(room);
                     return Err(e);
@@ -652,7 +667,7 @@ impl KernelRuntimeState {
                 "error": error.map(crate::secret_redaction::redact_secrets),
             }),
         );
-        self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence);
+        drop(self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence));
     }
 
     fn defer_inbox_steer(&self, room: &str, agent: &str, sequence: u64) -> Result<(), DaemonError> {

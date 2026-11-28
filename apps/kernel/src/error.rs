@@ -99,6 +99,10 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("the worker rejected the prompt before admission ({reason:?})")]
+    RemotePromptRejected {
+        reason: crate::transport::relay_peer::LeasedPromptRejection,
+    },
     /// MP-08 / MP-11: preserve mapped executor semantics for external grants and sudo.
     /// `message` is the kernel's own text with secret-shaped values cut out.
     #[error("{message}")]
@@ -493,24 +497,6 @@ pub enum DaemonError {
         cols: u16,
         rows: u16,
         message: String,
-    },
-    #[error("shell command `{command}` failed for session `{session_id}`: {message}")]
-    ShellCommandFailed {
-        session_id: String,
-        command: String,
-        message: String,
-    },
-    #[error("shell command `{command}` timed out for session `{session_id}` after {timeout_ms}ms")]
-    ShellCommandTimedOut {
-        session_id: String,
-        command: String,
-        timeout_ms: u64,
-    },
-    #[error("shell command working directory `{working_directory}` is outside session `{session_id}` worktree `{worktree_root}`")]
-    ShellCommandOutsideWorktree {
-        session_id: String,
-        working_directory: String,
-        worktree_root: String,
     },
     #[error("attachment `{attachment_id}` is not allowed to use capability `{capability}` in session `{session_id}`")]
     AttachmentCapabilityDenied {

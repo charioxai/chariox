@@ -5,11 +5,290 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use serde_json::Value;
 
-use super::handover::LineReader;
+use super::handover::{wake_pair, LineReader};
 use crate::error::DaemonError;
+
+struct ClaudeOwnedChild {
+    child: ClaudeChild,
+    #[cfg(unix)]
+    signals: crate::runtime::owned_process_signals::OwnedProcessSignals,
+}
+
+impl ClaudeOwnedChild {
+    fn new(mut child: ClaudeChild) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        let signals = match match &child {
+            ClaudeChild::Started(child) => {
+                crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(child)
+            }
+            ClaudeChild::Adopted { pid, .. } => {
+                crate::runtime::owned_process_signals::OwnedProcessSignals::for_pid(*pid)
+            }
+        } {
+            Ok(signals) => signals,
+            Err(error) => {
+                // The spawn handle still owns this exact unreaped child.
+                child.kill_and_wait();
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            child,
+            #[cfg(unix)]
+            signals,
+        })
+    }
+
+    fn poll_stop(&mut self) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        self.signals.kill_owned_processes()?;
+        #[cfg(not(unix))]
+        if self.child.try_wait()?.is_none() {
+            self.child.kill_and_wait();
+        }
+        let exited = self.child.try_wait()?.is_some();
+        #[cfg(unix)]
+        return Ok(exited && !self.signals.has_running_owned_processes()?);
+        #[cfg(not(unix))]
+        Ok(exited)
+    }
+}
+
+struct ClaudeProcessOwnership {
+    current: Arc<Mutex<ClaudeOwnedChild>>,
+    abort_child: Option<Arc<Mutex<ClaudeOwnedChild>>>,
+    prompt_abort_context: Option<String>,
+    retiring: bool,
+    #[cfg(test)]
+    cleanup_pending: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Physical ownership remains reachable while an actor leases its I/O state.
+#[derive(Clone)]
+pub(crate) struct ClaudeRuntimeProcess(Arc<Mutex<ClaudeProcessOwnership>>);
+
+impl ClaudeRuntimeProcess {
+    pub(super) fn new(child: ClaudeChild) -> std::io::Result<Self> {
+        Ok(Self(Arc::new(Mutex::new(ClaudeProcessOwnership {
+            current: Arc::new(Mutex::new(ClaudeOwnedChild::new(child)?)),
+            abort_child: None,
+            prompt_abort_context: None,
+            retiring: false,
+            #[cfg(test)]
+            cleanup_pending: Arc::default(),
+        }))))
+    }
+
+    fn current(&self) -> Arc<Mutex<ClaudeOwnedChild>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn defer_cleanup_for_test(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        let flag = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cleanup_pending
+            .clone();
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        flag
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retiring_for_test(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retiring
+    }
+
+    pub(super) fn id(&self) -> u32 {
+        self.current()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .child
+            .id()
+    }
+
+    pub(super) fn try_wait(&self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let child = self.current();
+        let mut child = child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(unix)]
+        child.signals.refresh()?;
+        child.child.try_wait()
+    }
+
+    pub(crate) fn capture_prompt_abort(&self) -> std::io::Result<()> {
+        let mut ownership = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ownership.abort_child.is_none() {
+            ownership.abort_child = Some(ownership.current.clone());
+        }
+        #[cfg(unix)]
+        ownership
+            .abort_child
+            .as_ref()
+            .expect("abort child was retained")
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .signals
+            .refresh()?;
+        Ok(())
+    }
+
+    pub(crate) fn set_prompt_abort_context(&self, prompt_id: Option<&str>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prompt_abort_context = prompt_id.map(str::to_string);
+    }
+
+    /// A capture for this already-admitted prompt must survive its late write.
+    pub(crate) fn clear_previous_prompt_abort_context(&self, prompt_id: &str) -> bool {
+        let mut ownership = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ownership.prompt_abort_context.as_deref() == Some(prompt_id) {
+            return false;
+        }
+        ownership.prompt_abort_context = None;
+        true
+    }
+
+    pub(crate) fn prompt_abort_context(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prompt_abort_context
+            .clone()
+    }
+
+    /// A successful restart already settled its old child. A forced retirement
+    /// also closes the current child and prevents a late actor from replacing it.
+    pub(crate) fn settle_prompt_abort(&self, force_retirement: bool) -> std::io::Result<bool> {
+        let mut ownership = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let child = ownership
+            .abort_child
+            .clone()
+            .unwrap_or_else(|| ownership.current.clone());
+        ownership.abort_child = Some(child.clone());
+        ownership.retiring |= force_retirement || Arc::ptr_eq(&child, &ownership.current);
+        #[cfg(test)]
+        if ownership
+            .cleanup_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "owned child cleanup held by test",
+            ));
+        }
+        let mut stopped = child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .poll_stop()?;
+        if ownership.retiring && !Arc::ptr_eq(&child, &ownership.current) {
+            stopped &= ownership
+                .current
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .poll_stop()?;
+        }
+        if !stopped {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "the owned Claude child or its descendants have not exited",
+            ));
+        }
+        ownership.abort_child = None;
+        Ok(ownership.retiring)
+    }
+
+    pub(super) fn replace_with<T>(
+        &self,
+        spawn: impl FnOnce() -> Result<(ClaudeChild, T), DaemonError>,
+    ) -> Result<T, DaemonError> {
+        // Admission and retirement share this lock: a cancelled leased actor
+        // cannot start another child after cancellation releases the turn.
+        let mut ownership = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ownership.retiring {
+            return Err(DaemonError::LocalTransport {
+                operation: "claude_replace_retired_process",
+                message: "the Claude provider process was retired".into(),
+            });
+        }
+        let (child, result) = spawn()?;
+        let child = ClaudeOwnedChild::new(child).map_err(|error| DaemonError::LocalTransport {
+            operation: "claude_capture_replacement_process",
+            message: error.to_string(),
+        })?;
+        ownership.current = Arc::new(Mutex::new(child));
+        Ok(result)
+    }
+
+    fn stop_until_exited(&self, retire: bool) {
+        let mut reported = false;
+        loop {
+            let result = if retire {
+                self.settle_prompt_abort(true).map(|_| true)
+            } else {
+                self.current()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .poll_stop()
+            };
+            match result {
+                Ok(true) => return,
+                Err(error) if !reported => {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider",
+                        "Claude process cleanup is pending",
+                        serde_json::json!({"pid": self.id(), "error": error.to_string()}),
+                    );
+                    reported = true;
+                }
+                _ => {}
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    pub(super) fn stop(&self) {
+        self.stop_until_exited(false);
+    }
+
+    pub(crate) fn begin_retirement(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retiring = true;
+    }
+
+    pub(crate) fn retire(&self) {
+        self.stop_until_exited(true);
+    }
+}
 
 pub(super) enum ClaudeRuntimeMessage {
     Stdout(Value),
@@ -141,16 +420,24 @@ pub(super) fn spawn_claude_child(
             operation,
             message: "Claude Code did not expose stderr".to_string(),
         })?;
-    let output = ClaudeOutput::start(
-        stdout.into(),
-        Vec::new(),
-        stderr.into(),
-        Vec::new(),
-        false,
-        output_notifier,
-    );
+    let mut child = ClaudeChild::Started(child);
+    let output = child
+        .start_output(
+            stdout.into(),
+            Vec::new(),
+            stderr.into(),
+            Vec::new(),
+            false,
+            output_notifier,
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to set up Claude Code output for `{provider_run_id}`: {error}"
+            ),
+        })?;
 
-    Ok((ClaudeChild::Started(child), stdin, output, resources))
+    Ok((child, stdin, output, resources))
 }
 
 /// The Claude Code process: started by this kernel program, or started by the
@@ -181,6 +468,26 @@ impl ClaudeChild {
                 Ok(*status)
             }
         }
+    }
+
+    pub(super) fn start_output(
+        &mut self,
+        stdout: OwnedFd,
+        stdout_unread: Vec<u8>,
+        stderr: OwnedFd,
+        stderr_unread: Vec<u8>,
+        held: bool,
+        output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
+    ) -> std::io::Result<ClaudeOutput> {
+        ClaudeOutput::start(
+            stdout,
+            stdout_unread,
+            stderr,
+            stderr_unread,
+            held,
+            output_notifier,
+        )
+        .inspect_err(|_| stop_child(self))
     }
 
     fn kill_and_wait(&mut self) {
@@ -233,6 +540,7 @@ impl ClaudeOutput {
             false,
             &Default::default(),
         )
+        .expect("detached Claude output")
     }
 
     pub(super) fn start(
@@ -242,12 +550,16 @@ impl ClaudeOutput {
         stderr_unread: Vec<u8>,
         held: bool,
         output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
+        // Reserve both pairs before either thread can read bytes or outlive
+        // a failed setup. Partial reservations close automatically on error.
+        let stdout_wake = wake_pair()?;
+        let stderr_wake = wake_pair()?;
         let (tx, receiver) = mpsc::channel();
         let stdout = {
             let tx = tx.clone();
             let output_notifier = output_notifier.clone();
-            LineReader::start(stdout, stdout_unread, held, move |line| {
+            LineReader::start(stdout, stdout_unread, held, stdout_wake, move |line| {
                 let message = match serde_json::from_str::<Value>(&line) {
                     Ok(value) => ClaudeRuntimeMessage::Stdout(value),
                     Err(error) => {
@@ -258,14 +570,14 @@ impl ClaudeOutput {
             })
         };
         let output_notifier = output_notifier.clone();
-        let stderr = LineReader::start(stderr, stderr_unread, held, move |line| {
+        let stderr = LineReader::start(stderr, stderr_unread, held, stderr_wake, move |line| {
             let _ = output_notifier.send(&tx, ClaudeRuntimeMessage::Stderr(line));
         });
-        Self {
+        Ok(Self {
             receiver,
             stdout,
             stderr,
-        }
+        })
     }
 
     pub(super) fn release(&self) {

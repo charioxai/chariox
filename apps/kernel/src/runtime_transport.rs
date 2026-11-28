@@ -697,6 +697,9 @@ where
             "reserved_interactive_requests": RESERVED_INTERACTIVE_REQUESTS,
         }),
     );
+    // Row 678: a self-restart is told to the owner; then the kernel watches for the next wedge.
+    crate::runtime::kernel_wedge_watchdog::report_self_restart(&router);
+    crate::runtime::kernel_wedge_watchdog::start(Arc::clone(&router));
 
     tokio::pin!(shutdown);
 
@@ -729,9 +732,10 @@ where
             progress.stage("schedule maintenance", Duration::from_secs(1));
             #[cfg(test)]
             pump_state.count_transport_pump_iteration();
+            // The independent output pump settles provider actor completion.
+            // Idle output polls complete twice a second per run; they must not
+            // request another transport maintenance pass for every completion.
             let output_ready_sequence = pump_state.provider_output_ready_sequence();
-            let provider_actor_completion_sequence =
-                pump_router.provider_run_actor_completion_sequence();
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
             if pass_requested && maintenance.is_empty() {
@@ -772,7 +776,6 @@ where
                 _ = sleep(delay) => pass_requested |= maintenance.is_empty(),
                 _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => pass_requested = true,
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => pass_requested = true,
-                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => pass_requested = true,
                 _ = pump_router.wait_for_started_app_refreshes() => pass_requested = true,
                 _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => pass_requested = true,
                 // The pass sweeps grants when it starts. While one runs, a holder that
@@ -1372,9 +1375,15 @@ async fn record_connection_subscription_heartbeat(
 /// echoes that id so the client can reject the pending request instead of
 /// waiting for its own timeout.
 fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> KernelOutgoingFrame {
-    let request_id = serde_json::from_slice::<Value>(payload)
-        .ok()
+    let frame = serde_json::from_slice::<Value>(payload).ok();
+    let request_id = frame
+        .as_ref()
         .and_then(|value| value.get("request_id")?.as_str().map(str::to_owned));
+    let body = frame.as_ref().and_then(|value| {
+        (value.get("type")?.as_str()? == "request")
+            .then(|| value.get("request"))
+            .flatten()
+    });
     let (request_id, code, message) = match request_id {
         Some(request_id) => (
             request_id,
@@ -1382,6 +1391,7 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
             crate::transport::request_decode_error::message(
                 crate::transport::request_decode_error::DECODE_PREFIX,
                 error,
+                body,
             ),
         ),
         None => (
@@ -1390,6 +1400,7 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
             crate::transport::request_decode_error::message(
                 "invalid kernel transport payload",
                 error,
+                None,
             ),
         ),
     };

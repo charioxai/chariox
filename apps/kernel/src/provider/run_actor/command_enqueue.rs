@@ -31,6 +31,19 @@ impl ProviderRunActorMailbox {
         let admission = crate::hot_reload::admit_provider_work().map_err(|reason| {
             provider_actor_enqueue_error("publish Claude plan", &run_id, reason.to_string())
         })?;
+        let output_admission = self
+            .closed_output_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if output_admission.contains(&run_id) {
+            return Err(provider_actor_enqueue_error(
+                "publish Claude plan",
+                &run_id,
+                "prompt cancellation owns output settlement".into(),
+            ));
+        }
+        let publication = self.output_publications.claim(&run_id);
+        drop(output_admission);
         self.in_flight
             .mark_plan_publication_in_flight(run_id.clone());
         drop(admission);
@@ -41,6 +54,7 @@ impl ProviderRunActorMailbox {
                 tool_use_id,
                 plan,
                 response,
+                publication,
             })
             .map_err(|error| {
                 self.in_flight.clear_plan_publication_in_flight(&run_id);
@@ -69,6 +83,19 @@ impl ProviderRunActorMailbox {
                 reason.to_string(),
             )
         })?;
+        if !envelope.steering {
+            let mut closed = self
+                .closed_output_admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let new_prompt = self
+                .runtime_registry
+                .claude_owned_process(&provider_run_id)
+                .is_none_or(|process| process.clear_previous_prompt_abort_context(&prompt_id));
+            if new_prompt {
+                closed.remove(&provider_run_id);
+            }
+        }
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         drop(admission);
         let sender = self.worker_for_run(&provider_run_id);
@@ -211,11 +238,13 @@ impl ProviderRunActorMailbox {
                 .remove(&provider_run_id)
                 .unwrap_or_else(|| self.worker_deps().spawn(provider_run_id.clone()))
         };
+        let publication = self.output_publications.claim(&provider_run_id);
         let (completion_tx, completion_rx) = mpsc::channel();
         match sender.try_send(ProviderRunActorCommand::Terminate {
             provider_run_id: provider_run_id.clone(),
             run,
             completion: completion_tx,
+            publication,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
@@ -290,6 +319,14 @@ impl ProviderRunActorMailbox {
         provider_run_id: String,
         run: RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
+        let output_admission = self
+            .closed_output_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if output_admission.contains(&provider_run_id) {
+            return Ok(false);
+        }
+
         // While a planned reload holds admission closed no poll starts: the next one
         // runs in the successor.
         let Ok(admission) = crate::hot_reload::admit_provider_work() else {
@@ -307,11 +344,14 @@ impl ProviderRunActorMailbox {
             self.operation_lanes.record_command_enqueued();
             return Ok(true);
         }
+        let publication = self.output_publications.claim(&provider_run_id);
+        drop(output_admission);
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::PollOutput {
             provider_run_id: provider_run_id.clone(),
             run,
             output_poll_delay: self.output_poll_delay_for_run(&provider_run_id),
+            publication,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
@@ -445,8 +485,9 @@ impl ProviderRunActorMailbox {
         let provider_run_id = finished.provider_run_id.clone();
         let finished_output_polls = std::sync::Arc::clone(&self.finished_output_polls);
         let completion_signal = self.completion_signal.clone();
+        let publications = self.output_publications.clone();
         schedule_provider_settlement_retry(delay, move || {
-            push_finished_output_poll(&finished_output_polls, finished);
+            push_finished_output_poll(&finished_output_polls, &publications, finished);
             completion_signal.record_completion(&provider_run_id);
         });
     }
@@ -460,7 +501,11 @@ impl ProviderRunActorMailbox {
         if self.manual_output_polls.load(Ordering::Relaxed) {
             self.clear_structured_output_poll_in_flight(&provider_run_id);
         }
-        push_finished_output_poll(&self.finished_output_polls, finished);
+        push_finished_output_poll(
+            &self.finished_output_polls,
+            &self.output_publications,
+            finished,
+        );
         self.completion_signal.record_completion(&provider_run_id);
     }
 
@@ -487,6 +532,7 @@ impl ProviderRunActorMailbox {
             finished_aborts: Arc::clone(&self.finished_aborts),
             finished_selection_syncs: Arc::clone(&self.finished_selection_syncs),
             finished_output_polls: Arc::clone(&self.finished_output_polls),
+            output_publications: self.output_publications.clone(),
             completion_signal: self.completion_signal.clone(),
             output_poll_delays: Arc::clone(&self.output_poll_delays),
             blocking_executor_permits: Arc::clone(&self.blocking_executor_permits),
@@ -693,6 +739,7 @@ mod tests {
 
         mailbox.push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
             prompt_identity: crate::provider::ProviderOutputPromptIdentity::InFlightPoll,
+            publication: None,
             provider_run_id: "run-1".to_string(),
             result: Ok(None),
             settlement_retry_attempt: 0,

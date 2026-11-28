@@ -94,6 +94,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         }
         DaemonError::LocalTransport { operation, .. }
             if *operation
+                == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
                 == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION =>
         {
             relay_error(
@@ -257,6 +267,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
         LocalDaemonRequest::KernelTerminal(_) => "terminal.kernel",
+        LocalDaemonRequest::RunCommand(_) => "command.run",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
             command:
@@ -328,6 +339,25 @@ mod tests {
             mapped.code,
             crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
         );
+    }
+
+    #[test]
+    fn queued_steer_admission_refusal_is_distinct_from_worker_uncertainty() {
+        let refused = DaemonError::LocalTransport {
+            operation: "steer queued prompt",
+            message: "queued prompts cannot steer a human-authorized sudo turn".into(),
+        }
+        .steer_not_submitted(true);
+        let projected = map_relay_error(&refused);
+        assert_eq!(projected.code, "prompt_steer_rejected");
+        assert!(!projected.retryable);
+
+        let uncertain = map_relay_error(&DaemonError::LocalTransport {
+            operation: "steer remote queued prompt",
+            message: "worker acknowledgement lost; exact queued item held".into(),
+        });
+        assert_eq!(uncertain.code, "transport_error");
+        assert!(uncertain.retryable);
     }
 
     #[test]

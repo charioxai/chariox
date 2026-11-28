@@ -14,6 +14,7 @@ mod meta_authority;
 mod native_launch_authority;
 mod notification_follows;
 mod owner_cards;
+mod owner_shell;
 mod pressure;
 mod session_authority;
 mod standing;
@@ -39,6 +40,7 @@ impl KernelRuntimeState {
                 expires_at_ms: Some(crate::session::unix_epoch_ms() + 1_800_000),
             },
             holder,
+            adopted: Vec::new(),
             clock: Some(GrantClock::new(30, 5)),
         };
         self.owned
@@ -66,6 +68,7 @@ impl KernelRuntimeState {
                 expires_at_ms: None,
             },
             holder,
+            adopted: Vec::new(),
             clock: None,
         };
         self.owned
@@ -125,8 +128,8 @@ impl KernelRuntimeState {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         self.owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     interaction,
                 ),
                 session_id,
@@ -300,6 +303,46 @@ impl KernelRuntimeState {
             self.raise_owner_cards_for_test(results).await;
             return;
         }
+        if action == "deadline-reached" {
+            // Row 754: an ended time limit with a queued message, on a top-level agent of the
+            // access test Room (`SESSION` in runtime_transport/tests/kernel_access_grants.rs),
+            // so a grant holder meets it the way a real external agent does.
+            let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+            let room = "access-session";
+            let agent = "access-vault-agent";
+            let message = crate::durable_state::agent_lifecycle::occurrence(
+                room,
+                agent,
+                "deadline-control",
+                "m1",
+                "message",
+                serde_json::json!({"message":"queued before the limit ended"}),
+            );
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Occur(
+                    message,
+                ))
+                .unwrap();
+            self.set_agent_deadline(
+                owner,
+                crate::local::SetAgentDeadlineRequest {
+                    session_id: room.into(),
+                    agent_id: agent.into(),
+                    deadline_ms: Some(crate::session::unix_epoch_ms() - 1),
+                },
+            )
+            .await
+            .unwrap();
+            self.tick_agent_deadlines(crate::session::unix_epoch_ms())
+                .await
+                .unwrap();
+            // A second tick finishes the physical cleanup, so the reached limit takes edits.
+            self.tick_agent_deadlines(crate::session::unix_epoch_ms())
+                .await
+                .unwrap();
+            return;
+        }
         if action == "guest" {
             assert!(self.passkey_prompts_for("guest").is_empty());
             let prompt = self
@@ -448,7 +491,7 @@ async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_bo
         };
         let rx = state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 scope,
                 owner,
                 decision("no-session-access"),
@@ -487,7 +530,7 @@ async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_bo
         assert!(state.passkey_prompts_for(owner).is_empty());
         let rx = state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 scope,
                 owner,
                 decision("no-session-expiry"),
@@ -529,6 +572,7 @@ async fn until_exit_grant_outlives_every_deadline_but_not_its_holder() {
             expires_at_ms: None,
         },
         holder,
+        adopted: Vec::new(),
         clock,
     };
     let mut reused = live_holder.clone();
@@ -1076,8 +1120,8 @@ async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
         state
             .owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     permission(id, agent_id, level),
                 ),
                 session.id(),
@@ -1123,8 +1167,8 @@ async fn a_holder_answers_kernel_decisions_except_one_that_needs_the_passkey() {
         state
             .owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     RuntimeInteraction::for_kernel_operation(
                         id,
                         id,
@@ -1206,8 +1250,8 @@ async fn a_decision_open_before_the_holder_subscribes_is_delivered_on_subscribe(
         state
             .owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     RuntimeInteraction::new(
                         id,
                         agent_id,
@@ -1335,7 +1379,7 @@ async fn enrolled_owner_can_manage_grants_approved_before_login() {
     .with_timeout_sec(60);
     let _answer = state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
             "local",
             extension,

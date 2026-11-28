@@ -101,6 +101,11 @@ impl KernelRuntimeState {
         if bound_to_another_run || ended_run_replaced {
             return Ok(false);
         }
+        // The batch has already published its diagnostic. Stop retains the
+        // prompt, task and queue until its physical finisher confirms exit.
+        if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            return Ok(false);
+        }
         if expected_prompt_id
             .is_some_and(|id| id != active_prompt.id() || active_prompt.is_external())
         {
@@ -289,6 +294,22 @@ impl KernelRuntimeState {
             }
             active_prompt
         };
+        // Win the failure transition before retiring the run. A concurrent Stop
+        // can otherwise become the owner while retirement is being awaited.
+        if expected_completion.is_none() {
+            let completion = owned.fail_local_prompt_without_advance_with_termination_if_matches(
+                session_id,
+                &agent_id,
+                Some(provider_run_id),
+                Some(active_prompt.id()),
+                provider_termination.clone(),
+                failure.clone(),
+            )?;
+            let Some(completion) = completion else {
+                return Ok(false);
+            };
+            expected_completion = Some(completion);
+        }
         if !attempt_recorded {
             self.record_failed_provider_attempt(&failed_attempt).await?;
         }
@@ -578,12 +599,44 @@ impl KernelRuntimeState {
             }
             owned.provider_run_projection.update(outcome.into_run());
         }
-        let (_, process_key) = self
+        let removal = self
             .with_app_side_effect(|app| {
-                crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
+                let run = owned.provider_store.get_run(provider_run_id)?;
+                let session = owned.session_store.get_session(session_id)?;
+                let Some(agent_id) = run.agent_instance_id() else {
+                    return crate::app::ProviderLaunchProcessRuntime::new(app)
+                        .remove_run(provider_run_id)
+                        .map(Some);
+                };
+                owned
+                    .prompt_state_owner
+                    .with_active_prompt(&session, agent_id, |prompt| {
+                        if prompt.is_some_and(|prompt| {
+                            prompt.status() == crate::session::PromptStatus::Cancelling
+                                && prompt
+                                    .durable_delivery_provider_run_id()
+                                    .is_none_or(|id| id == provider_run_id)
+                        }) {
+                            return Ok(None);
+                        }
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(provider_run_id)
+                            .map(Some)
+                    })
             })
-            .await
-            .unwrap_or((false, None));
+            .await;
+        let process_key = match removal {
+            Ok(Some((_, process_key))) => process_key,
+            Ok(None) => return,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "Provider process cleanup remains pending",
+                    serde_json::json!({"provider_run_id": provider_run_id, "error": error.to_string()}),
+                );
+                return;
+            }
+        };
         owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
         owned
             .connector_adapter_processes

@@ -65,6 +65,7 @@ impl Client {
 
 fn write(path: &std::path::Path, bytes: &[u8]) -> LocalDaemonRequest {
     LocalDaemonRequest::WriteKernelFile(crate::local::WriteKernelFileRequest {
+        upload_id: uuid::Uuid::nil(),
         path: path.display().to_string(),
         offset: 0,
         data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),

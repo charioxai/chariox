@@ -6,11 +6,11 @@ use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 const PREFIX: &str = "agent-deadline-ended-";
 const EXTEND_MS: u64 = 3_600_000;
 
-pub(super) fn is_deadline_card(id: &str) -> bool {
+pub(super) fn is_deadline_status(id: &str) -> bool {
     id.starts_with(PREFIX)
 }
 
-fn card_id(deadline: &AgentDeadline) -> String {
+fn status_id(deadline: &AgentDeadline) -> String {
     format!("{PREFIX}{}-{}", deadline.agent_id, deadline.deadline_ms)
 }
 
@@ -43,13 +43,13 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn show_deadline_refusal(&self, room: &str, agent: &str) {
-        if let Err(error) = self.raise_deadline_card(room, agent).await {
+    pub(super) async fn show_deadline_status(&self, room: &str, agent: &str) {
+        if let Err(error) = self.raise_deadline_status(room, agent).await {
             tracing::warn!(%error, room, agent, "could not show the agent's ended time limit");
         }
     }
 
-    async fn raise_deadline_card(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+    async fn raise_deadline_status(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
         let Some(deadline) = self
             .owned
             .durable_state_store
@@ -60,7 +60,7 @@ impl KernelRuntimeState {
         };
         let target = self.owned.agent_store.get_agent(agent)?;
         let session = self.owned.session_store.get_session(room)?;
-        let id = card_id(&deadline);
+        let id = status_id(&deadline);
         if session
             .active_interactions()
             .iter()
@@ -94,7 +94,7 @@ impl KernelRuntimeState {
         .with_related_agent_id(agent.to_owned());
         let rx = self
             .create_kernel_operation_interaction(
-                super::CardKind::OwnerControl,
+                super::InteractionSurface::PaneStatus,
                 session.id(),
                 session.owner_user_id(),
                 card,
@@ -109,7 +109,7 @@ impl KernelRuntimeState {
             .agent_deadline(room, agent)?
             .is_some_and(|current| current.deadline_ms == deadline.deadline_ms && reached(&current))
         {
-            return self.owned.close_deadline_card(&deadline);
+            return self.owned.close_deadline_status(&deadline);
         }
         let state = self.as_kernel();
         let owner = session.owner_user_id().to_owned();
@@ -145,10 +145,13 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn close_deadline_card(&self, deadline: &AgentDeadline) -> Result<(), DaemonError> {
+    pub(super) fn close_deadline_status(
+        &self,
+        deadline: &AgentDeadline,
+    ) -> Result<(), DaemonError> {
         self.settle_card_condition_met(
             &deadline.session_id,
-            &card_id(deadline),
+            &status_id(deadline),
             "The agent’s time limit was updated. It can take new work.".into(),
         )
     }

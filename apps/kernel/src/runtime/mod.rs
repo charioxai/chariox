@@ -30,6 +30,7 @@ pub(crate) mod app_install_control;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_lifecycle;
 pub(crate) mod app_lock;
+pub(crate) mod kernel_wedge_watchdog;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_log_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

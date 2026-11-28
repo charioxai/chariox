@@ -1,0 +1,221 @@
+[
+  {
+    "id": "miguel-20261123-question-reaffirmed247587",
+    "approved_by": "Miguel",
+    "source": "Miguel 2026-11-23 taxonomy, reaffirmed247587: choices plus free text, or free-text-only, are the same Question type",
+    "types": [
+      {
+        "type": "Question",
+        "class": "person action or answer"
+      }
+    ]
+  },
+  {
+    "id": "miguel-20261128-keep-2431825b",
+    "approved_by": "Miguel",
+    "source": "Miguel 2026-11-28 ~08:50 Berlin, via the Mac: approved the KEEP list at inventory sha 2431825b",
+    "inventory_sha256": "2431825b677e50ccaafa6d0976f8bd9be158f2bed835890d3389f6329d686be1",
+    "types": [
+      {
+        "type": "Question",
+        "class": "person action or answer"
+      },
+      {
+        "type": "provider_native_permission",
+        "class": "person action or answer"
+      },
+      {
+        "type": "opencode_permission",
+        "class": "person action or answer"
+      },
+      {
+        "type": "codex_command_approval",
+        "class": "person action or answer"
+      },
+      {
+        "type": "codex_file_change_approval",
+        "class": "person action or answer"
+      },
+      {
+        "type": "claude_permission_hook",
+        "class": "person action or answer"
+      },
+      {
+        "type": "claude_workspace_trust",
+        "class": "person action or answer"
+      },
+      {
+        "type": "provider_account_login",
+        "class": "person action or answer"
+      },
+      {
+        "type": "provider_account_logout",
+        "class": "person action or answer"
+      },
+      {
+        "type": "provider_login_workflow",
+        "class": "person action or answer"
+      },
+      {
+        "type": "provider_auth_recovery",
+        "class": "person action or answer"
+      },
+      {
+        "type": "portable_claude_login",
+        "class": "person action or answer"
+      },
+      {
+        "type": "provider_account_copy",
+        "class": "person action or answer"
+      },
+      {
+        "type": "credential_enrollment",
+        "class": "person action or answer"
+      },
+      {
+        "type": "credential_secret_capture",
+        "class": "person action or answer"
+      },
+      {
+        "type": "credential_secret",
+        "class": "person action or answer"
+      },
+      {
+        "type": "vault_secret_request",
+        "class": "person action or answer"
+      },
+      {
+        "type": "vault_unlock",
+        "class": "person action or answer"
+      },
+      {
+        "type": "vault_passphrase_change",
+        "class": "person action or answer"
+      },
+      {
+        "type": "vault_payment_approval",
+        "class": "person action or answer"
+      },
+      {
+        "type": "sudo_task_approval",
+        "class": "person action or answer"
+      },
+      {
+        "type": "sudo_window_extension",
+        "class": "person action or answer"
+      },
+      {
+        "type": "card_action",
+        "class": "person action or answer"
+      },
+      {
+        "type": "owner_context",
+        "class": "person action or answer"
+      },
+      {
+        "type": "auth_md_claim",
+        "class": "person action or answer"
+      },
+      {
+        "type": "kernel_access_grant",
+        "class": "person action or answer"
+      },
+      {
+        "type": "kernel_enrollment",
+        "class": "person action or answer"
+      },
+      {
+        "type": "machine_acquisition",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_binding_permission",
+        "class": "person action or answer"
+      },
+      {
+        "type": "workspace_live_sync_permission",
+        "class": "person action or answer"
+      },
+      {
+        "type": "extension_registration_permission",
+        "class": "person action or answer"
+      },
+      {
+        "type": "skill_catalog_permission",
+        "class": "person action or answer"
+      },
+      {
+        "type": "terminal_permission",
+        "class": "person action or answer"
+      },
+      {
+        "type": "watched_process",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_install",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_update",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_publisher_enroll",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_validation",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_deployment_consent",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_clipboard_write",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_open_link",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_file_pick",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_file_export",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_view_action",
+        "class": "person action or answer"
+      },
+      {
+        "type": "app_view_confirmation",
+        "class": "person action or answer"
+      },
+      {
+        "type": "owner_handoff_click",
+        "class": "live browser card"
+      },
+      {
+        "type": "owner_handoff_input",
+        "class": "live browser card"
+      },
+      {
+        "type": "popup_browser_region",
+        "class": "live browser card"
+      },
+      {
+        "type": "notify_person_notice_origin_agent",
+        "class": "asked-for notification"
+      },
+      {
+        "type": "provider_sign_in_notice_origin_kernel",
+        "class": "person action or answer"
+      }
+    ]
+  }
+]

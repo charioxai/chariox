@@ -126,6 +126,8 @@ impl RoomExecService {
         let exec = intent.exec_id.clone();
         let running = streams.is_some();
         let record = Arc::new(Record {
+            stdin_file: None,
+            scope: intent.session_id.clone(),
             intent,
             launch_command: Vec::new(),
             job: true,
@@ -138,6 +140,8 @@ impl RoomExecService {
             force: watch::channel(false).0,
             place: watch::channel(None).0,
             created_at: started_at,
+            deadline_at: None,
+            deadline_unix_ms: None,
             reader_deadline,
             reader_lease,
             input: Mutex::new(Input {

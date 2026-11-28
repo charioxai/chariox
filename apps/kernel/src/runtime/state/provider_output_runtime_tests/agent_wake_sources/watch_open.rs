@@ -67,6 +67,7 @@ async fn child_fixture(name: &str) -> Fixture {
         fail_arm: AtomicBool::new(false),
         cancel_pending: AtomicBool::new(false),
         lost: AtomicBool::new(false),
+        lost_ids: Default::default(),
         stall: Default::default(),
     });
     runtime.register_wake_driver(Arc::downgrade(&driver) as std::sync::Weak<dyn WakeDriver>);

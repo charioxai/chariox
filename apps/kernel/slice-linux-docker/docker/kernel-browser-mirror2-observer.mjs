@@ -380,7 +380,21 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Row 489: a document's body with no box of its own whose closed root paints (Chromium's PDF document: a 0-high body, its
     // viewer iframe absolute in the root) is laid out in the viewer at what it paints: a 0-high tile never gets a region there.
     // Only the body: any other host keeps its layout size (its painted overflow must not push the content after it).
-    const tileSize = node => { const size = layoutSize(node); if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node) || node !== node.ownerDocument.body) return size; const own = box(node), ink = closedInk(node, own); return ink && ink[0] === own[0] && ink[1] === own[1] ? [Math.round(ink[2]), Math.round(ink[3])] : size; };
+    const tileSize = node => {
+      let size = layoutSize(node);
+      if (node.nodeType === 1 && node.offsetWidth !== undefined) {
+        // offsetWidth rounds CSS pixels: an inward native crop can extend past
+        // that smaller mirror surface when the real border box is fractional.
+        const style = getComputedStyle(node);
+        size = [['width', 'paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth'], ['height', 'paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth']].map(([axis, ...edges], index) => {
+          const value = parseFloat(style[axis]);
+          return Number.isFinite(value) ? value + (style.boxSizing === 'border-box' ? 0 : edges.reduce((total, edge) => total + parseFloat(style[edge]), 0)) : size[index];
+        });
+      }
+      if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node) || node !== node.ownerDocument.body) return size;
+      const own = box(node), ink = closedInk(node, own);
+      return ink && ink[0] === own[0] && ink[1] === own[1] ? [ink[2], ink[3]] : size;
+    };
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;

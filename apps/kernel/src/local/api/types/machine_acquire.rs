@@ -23,12 +23,79 @@ pub enum MachineAcquisitionRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
     },
+    /// One allocation's state; without `allocation_ref`, every allocation of the owner that is not deleted.
     Status {
-        allocation_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allocation_ref: Option<String>,
     },
     Release {
         allocation_ref: String,
     },
+    /// The account's machine limits and the owner's limits for acquiring without asking.
+    Limits {},
+    /// Change one set of limits. A lower applies at once; a raise needs the person's say-so (see
+    /// `machine_acquisition::limits`). A field left out keeps its value.
+    SetLimits {
+        #[serde(default)]
+        scope: LimitScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machines_at_once: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spend_per_day_micros: Option<u64>,
+        /// The classes agents may acquire without asking (`scope` no_ask only): the named classes, or an empty list for the smallest only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        classes: Option<Vec<String>>,
+    },
+}
+
+/// Which limits a change is about: the account's (the connected service holds them) or the owner's
+/// own limits for acquiring without asking (the kernel's `agents.offload_*` settings).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitScope {
+    #[default]
+    Account,
+    NoAsk,
+}
+
+/// Both sets of limits as one read shows them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineLimitsReading {
+    /// `None` when the connected service has no account limits.
+    pub account: Option<AccountLimitsReading>,
+    pub no_ask: NoAskLimitsReading,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountLimitsReading {
+    pub machines_at_once: u32,
+    /// How many machines count against it now, when the service says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machines_in_use: Option<u32>,
+    /// What is committed against `spend_per_day_micros` today, when the service says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_today_micros: Option<u64>,
+    pub spend_per_day_micros: u64,
+    pub currency: String,
+    pub version: u64,
+}
+
+/// The owner's limits for acquiring without asking: what they set, and what applies once the account
+/// limits bound it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoAskLimitsReading {
+    pub enabled: bool,
+    pub machines_at_once: u32,
+    /// `None` is no cap of its own.
+    pub spend_per_day_micros: Option<u64>,
+    pub classes: Option<Vec<String>>,
+    pub effective_machines_at_once: u32,
+    pub effective_spend_per_day_micros: Option<u64>,
+    /// True when an account limit lowers a no-ask value.
+    pub clamped: bool,
 }
 
 /// The answer to a [`MachineAcquisitionRequest`], and the payload of the `chariox.machines.*` tools.
@@ -38,6 +105,11 @@ pub enum MachineAcquisitionResult {
     Options {
         options: Vec<MachineOption>,
         default: Option<MachineAcquisitionOffer>,
+        /// How many machines count against the account's limit now, before any is asked for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_machines: Option<AccountMachines>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_spend: Option<AccountSpend>,
     },
     /// An acquired machine with the option it was acquired under; no duration is known up front.
     Acquired {
@@ -48,6 +120,8 @@ pub enum MachineAcquisitionResult {
     },
     /// The allocation's state after a status read or a release.
     Machine(ControlPlaneResponse),
+    /// Both sets of limits, after a read or a change.
+    Limits { limits: MachineLimitsReading },
 }
 
 /// What the acquisition was made under: the named option, or the service's default offer. The answer

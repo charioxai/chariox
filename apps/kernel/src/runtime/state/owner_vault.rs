@@ -349,6 +349,7 @@ impl KernelRuntimeState {
                     BindingChange::Keep,
                 )?;
                 self.forget_vault_payment_grants(&id);
+                self.unlink_deleted_vault_entry(&id);
                 OwnerVaultResult::Deleted { id }
             }
         };

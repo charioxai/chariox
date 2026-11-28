@@ -65,6 +65,7 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
             ],
             default: crate::local::VaultUnlockDuration::Minutes { minutes: 60 },
         },
+        copy_unlock_requests: Vec::new(),
     };
     assert_eq!(
         serde_json::to_value(&status).unwrap(),

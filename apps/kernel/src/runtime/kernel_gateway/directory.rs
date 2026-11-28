@@ -7,9 +7,9 @@ use std::time::Duration;
 use chariox_relay::protocol::RelayKernelPresence;
 
 use super::error::GatewayError;
-use super::inventory::InventorySource;
+use super::inventory::{InventorySource, UpdateNeededKernel};
 use super::names;
-use crate::local::{GatewayKernel, GatewayKernelStatus};
+use crate::local::{GatewayKernel, GatewayKernelStatus, GatewayKernelUpdate};
 
 /// The capability a kernel advertises when it enforces `on_behalf_of`.
 const GATEWAY_CAPABILITY: &str = "kernel_gateway_v1";
@@ -26,6 +26,9 @@ struct Seen {
 pub(super) struct Directory {
     source: Arc<dyn InventorySource>,
     seen: Mutex<BTreeMap<String, Seen>>,
+    /// Kernels the relay refused for their age: listed, never routed to. Only their machine, id
+    /// and protocol are known.
+    refused: Mutex<BTreeMap<String, Seen>>,
     /// A refresh behind a request is running; one at a time.
     refreshing: Arc<AtomicBool>,
 }
@@ -35,6 +38,7 @@ impl Directory {
         Self {
             source,
             seen: Mutex::new(BTreeMap::new()),
+            refused: Mutex::new(BTreeMap::new()),
             refreshing: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -47,9 +51,11 @@ impl Directory {
         self.merge();
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
+        let refused = self.refused.lock().expect("directory poisoned");
         let now_ms = crate::session::unix_epoch_ms();
         Ok(names::grouped(
             seen.values()
+                .chain(refused.values())
                 .filter(|seen| {
                     seen.online
                         || crate::runtime::machine_presence::still_reconnecting(
@@ -71,6 +77,8 @@ impl Directory {
                     last_seen_ms: seen.last_seen_ms,
                     gateway_ready: is_gateway_ready(&seen.kernel),
                     via,
+                    protocol: seen.kernel.local_protocol,
+                    update: super::update_needed::update_state(seen.kernel.local_protocol),
                 })
                 .collect(),
         ))
@@ -89,7 +97,31 @@ impl Directory {
             return Ok(kernel);
         }
         self.refresh().await?;
-        self.lookup(name)
+        self.lookup(name).map_err(|error| match error {
+            GatewayError::Unknown { .. } => self.refused_refusal(name).unwrap_or(error),
+            other => other,
+        })
+    }
+
+    /// A name that only a kernel the relay refused for its age carries: say why it cannot be used,
+    /// as the refusal of any too-old target does, instead of "unknown" for a kernel the list shows.
+    fn refused_refusal(&self, name: &str) -> Option<GatewayError> {
+        let refused = self.refused.lock().expect("directory poisoned");
+        let known: Vec<&RelayKernelPresence> = refused.values().map(|seen| &seen.kernel).collect();
+        let kernel = names::find(&known, name).ok()?;
+        Some(match kernel.local_protocol {
+            Some(kernel_protocol)
+                if super::update_needed::update_state(Some(kernel_protocol))
+                    == GatewayKernelUpdate::UpdateNeeded =>
+            {
+                GatewayError::UpdateNeeded {
+                    name: name.into(),
+                    kernel_protocol,
+                    needed_protocol: super::update_needed::MINIMUM_TARGET_PROTOCOL,
+                }
+            }
+            _ => GatewayError::Offline { name: name.into() },
+        })
     }
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
@@ -162,6 +194,43 @@ impl Directory {
                 },
             );
         }
+        let mut refused = self.refused.lock().expect("directory poisoned");
+        // A kernel that updated and registered is live, not refused.
+        refused.retain(|id, _| !seen.get(id).is_some_and(|seen| seen.online));
+        for kernel in self.source.update_needed_kernels() {
+            if seen.get(&kernel.kernel_id).is_some_and(|seen| seen.online) {
+                continue;
+            }
+            // One entry per kernel: the refusal is the newer word than an earlier live sighting.
+            seen.remove(&kernel.kernel_id);
+            refused.insert(
+                kernel.kernel_id.clone(),
+                Seen {
+                    kernel: stub(&kernel),
+                    last_seen_ms: now,
+                    online: false,
+                },
+            );
+        }
+    }
+}
+
+/// What the list knows of a kernel the relay refused: where it is and the protocol it reported.
+fn stub(kernel: &UpdateNeededKernel) -> RelayKernelPresence {
+    RelayKernelPresence {
+        kernel_id: kernel.kernel_id.clone(),
+        machine_id: kernel.machine_id.clone(),
+        machine_alias: kernel.machine_alias.clone(),
+        relay_alias: None,
+        kernel_alias: None,
+        available_providers: Vec::new(),
+        provider_accounts: Vec::new(),
+        capabilities: Vec::new(),
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        public_key: String::new(),
+        local_protocol: kernel.protocol,
     }
 }
 
@@ -188,6 +257,10 @@ fn advertises(kernel: &RelayKernelPresence, capability: &str) -> bool {
     kernel.capabilities.iter().any(|value| value == capability)
 }
 
+/// The local protocol that introduced `GetGatewayCommandStatus`. An older target answers the request as an unknown
+/// one, so it is refused here with the update-the-target message. Renumber it with the protocol bump of that request.
+const GATEWAY_COMMAND_STATUS_PROTOCOL: u32 = 1017;
+
 /// Why this request cannot go to this kernel, in words that say what to do, or `None`.
 pub(super) fn incompatibility(
     kernel: &RelayKernelPresence,
@@ -195,6 +268,14 @@ pub(super) fn incompatibility(
 ) -> Option<String> {
     use crate::local::LocalDaemonRequest;
     match request {
+        LocalDaemonRequest::GetGatewayCommandStatus(_)
+            if !is_gateway_ready(kernel)
+                || kernel
+                    .local_protocol
+                    .is_none_or(|version| version < GATEWAY_COMMAND_STATUS_PROTOCOL) =>
+        {
+            Some("it predates command status lookup; update the target kernel".into())
+        }
         LocalDaemonRequest::RespondToInteraction(_) if !is_gateway_ready(kernel) => Some(format!(
             "it predates the {GATEWAY_CAPABILITY} contract that classifies approvals itself"
         )),
@@ -203,11 +284,9 @@ pub(super) fn incompatibility(
         _ if !is_gateway_ready(kernel) && !super::ledger::is_repeatable(request) => Some(format!(
             "it predates the {GATEWAY_CAPABILITY} contract whose durable receipts make a retry safe"
         )),
-        LocalDaemonRequest::RoomTerminal(request)
-            if request.operation.is_exec() && !advertises(kernel, "room_exec_v1") =>
-        {
-            Some("it does not support binary Room exec; update the target kernel".to_string())
-        }
+        LocalDaemonRequest::RunCommand(_) if !advertises(kernel, "run_command_v1") => Some(
+            "it does not support binary command execution; update the target kernel".to_string(),
+        ),
         LocalDaemonRequest::RoomTerminal(_) if !advertises(kernel, ROOM_TERMINAL_CAPABILITY) => {
             Some("it predates Room terminals".into())
         }
@@ -223,7 +302,7 @@ pub(super) fn incompatibility(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::GatewayKernelVia;
+    use crate::local::{GatewayKernelUpdate, GatewayKernelVia};
     use std::future::Future;
     use std::pin::Pin;
 
@@ -441,6 +520,23 @@ mod tests {
         assert_eq!(incompatibility(&older, &list), None);
     }
 
+    #[test]
+    fn a_kernel_older_than_command_status_is_incompatible_before_the_lookup_is_sent() {
+        use crate::local::{GetGatewayCommandStatusRequest, LocalDaemonRequest};
+        let lookup = LocalDaemonRequest::GetGatewayCommandStatus(GetGatewayCommandStatusRequest {
+            command_id: "c-1".into(),
+        });
+        let mut target = kernel("k-t", None, "t", true);
+        target.local_protocol = Some(GATEWAY_COMMAND_STATUS_PROTOCOL - 1);
+        assert!(incompatibility(&target, &lookup)
+            .unwrap()
+            .contains("command status"));
+        target.local_protocol = Some(GATEWAY_COMMAND_STATUS_PROTOCOL);
+        assert_eq!(incompatibility(&target, &lookup), None);
+        target.local_protocol = None;
+        assert!(incompatibility(&target, &lookup).is_some());
+    }
+
     // A kernel without durable receipts is never sent a state-changing request: a retry after
     // its crash could run it twice.
     #[test]
@@ -460,6 +556,164 @@ mod tests {
             incompatibility(&kernel("k-new", None, "new", true), &create),
             None
         );
+    }
+
+    fn with_protocol(
+        mut kernel: RelayKernelPresence,
+        protocol: Option<u32>,
+    ) -> RelayKernelPresence {
+        kernel.local_protocol = protocol;
+        kernel
+    }
+
+    // Row 490: `chariox kernels` and the agent's kernel list say which protocol each kernel runs
+    // and whether it needs an update, from the kernel's own registration; no client decides.
+    #[tokio::test]
+    async fn the_list_carries_each_kernels_protocol_and_whether_it_needs_an_update() {
+        let current = super::super::update_needed::MINIMUM_TARGET_PROTOCOL;
+        let (directory, _) = directory(vec![
+            with_protocol(kernel("k-new", Some("new"), "m-new", true), Some(current)),
+            with_protocol(
+                kernel("k-old", Some("old"), "m-old", true),
+                Some(current - 1),
+            ),
+            with_protocol(kernel("k-none", Some("none"), "m-none", false), None),
+        ]);
+        let listed = directory.kernels().await.unwrap();
+        let of = |name: &str| listed.iter().find(|kernel| kernel.name == name).unwrap();
+        assert_eq!(of("new").protocol, Some(current));
+        assert_eq!(of("new").update, GatewayKernelUpdate::Current);
+        assert_eq!(of("old").protocol, Some(current - 1));
+        assert_eq!(of("old").update, GatewayKernelUpdate::UpdateNeeded);
+        assert_eq!(of("none").protocol, None);
+        assert_eq!(of("none").update, GatewayKernelUpdate::UpdateNeeded);
+        // The CLI prints this JSON as it is: null and a state, no error text.
+        let printed = serde_json::to_value(of("none")).unwrap();
+        assert_eq!(printed["protocol"], serde_json::Value::Null);
+        assert_eq!(printed["update"], "update_needed");
+        assert_eq!(
+            serde_json::to_value(of("new")).unwrap()["protocol"],
+            current
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_changes_the_next_list_and_an_offline_kernel_keeps_its_last_values() {
+        let current = super::super::update_needed::MINIMUM_TARGET_PROTOCOL;
+        let (directory, source) = directory(vec![with_protocol(
+            kernel("k-b3", Some("b3"), "ovh-b3", true),
+            Some(current - 1),
+        )]);
+        let before = directory.kernels().await.unwrap();
+        assert_eq!(before[0].update, GatewayKernelUpdate::UpdateNeeded);
+        // Hot reload on the new build: the kernel registers again with the new protocol.
+        source.0.lock().unwrap()[0].local_protocol = Some(current);
+        let after = directory.kernels().await.unwrap();
+        assert_eq!(after[0].protocol, Some(current));
+        assert_eq!(after[0].update, GatewayKernelUpdate::Current);
+        // It stops: listed offline for the reconnecting window with what it last reported.
+        source.0.lock().unwrap().clear();
+        let gone = directory.kernels().await.unwrap();
+        assert_eq!(gone[0].status, GatewayKernelStatus::Offline);
+        assert_eq!(gone[0].protocol, Some(current));
+        assert_eq!(gone[0].update, GatewayKernelUpdate::Current);
+    }
+
+    /// A relay that refused one kernel for its age: the machine list names it, the live list
+    /// does not.
+    struct Refusing {
+        live: Mutex<Vec<RelayKernelPresence>>,
+        refused: Mutex<Vec<UpdateNeededKernel>>,
+    }
+
+    impl InventorySource for Refusing {
+        fn via(&self) -> GatewayKernelVia {
+            GatewayKernelVia::Hosted
+        }
+        fn kernels(&self) -> Vec<RelayKernelPresence> {
+            self.live.lock().unwrap().clone()
+        }
+        fn update_needed_kernels(&self) -> Vec<UpdateNeededKernel> {
+            self.refused.lock().unwrap().clone()
+        }
+        fn is_fresh(&self) -> bool {
+            true
+        }
+        fn refreshed_within(&self, _max_age_ms: u64) -> bool {
+            true
+        }
+        fn refresh(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kernel_the_relay_refused_for_its_age_is_listed_offline_and_needing_an_update() {
+        let source = Arc::new(Refusing {
+            live: Mutex::new(vec![with_protocol(
+                kernel("k-b3", Some("b3"), "ovh-b3", true),
+                Some(super::super::update_needed::MINIMUM_TARGET_PROTOCOL),
+            )]),
+            refused: Mutex::new(vec![
+                UpdateNeededKernel {
+                    kernel_id: "k-ancient".into(),
+                    machine_id: "machine-pc".into(),
+                    machine_alias: Some("pc".into()),
+                    protocol: Some(1011),
+                },
+                UpdateNeededKernel {
+                    kernel_id: "k-silent".into(),
+                    machine_id: "machine-nas".into(),
+                    machine_alias: None,
+                    protocol: None,
+                },
+            ]),
+        });
+        let directory = Directory::new(source.clone());
+        let listed = directory.kernels().await.unwrap();
+        let ancient = listed
+            .iter()
+            .find(|kernel| kernel.kernel_id == "k-ancient")
+            .unwrap();
+        assert_eq!(ancient.name, "pc");
+        assert_eq!(ancient.status, GatewayKernelStatus::Offline);
+        assert_eq!(ancient.protocol, Some(1011));
+        assert_eq!(ancient.update, GatewayKernelUpdate::UpdateNeeded);
+        assert!(!ancient.gateway_ready);
+        let silent = listed
+            .iter()
+            .find(|kernel| kernel.kernel_id == "k-silent")
+            .unwrap();
+        assert_eq!(
+            (silent.protocol, silent.update),
+            (None, GatewayKernelUpdate::UpdateNeeded)
+        );
+        assert_eq!(listed.len(), 3);
+        // A listed refused kernel is never a route; asking for it says why, not "unknown".
+        let refusal = directory.resolve("pc").await.unwrap_err();
+        assert_eq!(refusal.code(), "kernel_update_needed");
+        assert!(refusal.message().contains("1011"), "{}", refusal.message());
+        assert_eq!(
+            directory.resolve("k-silent").await.unwrap_err().code(),
+            "kernel_offline"
+        );
+        // It is updated and registers: the refused entry is gone, the live one shows it current.
+        source.refused.lock().unwrap().clear();
+        source.live.lock().unwrap().push(with_protocol(
+            kernel("k-ancient", Some("pc"), "pc", true),
+            Some(super::super::update_needed::MINIMUM_TARGET_PROTOCOL),
+        ));
+        let listed = directory.kernels().await.unwrap();
+        let pc: Vec<_> = listed
+            .iter()
+            .filter(|kernel| kernel.kernel_id == "k-ancient")
+            .collect();
+        assert_eq!(pc.len(), 1, "{listed:?}");
+        assert_eq!(pc[0].status, GatewayKernelStatus::Online);
+        assert_eq!(pc[0].update, GatewayKernelUpdate::Current);
     }
 
     #[tokio::test]

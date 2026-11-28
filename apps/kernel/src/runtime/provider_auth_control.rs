@@ -267,7 +267,7 @@ async fn start_terminal_provider_auth(
         let owner = owner_user_id.to_string();
         let profile_id = profile.profile_id.clone();
         tokio::task::spawn_blocking(move || {
-            registry.discard_copied_login(&owner, "claude", &profile_id)
+            registry.discard_shared_login(&owner, "claude", &profile_id)
         })
         .await
         .map_err(|error| provider_auth_task_error("discard copied Claude login", error))??;
@@ -1009,7 +1009,7 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
     }
     let owner = owner_user_id.to_string();
     let session = tokio::task::spawn_blocking(move || {
-        if registry.discard_copied_login(&owner, "codex", &profile.profile_id)? {
+        if registry.discard_shared_login(&owner, "codex", &profile.profile_id)? {
             crate::provider::invalidate_codex_account_endpoint(&owner, &profile.profile_id);
         }
         let environment = registry.resolve_environment(&owner, "codex", &profile.profile_id)?;
@@ -1157,11 +1157,13 @@ pub(crate) async fn execute_logout_provider_request(
     }
     let config = runtime_state.config_snapshot().await;
     let response = tokio::task::spawn_blocking(move || {
-        let response = if registry.discard_copied_login(
-            &owner_user_id,
-            &profile.provider,
-            &profile.profile_id,
-        )? {
+        let local_only = !request.end_everywhere
+            && registry.discard_shared_login(
+                &owner_user_id,
+                &profile.provider,
+                &profile.profile_id,
+            )?;
+        let response = if local_only {
             if profile.provider == "codex" {
                 crate::provider::invalidate_codex_account_endpoint(
                     &owner_user_id,
@@ -1185,6 +1187,7 @@ pub(crate) async fn execute_logout_provider_request(
             LocalDaemonResponse::ProviderLoggedOut {
                 provider: profile.provider.clone(),
                 account_profile: profile.profile_id.clone(),
+                local_only: true,
             }
         } else {
             logout_provider_response(&registry, &owner_user_id, request)?

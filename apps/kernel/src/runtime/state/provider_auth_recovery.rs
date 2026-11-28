@@ -22,6 +22,13 @@ impl Drop for RecoveryClaim {
 impl KernelRuntimeState {
     pub(super) async fn publish_credential_copy_notices(&self, session_id: &str) {
         let config = self.owned.config_projection.snapshot();
+        if !self
+            .owned
+            .provider_account_profiles
+            .credential_copy_notice_waiting(&config.host_machine_id)
+        {
+            return;
+        }
         for agent in self
             .owned
             .agent_store
@@ -285,7 +292,7 @@ impl KernelRuntimeState {
                 }
                 None
             } else {
-                Some(self.create_runtime_interaction(crate::runtime::state::CardKind::ProviderLogin, run.session_id(), RuntimeInteraction::new(
+                Some(self.create_runtime_interaction(crate::runtime::state::InteractionSurface::named("provider_auth_recovery"), run.session_id(), RuntimeInteraction::new(
                     &id, agent_id, RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
                     Some(format!("Log in to {provider} on this machine")),
                     "The provider could not renew its login. Credentials will stay on this machine.",

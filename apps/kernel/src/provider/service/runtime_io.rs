@@ -8,10 +8,10 @@ use crate::provider::{
 
 use super::super::{
     claude_runtime::{
-        initialize_claude_runtime_with_credentials, ClaudeRunSelection, ClaudeRuntimeBinding,
+        ClaudeRunSelection, ClaudeRuntimeBinding, initialize_claude_runtime_with_credentials,
     },
-    codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
-    opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
+    codex_runtime::{CodexRuntimeBinding, initialize_codex_runtime},
+    opencode_binding::{OpenCodeRunSelection, OpenCodeRuntimeBinding, initialize_opencode_runtime},
 };
 use super::ProviderProcessService;
 
@@ -426,6 +426,24 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_output_polls()
     }
 
+    pub(crate) fn output_publication_pending(&self, run_id: &str) -> bool {
+        self.run_actor_mailbox.output_publication_pending(run_id)
+    }
+
+    pub(crate) fn close_prompt_abort_output_admission(&self, run_id: &str) {
+        self.run_actor_mailbox
+            .close_prompt_abort_output_admission(run_id);
+    }
+
+    pub(crate) fn queue_cancelled_claude_output(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.run_actor_mailbox
+            .queue_cancelled_claude_output(run_id, prompt_id)
+    }
+
     pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
         &mut self,
         run_id: &str,
@@ -493,6 +511,7 @@ impl ProviderProcessService {
         self.run_actor_mailbox
             .push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
                 prompt_identity: crate::provider::ProviderOutputPromptIdentity::InFlightPoll,
+                publication: None,
                 provider_run_id,
                 result,
                 settlement_retry_attempt: 0,
@@ -774,7 +793,7 @@ mod tests {
     };
 
     use super::{
-        normalize_claude_selection_model, record_initialized_claude_session, CodexRunSelection,
+        CodexRunSelection, normalize_claude_selection_model, record_initialized_claude_session,
     };
 
     #[test]

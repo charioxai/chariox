@@ -1,0 +1,46 @@
+[
+  {
+    "ProviderAccountCopyWaiting": {
+      "wait": {
+        "expires_at_ms": 600001,
+        "operation_id": "op-1",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "target_label": "Target"
+      }
+    }
+  },
+  {
+    "expires_at_ms": 600001,
+    "kind": "provider_account_copy_target_vault_locked"
+  },
+  {
+    "kind": "provider_account_copy_waiting",
+    "wait": {
+      "expires_at_ms": 600001,
+      "operation_id": "op-1",
+      "source_kernel_id": "source",
+      "target_kernel_id": "target",
+      "target_label": "Target"
+    }
+  },
+  {
+    "status": "waiting_for_unlock",
+    "wait": {
+      "expires_at_ms": 600001,
+      "operation_id": "op-1",
+      "source_kernel_id": "source",
+      "target_kernel_id": "target",
+      "target_label": "Target"
+    }
+  },
+  {
+    "code": "provider_account_copy_cancelled",
+    "operation_id": "op-1",
+    "status": "failed"
+  },
+  {
+    "expires_at_ms": 600001,
+    "interaction_id": "account-copy-unlock:test"
+  }
+]

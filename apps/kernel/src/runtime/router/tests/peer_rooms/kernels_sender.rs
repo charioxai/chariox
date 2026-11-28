@@ -1008,7 +1008,11 @@ fn a_message_to_a_peer_on_another_kernel_queues_there_and_its_sender_promotes_it
             }))
             .await
             .expect("the resend is answered");
-        assert_eq!(again["status"], "duplicate");
+        assert_eq!(again["duplicate"], true);
+        assert!(matches!(
+            again["status"].as_str(),
+            Some("started" | "steered")
+        ));
         assert_eq!(b.messages(b.agent.id()).await.len(), 1);
 
         // A promotion of what the other kernel never held is refused there, not sent as a message.
@@ -1021,6 +1025,36 @@ fn a_message_to_a_peer_on_another_kernel_queues_there_and_its_sender_promotes_it
             ))
             .await;
         assert!(unknown.is_err(), "{unknown:?}");
+        assert_eq!(b.messages(b.agent.id()).await.len(), 1);
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn receipt_explicit_read_before_ack_is_delivered_on_cross_kernel_urgent_resend() {
+    run_peer_test("receipt-explicit-peer", || async {
+        let (a, b) = two_kernels(
+            "receipt-explicit-peer",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let mut args = serde_json::json!({"agent":"worker","room":b.room,"kernel":b.name,"message":"read before ack","idempotency_key":"explicit-peer"});
+        let sent = a.send(args.clone()).await.expect("queued on the peer");
+        assert_eq!(sent["status"], "queued");
+        let row = b.messages(b.agent.id()).await.remove(0);
+        b.router
+            .runtime_state
+            .read_agent_inbox(
+                &b.room,
+                b.agent.id(),
+                &serde_json::json!({"sequence":row.sequence}),
+            )
+            .expect("the peer recipient explicitly reads it");
+        assert_eq!(b.messages(b.agent.id()).await[0].state, "pending");
+        args["urgent"] = true.into();
+        let resent = a.send(args).await.expect("same-key urgent resend answers");
+        assert_eq!(resent["status"], "already_delivered");
+        assert_eq!(resent["duplicate"], true);
         assert_eq!(b.messages(b.agent.id()).await.len(), 1);
         unlink(&[&a, &b]);
     });

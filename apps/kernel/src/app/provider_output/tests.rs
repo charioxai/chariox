@@ -840,6 +840,8 @@ fn pending_structured_output_record(
         bytes: b"completed output".to_vec(),
         pending_recipient_attachment_ids: vec![attachment_id.to_string()],
         external_observation_metadata: None,
+        replaces: false,
+        continues_replacement: false,
     }
 }
 
@@ -1706,6 +1708,8 @@ fn structured_output_record_store_clear_removes_records_and_schedule() {
             bytes: b"pending".to_vec(),
             pending_recipient_attachment_ids: Vec::new(),
             external_observation_metadata: None,
+            replaces: false,
+            continues_replacement: false,
         }],
     );
 

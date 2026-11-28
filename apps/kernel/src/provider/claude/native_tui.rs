@@ -30,9 +30,9 @@ pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 =
     crate::runtime::native_interaction_bridge::PROVIDER_TERMINAL_HOLD_LIMIT_SECS
         + CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS
         + 60;
-/// Claude's timeout for the permission hook, past the hook's own wait.
-const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 =
-    CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS + 30;
+/// Claude's timeout for the permission hook: past the hook's own wait, and a
+/// day for a question, which waits for the person with no deadline of its own.
+const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 86_400;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
@@ -155,8 +155,56 @@ pub(super) struct ClaudeNativeTuiFiles {
     pub(super) permission_response_dir: PathBuf,
     pub(super) settings_file: PathBuf,
     pub(super) usage_file: PathBuf,
+    /// Only for a provider terminal: its agent pane on Claude's own surfaces.
+    pub(super) terminal_pane: Option<ClaudeTerminalPaneFiles>,
     mcp_config_file: Option<PathBuf>,
 }
+
+/// What Claude's own terminal shows of its agent pane and reports back
+/// (docs/PROTOCOL.md section 3.3.2.1). The kernel writes the status lines; the
+/// status line command writes the model and effort, the hook the permission mode.
+pub(super) struct ClaudeTerminalPaneFiles {
+    pub(super) status_file: PathBuf,
+    pub(super) model_file: PathBuf,
+    pub(super) mode_file: PathBuf,
+}
+
+impl ClaudeTerminalPaneFiles {
+    pub(super) fn env(&self) -> [(String, String); 3] {
+        [
+            (CLAUDE_PANE_STATUS_FILE_ENV, &self.status_file),
+            (CLAUDE_TERMINAL_MODEL_FILE_ENV, &self.model_file),
+            (CLAUDE_TERMINAL_MODE_FILE_ENV, &self.mode_file),
+        ]
+        .map(|(name, path)| (name.to_string(), path.display().to_string()))
+    }
+}
+
+/// The card behind Claude's own permission dialog in a native run: that dialog is its
+/// terminal face, so the terminal's pane adapter opens no second one for it.
+pub(crate) fn claude_native_permission_interaction_id(
+    provider_run_id: &str,
+    request_id: &str,
+) -> String {
+    format!(
+        "{}{request_id}",
+        claude_native_permission_prefix(provider_run_id)
+    )
+}
+
+pub(crate) fn is_claude_native_permission(interaction_id: &str, provider_run_id: &str) -> bool {
+    interaction_id.starts_with(&claude_native_permission_prefix(provider_run_id))
+}
+
+fn claude_native_permission_prefix(provider_run_id: &str) -> String {
+    format!("claude-native-permission-{provider_run_id}-")
+}
+
+pub(crate) const CLAUDE_PANE_STATUS_FILE_ENV: &str = "CHARIOX_CLAUDE_PANE_STATUS_FILE";
+pub(crate) const CLAUDE_TERMINAL_MODEL_FILE_ENV: &str = "CHARIOX_CLAUDE_TERMINAL_MODEL_FILE";
+pub(crate) const CLAUDE_TERMINAL_MODE_FILE_ENV: &str = "CHARIOX_CLAUDE_TERMINAL_MODE_FILE";
+/// Seconds between status line refreshes while Claude is idle.
+const CLAUDE_PANE_STATUS_REFRESH_SECS: u64 = 2;
 
 impl ClaudeNativeTuiFiles {
     pub(super) fn materialize_mcp_config(
@@ -188,6 +236,13 @@ pub(super) fn prepare_claude_native_tui_files(
     let hook_handler_file = root.path().join("hook-handler.mjs");
     let usage_capture = materialize_claude_usage_capture(&root)?;
     let usage_file = usage_capture.usage_file().to_path_buf();
+    let terminal_pane = (!request.client_interface.is_chariox()
+        && request.provider != super::catalog::CLAUDE_HEADLESS_PROVIDER_ID)
+        .then(|| ClaudeTerminalPaneFiles {
+            status_file: root.path().join("pane-status.txt"),
+            model_file: root.path().join("terminal-model.json"),
+            mode_file: root.path().join("terminal-mode"),
+        });
     fs::create_dir_all(&context_response_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native context response dir",
         message: error.to_string(),
@@ -233,6 +288,13 @@ pub(super) fn prepare_claude_native_tui_files(
             })
         })
         .collect::<Vec<_>>();
+    let mut status_line = serde_json::json!({
+        "type": "command",
+        "command": usage_capture.command()
+    });
+    if terminal_pane.is_some() {
+        status_line["refreshInterval"] = CLAUDE_PANE_STATUS_REFRESH_SECS.into();
+    }
     let settings = serde_json::json!({
         "skipDangerousModePermissionPrompt": request.permission_level.unwrap_or_default()
             == AgentPermissionLevel::Yolo,
@@ -247,10 +309,7 @@ pub(super) fn prepare_claude_native_tui_files(
             // Claude must not cancel the hook before its own decision wait.
             "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command, "timeout": CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS }] }]
         },
-        "statusLine": {
-            "type": "command",
-            "command": usage_capture.command()
-        },
+        "statusLine": status_line,
         // A command waiting for room still counts against the Bash tool's
         // timeout (2 minutes by default): give it the time a queued build needs.
         "env": {
@@ -275,6 +334,7 @@ pub(super) fn prepare_claude_native_tui_files(
         permission_response_dir,
         settings_file,
         usage_file,
+        terminal_pane,
         mcp_config_file: None,
     })
 }
@@ -451,14 +511,27 @@ mod tests {
     #[test]
     fn hook_auto_allows_only_bypass_permissions() {
         let handler = claude_native_hook_handler();
+        let after_bypass_guard = handler
+            .split_once(
+                "  if (input.permission_mode === \"bypassPermissions\" && input.tool_name !== \"AskUserQuestion\") {\n",
+            )
+            .expect("ordinary tools bypass permission approval; questions must not")
+            .1;
+        let (ordinary_tools, permission_wait) = after_bypass_guard
+            .split_once("  clearTimeout(hookWatchdog)\n")
+            .expect("the decision wait follows the ordinary-tool bypass");
 
-        assert!(handler.contains("if (input.permission_mode === \"bypassPermissions\")"));
-        assert!(handler.contains("behavior: \"allow\""));
+        assert!(ordinary_tools.starts_with("    if (eventName === \"PermissionRequest\") {\n"));
+        assert!(ordinary_tools.contains("\n          hookEventName: \"PermissionRequest\","));
+        assert!(ordinary_tools.contains("\n            behavior: \"allow\"\n"));
+        assert!(ordinary_tools.contains("\n    }\n    process.exit(0)\n  }\n"));
         assert!(!handler.contains("permissionDecision"));
         assert!(!handler.contains("toolName.startsWith"));
-        assert!(handler.contains("process.exit(0)"));
-        assert!(handler.contains(&format!(
-            "const deadline = Date.now() + {}",
+        assert!(permission_wait.contains(&format!(
+            concat!(
+                "\n    const deadline = input.tool_name === \"AskUserQuestion\" ? Infinity : ",
+                "Date.now() + {}\n    while (Date.now() < deadline) {{\n",
+            ),
             super::CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS * 1000
         )));
     }
@@ -676,6 +749,305 @@ mod tests {
                 contract_case["name"]
             );
         }
+    }
+
+    #[test]
+    fn question_hook_waits_for_the_person_in_every_mode_and_returns_the_answer() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-hook-question",
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let updated_input = serde_json::json!({
+            "questions": [{ "question": "Red or blue?", "options": [{ "label": "Blue" }] }],
+            "answers": { "Red or blue?": "Blue" }
+        });
+        for (event_name, mode) in [
+            ("PermissionRequest", "default"),
+            ("PermissionRequest", "bypassPermissions"),
+        ] {
+            let before = fs::read_to_string(&native.events_file).unwrap_or_default();
+            let mut child = crate::process_spawn::command("node")
+                .arg(&hook_handler)
+                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                    &native.permission_response_dir,
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("hook handler should start");
+            child
+                .stdin
+                .take()
+                .expect("hook stdin should be piped")
+                .write_all(
+                    serde_json::json!({
+                        "hook_event_name": event_name,
+                        "permission_mode": mode,
+                        "tool_name": "AskUserQuestion",
+                        "tool_input": { "questions": updated_input["questions"] }
+                    })
+                    .to_string()
+                    .as_bytes(),
+                )
+                .expect("hook input should write");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let request_id = loop {
+                let now = fs::read_to_string(&native.events_file).unwrap_or_default();
+                if let Some(id) = now
+                    .strip_prefix(before.as_str())
+                    .unwrap_or(&now)
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .find_map(|event| {
+                        event["hook_context_request_id"]
+                            .as_str()
+                            .map(str::to_string)
+                    })
+                {
+                    break id;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{mode}: the hook never asked for an answer"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            assert!(
+                child.try_wait().expect("hook state").is_none(),
+                "{mode}: the hook must wait for the person's answer"
+            );
+            fs::write(
+                native
+                    .permission_response_dir
+                    .join(format!("{request_id}.json")),
+                serde_json::json!({ "behavior": "allow", "updatedInput": updated_input })
+                    .to_string(),
+            )
+            .expect("answer should write");
+            let output = child
+                .wait_with_output()
+                .expect("hook handler should finish");
+            let response: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+            assert_eq!(
+                response["hookSpecificOutput"]["decision"]["updatedInput"], updated_input,
+                "{mode}"
+            );
+        }
+    }
+
+    /// The hook with its clock moved a day ahead once `jump` exists, so a
+    /// wait with a deadline ends and one without keeps waiting.
+    fn run_hook_until_the_clock_jumps(
+        tool_name: &str,
+    ) -> (std::process::Child, std::path::PathBuf) {
+        let request = LaunchProviderRequest::new(
+            format!("session-hook-clock-{tool_name}"),
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let root = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .to_path_buf();
+        let jump = root.join("jump");
+        let preload = root.join("clock.cjs");
+        fs::write(
+            &preload,
+            format!(
+                "const fs = require('node:fs'); const now = Date.now; \
+                 Date.now = () => now() + (fs.existsSync({:?}) ? 86400000 : 0);",
+                jump.to_string_lossy()
+            ),
+        )
+        .expect("clock preload should write");
+        let mut child = crate::process_spawn::command("node")
+            .arg("--require")
+            .arg(&preload)
+            .arg(root.join("hook-handler.mjs"))
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                &native.permission_response_dir,
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("hook handler should start");
+        child
+            .stdin
+            .take()
+            .expect("hook stdin should be piped")
+            .write_all(
+                serde_json::json!({
+                    "hook_event_name": "PermissionRequest",
+                    "permission_mode": "default",
+                    "tool_name": tool_name,
+                    "tool_input": { "questions": [], "command": "true" }
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .expect("hook input should write");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !fs::read_to_string(&native.events_file)
+            .unwrap_or_default()
+            .contains("hook_context_request_id")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the hook never asked for a decision"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        fs::write(&jump, "").expect("clock jump should write");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        (child, jump)
+    }
+
+    #[test]
+    fn a_question_hook_has_no_deadline_while_a_tool_approval_hook_has_one() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let (mut approval, _) = run_hook_until_the_clock_jumps("Bash");
+        assert!(
+            approval.try_wait().expect("hook state").is_some(),
+            "an approval nobody answers returns to Claude's own dialog"
+        );
+        let (mut question, _) = run_hook_until_the_clock_jumps("AskUserQuestion");
+        assert!(
+            question.try_wait().expect("hook state").is_none(),
+            "a question waits for the person, however long it takes"
+        );
+        question.kill().expect("question hook should stop");
+        let _ = question.wait();
+    }
+
+    #[test]
+    fn a_stopped_turn_denies_the_pending_call_and_tells_claude_to_stop() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-hook-stop",
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let mut child = crate::process_spawn::command("node")
+            .arg(&hook_handler)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                &native.permission_response_dir,
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("hook handler should start");
+        child
+            .stdin
+            .take()
+            .expect("hook stdin should be piped")
+            .write_all(
+                serde_json::json!({
+                    "hook_event_name": "PermissionRequest",
+                    "permission_mode": "default",
+                    "tool_name": "Bash",
+                    "tool_input": { "command": "sleep 20" }
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .expect("hook input should write");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let request_id = loop {
+            if let Some(id) = fs::read_to_string(&native.events_file)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find_map(|event| {
+                    event["hook_context_request_id"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+            {
+                break id;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hook never recorded its permission request"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        fs::write(
+            native
+                .permission_response_dir
+                .join(format!("{request_id}.json")),
+            serde_json::json!({
+                "behavior": "deny",
+                "message": "Stopped.",
+                "interrupt": true
+            })
+            .to_string(),
+        )
+        .expect("decision should write");
+        let output = child
+            .wait_with_output()
+            .expect("hook handler should finish");
+        let response: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+        assert_eq!(
+            response["hookSpecificOutput"]["decision"]["interrupt"], true,
+            "Claude must end the turn, not retry the call"
+        );
     }
 
     #[test]
@@ -1325,6 +1697,88 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--resume", "claude-session-1"]));
+    }
+
+    #[test]
+    fn a_provider_terminal_shows_its_pane_and_reports_its_settings_and_headless_runs_do_not() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let run = |command: &str, env: &[(String, String)], input: &[u8]| {
+            let mut child = crate::process_spawn::command("/bin/sh")
+                .args(["-c", command])
+                .envs(env.iter().map(|(name, value)| (name, value)))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("the command should start");
+            child
+                .stdin
+                .take()
+                .expect("stdin should be piped")
+                .write_all(input)
+                .expect("input should write");
+            let output = child.wait_with_output().expect("the command should finish");
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).expect("output is text")
+        };
+        let settings_of = |files: &super::ClaudeNativeTuiFiles| -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&files.settings_file).unwrap()).unwrap()
+        };
+        let headless = prepare_claude_native_tui_files(&LaunchProviderRequest::new(
+            "session-headless",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        ))
+        .unwrap();
+        assert!(
+            headless.terminal_pane.is_none(),
+            "nobody sees a headless terminal"
+        );
+        assert!(settings_of(&headless)["statusLine"]
+            .get("refreshInterval")
+            .is_none());
+
+        let terminal = prepare_claude_native_tui_files(
+            &LaunchProviderRequest::new("session-pane", "claude", "claude", "default", "sonnet")
+                .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+        )
+        .unwrap();
+        let settings = settings_of(&terminal);
+        assert_eq!(settings["statusLine"]["refreshInterval"], 2);
+        let pane = terminal
+            .terminal_pane
+            .as_ref()
+            .expect("a terminal has a pane");
+        let env = pane.env();
+        fs::write(&pane.status_file, "Room · claude-1\nWorking").unwrap();
+        let shown = run(
+            settings["statusLine"]["command"].as_str().unwrap(),
+            &env,
+            br#"{"model":{"id":"claude-opus-5-5"},"effort":{"level":"high"},"context_window":{}}"#,
+        );
+        assert_eq!(shown, "Room · claude-1\nWorking");
+        let reported: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&pane.model_file).unwrap()).unwrap();
+        assert_eq!(
+            reported,
+            serde_json::json!({ "model": "claude-opus-5-5", "effort": "high" })
+        );
+
+        run(
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap(),
+            &env,
+            br#"{"hook_event_name":"Stop","session_id":"s","permission_mode":"plan"}"#,
+        );
+        assert_eq!(fs::read_to_string(&pane.mode_file).unwrap(), "plan");
     }
 
     #[test]

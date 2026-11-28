@@ -14,6 +14,8 @@ export type RuntimeProviderRun = {
   variant: string | null
   usage_tokens_total: number | null
   usage?: {
+    accounting?: ProviderTokenAccounting | null
+    turn_accounting?: ProviderTokenAccounting | null
     total_tokens?: number | null
     last_tokens?: number | null
     context_tokens?: number | null
@@ -180,6 +182,8 @@ export type SliceProviderLoginStart = {
 export type ProviderLogoutResult = {
   provider: string
   account_profile: string
+  /** The login is shared with other machines: only this machine's copy was removed. */
+  local_only?: boolean
 }
 
 export type ProviderLogoutOutcome =
@@ -306,6 +310,10 @@ export type TerminalOutputRecord = {
   source_attachment_id?: string | null
   kind: "provider_output" | "provider_terminal" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "context_compacted"
   merge_key?: string
+  /** Protocol ≥1016: `bytes` take the place of the row under `merge_key` instead of being added to it. */
+  replaces?: boolean
+  /** The bytes are more of the replacement the `replaces` record of the same `merge_key` began: they join that row, wherever it is now. */
+  continues_replacement?: boolean
   source?: "external_provider_observed" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null
@@ -365,4 +373,29 @@ export type PersonInboxNoticeAction = {
   provider: string
   account_profile: string
   label: string
+}
+
+// MP-08 / MP-10 / MP-11, allocated local448 / peer91.
+export type ProviderTokenAccounting = {
+  input_tokens: number | null
+  cached_input_tokens: number | null
+  cache_write: number | null
+  cache_write_5m: number | null
+  cache_write_1h: number | null
+  output_tokens: number | null
+  reasoning_tokens: number | null
+}
+export type ProviderTurnUsage = {
+  session_id: string; agent_id: string; parent_agent_id: string | null; prompt_id: string
+  provider_run_id: string; provider: string; model: string; completed: boolean
+  usage: ProviderTokenAccounting | null; provider_counters: ProviderTokenAccounting | null
+  api_equivalent_nanodollars: string | null; price_table_version: number; price_table_date: string
+}
+export type ProviderUsageTotals = {
+  turns: number; unavailable_turns: number; usage: ProviderTokenAccounting
+  api_equivalent_nanodollars: string | null
+}
+export type SessionUsageReport = {
+  session_id: string; turns: ProviderTurnUsage[]; total: ProviderUsageTotals
+  agents: Record<string, ProviderUsageTotals>; delegation_trees: Record<string, ProviderUsageTotals>
 }

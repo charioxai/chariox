@@ -5,8 +5,8 @@ import { createKernelApprovalController, kernelApprovals, type KernelApprovalKey
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { createCliStdinKeyController, type CliStdinKeyControllerDeps } from "./cli-stdin-key-controller.js"
 
-export const approvalFixture: RuntimeInteraction = {
-  id: "approval-1", kernel_operation_id: "install-1", kind: "permission", level: "warning",
+export const approvalFixture: Extract<RuntimeInteraction, { kernel_operation_id: string }> = {
+  id: "approval-1", surface: "card", card_type: "app_install", kernel_operation_id: "install-1", kind: "permission", level: "warning",
   title: "Install Linear", message: "Allow this App to use the capabilities listed in the installation?",
   choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }],
   requested_at_ms: 1,
@@ -157,7 +157,7 @@ test("a stale rendered choice cannot authorize the next pending interaction", as
 })
 
 const critical = (id: string): Extract<RuntimeInteraction, { kernel_operation_id: string }> => ({
-  id, kernel_operation_id: `validation:${id}`, kind: "permission", level: "warning",
+  id, kernel_operation_id: `validation:${id}`, surface: "card", card_type: "app_validation", kind: "permission", level: "warning",
   title: "Approve App action", message: "An App asks to perform a protected action.",
   choices: [{ id: "deny", label: "Deny", reply: "deny" },
     { id: "approve", label: "Approve", reply: "allow", requires_passkey: true }],
@@ -234,7 +234,7 @@ test("an open panel takes every paste, so none reaches the prompt", () => {
 
 test("no-ID host acceptance is bound to the offer displayed before dismissal", () => {
   const h = harness()
-  const host = (operation: string): RuntimeInteraction => ({ ...approvalFixture, id: `app_host_${operation}`, kernel_operation_id: `host_action:${operation}`, choices: [{ id: "decline", label: "Decline", reply: "deny" }] })
+  const host = (operation: string): RuntimeInteraction => ({ ...approvalFixture, id: `app_host_${operation}`, kernel_operation_id: `host_action:${operation}`, card_type: "app_clipboard_write", choices: [{ id: "decline", label: "Decline", reply: "deny" }] })
   const a = host("0123456789abcdef0123456789abcdef")
   const b = host("fedcba9876543210fedcba9876543210")
   h.setSession(session("session-1", [a]))
@@ -298,13 +298,13 @@ test("critical approvals anywhere in the queue are visible without stealing focu
 })
 
 test("MP-08/MP-11 sudo delegates to the one passkey popup without hiding routine approvals", () => {
-  const sudo = {...approvalFixture,id:"sudo:one",kernel_operation_id:"sudo:one",choices:[{id:"deny",label:"Refuse",reply:"deny"},{id:"allow",label:"Approve",reply:"allow",requires_passkey:true}]}
+  const sudo = {...approvalFixture,id:"sudo:one",kernel_operation_id:"sudo:one",card_type:"sudo_task_approval",choices:[{id:"deny",label:"Refuse",reply:"deny"},{id:"allow",label:"Approve",reply:"allow",requires_passkey:true}]}
   assert.deepEqual(kernelApprovals(session("session-1",[sudo,approvalFixture]),true).map(i=>i.id),[approvalFixture.id])
   assert.equal(kernelApprovals(session("session-1",[sudo])).length,1,"fallback stays available")
 })
 
 test("detached copy consent uses the same approval panel without a session mutation", async () => {
-  let detached: RuntimeInteraction[] = [{ ...approvalFixture, id: "copy", kernel_operation_id: "provider-account-copy:op" }]
+  let detached: RuntimeInteraction[] = [{ ...approvalFixture, id: "copy", kernel_operation_id: "provider-account-copy:op", card_type: "provider_account_copy" }]
   const answers: string[][] = []
   const controller = createKernelApprovalController({
     getSession: () => session("", []), detachedInteractions: () => detached, connected: () => true,
@@ -325,7 +325,7 @@ test("detached copy consent uses the same approval panel without a session mutat
 
 test("Accept on an App host offer sends the dedicated accept, never a reply; Decline stays a reply", async () => {
   const accepted: string[][] = []
-  const offer: RuntimeInteraction = { ...approvalFixture, id: "app_host_op1", kernel_operation_id: "host_action:op1", choices: [{ id: "accept_host_action", label: "Accept", reply: "accept_host_action" }, { id: "decline", label: "Decline", reply: "deny" }] }
+  const offer: RuntimeInteraction = { ...approvalFixture, id: "app_host_op1", kernel_operation_id: "host_action:op1", card_type: "app_clipboard_write", choices: [{ id: "accept_host_action", label: "Accept", reply: "accept_host_action" }, { id: "decline", label: "Decline", reply: "deny" }] }
   let current = session("session-1", [offer])
   const replies: unknown[][] = []
   const controller = createKernelApprovalController({

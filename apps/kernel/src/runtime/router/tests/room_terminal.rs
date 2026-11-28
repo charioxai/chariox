@@ -24,6 +24,41 @@ fn run<F: std::future::Future<Output = ()> + 'static>(name: &str, test: fn() -> 
         .expect("test thread should not panic");
 }
 
+async fn command_request(
+    router: &CommandRouter,
+    user_id: &str,
+    session_id: &str,
+    operation: crate::local::RunCommandOperation,
+) -> Result<crate::local::RunCommandResult, DaemonError> {
+    command_request_on_target(
+        router,
+        user_id,
+        crate::local::CommandTarget::RoomWorkspace {
+            session_id: session_id.to_string(),
+        },
+        operation,
+    )
+    .await
+}
+
+async fn command_request_on_target(
+    router: &CommandRouter,
+    user_id: &str,
+    target: crate::local::CommandTarget,
+    operation: crate::local::RunCommandOperation,
+) -> Result<crate::local::RunCommandResult, DaemonError> {
+    let request = LocalDaemonRequest::RunCommand(crate::local::RunCommandRequest {
+        target,
+        acting_agent: None,
+        operation,
+    });
+    let command = remote_command_for_request(&request, Some(user_id));
+    match router.dispatch(command, request).await? {
+        LocalDaemonResponse::RunCommand { result } => Ok(result),
+        other => panic!("unexpected command response {other:?}"),
+    }
+}
+
 async fn terminal_request(
     router: &CommandRouter,
     user_id: &str,
@@ -103,7 +138,7 @@ async fn list(router: &CommandRouter, session_id: &str) -> Vec<RoomTerminalSumma
     .await
     .expect("list")
     {
-        RoomTerminalResult::Listed { terminals } => terminals,
+        RoomTerminalResult::Listed { terminals, .. } => terminals,
         other => panic!("unexpected result: {other:?}"),
     }
 }
@@ -496,68 +531,71 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
             .join_session_invite(&room, invite.invite_id(), "member".to_string(), 1)
             .unwrap();
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-        let operation = RoomTerminalOperation::ExecOpen {
+        use crate::local::{RunCommandOperation, RunCommandResult};
+        let operation = RunCommandOperation::ExecOpen {
             command: vec!["/bin/cat".to_string()],
+            directory: None,
+            timeout_ms: None,
+            deadline_unix_ms: None,
+            stdin_file: None,
         };
         assert!(
-            terminal_request(&router, "member", &room, None, operation.clone())
+            command_request(&router, "member", &room, operation.clone())
                 .await
                 .is_err(),
             "membership alone grants neither terminal nor exec access"
         );
-        let result = terminal_request(&router, DEFAULT_LOCAL_USER_ID, &room, None, operation)
+        let result = command_request(&router, DEFAULT_LOCAL_USER_ID, &room, operation)
             .await
             .unwrap();
-        let RoomTerminalResult::ExecOpened { exec_id } = result else {
+        let RunCommandResult::ExecOpened { exec_id } = result else {
             panic!("expected exec ID");
         };
-        let listed = terminal_request(
+        let listed = command_request(
             &router,
             DEFAULT_LOCAL_USER_ID,
             &room,
-            None,
-            RoomTerminalOperation::ExecList,
+            RunCommandOperation::ExecList,
         )
         .await
         .unwrap();
-        let RoomTerminalResult::ExecListed { execs } = listed else {
+        let RunCommandResult::ExecListed { execs } = listed else {
             panic!("expected exec list");
         };
         assert_eq!(execs.len(), 1);
         assert_eq!(execs[0].exec_id, exec_id);
         for operation in [
-            RoomTerminalOperation::ExecList,
-            RoomTerminalOperation::ExecWrite {
+            RunCommandOperation::ExecList,
+            RunCommandOperation::ExecWrite {
                 exec_id: exec_id.clone(),
                 offset: 0,
                 data_base64: "YQ==".to_string(),
             },
-            RoomTerminalOperation::ExecStdinClose {
+            RunCommandOperation::ExecStdinClose {
                 exec_id: exec_id.clone(),
                 offset: 0,
             },
-            RoomTerminalOperation::ExecRead {
+            RunCommandOperation::ExecRead {
                 exec_id: exec_id.clone(),
                 after_cursor: 0,
                 wait_ms: 0,
             },
-            RoomTerminalOperation::ExecCancel {
+            RunCommandOperation::ExecCancel {
                 exec_id: exec_id.clone(),
             },
-            RoomTerminalOperation::ExecClose {
+            RunCommandOperation::ExecClose {
                 exec_id: exec_id.clone(),
             },
         ] {
-            assert!(terminal_request(&router, "member", &room, None, operation)
+            assert!(command_request(&router, "member", &room, operation)
                 .await
                 .is_err());
         }
-        terminal_request(
+        command_request(
             &router,
             DEFAULT_LOCAL_USER_ID,
             &room,
-            None,
-            RoomTerminalOperation::ExecClose { exec_id },
+            RunCommandOperation::ExecClose { exec_id },
         )
         .await
         .unwrap();
@@ -758,5 +796,191 @@ fn deleting_an_agent_ends_the_detached_job_of_its_ended_terminal() {
 fn deleting_an_agent_ends_the_detached_job_of_its_closed_terminal() {
     run("delete-terminal-job-closed", || {
         agent_deletion_ends_a_detached_terminal_job(true, "delete_terminal_job_closed")
+    });
+}
+
+#[test]
+fn kernel_commands_stream_target_stdin_files_without_inline_limits() {
+    run("kernel-command-file", || async {
+        use crate::local::{CommandTarget, RunCommandOperation as Op, RunCommandResult as Result};
+        let worktree = crate::test_support::TestWorktree::new("kernel_command_file");
+        let bytes: Vec<u8> = (0..131_073).map(|n| (n % 256) as u8).collect();
+        std::fs::write(worktree.path().join("input.bin"), &bytes).unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "stdin-owner".into(),
+            ..Default::default()
+        });
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let opened = command_request_on_target(
+            &router,
+            "stdin-owner",
+            CommandTarget::Kernel,
+            Op::ExecOpen {
+                command: vec!["/bin/cat".into()],
+                directory: Some(worktree.path().display().to_string()),
+                timeout_ms: Some(5_000),
+                deadline_unix_ms: None,
+                stdin_file: Some("input.bin".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let Result::ExecOpened { exec_id } = opened else {
+            panic!("expected exec ID")
+        };
+        let extra = command_request_on_target(
+            &router,
+            "stdin-owner",
+            CommandTarget::Kernel,
+            Op::ExecWrite {
+                exec_id: exec_id.clone(),
+                offset: 0,
+                data_base64: "YQ==".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(extra, DaemonError::MachineRequest { ref code, .. } if code == "exec_stdin_file")
+        );
+        // The CLI still closes its inline input at zero; this must not cut off the target file.
+        command_request_on_target(
+            &router,
+            "stdin-owner",
+            CommandTarget::Kernel,
+            Op::ExecStdinClose {
+                exec_id: exec_id.clone(),
+                offset: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let mut cursor = 0;
+        let mut output = Vec::new();
+        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let page = command_request_on_target(
+                    &router,
+                    "stdin-owner",
+                    CommandTarget::Kernel,
+                    Op::ExecRead {
+                        exec_id: exec_id.clone(),
+                        after_cursor: cursor,
+                        wait_ms: 100,
+                    },
+                )
+                .await
+                .unwrap();
+                let Result::ExecOutput { output: page } = page else {
+                    panic!("expected output")
+                };
+                for chunk in page.chunks {
+                    assert_eq!(chunk.stream, crate::room_exec::ExecStream::Stdout);
+                    output.extend(
+                        base64::engine::general_purpose::STANDARD
+                            .decode(chunk.data_base64)
+                            .unwrap(),
+                    );
+                }
+                cursor = page.next_cursor;
+                if let Some(outcome) = page.outcome {
+                    break outcome;
+                }
+            }
+        })
+        .await
+        .expect("file command finishes");
+        command_request_on_target(
+            &router,
+            "stdin-owner",
+            CommandTarget::Kernel,
+            Op::ExecClose { exec_id },
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, crate::room_exec::ExecOutcome::Exited { code: 0 });
+        assert_eq!(output.len(), bytes.len());
+        use sha2::{Digest, Sha256};
+        assert_eq!(Sha256::digest(output), Sha256::digest(bytes));
+    });
+}
+
+#[test]
+fn kernel_stdin_files_keep_owner_target_and_regular_file_checks() {
+    run("kernel-command-file-gates", || async {
+        use crate::local::{CommandTarget, RunCommandOperation as Op};
+        let worktree = crate::test_support::TestWorktree::new("kernel_command_file_gates");
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "stdin-owner".into(),
+            ..Default::default()
+        });
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let room = app
+            .sessions_mut()
+            .create_session(worktree.session_request().with_owner_user_id("stdin-owner"))
+            .unwrap()
+            .id()
+            .to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let opening = |path: &str| Op::ExecOpen {
+            command: vec!["/bin/cat".into()],
+            directory: Some(worktree.path().display().to_string()),
+            timeout_ms: Some(5_000),
+            deadline_unix_ms: None,
+            stdin_file: Some(path.into()),
+        };
+        // Authorization precedes any path probe, including a path that does not exist.
+        let denied = command_request_on_target(
+            &router,
+            "stranger",
+            CommandTarget::Kernel,
+            opening("missing.bin"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(denied, DaemonError::MachineRequest { ref code, .. } if code == "exec_access_denied")
+        );
+        for path in ["missing.bin", "."] {
+            let refused = command_request_on_target(
+                &router,
+                "stdin-owner",
+                CommandTarget::Kernel,
+                opening(path),
+            )
+            .await
+            .unwrap_err();
+            assert!(refused.to_string().contains("stdin file"), "{refused}");
+        }
+        let placed = command_request_on_target(
+            &router,
+            "stdin-owner",
+            CommandTarget::Kernel,
+            Op::ExecPlace {
+                exec_id: "target-file".into(),
+                kernel: "other".into(),
+                directory: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(placed, DaemonError::MachineRequest { ref code, .. } if code == "exec_invalid_target"),
+            "a kernel file cannot become another kernel's stdin"
+        );
+        let refused = command_request_on_target(
+            &router,
+            "stdin-owner",
+            CommandTarget::RoomWorkspace { session_id: room },
+            opening("missing.bin"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(refused, DaemonError::MachineRequest { ref code, .. } if code == "exec_invalid_target")
+        );
     });
 }

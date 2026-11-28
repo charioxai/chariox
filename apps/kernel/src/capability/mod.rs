@@ -2,7 +2,6 @@ mod common;
 mod file;
 mod git;
 mod screenshot;
-mod shell;
 mod transfer;
 mod tree;
 
@@ -14,7 +13,6 @@ pub use screenshot::{
     CaptureScreenshotRequest, CaptureScreenshotResult, ScreenshotCapabilityService,
     ScreenshotStatus,
 };
-pub use shell::{RunShellCommandRequest, RunShellCommandResult, ShellCommandService};
 pub use transfer::{FileTransferService, StoreTransferredFileRequest, StoredTransferArtifact};
 pub use tree::{
     DirectoryEntry, DirectoryTreeService, ReadDirectoryTreeRequest, ReadDirectoryTreeResult,

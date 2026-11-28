@@ -6,7 +6,7 @@ import { createHandoffEntry, handoffKeyText, HANDOFF_ENTER_CHOICE } from "./kern
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import type { RuntimeHandoff, HandoffResponseAction } from "@chariox/kernel-client/owner-handoff"
 const h: RuntimeHandoff = {kind:"secret",reason:"human_verification",agent_id:"agent",task_id:"task",obligation_id:"obligation",explanation:"Enter the missing value",target:{tab_id:"tab",generation:1,document_id:"doc",node_ref:"backend:1",origin:"https://github.com",path:"/login",label:"Password"},expires_at_ms:Date.now()+900_000,save_to_vault_offered:true}
-const interaction: RuntimeInteraction = {id:"handoff-obligation",kernel_operation_id:"handoff-obligation",kind:"permission",level:"warning",message:"Protected step",choices:[{id:"cancel",label:"Cancel",reply:"cancel"}],requested_at_ms:1,handoff:h}
+const interaction: Extract<RuntimeInteraction, { kernel_operation_id: string }> = {id:"handoff-obligation", surface: "card", card_type: "owner_handoff_input",kernel_operation_id:"handoff-obligation",kind:"permission",level:"warning",message:"Protected step",choices:[{id:"cancel",label:"Cancel",reply:"cancel"}],requested_at_ms:1,handoff:h}
 const key=(name:string):KernelApprovalKey=>({name,preventDefault(){},stopPropagation(){}})
 function fixture() {
  let connected=true
@@ -74,8 +74,8 @@ test("a hand-off opens with its owner action selected so Enter acts at once",asy
  f.controller.dispose()
 })
 test("a click hand-off is answered by Enter alone and an ordinary approval still opens unselected",async()=>{
- const click:RuntimeInteraction={...interaction,id:"handoff-click",kernel_operation_id:"handoff-click",requested_at_ms:1,handoff:{...h,kind:"click"}}
- const ordinary:RuntimeInteraction={...interaction,id:"ordinary",kernel_operation_id:"ordinary",requested_at_ms:2,handoff:null,choices:[{id:"deny",label:"Deny",reply:"deny"},{id:"allow",label:"Allow",reply:"allow"}]}
+ const click:RuntimeInteraction={...interaction,id:"handoff-click",kernel_operation_id:"handoff-click",card_type:"owner_handoff_click",requested_at_ms:1,handoff:{...h,kind:"click"}}
+ const ordinary:RuntimeInteraction={...interaction,id:"ordinary",kernel_operation_id:"ordinary",card_type:"app_install",requested_at_ms:2,handoff:null,choices:[{id:"deny",label:"Deny",reply:"deny"},{id:"allow",label:"Allow",reply:"allow"}]}
  const actions:HandoffResponseAction[]=[]
  let current={id:"room",agents:[],active_interactions:[click,ordinary]} as unknown as RuntimeSession
  const controller=createKernelApprovalController({getSession:()=>current,connected:()=>true,onView(){},onOpen(){},onClose(){},scroll(){},notify(){},applySession(){},showPasskeyPrompt:()=>false,

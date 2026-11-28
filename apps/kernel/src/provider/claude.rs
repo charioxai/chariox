@@ -32,9 +32,11 @@ pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::CLAUDE_RUNTIME_MCP_SERVER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
 pub(crate) use native_tui::{
-    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
-    fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
-    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+    claude_native_hidden_context_room, claude_native_permission_interaction_id,
+    ensure_claude_native_hidden_context_fits, fit_claude_native_hidden_context,
+    is_claude_native_permission, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS, CLAUDE_PANE_STATUS_FILE_ENV,
+    CLAUDE_TERMINAL_MODEL_FILE_ENV, CLAUDE_TERMINAL_MODE_FILE_ENV,
 };
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use project_trust::trusted_workspace_notice;
@@ -184,6 +186,7 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
             native.usage_file.display().to_string(),
         );
+        pty_env.extend(native.terminal_pane.iter().flat_map(|files| files.env()));
         pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
         pty_env.insert("COLORTERM".to_string(), "truecolor".to_string());
         let launch = ProviderLaunchResult {

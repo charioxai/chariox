@@ -12,7 +12,7 @@ use super::*;
 pub(super) enum RemotePromptReceiptAction {
     AssociateActiveRun(String),
     DrainCompletedProjection(String),
-    RejectUnadmitted,
+    RejectUnadmitted(crate::transport::relay_peer::LeasedPromptRejection),
     WaitForMemory,
 }
 
@@ -57,13 +57,13 @@ pub(super) fn remote_prompt_receipt_action(
         crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed => Ok(
             RemotePromptReceiptAction::DrainCompletedProjection(receipt.worker_provider_run_id),
         ),
-        crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::AdmissionRejected(reason)
             if !expected_execution_lease_id.trim().is_empty()
                 && receipt.target_home_prompt_id.is_none()
                 && receipt.worker_provider_run_id.is_empty()
                 && receipt.execution_lease_id.as_deref() == Some(expected_execution_lease_id) =>
         {
-            Ok(RemotePromptReceiptAction::RejectUnadmitted)
+            Ok(RemotePromptReceiptAction::RejectUnadmitted(reason))
         }
         crate::transport::relay_peer::LeasedPromptReceiptPhase::WaitingForMemory
             if !expected_execution_lease_id.trim().is_empty()
@@ -83,6 +83,9 @@ pub(super) fn remote_prompt_receipt_action(
                 "worker admission of the exact prompt is still Dispatching with no accepted or rejected outcome",
             )
         }
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::AdmissionRejected(_) => {
+            Err("worker rejection receipt has conflicting admission identity")
+        }
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
         | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
         | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected => {
@@ -101,13 +104,7 @@ pub(super) fn remote_prompt_receipt_action_requires_projection(
 }
 
 pub(super) fn remote_prompt_receipt_is_rejected(error: &DaemonError) -> bool {
-    matches!(
-        error,
-        DaemonError::LocalTransport {
-            operation: "remote prompt worker rejected admission",
-            ..
-        }
-    )
+    matches!(error, DaemonError::RemotePromptRejected { .. })
 }
 
 impl KernelRuntimeState {
@@ -187,14 +184,8 @@ impl KernelRuntimeState {
                 "remote worker binding changed while its receipt was being queried",
             ));
         }
-        if action == RemotePromptReceiptAction::RejectUnadmitted {
-            return Err(DaemonError::LocalTransport {
-                operation: "remote prompt worker rejected admission",
-                message: format!(
-                    "worker durably rejected exact prompt {} under execution lease {}",
-                    dispatch.prompt_id, binding_before.execution_lease_id
-                ),
-            });
+        if let RemotePromptReceiptAction::RejectUnadmitted(reason) = action {
+            return Err(DaemonError::RemotePromptRejected { reason });
         }
         if action == RemotePromptReceiptAction::WaitForMemory {
             return Err(super::provider_turn_admission::provider_memory_wait_error(
@@ -205,7 +196,7 @@ impl KernelRuntimeState {
         let worker_provider_run_id = match action {
             RemotePromptReceiptAction::AssociateActiveRun(provider_run_id) => provider_run_id,
             RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id) => provider_run_id,
-            RemotePromptReceiptAction::RejectUnadmitted
+            RemotePromptReceiptAction::RejectUnadmitted(_)
             | RemotePromptReceiptAction::WaitForMemory => unreachable!(),
         };
         if let Err(error) = self

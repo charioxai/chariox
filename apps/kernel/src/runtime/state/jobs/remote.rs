@@ -4,6 +4,7 @@ use crate::local::*;
 use crate::room_exec::gateway_placement::{create_target_room, GrantedSend};
 use crate::room_exec::{ExecOutcome, ExecOutput};
 use crate::runtime::kernel_gateway::forward_with_retry;
+use sha2::{Digest, Sha256};
 use std::io::Read;
 
 /// A job's place on its machine: the home directory and the workspace root below it.
@@ -51,21 +52,22 @@ impl Remote {
     async fn operation(
         &self,
         suffix: &str,
-        operation: RoomTerminalOperation,
-    ) -> Result<RoomTerminalResult, DaemonError> {
+        operation: RunCommandOperation,
+    ) -> Result<RunCommandResult, DaemonError> {
         match self
             .call(
                 suffix,
-                LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
-                    session_id: self.room.clone(),
+                LocalDaemonRequest::RunCommand(RunCommandRequest {
+                    target: crate::local::CommandTarget::RoomWorkspace {
+                        session_id: self.room.clone(),
+                    },
                     acting_agent: None,
-                    host_agent: None,
                     operation,
                 }),
             )
             .await?
         {
-            LocalDaemonResponse::RoomTerminal { result } => Ok(result),
+            LocalDaemonResponse::RunCommand { result } => Ok(result),
             _ => Err(ledger::error("Job machine returned another operation")),
         }
     }
@@ -76,11 +78,17 @@ impl Remote {
         suffix: &str,
     ) -> Result<String, DaemonError> {
         let operation = match needs {
-            Some(needs) => RoomTerminalOperation::ExecOpenJob { command, needs },
-            None => RoomTerminalOperation::ExecOpen { command },
+            Some(needs) => RunCommandOperation::ExecOpenJob { command, needs },
+            None => RunCommandOperation::ExecOpen {
+                command,
+                directory: None,
+                timeout_ms: None,
+                deadline_unix_ms: None,
+                stdin_file: None,
+            },
         };
         match self.operation(suffix, operation).await? {
-            RoomTerminalResult::ExecOpened { exec_id } => Ok(exec_id),
+            RunCommandResult::ExecOpened { exec_id } => Ok(exec_id),
             _ => Err(ledger::error("Job machine did not start the command")),
         }
     }
@@ -93,7 +101,7 @@ impl Remote {
         match self
             .operation(
                 &format!("{exec_id}:input:{offset}"),
-                RoomTerminalOperation::ExecWrite {
+                RunCommandOperation::ExecWrite {
                     exec_id: exec_id.into(),
                     offset,
                     data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -101,7 +109,7 @@ impl Remote {
             )
             .await?
         {
-            RoomTerminalResult::ExecInput { next_offset } => Ok(next_offset),
+            RunCommandResult::ExecInput { next_offset } => Ok(next_offset),
             _ => Err(ledger::error("Job machine did not accept command input")),
         }
     }
@@ -109,14 +117,14 @@ impl Remote {
         match self
             .operation(
                 &format!("{exec_id}:stdin-close"),
-                RoomTerminalOperation::ExecStdinClose {
+                RunCommandOperation::ExecStdinClose {
                     exec_id: exec_id.into(),
                     offset,
                 },
             )
             .await?
         {
-            RoomTerminalResult::ExecInput { .. } => Ok(()),
+            RunCommandResult::ExecInput { .. } => Ok(()),
             _ => Err(ledger::error("Job machine did not close command input")),
         }
     }
@@ -124,7 +132,7 @@ impl Remote {
         match self
             .operation(
                 &format!("{exec_id}:read:{cursor}:{:016x}", rand::random::<u64>()),
-                RoomTerminalOperation::ExecRead {
+                RunCommandOperation::ExecRead {
                     exec_id: exec_id.into(),
                     after_cursor: cursor,
                     wait_ms: 250,
@@ -132,7 +140,7 @@ impl Remote {
             )
             .await?
         {
-            RoomTerminalResult::ExecOutput { output } => Ok(output),
+            RunCommandResult::ExecOutput { output } => Ok(output),
             _ => Err(ledger::error("Job machine did not return command output")),
         }
     }
@@ -158,7 +166,7 @@ impl Remote {
     pub(super) async fn cancel(&self, exec_id: &str) -> Result<(), DaemonError> {
         self.operation(
             &format!("{exec_id}:cancel"),
-            RoomTerminalOperation::ExecCancel {
+            RunCommandOperation::ExecCancel {
                 exec_id: exec_id.into(),
             },
         )
@@ -322,6 +330,19 @@ impl Remote {
                 .map_err(|e| ledger::error(e.to_string()))?
                 .len();
             let mut offset = 0;
+            // Preparation replays these command IDs after a reconnect. Keep their upload
+            // attempt stable for this job's frozen file, rather than minting a new one on replay.
+            let mut identity = Sha256::new();
+            identity.update(record.job_id.as_bytes());
+            identity.update([0]);
+            identity.update(path.as_bytes());
+            identity.update([0]);
+            identity.update(state.sha256.as_bytes());
+            let upload_id = uuid::Uuid::from_bytes(
+                identity.finalize()[..16]
+                    .try_into()
+                    .expect("a SHA-256 holds sixteen bytes"),
+            );
             loop {
                 if *cancelled.borrow() {
                     return Err(ledger::error("Job cancelled during workspace upload"));
@@ -335,6 +356,7 @@ impl Remote {
                     .call(
                         &format!("upload:{index}:{offset}"),
                         LocalDaemonRequest::WriteKernelFile(WriteKernelFileRequest {
+                            upload_id,
                             path: format!("{root}/{path}"),
                             offset,
                             data_base64: base64::engine::general_purpose::STANDARD.encode(chunk),

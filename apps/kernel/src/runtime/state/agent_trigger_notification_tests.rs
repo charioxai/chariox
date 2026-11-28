@@ -751,6 +751,9 @@ async fn a_completion_promotion_with_a_timer_wake_ends_the_wait_row_of_the_task_
         .expect("the busy turn completes")
         .dispatch
         .expect("the mixed batch uses receipt-aware dispatch");
+    let super::owned::NextPromptDispatch::Submit(batch) = batch else {
+        panic!("the mixed batch must submit rather than fail preparation");
+    };
     assert!(batch.prompt.contains("2 new messages:"), "{}", batch.prompt);
     assert!(rig
         .runtime
@@ -905,6 +908,9 @@ async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_recei
         .expect("the busy turn completes")
         .dispatch
         .expect("the mixed batch uses receipt-aware dispatch");
+    let super::owned::NextPromptDispatch::Submit(batch) = batch else {
+        panic!("the mixed batch must submit rather than fail preparation");
+    };
     assert!(batch.prompt.contains("5 new messages:"), "{}", batch.prompt);
     for row in &arrived {
         assert!(batch

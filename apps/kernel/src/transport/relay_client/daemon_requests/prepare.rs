@@ -159,10 +159,7 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
     let message = parse_relay_client_request(&json).map_err(|error| {
         refusal(relay_error(
             "invalid_request",
-            &crate::transport::request_decode_error::message(
-                "invalid relay request payload",
-                &error,
-            ),
+            &relay_decode_message(&json, &error),
             false,
         ))
     })?;
@@ -412,4 +409,34 @@ mod tests {
         .browser_input_key()
         .is_none());
     }
+}
+
+/// Special relay envelopes have their own request types; report their own shape errors.
+fn relay_decode_message(json: &[u8], error: &serde_json::Error) -> String {
+    use crate::transport::request_decode_error::{envelope_detail, message};
+    const PREFIX: &str = "invalid relay request payload";
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(json) else {
+        return message(PREFIX, error, None);
+    };
+    let detail = if payload.get("local_terminal_connect").is_some() {
+        envelope_detail::<LocalTerminalConnectEnvelope>(&payload)
+    } else if payload.get("local_terminal_renew").is_some() {
+        envelope_detail::<LocalTerminalRenewEnvelope>(&payload)
+    } else if payload.get("browser_import_delivery").is_some() {
+        envelope_detail::<BrowserImportDeliveryEnvelope>(&payload)
+    } else if payload.get("local_browser_renew").is_some() {
+        envelope_detail::<LocalBrowserRenewEnvelope>(&payload)
+    } else if payload.get("local_browser_connect").is_some() {
+        envelope_detail::<LocalBrowserConnectEnvelope>(&payload)
+    } else {
+        None
+    };
+    if let Some(detail) = detail {
+        return format!("{PREFIX}: {detail}");
+    }
+    message(
+        PREFIX,
+        error,
+        Some(payload.get("request").unwrap_or(&payload)),
+    )
 }

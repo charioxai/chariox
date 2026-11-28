@@ -165,6 +165,52 @@ pub fn admit_chariox_selection<'a>(
     Ok(row)
 }
 
+/// A queued `$name` chip was admitted against the catalog it was picked from (`picked`).
+/// When its turn starts on a later revision, it still names the same, unchanged skill
+/// that is not Off, or the turn ends with the change and what to do next.
+pub fn admit_queued_chariox_selection<'a>(
+    picked: &[SkillProjection],
+    current: &'a [SkillProjection],
+    skill_id: &str,
+    name: &str,
+) -> Result<&'a SkillProjection, DaemonError> {
+    let shown: String = name.chars().take(128).collect();
+    let after = |change: &str, next: &str| {
+        failure(format!(
+            "skill `{shown}` {change} after this prompt was queued; {next}"
+        ))
+    };
+    let was = picked
+        .iter()
+        .find(|row| row.skill.id == skill_id)
+        .ok_or_else(|| failure("selected skill catalog changed; refresh and reselect"))?;
+    let Some(row) = current.iter().find(|row| row.skill.id == skill_id) else {
+        return Err(
+            if current
+                .iter()
+                .any(|row| row.skill.name.eq_ignore_ascii_case(&was.skill.name))
+            {
+                after("was replaced", "resend the prompt to use the new one")
+            } else {
+                after("was removed", "reinstall it or resend without it")
+            },
+        );
+    };
+    if row.effective_state == SkillState::Off {
+        return Err(after(
+            "was turned off",
+            "turn it back on in Skills or resend without it",
+        ));
+    }
+    if row.skill.digest != was.skill.digest {
+        return Err(after(
+            "changed",
+            "resend the prompt to use the current version",
+        ));
+    }
+    Ok(row)
+}
+
 pub fn resolve_name<'a>(
     rows: &'a [SkillProjection],
     name: &str,

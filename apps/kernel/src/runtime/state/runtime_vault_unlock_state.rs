@@ -61,7 +61,7 @@ impl VaultUnlockGuard {
 
     /// The open Vault for this operation of `holder`; `None` when it is open only for another
     /// holder's operation that took its single-use ("once") unlock.
-    fn for_existing_unlock(
+    pub(super) fn for_existing_unlock(
         path: std::path::PathBuf,
         holder: &str,
     ) -> Result<Option<Self>, DaemonError> {

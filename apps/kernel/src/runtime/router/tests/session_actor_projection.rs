@@ -12,6 +12,7 @@ mod prompt_lifecycle;
 mod prompt_routing;
 mod runtime_interactions;
 mod session_commands;
+mod terminal_pane;
 mod vault_creation;
 mod vault_unlock_request;
 

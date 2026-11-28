@@ -30,7 +30,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "agent parent", brief: "Move an agent under another parent", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "PARENT|none"], summary: "move an agent of the owner's Room, with its sub-agents, history and context, under another agent of the Room, as the owner's own move in the agent tree; `none` makes it a Room agent. The agent keeps its id and moves from the old parent's tree to the new parent's; the owner's agents still control each other as peers, so this changes the tree, not who may steer it. A cycle and an agent of another Room are refused" },
   { name: "agent resume", brief: "Resume an agent a usage limit or a blocked task stopped", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT"], summary: "go on with an agent paused by a usage limit or whose task is blocked (its row says which, and what unblocks it); `agent resume cancel AGENT` instead leaves it paused or cancels the blocked task" },
   { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, { name: "--stdin-file", value: "KERNEL_PATH" }, { name: "--stdin" }, SOCKET],
-    summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait). Its stdin is yours up to 64 KiB when it is a file (chariox exec -- bash -s < script.sh) or a pipe that has data at once (echo hi | chariox exec -- cat); a stdin that stays open and idle is ignored, and --stdin waits for a slow pipe to end. --stdin-file KERNEL_PATH gives a file already on that kernel (chariox files put it first), so a long script goes in one call; an argument is at most 4096 bytes; with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
+    summary: "run argv after -- without a PTY, streaming binary stdin, stdout and stderr separately. With no --session or --workspace it runs directly on the kernel in no Room (--directory PATH, default the kernel user's home). --workspace PATH also runs directly on that kernel in PATH without creating a Room; --session ROOM uses its Room workspace. --timeout SECONDS is the command deadline. For a kernel command, stdin is yours up to 64 KiB when it is a regular file or a pipe with data at once; idle stdin is ignored, and --stdin waits for a slow pipe to end. --stdin-file KERNEL_PATH streams a regular file already on that kernel, without the inline limit. An argument is at most 4096 bytes. An admitted command resumes cursor reads after a brief connection loss within the remaining deadline and reader lease; an uncertain open is never repeated. Returns the command exit code" },
   {
     name: "exec place", brief: "Move a queued command to another kernel",
     flags: [SESSION, { name: "--kernel", value: "NAME", required: true }, { name: "--directory", value: "PATH" }, SOCKET],
@@ -75,10 +75,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     summary: "acquire a machine of CLASS (and REGION when the class is offered in several); prints the allocation with its state. Reuse --request-id to retry after a lost answer or a refusal: it returns the machine the first try got and never acquires twice; use a new one only when the answer says the old one was closed. When the person asked to approve agent acquisitions, their card is raised and this waits for the answer",
     note: "Charges continue until the machine is deleted: run machine release when finished.",
   },
-  { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "the allocation's state and its verified kernel target; release it before it is no longer needed to stop charges" },
+  {
+    name: "machine limits", brief: "Read or change the machine limits",
+    flags: [{ name: "--scope", value: "account|no-ask" }, { name: "--machines", value: "N" }, { name: "--spend", value: "AMOUNT" }, { name: "--classes", value: "CLASS,...|smallest" }, KERNEL, TIMEOUT, SOCKET],
+    summary: "read the account's limits (machines at once, spend per day) and the person's limits for acquiring without asking, with what applies after the account's bound them. --machines and/or --spend (AMOUNT in the account's currency) change them, of the account or with --scope no-ask of the person's own (--classes: the machine classes allowed without asking): a lower applies at once; a raise needs the person, by their /sudo naming it or by their card showing the old and new values, which this waits for",
+  },
+  { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["[ALLOCATION_REF]"], summary: "the allocation's state and its verified kernel target; without ALLOCATION_REF, every live allocation of the owner (class, region, state, created, hard stop); release what is no longer needed to stop charges" },
   { name: "machine release", brief: "Release an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "delete an acquired machine; read machine status until its state is deleted" },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
-  { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
+  { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach, with protocol and update (against this gateway's minimum, not the web's)" },
   { name: "kernels restart", brief: "Restart a kernel, or only its browser", flags: [{ name: "--browser" }, KERNEL, TIMEOUT, SOCKET], summary: "restart this kernel, or --kernel NAME, as a hot reload: its terminals and running agents carry on, its Vault keeps its unlock and its deadline, clients reconnect. Answers KernelRestarting once the reload is prepared, or refuses with why and the kernel keeps running. A process needs its kernel access grant or a /sudo window for this, as for any kernel request; an agent without either restarts its own kernel with the chariox.kernels.restart tool (pass kernel for another one). With --browser it restarts only the browser: Chrome and its display start again and every Tab comes back at its URL with its opener, and it answers with the browser state once it is up" },
   {
     name: "request", brief: "Send a JSON request to a kernel",
@@ -205,9 +210,9 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"), note: "InteractionResponded; set custom_reply to the person's text when question.text_reply is present" },
 ]
 
-const REFUSED = ["events_refused", "acquisition_denied", "approval_required", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_agent_unavailable", "kernel_access_local_only", "kernel_access_request_denied", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["exec_access_denied", "events_refused", "acquisition_denied", "approval_required", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_agent_unavailable", "kernel_access_local_only", "kernel_access_request_denied", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"]
-const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_access_request_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed", "steer_unconfirmed"]
+const TIMEOUT_OR_UNKNOWN = ["exec_timed_out", "kernel_sudo_expired", "kernel_access_request_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed", "steer_unconfirmed"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
@@ -277,12 +282,13 @@ export function parseArguments(command: string, argv: readonly string[]): { flag
     if (values.has(flag.name)) throw new CommandFailure("usage", usage(spec))
     values.set(flag.name, value)
   }
-  if (positionals.length !== (spec.args?.length ?? 0)) throw new CommandFailure("usage", usage(spec))
+  const required = spec.args?.filter(arg => !arg.startsWith("[")).length ?? 0
+  if (positionals.length < required || positionals.length > (spec.args?.length ?? 0)) throw new CommandFailure("usage", usage(spec))
   return { flags: values, repeated, positionals }
 }
 
 export function guideText(): string {
-  const commands = COMMANDS.map(spec => `  ${usage(spec).replace("Usage: ", "")}\n      ${spec.summary}${spec.note ? `\n      ${spec.note}` : ""}`)
+  const commands = COMMANDS.map(spec => `  ${usage(spec).replace("Usage: ", "")}\n      ${spec.summary}${spec.note ? ` ${spec.note}` : ""}`)
   const exits = EXIT_CODES.map(entry => `  ${entry.exit} ${entry.meaning}`)
   return [
     "Chariox guide for agents. You talk only to your local kernel; nothing is installed in your harness.",

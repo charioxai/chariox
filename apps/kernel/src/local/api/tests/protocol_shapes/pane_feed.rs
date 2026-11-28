@@ -10,7 +10,7 @@ fn pane_feed_1015_snapshot_and_hash() {
     let bytes = include_bytes!("pane-feed-1015.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "8c5aceba3a35f1a5f88fade648373e27dc2cd81864c7bcfb550cee84e47f6733"
+        "36370919023aee8cef3fe248c1ba61fedea94a0d5b1b427ae9924e28bfbcc8e8"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

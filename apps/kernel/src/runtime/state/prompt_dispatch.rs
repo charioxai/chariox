@@ -890,9 +890,10 @@ impl KernelRuntimeState {
                                     // The app mutex can outlive the grant. Reauthorize only
                                     // after acquiring it, before launching a cold provider.
                                     authorize()?;
-                                    app.ensure_prompt_provider_run_for_agent(
+                                    app.ensure_prompt_provider_run_for_turn(
                                         &session_id,
                                         &target_agent_id,
+                                        prepared.prompt.id(),
                                     )
                                     .map(|_| ())
                                 },
@@ -1802,10 +1803,16 @@ impl KernelRuntimeState {
                         owned.workflow_mark_prompt_started(session_id, started_next)?;
                     }
                 }
-                if let Some(dispatch) = completion.dispatch {
-                    if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                        let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                match completion.dispatch {
+                    Some(super::owned::NextPromptDispatch::Submit(dispatch)) => {
+                        if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                            let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                        }
                     }
+                    Some(super::owned::NextPromptDispatch::Failed(dispatch, error)) => {
+                        let _ = self.fail_unprepared_prompt(dispatch, error).await;
+                    }
+                    None => {}
                 }
                 self.inject_orphaned_metaagent_task_event_after_turn(
                     session_id,

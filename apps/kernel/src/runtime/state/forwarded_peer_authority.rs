@@ -31,6 +31,13 @@ impl KernelRuntimeState {
             .authorize_worker(worker_id)
     }
 
+    /// Row 405: the authenticated forwarding peer is a kernel of this kernel's own owner.
+    pub(crate) fn forwarded_peer_is_owners_kernel(&self) -> bool {
+        self.relay_peer_authority
+            .as_ref()
+            .is_some_and(|peer| peer.owners_kernel)
+    }
+
     pub(crate) fn authorize_forwarded_workspace_context(
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,

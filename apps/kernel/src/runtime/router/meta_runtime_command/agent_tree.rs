@@ -24,6 +24,12 @@ impl CommandRouter {
         command: &str,
         tokens: &[String],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        if let Some(result) = self
+            .account_copy_targets_command(session, caller, command, tokens)
+            .await
+        {
+            return Ok(Some(result));
+        }
         if let Some(identity) = self
             .kernel_identity_command(provider_run, session, caller, command, tokens)
             .await
@@ -540,7 +546,7 @@ impl CommandRouter {
         let request_id = self
             .runtime_state
             .peer_cancel_request_id(parent, kernel, room, reference)?;
-        let (target, duplicate) = self
+        let (target, duplicate, _) = self
             .runtime_state
             .relay_peer_agent(
                 parent,

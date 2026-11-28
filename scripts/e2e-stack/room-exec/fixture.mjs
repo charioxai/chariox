@@ -54,7 +54,9 @@ export class Fixture {
 
   async launch(name, executable, env, args = []) {
     const log = await open(path.join(this.evidence, `${name}.log`), 'w', 0o600)
-    const child = spawn(executable, args, { env, stdio: ['ignore', log.fd, log.fd] })
+    const child = this.systemdScopes
+      ? spawn('/usr/bin/systemd-run', ['--scope', '--quiet', '--', executable, ...args], { env, stdio: ['ignore', log.fd, log.fd] })
+      : spawn(executable, args, { env, stdio: ['ignore', log.fd, log.fd] })
     if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error('invalid owned process PID')
     child.done = new Promise((resolve, reject) => {
       child.once('error', reject)
@@ -94,13 +96,16 @@ export class Fixture {
         CHARIOX_MCP_PORT: String(await port()), CHARIOX_OPENCODE_PORT: String(await port()),
         CHARIOX_CODEX_PORT: String(await port()), NODE_OPTIONS: '--max-old-space-size=1024',
       }
-      await this.launch(`kernel-${name}`, this.kernelBinary, this.envs[name])
+      const child = await this.launch(`kernel-${name}`, this.kernelBinary, this.envs[name])
       const client = new LocalIpcClient(`ws://127.0.0.1:${this.ports[name]}/kernel`, {
         localAuthEnvironment: this.envs[name], controlRequestRetryDeadlineMs: 0,
       })
       this.clients.push(client)
       this[name] = client
       const status = await until(async () => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(`kernel ${name} exited during startup. See kernel-${name}.log in ${this.evidence}`)
+        }
         try { return (await client.send({ RelayStatus: null })).RelayStatus.status } catch { return null }
       }, `kernel ${name} startup`, 60_000)
       this.ids[name] = status.daemon_id

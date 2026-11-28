@@ -59,7 +59,7 @@ function run(name, memory) {
 }
 async function ready(child) {await until(() => child.output === 'ready\n', 'native binary ready', 15_000)}
 async function finish(child) {child.stdin.end('done\n'); assert.equal((await child.done).code, 0, child.errors)}
-async function listed() {return (await fixture.A.send({RoomTerminal: {session_id: session, operation: {operation: 'exec_list'}}})).RoomTerminal.result.execs}
+async function listed() {return (await fixture.A.send({RunCommand: { target: { kind: 'room_workspace', session_id: session }, operation: {operation: 'exec_list'}}})).RunCommand.result.execs}
 async function cell(id, work) {
   try {cells.push({id, status: 'PASS', ...await work()})}
   catch (error) {

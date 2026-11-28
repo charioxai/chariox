@@ -82,7 +82,7 @@ try{
   await until(async()=>{const s=(await rpc({GetSessionState:{session_id:room}})).SessionState;return(s.agent_tasks??s.session.agent_tasks??[]).some(t=>t.agent_id===agent&&t.state==='working')},'fixture task working');
   tools.push(await caller(room,agent,attachment,run));
  }
- const terminal=async(operation)=>{const r=await rpc({RoomTerminal:{session_id:room,operation}});return r.RoomTerminal.result};
+ const terminal=async(operation)=>{const r=await rpc({RunCommand: { target: { kind: 'room_workspace', session_id: room }, operation}});return r.RunCommand.result};
  const list=async()=>(await terminal({operation:'exec_list'})).execs;
  // A never-read pipe must expire without any list/status operation renewing its lease.
  const abandoned=(await terminal({operation:'exec_open',command:['/bin/sleep','3600']})).exec_id;

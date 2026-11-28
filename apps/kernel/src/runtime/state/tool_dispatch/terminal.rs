@@ -303,7 +303,7 @@ impl KernelRuntimeState {
         let interaction_id = interaction.id().to_string();
         let resolution = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::RuntimeGrant,
+                crate::runtime::state::InteractionSurface::named("terminal_permission"),
                 session_id,
                 interaction,
             )
@@ -501,7 +501,10 @@ pub(in crate::runtime::state) fn watches(
 fn terminal_result_payload(result: RoomTerminalResult) -> RuntimeToolResult {
     let payload = match result {
         RoomTerminalResult::Opened { terminal } => serde_json::json!({ "terminal": terminal }),
-        RoomTerminalResult::Listed { terminals } => serde_json::json!({ "terminals": terminals }),
+        RoomTerminalResult::Listed {
+            terminals,
+            unavailable,
+        } => serde_json::json!({ "terminals": terminals, "unavailable": unavailable }),
         RoomTerminalResult::Snapshot { snapshot } => {
             let scrollback = tail_of(&snapshot.scrollback_text, READ_SCROLLBACK_BYTES);
             serde_json::json!({

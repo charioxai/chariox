@@ -250,7 +250,7 @@ impl AppPublisherControl {
             );
             let result = runtime
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::App,
+                    crate::runtime::state::InteractionSurface::named("app_publisher_enroll"),
                     session,
                     &key.0,
                     interaction,

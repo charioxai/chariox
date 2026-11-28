@@ -87,3 +87,21 @@ test("EA2-77 /kernel access list shows the background processes a grant covers",
   assert.match(notices[0]!, /access-1: .*until the agent exits, covering "\/usr\/bin\/shipper" \(pid 77\)/)
   assert.doesNotMatch(notices[0]!, /access-2: .*covering/)
 })
+
+test("550 /kernel access list names the owner's own terminal shell and says it lasts until that shell exits", async () => {
+  const notices: string[] = []
+  const deps = {
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: () => {},
+    transitionToNoSession: () => {},
+    listKernelAccessGrants: async () => ({ grants: [
+      { grant_id: "shell-00ff", owner_user_id: "local", holder_pid: 51, holder_executable: "/usr/bin/bash", term: "until_holder_exits" as const },
+      { grant_id: "access-2", owner_user_id: "local", holder_pid: 42, holder_executable: "/opt/codex", term: "until_holder_exits" as const },
+    ] }),
+  }
+  await handleKernelSlashCommand(deps, { kind: "kernel", raw: "/kernel access list", args: ["access", "list"] })
+  assert.match(notices[0]!, /shell-00ff: your own terminal shell "\/usr\/bin\/bash" \(pid 51\), local kernel, until that shell exits/)
+  assert.match(notices[0]!, /access-2: "\/opt\/codex" \(pid 42\), local kernel, until the agent exits/)
+})

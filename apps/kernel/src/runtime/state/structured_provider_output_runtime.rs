@@ -3,6 +3,24 @@
 use super::*;
 
 impl KernelRuntimeState {
+    /// How long after a poll that found nothing the run is read again: the busy rate while it
+    /// holds a prompt or background work, the idle rate otherwise.
+    fn quiet_poll_backoff_ms(&self, provider_run_id: &str) -> u64 {
+        let busy = crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS;
+        let owned = &self.owned;
+        let Ok(run) = owned.provider_store.get_run(provider_run_id) else {
+            return busy;
+        };
+        if owned.background_holds.holds_run(provider_run_id)
+            || owned
+                .provider_run_has_active_prompt(run.session_id(), &run)
+                .unwrap_or(true)
+        {
+            return busy;
+        }
+        crate::app::provider_output::STRUCTURED_OUTPUT_IDLE_POLL_BACKOFF_MS
+    }
+
     pub(super) async fn pump_owned_structured_provider_output(
         &self,
         session_id: &str,
@@ -45,6 +63,7 @@ impl KernelRuntimeState {
             .provider_store
             .drain_finished_structured_output_poll_jobs_for_run(provider_run_id)
         {
+            let mut publication = finished.publication;
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let finished_run_id = finished.provider_run_id.clone();
             let prompt_identity = finished.prompt_identity;
@@ -80,9 +99,10 @@ impl KernelRuntimeState {
                     owned
                         .structured_output_records
                         .mark_poll_succeeded(&finished_run_id);
+                    let backoff_ms = self.quiet_poll_backoff_ms(&finished_run_id);
                     owned
                         .structured_output_records
-                        .schedule_after_empty_poll(finished_run_id, now_ms);
+                        .schedule_next_poll(finished_run_id, now_ms.saturating_add(backoff_ms));
                     continue;
                 }
                 Err(error) => {
@@ -346,9 +366,7 @@ impl KernelRuntimeState {
                 ) {
                     now_ms
                 } else {
-                    now_ms.saturating_add(
-                        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
-                    )
+                    now_ms.saturating_add(self.quiet_poll_backoff_ms(&finished_run_id))
                 };
             let run_session_id = run.session_id().to_string();
             let recipients = if is_requested_run {
@@ -381,6 +399,7 @@ impl KernelRuntimeState {
                                 prompt_identity,
                                 provider_run_id: finished_run_id.clone(),
                                 result: Ok(Some(retry_poll_result)),
+                                publication,
                                 settlement_retry_attempt,
                             },
                         );
@@ -398,11 +417,13 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             };
             let applied = self
-                .apply_prepared_owned_structured_output_batch(
+                .publish_prepared_owned_structured_output_batch(
                     &run_session_id,
                     &finished_run_id,
                     recipients,
                     poll_result,
+                    &mut publication,
+                    true,
                 )
                 .await?;
             if is_requested_run {
@@ -415,6 +436,17 @@ impl KernelRuntimeState {
             owned
                 .structured_output_records
                 .schedule_next_poll(finished_run_id, next_due_at_ms);
+        }
+        // A run that took a prompt since its last empty poll leaves the idle rate now.
+        if self.quiet_poll_backoff_ms(provider_run_id)
+            == crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS
+        {
+            owned.structured_output_records.cap_next_poll(
+                provider_run_id,
+                crate::session::unix_epoch_ms().saturating_add(
+                    crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
+                ),
+            );
         }
         if owned
             .structured_output_records
@@ -670,12 +702,33 @@ impl KernelRuntimeState {
         Ok(poll_result)
     }
 
+    #[cfg(test)]
     pub(super) async fn apply_prepared_owned_structured_output_batch(
         &self,
         session_id: &str,
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
+        poll_result: crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        self.publish_prepared_owned_structured_output_batch(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+            poll_result,
+            &mut None,
+            true,
+        )
+        .await
+    }
+
+    pub(super) async fn publish_prepared_owned_structured_output_batch(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
         mut poll_result: crate::provider::ProviderPromptSignalBatch,
+        publication: &mut Option<crate::provider::OutputPublicationClaim>,
+        settle_prompt: bool,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
         // The first output of a process the next dispatch started on new settings says that a
@@ -932,6 +985,9 @@ impl KernelRuntimeState {
         // attached earlier is a recipient now, whatever the pump saw before it
         // waited for the run lane.
         self.enqueue_provider_history(prepared, history_lease);
+        // No await separates the durable handoff from releasing publication
+        // ownership. Completion callbacks may reenter cancellation afterwards.
+        drop(publication.take());
         let recipient_attachment_ids = owned
             .attachment_store
             .list_session_attachment_ids(session_id);
@@ -962,6 +1018,13 @@ impl KernelRuntimeState {
             if !requires_authoritative_turn_completion {
                 owned.mark_prompt_completion_recorded(provider_run_id);
             }
+        }
+        if !settle_prompt
+            || owned
+                .provider_store
+                .output_publication_pending(provider_run_id)
+        {
+            return Ok(records);
         }
         if let Some(message) = terminal_failure {
             if !prompt_completed

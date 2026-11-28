@@ -35,6 +35,8 @@ fn fixture(
     command.session_id = Some(room.id().into());
     command.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
     let caps = MachineAllocationCapability {
+        account_machines: None,
+        account_spend: None,
         revision: "v1".into(),
         actions: vec!["acquire_job".into()],
         offer: None,
@@ -164,7 +166,7 @@ async fn machine_acquisition_reclaims_stale_owner_decisions_before_admission() {
         .with_timeout_sec(300);
         let receiver = state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("card_action"),
                 "",
                 &owner,
                 interaction,
@@ -826,4 +828,13 @@ async fn a_restart_withdraws_the_receipts_of_tries_it_interrupted() {
     assert_eq!(receipts(&state, &room).len(), 1);
     state.withdraw_interrupted_machine_approvals();
     assert!(receipts(&state, &room).is_empty());
+}
+
+#[test]
+fn the_status_tool_lists_the_owners_allocations_within_its_byte_cap() {
+    let specs = super::machine_tool_specs();
+    let status = specs.iter().find(|spec| spec.name == "chariox.machines.status").unwrap();
+    assert!(status.description.len() <= 414, "{}", status.description.len());
+    assert_eq!(status.input_schema["required"], serde_json::json!([]));
+    assert!(status.input_schema["properties"]["allocation_ref"].is_object());
 }

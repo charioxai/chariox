@@ -16,12 +16,9 @@ Markdown and HTML documents the person and their agents write together, on the w
   `data/drafts/<id>.<editor>.json`, with the revision it started from) because the view's sandbox keeps nothing
   across a replacement. Each window instance is its own editor with a random name, so two windows on one document
   keep two drafts, and a window that saves or gives up its edit discards its own draft of that document
-  (`discard_draft`) and no other. Nothing moves or deletes another editor's draft, because that window may still be
-  open: a draft is removed only by its own editor or once it is a day old. A new window asks `claim_draft` once: it
-  keeps its own draft, otherwise it is handed a copy of the most recently kept draft of another editor, written under
-  its own name (the source stays; at 32 drafts the edit is handed over without a copy), and a draft whose document was
-  deleted is not offered. It restores the edit, so a save after someone else's change is still refused. The cost: an
-  edit one window gave up can come back in a later window until it is a day old, a duplicate and never a lost edit.
+  (`discard_draft`) and no other. A new window asks `claim_draft` once: it keeps its own draft, otherwise the most
+  recently kept draft of another editor moves to it, and a draft whose document was deleted is dropped. It restores
+  the edit, so a save after someone else's change is still refused.
 - An agent's `delete_document` is an `approval` action: the person confirms it in the Room. The person's own
   delete in the window is one click with the usual confirm.
 

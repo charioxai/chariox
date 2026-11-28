@@ -1,9 +1,12 @@
 //! Explicit account copy admission and the encrypted transport adapter.
-use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
+use super::runtime_vault_unlock_state::{
+    expand_vault_path, vault_unlock_request_lock, VaultUnlockGuard,
+};
 use super::*;
 use crate::provider_account_copy::{
     failure, AccountCopyInstall, ProviderAccountCopyBinding, ProviderAccountCopyCredential,
-    ProviderAccountCopyReceipt, MAX_COPY_CREDENTIAL_BYTES, PROVIDER_ACCOUNT_COPY_CAPABILITY,
+    ProviderAccountCopyOutcome, ProviderAccountCopyReceipt, ProviderAccountCopyWait,
+    MAX_COPY_CREDENTIAL_BYTES, PROVIDER_ACCOUNT_COPY_CAPABILITY,
 };
 
 pub(super) fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
@@ -40,12 +43,45 @@ pub(super) fn receiver_enrolled(
     kernel || machine_enrolled
 }
 
+#[derive(Clone, Copy)]
+enum CopyCompletion {
+    Installed,
+    MayWait,
+}
+
 impl KernelRuntimeState {
+    /// Internal admission callers need a completed install, never a pending copy.
     pub(crate) async fn copy_provider_account_to_kernel(
         &self,
         caller: &str,
         request: crate::local::CopyProviderAccountToKernelRequest,
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+        match self
+            .copy_account(caller, request, CopyCompletion::Installed)
+            .await?
+        {
+            ProviderAccountCopyOutcome::Installed(receipt) => Ok(receipt),
+            ProviderAccountCopyOutcome::Waiting(_) => {
+                Err(failure("provider_account_copy_target_vault_locked"))
+            }
+        }
+    }
+
+    pub(crate) async fn begin_provider_account_copy_to_kernel(
+        &self,
+        caller: &str,
+        request: crate::local::CopyProviderAccountToKernelRequest,
+    ) -> Result<ProviderAccountCopyOutcome, DaemonError> {
+        self.copy_account(caller, request, CopyCompletion::MayWait)
+            .await
+    }
+
+    async fn copy_account(
+        &self,
+        caller: &str,
+        request: crate::local::CopyProviderAccountToKernelRequest,
+        completion: CopyCompletion,
+    ) -> Result<ProviderAccountCopyOutcome, DaemonError> {
         let config = self.config_snapshot().await;
         if caller != crate::session::DEFAULT_LOCAL_USER_ID
             && config
@@ -96,7 +132,7 @@ impl KernelRuntimeState {
             self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                 .await;
             self.record_room_list_change();
-            return Ok(receipt);
+            return Ok(ProviderAccountCopyOutcome::Installed(receipt));
         }
         if binding.provider == "claude"
             && !crate::provider::provider_account_credential_uses_vault(
@@ -156,6 +192,18 @@ impl KernelRuntimeState {
         {
             return Err(failure("provider_account_copy_unauthorized"));
         }
+        if let Some(copy) = self.existing_account_copy(&owner, &binding)? {
+            if matches!(
+                (&completion, &copy),
+                (
+                    CopyCompletion::Installed,
+                    ProviderAccountCopyOutcome::Waiting(_)
+                )
+            ) {
+                return Err(failure("provider_account_copy_target_vault_locked"));
+            }
+            return Ok(copy);
+        }
         if !peer
             .capabilities
             .iter()
@@ -181,6 +229,7 @@ impl KernelRuntimeState {
             return Err(failure("provider_account_copy_unsupported"));
         }
         let credential = {
+            let owner = owner.clone();
             let _unlock = vault_unlock_request_lock(&expand_vault_path(
                 &config.user_config.credential_vault.path,
             ))
@@ -203,45 +252,82 @@ impl KernelRuntimeState {
             .await
             .map_err(|_| failure("provider_account_copy_install_failed"))??
         };
-        let response = crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
-            &config, &self.owned.relay_state,
-            ClientTarget { daemon_id: Some(peer.kernel_id), daemon_alias: None }, &peer.public_key,
-            RelayPeerRequest::InstallProviderAccountCopy { binding: binding.clone(), credential },
-            Duration::from_secs(90),
-        ).await.map_err(|_| failure("provider_account_copy_unavailable"))?;
-        match response {
+        let target_label = peer
+            .kernel_alias
+            .or(peer.relay_alias)
+            .unwrap_or_else(|| peer.kernel_id.clone());
+        let send_copy = {
+            let state = self.clone();
+            let binding = binding.clone();
+            move |resume_after_unlock| {
+                let state = state.clone();
+                let config = config.clone();
+                let public_key = peer.public_key.clone();
+                let binding = binding.clone();
+                let credential = credential.clone();
+                async move {
+                    if resume_after_unlock {
+                        let current = state.config_snapshot().await;
+                        if current.relay_public_key != config.relay_public_key
+                            || current
+                                .cloud_relay
+                                .as_ref()
+                                .map(|p| (&p.user_id, &p.realm_id))
+                                != config
+                                    .cloud_relay
+                                    .as_ref()
+                                    .map(|p| (&p.user_id, &p.realm_id))
+                        {
+                            return Err(failure("provider_account_copy_unauthorized"));
+                        }
+                        crate::managed_context::owner_authority::authorize_account_copy_peer(
+                            &current, &binding,
+                        )
+                        .await?;
+                    }
+                    crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
+                        &config, &state.owned.relay_state,
+                        ClientTarget { daemon_id: Some(binding.target_kernel_id.clone()), daemon_alias: None }, &public_key,
+                        RelayPeerRequest::InstallProviderAccountCopy { binding, credential, resume_after_unlock },
+                        Duration::from_secs(90),
+                    ).await.map_err(|_| failure("provider_account_copy_unavailable"))
+                }
+            }
+        };
+        let result = match send_copy(false).await? {
             RelayPeerResponse::ProviderAccountCopyInstalled { receipt }
                 if receipt == ProviderAccountCopyReceipt::installed(&binding) =>
             {
-                Ok(receipt)
+                Ok(ProviderAccountCopyOutcome::Installed(receipt))
+            }
+            RelayPeerResponse::ProviderAccountCopyTargetVaultLocked { expires_at_ms } => {
+                if matches!(completion, CopyCompletion::Installed) {
+                    Err(failure("provider_account_copy_target_vault_locked"))
+                } else {
+                    let wait = ProviderAccountCopyWait {
+                        operation_id: binding.operation_id.clone(),
+                        source_kernel_id: binding.source_kernel_id.clone(),
+                        target_kernel_id: binding.target_kernel_id.clone(),
+                        target_label,
+                        expires_at_ms,
+                    };
+                    let result = self.wait_for_account_copy(
+                        owner.clone(),
+                        binding.clone(),
+                        wait,
+                        move || send_copy(true),
+                    );
+                    self.notify_account_copy_progress();
+                    result
+                }
             }
             RelayPeerResponse::ProviderAccountCopyFailed { code } => {
-                Err(failure(match code.as_str() {
-                    "provider_account_copy_unauthorized" => "provider_account_copy_unauthorized",
-                    // The target answered, so the Vault that is closed is the receiving one.
-                    "provider_account_copy_vault_locked" => {
-                        "provider_account_copy_target_vault_locked"
-                    }
-                    "provider_account_copy_vault_unreadable" => {
-                        "provider_account_copy_target_vault_unreadable"
-                    }
-                    "provider_account_copy_credential_unreadable" => {
-                        "provider_account_copy_target_credential_unreadable"
-                    }
-                    "provider_account_copy_cli_missing" => "provider_account_copy_cli_missing",
-                    "provider_account_copy_replace_differs" => {
-                        "provider_account_copy_replace_differs"
-                    }
-                    "provider_account_copy_conflict" => "provider_account_copy_conflict",
-                    "provider_account_copy_rejected" => "provider_account_copy_rejected",
-                    "provider_account_copy_verification_failed" => {
-                        "provider_account_copy_verification_failed"
-                    }
-                    _ => "provider_account_copy_install_failed",
-                }))
+                Err(install_peer_failure(&code))
             }
             _ => Err(failure("provider_account_copy_unsupported")),
-        }
+        };
+        self.remember_account_copy_retry(&owner, &binding, &result);
+        result
     }
 
     pub(crate) async fn install_provider_account_copy(
@@ -251,7 +337,8 @@ impl KernelRuntimeState {
         identity: &chariox_relay::protocol::RelayCallerIdentity,
         binding: ProviderAccountCopyBinding,
         credential: ProviderAccountCopyCredential,
-    ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+        resume_after_unlock: bool,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         binding.validate()?;
         let config = self.config_snapshot().await;
         let profile = config
@@ -281,16 +368,54 @@ impl KernelRuntimeState {
         }
         let owner = self.provider_account_authority_owner_user_id(&profile.user_id);
         let profiles = self.provider_account_profile_registry().clone();
-        let unlock = vault_unlock_request_lock(&expand_vault_path(
-            &config.user_config.credential_vault.path,
-        ))
-        .lock_owned()
-        .await;
+        let vault_path = expand_vault_path(&config.user_config.credential_vault.path);
+        let unlock = vault_unlock_request_lock(&vault_path).lock_owned().await;
         // An OpenCode login lives only in its native store: its copy neither needs
         // nor changes the Vault.
         let uses_vault = binding.provider != "opencode";
+        let lease = if uses_vault {
+            let encrypted = config.user_config.credential_vault.backend
+                == crate::config::CredentialVaultBackend::CharioxEncrypted;
+            let locked = match unlocked(&config) {
+                Ok(()) => {
+                    encrypted
+                        && crate::secret::chariox_vault_held_for_another(&vault_path, None)
+                            .map_err(|_| failure("provider_account_copy_vault_unreadable"))?
+                }
+                Err(DaemonError::ProviderAccountCopy {
+                    code: "provider_account_copy_vault_locked",
+                    ..
+                }) => true,
+                Err(error) => return Err(error),
+            };
+            if let Some(expires_at_ms) = self
+                .account_copy_unlock_gate(&profile.user_id, &binding, locked, resume_after_unlock)
+                .await?
+            {
+                return Ok(RelayPeerResponse::ProviderAccountCopyTargetVaultLocked {
+                    expires_at_ms,
+                });
+            }
+            if encrypted {
+                VaultUnlockGuard::for_existing_unlock(
+                    vault_path,
+                    &format!("account-copy:{}", binding.operation_id),
+                )
+                .map_err(|_| failure("provider_account_copy_vault_unreadable"))?
+                .ok_or_else(|| failure("provider_account_copy_vault_locked"))?
+            } else {
+                VaultUnlockGuard::not_required()
+            }
+        } else {
+            VaultUnlockGuard::not_required()
+        };
+        if uses_vault {
+            self.claim_account_copy_unlock(&binding, resume_after_unlock)
+                .await?;
+        }
         let result = tokio::task::spawn_blocking(move || {
             let _unlock = unlock;
+            let _lease = lease;
             if uses_vault {
                 unlocked(&config)?;
             }
@@ -309,6 +434,7 @@ impl KernelRuntimeState {
                 }
                 return Ok(installed);
             }
+
             // "Ask every time": the owner's unlock covered this one copy.
             let vault = &config.user_config.credential_vault;
             if vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
@@ -322,7 +448,9 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| failure("provider_account_copy_install_failed"))?;
         let receipt = match result? {
-            AccountCopyInstall::Replay(receipt) => return Ok(receipt),
+            AccountCopyInstall::Replay(receipt) => {
+                return Ok(RelayPeerResponse::ProviderAccountCopyInstalled { receipt })
+            }
             AccountCopyInstall::Fresh(receipt) => receipt,
         };
         self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
@@ -336,7 +464,22 @@ impl KernelRuntimeState {
             &receipt.account_profile,
         )?;
         self.notify_provider_account_sign_in(&profile, true).await?;
-        Ok(receipt)
+        Ok(RelayPeerResponse::ProviderAccountCopyInstalled { receipt })
+    }
+}
+
+pub(super) fn install_peer_failure(code: &str) -> DaemonError {
+    match code {
+        "provider_account_copy_vault_locked" => {
+            failure("provider_account_copy_target_vault_locked")
+        }
+        "provider_account_copy_vault_unreadable" => {
+            failure("provider_account_copy_target_vault_unreadable")
+        }
+        "provider_account_copy_credential_unreadable" => {
+            failure("provider_account_copy_target_credential_unreadable")
+        }
+        _ => super::provider_account_copy_offer::copy_peer_failure(code),
     }
 }
 

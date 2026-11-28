@@ -13,6 +13,14 @@ pub(super) struct CredentialCopyNotice {
     notified_machines: Vec<String>,
 }
 
+/// Source side of a copy: this profile's login was handed to another machine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct IssuedCredentialCopy {
+    owner_user_id: String,
+    provider: String,
+    profile_id: String,
+}
+
 fn nonempty(value: Option<&serde_json::Value>) -> bool {
     value
         .and_then(serde_json::Value::as_str)
@@ -124,8 +132,80 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
-    /// Disconnect a received login without allowing the provider to revoke its source.
-    pub(crate) fn discard_copied_login(
+    /// A shared refresh-token chain may have been received here or issued from here.
+    pub(crate) fn credential_is_shared(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let profile = self.get(owner_user_id, provider, profile_id)?;
+        let document = self.read_document()?;
+        let stored = resolve_stored_profile(
+            &document,
+            owner_user_id,
+            &profile.provider,
+            &profile.profile_id,
+        )?;
+        Ok(stored.materialized_replica
+            || stored.managed_context_replica.is_some()
+            || !profile.materializations.is_empty()
+            || stored.transferred_from.is_some()
+            || document.credential_copy_notices.iter().any(|notice| {
+                notice.owner_user_id == owner_user_id
+                    && notice.provider == profile.provider
+                    && notice.profile_id == profile.profile_id
+            })
+            || document.credential_copies_issued.iter().any(|issued| {
+                issued.owner_user_id == owner_user_id
+                    && issued.provider == profile.provider
+                    && issued.profile_id == profile.profile_id
+            }))
+    }
+
+    pub(crate) fn record_credential_issued(
+        &self,
+        owner_user_id: &str,
+        materialization: &ProviderAccountMaterialization,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(&materialization.profile.provider)?;
+        let renewable = materialization.files.iter().any(|file| {
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&file.contents_base64)
+            else {
+                return false;
+            };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                return false;
+            };
+            renewable_login(provider, &value)
+        });
+        if !renewable {
+            return Ok(());
+        }
+        let profile = self.get(owner_user_id, provider, &materialization.profile.profile_id)?;
+        let mut document = self.write_document()?;
+        if document.credential_copies_issued.iter().any(|issued| {
+            issued.owner_user_id == owner_user_id
+                && issued.provider == provider
+                && issued.profile_id == profile.profile_id
+        }) {
+            return Ok(());
+        }
+        let original = document.clone();
+        document.credential_copies_issued.push(IssuedCredentialCopy {
+            owner_user_id: owner_user_id.into(),
+            provider: provider.into(),
+            profile_id: profile.profile_id,
+        });
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Disconnect this holder without revoking any other holder of a shared login.
+    pub(crate) fn discard_shared_login(
         &self,
         owner_user_id: &str,
         provider: &str,
@@ -138,19 +218,12 @@ impl ProviderAccountProfileRegistry {
         // Resolve aliases before looking up provenance, and retain a stable root
         // until its local credential has been removed.
         let profile = self.get(owner_user_id, provider, profile_id)?;
+        if !self.credential_is_shared(owner_user_id, provider, &profile.profile_id)? {
+            return Ok(false);
+        }
         let document = self.read_document()?;
         let stored =
             resolve_stored_profile(&document, owner_user_id, provider, &profile.profile_id)?;
-        let copied = stored.materialized_replica
-            || stored.transferred_from.is_some()
-            || document.credential_copy_notices.iter().any(|notice| {
-                notice.owner_user_id == owner_user_id
-                    && notice.provider == provider
-                    && notice.profile_id == profile.profile_id
-            });
-        if !copied {
-            return Ok(false);
-        }
 
         match &stored.locator {
             ProviderAccountLocator::Codex { codex_home } => {
@@ -187,6 +260,17 @@ impl ProviderAccountProfileRegistry {
         Ok(true)
     }
 
+    /// Whether any copy notice still waits to be shown on `machine`. Every provider
+    /// output pass asks before it walks the Room's agents.
+    pub(crate) fn credential_copy_notice_waiting(&self, machine: &str) -> bool {
+        self.read_document().is_ok_and(|document| {
+            document
+                .credential_copy_notices
+                .iter()
+                .any(|notice| !notice.notified_machines.iter().any(|id| id == machine))
+        })
+    }
+
     pub(crate) fn take_credential_copy_notice(
         &self,
         owner_user_id: &str,
@@ -196,7 +280,6 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<Option<String>, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
         let mut document = self.write_document()?;
-        let original = document.clone();
         let Some(notice) = document.credential_copy_notices.iter_mut().find(|notice| {
             notice.owner_user_id == owner_user_id
                 && notice.provider == profile.provider
@@ -214,7 +297,13 @@ impl ProviderAccountProfileRegistry {
         let message = format!("{provider} credentials on {machine} were copied from {}. The provider may invalidate one copy when another refreshes; you may need to log in on this machine later.", notice.source_machine);
         notice.notified_machines.push(machine.into());
         if let Err(error) = self.persist_locked(&document) {
-            *document = original;
+            if let Some(notice) = document.credential_copy_notices.iter_mut().find(|notice| {
+                notice.owner_user_id == owner_user_id
+                    && notice.provider == profile.provider
+                    && notice.profile_id == profile.profile_id
+            }) {
+                notice.notified_machines.retain(|id| id != machine);
+            }
             return Err(error);
         }
         Ok(Some(message))
@@ -322,4 +411,54 @@ mod tests {
             .contains("refresh_token"));
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn issued_and_received_login_provenance_remain_separate_and_owner_bound() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("issued-copy-provenance");
+        std::env::set_var("CHARIOX_HOME", root.path().join("state"));
+        let path = root.path().join("accounts.json");
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        let source = registry.create_managed("owner", "codex", "Source").unwrap();
+        let other = registry.create_managed("owner", "codex", "Other").unwrap();
+        let foreign = registry.create_managed("other-owner", "codex", "Foreign").unwrap();
+        let environment = registry.resolve_environment("owner", "codex", &source.profile_id).unwrap();
+        let home = PathBuf::from(&environment["CODEX_HOME"]);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("auth.json"), br#"{"OPENAI_API_KEY":"synthetic"}"#).unwrap();
+        let api_key = registry.export_materialization("owner", "codex", &source.profile_id).unwrap();
+        registry.record_credential_issued("owner", &api_key).unwrap();
+        assert!(!registry.credential_is_shared("owner", "codex", &source.profile_id).unwrap());
+
+        fs::write(home.join("auth.json"), br#"{"tokens":{"refresh_token":"synthetic"}}"#).unwrap();
+        fs::write(home.join("config.toml"), "keep").unwrap();
+        let issued = registry.export_materialization("owner", "codex", &source.profile_id).unwrap();
+        registry.record_credential_issued("owner", &issued).unwrap();
+        registry.record_credential_issued("owner", &issued).unwrap();
+        assert!(registry.credential_is_shared("owner", "codex", &source.profile_id).unwrap());
+        assert!(!registry.credential_is_shared("owner", "codex", &other.profile_id).unwrap());
+        assert!(!registry.credential_is_shared("other-owner", "codex", &foreign.profile_id).unwrap());
+        assert!(registry.credential_is_shared("other-owner", "codex", &source.profile_id).is_err());
+        assert!(registry.record_credential_issued("other-owner", &issued).is_err());
+        {
+            let document = registry.read_document().unwrap();
+            assert_eq!(document.credential_copies_issued.len(), 1);
+            assert!(document.credential_copy_notices.is_empty(), "issuing is not receiving");
+        }
+        assert!(registry.take_credential_copy_notice("owner", "codex", &source.profile_id, "source-machine").unwrap().is_none());
+        let mut received = issued.clone();
+        received.profile.profile_id = other.profile_id.clone();
+        registry.record_credential_copy("owner", &received, "source-machine").unwrap();
+        assert!(registry.credential_is_shared("owner", "codex", &other.profile_id).unwrap());
+        assert_eq!(registry.read_document().unwrap().credential_copies_issued.len(), 1);
+        assert!(registry.take_credential_copy_notice("owner", "codex", &other.profile_id, "receiver-machine").unwrap().is_some());
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        assert!(registry.credential_is_shared("owner", "codex", &source.profile_id).unwrap());
+        assert!(registry.discard_shared_login("owner", "codex", &source.profile_id).unwrap());
+        assert!(!home.join("auth.json").exists());
+        assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "keep");
+        assert!(registry.discard_shared_login("owner", "codex", &source.profile_id).unwrap());
+        assert!(!fs::read_to_string(&path).unwrap().contains("refresh_token"));
+    }
+
 }

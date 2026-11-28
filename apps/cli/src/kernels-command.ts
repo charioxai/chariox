@@ -7,7 +7,7 @@ import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
-import { LATE_STDIN_NOTICE, lateStdin, ownStdin, readExecInput, runKernelExec, stdinIsRegularFile } from "./kernel-exec.js"
+import { EXEC_REQUEST_MARGIN_SECONDS, LATE_STDIN_NOTICE, lateStdin, ownStdin, readExecInput, runKernelExec, stdinIsRegularFile } from "./kernel-exec.js"
 import { runExecPlace } from "./exec-place-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
@@ -250,8 +250,8 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         const late = lateStdin()
         const stdin = await readExecInput(ownStdin(), { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
         try {
-          process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
-            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process, kernel: kernel ?? undefined }, send, process.stdout))
+          process.exitCode = await withKernel({ socket, timeoutSeconds: timeoutSeconds + EXEC_REQUEST_MARGIN_SECONDS, kernel: kernel ?? undefined }, send =>
+            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
         } finally {
           late.stop()
           if (late.arrived) process.stderr.write(`${LATE_STDIN_NOTICE}\n`)
@@ -259,10 +259,12 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         return true
       }
       if (flags.has("--stdin-file") || flags.has("--stdin")) throw new CommandFailure("usage", "--stdin and --stdin-file are for a command on the kernel itself; with --session or --workspace the command's stdin is yours")
+      const timeoutSeconds = parseTimeout(flags.get("--timeout"))
+      if (timeoutSeconds > 86_400) throw new CommandFailure("usage", "--timeout cannot exceed 86400 seconds")
       process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
         runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
-          hostAgent: flags.get("--host-agent") as string | undefined, command: program }, send,
-          { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
+          hostAgent: flags.get("--host-agent") as string | undefined, command: program, timeoutSeconds }, send,
+          { stdin: process.stdin.isTTY ? undefined : process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
     } else if (command === "whats-new") {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       const response = await sendRequest({ GetAgentReleaseNotes: {} }, { socket, kernel: kernel ?? undefined, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { AgentReleaseNotes?: { text: string } }

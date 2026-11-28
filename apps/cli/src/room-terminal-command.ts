@@ -35,9 +35,14 @@ export function parseRoomTerminalCommand(args: readonly string[]): RoomTerminalC
   return args.length === 1 ? { kind: "attach", selector: first } : ROOM_TERMINAL_USAGE
 }
 
-export function formatRoomTerminals(terminals: readonly RoomTerminalSummary[]): string {
-  if (terminals.length === 0) return "No terminals in this Room yet. `terminal new` opens one."
-  return terminals.map((terminal, index) => {
+/** A machine the list could not ask: the agent that runs there and what to do. Its terminals may exist and are not listed. */
+export type UnavailableTerminals = { readonly host_agent: string; readonly message: string }
+
+const notAsked = (unavailable: readonly UnavailableTerminals[]) => unavailable.map(machine => `${machine.host_agent}: ${machine.message}`).join("\n")
+
+export function formatRoomTerminals(terminals: readonly RoomTerminalSummary[], unavailable: readonly UnavailableTerminals[] = []): string {
+  if (terminals.length === 0 && unavailable.length === 0) return "No terminals in this Room yet. `terminal new` opens one."
+  const lines = terminals.length === 0 ? "No terminals listed." : terminals.map((terminal, index) => {
     const state = terminal.status.state === "running"
       ? terminal.driver.state === "busy"
         ? `busy (driven by ${terminal.driver.driven_by.kind === "user" ? "you" : terminal.driver.driven_by.agent_id})`
@@ -46,6 +51,7 @@ export function formatRoomTerminals(terminals: readonly RoomTerminalSummary[]): 
     const host = terminal.host_agent ? ` on ${terminal.host_agent}` : ""
     return `${index + 1}. ${terminal.terminal_id}  ${terminal.title}  ${state}${host}`
   }).join("\n")
+  return unavailable.length === 0 ? lines : `${lines}\nNot listed (their terminals may still be running):\n${notAsked(unavailable)}`
 }
 
 async function listTerminals(send: TerminalSend, target: RoomTerminalTarget) {
@@ -54,15 +60,16 @@ async function listTerminals(send: TerminalSend, target: RoomTerminalTarget) {
     requestVariant: "RoomTerminal",
     minimumProtocolVersion: roomTerminalMinimumProtocolVersion,
   })
-  return expectRoomTerminalResult(reply, "listed").terminals
+  const listed = expectRoomTerminalResult(reply, "listed")
+  return { terminals: listed.terminals, unavailable: listed.unavailable ?? [] }
 }
 
-function pick(terminals: readonly RoomTerminalSummary[], selector: string): RoomTerminalSummary {
+function pick(terminals: readonly RoomTerminalSummary[], selector: string, unavailable: readonly UnavailableTerminals[] = []): RoomTerminalSummary {
   const index = /^\d+$/.test(selector) ? terminals[Number(selector) - 1] : undefined
   const matches = index ? [index] : terminals.filter(terminal => terminal.terminal_id.startsWith(selector))
   if (matches.length === 1) return matches[0]!
   throw new Error(matches.length === 0
-    ? `No terminal "${selector}" in this Room. Run \`terminal list\`.`
+    ? `No terminal "${selector}" in this Room. Run \`terminal list\`.${unavailable.length ? `\nNot listed (it may be there):\n${notAsked(unavailable)}` : ""}`
     : `"${selector}" matches ${matches.length} terminals; use more of the id.`)
 }
 
@@ -80,16 +87,23 @@ export type RoomTerminalCommandDeps = {
 export async function runRoomTerminalCommand(deps: RoomTerminalCommandDeps, command: RoomTerminalCommand): Promise<string> {
   const { send, target, output } = deps
   const size = { cols: output.columns || 80, rows: output.rows || 24 }
-  if (command.kind === "list") return formatRoomTerminals(await listTerminals(send, target))
+  if (command.kind === "list") {
+    const listed = await listTerminals(send, target)
+    return formatRoomTerminals(listed.terminals, listed.unavailable)
+  }
   if (command.kind === "close") {
-    const terminal = pick(await listTerminals(send, target), command.selector)
+    const listed = await listTerminals(send, target)
+    const terminal = pick(listed.terminals, command.selector, listed.unavailable)
     expectRoomTerminalResult(await send(closeRoomTerminalRequest({ ...target, ...(terminal.host_agent ? { hostAgent: terminal.host_agent } : {}) }, terminal.terminal_id)), "closed")
     return `Closed terminal ${terminal.terminal_id}.`
   }
-  const terminals = await listTerminals(send, target)
+  const { terminals, unavailable } = await listTerminals(send, target)
   let terminal: RoomTerminalSummary
   if (command.kind === "attach" && command.selector) {
-    terminal = pick(terminals, command.selector)
+    terminal = pick(terminals, command.selector, unavailable)
+  } else if (command.kind === "attach" && unavailable.length > 0 && !terminals.some(candidate => candidate.status.state === "running")) {
+    // The terminal that is there may be on a machine the list could not ask: no shell opens on a guess.
+    return `Terminals on some machines could not be listed:\n${notAsked(unavailable)}\n\`terminal new\` opens one on this kernel.`
   } else {
     const running = command.kind === "attach" ? terminals.filter(candidate => candidate.status.state === "running").at(-1) : undefined
     terminal = running ?? expectRoomTerminalResult(

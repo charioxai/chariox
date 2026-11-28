@@ -1,8 +1,8 @@
 mod skill_ack;
+pub use skill_ack::SkillToolDeliveryAcknowledgement;
 pub(crate) use skill_ack::completed_native_skill_tool;
 #[cfg(test)]
 pub(crate) use skill_ack::completed_skill_tool;
-pub use skill_ack::SkillToolDeliveryAcknowledgement;
 pub mod skill_delivery;
 pub mod skill_inventory;
 pub(crate) mod switch_turn;
@@ -26,7 +26,7 @@ pub(crate) use claude_runtime::usage::{
 mod account_handoff;
 mod checkpoint;
 pub(crate) use checkpoint::{
-    supported_interface as native_checkpoint_support, MAX_NATIVE_CHECKPOINT_BYTES,
+    MAX_NATIVE_CHECKPOINT_BYTES, supported_interface as native_checkpoint_support,
 };
 pub use checkpoint::{
     NativeCheckpointBinding, NativeCheckpointFailure, NativeMoveCompatibility,
@@ -40,9 +40,9 @@ mod command_catalog;
 mod credential_environment;
 #[cfg(test)]
 pub(crate) use credential_environment::{
-    record_provider_credential_delivery_for_test, take_provider_lifecycle_failure_for_test,
     ProviderCredentialDeliveryProbe, ProviderLifecycleFailureInjection,
-    ProviderLifecycleFailureStage,
+    ProviderLifecycleFailureStage, record_provider_credential_delivery_for_test,
+    take_provider_lifecycle_failure_for_test,
 };
 mod executable_resolution;
 mod external_observation;
@@ -78,47 +78,51 @@ mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
 pub(crate) use account_credential::{
-    launch_uses_vault_credential, provider_account_credential_id,
+    CLAUDE_OAUTH_TOKEN_ENV, launch_uses_vault_credential, provider_account_credential_id,
     provider_account_credential_registered, remove_provider_account_credential,
     resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
     store_provider_account_copy_credential, store_provider_account_credential,
-    validate_provider_account_credential_input, verify_account_login, CLAUDE_OAUTH_TOKEN_ENV,
+    validate_provider_account_credential_input, verify_account_login,
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::{
-    prepare_claude_launch_state, trusted_workspace_notice, CLAUDE_START_BUDGET,
+    CLAUDE_PANE_STATUS_FILE_ENV, CLAUDE_TERMINAL_MODE_FILE_ENV, CLAUDE_TERMINAL_MODEL_FILE_ENV,
+    claude_native_permission_interaction_id, is_claude_native_permission,
+};
+pub(crate) use claude::{
+    CLAUDE_START_BUDGET, prepare_claude_launch_state, trusted_workspace_notice,
 };
 
 pub(crate) mod process_owner;
 pub(crate) use claude::{
+    CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS, CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
     claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
-    fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
-    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+    fit_claude_native_hidden_context,
+};
+pub(crate) use claude::{
+    ClaudeCredentialCheckError, probe_claude_skill_version, read_claude_rate_limits,
+    verify_claude_account_credential, verify_claude_setup_token,
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
-pub(crate) use claude::{
-    probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
-    verify_claude_setup_token, ClaudeCredentialCheckError,
-};
 pub(crate) use claude_compaction::{
-    claude_compaction, read_summary_from_transcript, ClaudeCompaction, ContextCompaction,
+    ClaudeCompaction, ContextCompaction, claude_compaction, read_summary_from_transcript,
 };
+pub(crate) use claude_runtime::ClaudeRuntimeState;
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
-pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub(crate) use claude_runtime::{
-    begin_claude_runtime_tool_wait, finished_background_task, BackgroundTaskEnd,
-    ClaudeRuntimeToolWait,
+    BackgroundTaskEnd, ClaudeRuntimeToolWait, begin_claude_runtime_tool_wait,
+    finished_background_task,
 };
+pub(crate) use claude_runtime::{ClaudeHandover, hand_over_claude_runtime};
 pub(crate) use claude_runtime::{
-    bounded_result, bounded_result_images, ended_task_of_result, ends_background_commands,
-    launched_task_id, launches_background_task, RESULT_IMAGE_FILE_BYTES,
+    RESULT_IMAGE_FILE_BYTES, bounded_result, bounded_result_images, ended_task_of_result,
+    ends_background_commands, launched_task_id, launches_background_task,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
 };
-pub(crate) use claude_runtime::{hand_over_claude_runtime, ClaudeHandover};
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
@@ -126,51 +130,51 @@ pub(crate) use codex::{
     ensure_codex_account_endpoint, invalidate_codex_account_endpoint, retain_codex_account_login,
     shutdown_codex_account_endpoints,
 };
+pub(crate) use codex_client::CodexDeviceLogin;
 #[cfg(test)]
 pub(crate) use codex_client::test_codex_connect;
-pub(crate) use codex_client::CodexDeviceLogin;
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexStream, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
 pub use codex_runtime::CodexRuntimeState;
 #[cfg(unix)]
-pub(crate) use codex_runtime::{hand_over_codex_turn, CodexHandover};
+pub(crate) use codex_runtime::{CodexHandover, hand_over_codex_turn};
 pub use command_catalog::{
-    default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
-    ProviderCommandCatalogSource, ProviderCommandDescriptor,
+    ProviderCommandCatalog, ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource,
+    ProviderCommandDescriptor, default_provider_command_catalogs,
 };
 pub(crate) use credential_environment::ProviderCredentialEnvironment;
 pub(crate) use external_observation::{
-    claude_native_pasted_prompt_body, clean_observed_turn_text, clean_provider_prompt,
-    normalized_observed_prompt_text, normalized_observed_prompt_text_after_mentions, observed_role,
-    text_from_content, ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
-    ObservedExternalProviderTurnRole,
+    ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
+    ObservedExternalProviderTurnRole, claude_native_pasted_prompt_body, clean_observed_turn_text,
+    clean_provider_prompt, normalized_observed_prompt_text,
+    normalized_observed_prompt_text_after_mentions, observed_role, text_from_content,
 };
 pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
+    AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata,
+    ExternalProviderObservedCursor, LaunchProviderRequest, ProviderLaunchResult,
+    ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
     default_provider_control_capabilities, external_provider_import_model,
     external_provider_session_providers, normalize_provider_resume_model,
-    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode,
-    AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
-    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
-    RuntimeMcpBinding,
+    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding,
 };
 #[cfg(test)]
 #[cfg(test)]
 pub(crate) use managed_isolation::managed_provider_isolation_env_remove;
+#[cfg(test)]
 pub(crate) use managed_isolation::{
+    MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV, chariox_cli_beside,
+};
+pub(crate) use managed_isolation::{
+    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
     apply_managed_provider_isolation, chariox_cli_command, command_from_provider_launch,
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_required,
     managed_provider_parent_credential_env_remove, provider_account_environment_on_kernel,
-    provider_reported_transcript_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
-    MANAGED_SLICE_SERVICE_ROOT_ENV,
-};
-#[cfg(test)]
-pub(crate) use managed_isolation::{
-    chariox_cli_beside, MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
+    provider_reported_transcript_location, provider_reported_transcript_on_kernel,
 };
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_environment,
@@ -178,9 +182,9 @@ pub(crate) use mcp_proxy::{
 };
 pub(crate) use opencode::OPENCODE_CATALOG_START;
 pub(crate) use opencode::{
-    apply_opencode_discovery_environment, ensure_opencode_account_endpoint,
-    invalidate_opencode_account_endpoint, isolate_opencode_discovery_configuration,
-    shutdown_opencode_account_endpoints, OpenCodeDiscoveryConfigDirectory,
+    OpenCodeDiscoveryConfigDirectory, apply_opencode_discovery_environment,
+    ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
+    isolate_opencode_discovery_configuration, shutdown_opencode_account_endpoints,
 };
 pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
 #[cfg(test)]
@@ -194,10 +198,11 @@ pub use opencode_client::{
 };
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
+    ClaudeNotificationContext, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
     classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
     claude_native_stop_failure, find_provider_terminal_failure_output, provider_coded_failure_text,
     provider_error_frame, provider_exit_error_message, provider_retry_status,
-    text_reports_resource_limit, ClaudeNotificationContext, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    text_reports_resource_limit,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderBackgroundNotification, ProviderOwnTurnSignal,
@@ -205,25 +210,24 @@ pub use prompt_signals::{
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
-    run_room_commands_on_fresh_claude, setup_turn_origin, CodexApprovalHandover,
-    CodexApprovalOutcome, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
-    FinishedProviderPromptSubmitJob, NativeApprovalGoal, ProviderNativeInteractionBridge,
-    ProviderNativeInteractionResolution, ProviderOutputPromptIdentity,
-    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    CodexApprovalHandover, CodexApprovalOutcome, FinishedProviderOutputPollJob,
+    FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob, NativeApprovalGoal,
+    OutputPublicationClaim, ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
+    ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
-    ProviderRunOperationPermit,
+    ProviderRunOperationPermit, run_room_commands_on_fresh_claude, setup_turn_origin,
 };
 pub(crate) use runtime_run::{
-    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id, ProcessStart,
+    ProcessStart, projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
 };
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
+pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use termination::{
     provider_exit_before_delivery_message, provider_launch_failure_diagnostic,
     sanitize_provider_diagnostic,
 };
-pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub use turn_outcome::{AnsweredTurnReceipt, TurnOutcome, TurnOutcomeKind};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
@@ -233,8 +237,8 @@ pub use types::{
 pub(crate) use usage_limit_reset::usage_limit_reset_at_ms;
 pub(crate) use usage_read_error::ProviderUsageReadError;
 pub(crate) use workspace_live_sync_policy::{
-    native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,
-    NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
+    NATIVE_TUI_HIDDEN_INSTRUCTIONS_END, NATIVE_TUI_HIDDEN_INSTRUCTIONS_START,
+    WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH, native_tui_hidden_instructions_block,
 };
 
 pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {
@@ -585,18 +589,17 @@ pub(crate) use opencode_runtime::assert_native_non_retryability as assert_openco
 #[cfg(test)]
 mod tests {
     use super::{
-        adapter_key_for_provider, canonical_provider_family,
-        provider_adapter_supports_policy_reload, provider_batch_launch_concurrency_limit,
-        provider_id_for_launch, provider_run_is_claude_headless,
-        provider_run_refreshes_selection_on_read,
+        AgentEndpointMode, LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult,
+        ProviderUtilityExecutionPolicy, RuntimeProviderRun, adapter_key_for_provider,
+        canonical_provider_family, provider_adapter_supports_policy_reload,
+        provider_batch_launch_concurrency_limit, provider_id_for_launch,
+        provider_run_is_claude_headless, provider_run_refreshes_selection_on_read,
         provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_policy_reload,
         provider_run_supports_selection_sync, provider_run_uses_claude_native_bridge,
         provider_run_uses_runtime_structured_utility_prompt,
         provider_run_waits_for_workflow_publication_completion, retain_public_inventory_providers,
         retain_public_inventory_providers_with_dev_stub_policy,
-        run_blocking_provider_utility_prompt, AgentEndpointMode, LaunchProviderRequest,
-        ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
-        RuntimeProviderRun,
+        run_blocking_provider_utility_prompt,
     };
 
     #[test]

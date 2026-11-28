@@ -854,6 +854,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Attempt { .. }
         | Operation::Expire { .. }
         | Operation::MarkShown { .. }
+        | Operation::MarkRead { .. }
         | Operation::Defer { .. }
         | Operation::ReleaseQueuedMessage { .. }
         | Operation::CancelQueuedMessage { .. }

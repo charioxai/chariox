@@ -32,6 +32,8 @@ pub(super) struct Service {
     pub(super) answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
     pub(super) capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
     ready_target: Arc<std::sync::Mutex<Option<ControlPlaneMachineTarget>>>,
+    /// Allocations the owner made without this kernel's agents, as the service lists them.
+    pub(super) owner_rentals: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
 
 /// How the stand-in service answers the next capability calls, in order; it answers at once when
@@ -67,6 +69,8 @@ pub(super) async fn service(
     let next_capability_failure = capability_failures.clone();
     let ready_target = Arc::new(std::sync::Mutex::new(None::<ControlPlaneMachineTarget>));
     let target = ready_target.clone();
+    let owner_rentals = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listed_rentals = owner_rentals.clone();
     let mut accepted = BTreeMap::<String, (serde_json::Value, serde_json::Value, String)>::new();
     let mut closed = std::collections::BTreeSet::<String>::new();
     let mut released = std::collections::BTreeSet::<String>::new();
@@ -109,6 +113,8 @@ pub(super) async fn service(
                     // One guard for both fields: a second lock in the same statement would wait on the first.
                     let listed_now = listed.lock().unwrap().clone();
                     let capability = MachineAllocationCapability {
+                        account_machines: None,
+                        account_spend: None,
                         revision: "v1".into(),
                         actions: vec!["acquire".into()],
                         // A service that lists no options still has its one default machine.
@@ -234,17 +240,22 @@ pub(super) async fn service(
                     ("404 Not Found", error("not_found"))
                 }
                 // The kernel reconciles the machines it recorded against the service's whole list.
-                "list" => (
-                    "200 OK",
-                    serde_json::json!({"kind":"machines","saved_states":[],
-                        "machines": accepted.values()
-                            .filter(|(_, _, id)| !released.contains(id))
-                            .map(|(_, _, id)| serde_json::json!({
+                "list" => {
+                    let mut machines = listed_rentals.lock().unwrap().clone();
+                    machines.extend(accepted.values().filter(|(_, _, id)| !released.contains(id)).map(
+                        |(class, region, id)| {
+                            serde_json::json!({
                                 "allocation_ref":id,"name":id,"state":"ready","revision":1,
                                 "since":"2026-11-19T00:00:00Z","kernel_id":null,"machine_id":null,
-                                "available_actions":["stop","release"]}))
-                            .collect::<Vec<_>>()}),
-                ),
+                                "available_actions":["stop","release"],
+                                "class_id":class,"region":region,"created_at":"2026-11-22T00:00:00Z"})
+                        },
+                    ));
+                    (
+                        "200 OK",
+                        serde_json::json!({"kind":"machines","saved_states":[],"machines":machines}),
+                    )
+                }
                 "get" | "release" => {
                     let allocation_ref = request["allocation_ref"].as_str().unwrap();
                     assert!(accepted.values().any(|(_, _, id)| id == allocation_ref));
@@ -281,6 +292,7 @@ pub(super) async fn service(
         answers,
         capability_failures,
         ready_target,
+        owner_rentals,
     }
 }
 
@@ -1436,4 +1448,149 @@ async fn the_owner_card_names_the_agent_that_gave_no_purpose() {
         title,
         format!("{name} asks for a machine and gave no purpose.")
     );
+}
+
+fn listed_refs(result: &serde_json::Value) -> Vec<String> {
+    result["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["allocation_ref"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn status_without_a_ref_lists_the_live_allocation_and_not_the_request_the_service_closed() {
+    let service = service(two_in_stock(), &["big"]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let live = state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"live","class_id":"small","region":"north"}),
+        )
+        .await
+        .unwrap();
+    let closed = state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"closed","class_id":"big"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_closed(&closed, "closed");
+    let listed = state
+        .machine_tool(&token, "chariox.machines.status", serde_json::json!({}))
+        .await
+        .unwrap()
+        .payload;
+    assert_eq!(
+        listed_refs(&listed),
+        vec![live.payload["allocation"]["allocation_ref"]
+            .as_str()
+            .unwrap()
+            .to_owned()]
+    );
+    let row = &listed["machines"][0];
+    assert_eq!(row["class_id"], "small");
+    assert_eq!(row["region"], "north");
+    assert_eq!(row["state"], "ready");
+    assert_eq!(row["created_at"], "2026-11-22T00:00:00Z");
+    assert_eq!(listed["saved_states"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn the_list_also_shows_the_owners_other_rental_and_never_a_deleted_one() {
+    let service = service(two_in_stock(), &[]).await;
+    service.owner_rentals.lock().unwrap().extend([
+        serde_json::json!({
+            "allocation_ref":"owner-rental","name":"Cloud 29","state":"ready","revision":1,
+            "since":"2026-11-21T00:00:00Z","kernel_id":null,"machine_id":null,"available_actions":["release"],
+            "class_id":"big","region":"south","created_at":"2026-11-21T00:00:00Z"
+        }),
+        serde_json::json!({
+            "allocation_ref":"gone","name":"Cloud 3","state":"deleted","revision":4,
+            "since":"2026-11-20T00:00:00Z","kernel_id":null,"machine_id":null,"available_actions":[]
+        }),
+    ]);
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    state
+        .machine_tool(&token, "chariox.machines.acquire", acquire_args("r1"))
+        .await
+        .unwrap();
+    let listed = state
+        .machine_tool(&token, "chariox.machines.status", serde_json::json!({}))
+        .await
+        .unwrap()
+        .payload;
+    let refs = listed_refs(&listed);
+    assert_eq!(refs.len(), 2);
+    assert!(refs.contains(&"owner-rental".to_owned()));
+    assert!(!refs.contains(&"gone".to_owned()));
+}
+
+/// Review of the owner-wait PR: an agent that gave no request_id is told the one the kernel chose
+/// when the card is still open, and retrying with it uses the approval, with no second card.
+#[tokio::test]
+async fn an_acquire_without_a_request_id_waits_names_its_id_and_the_retry_uses_the_approval() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let mut config = state.owned.config_projection.snapshot();
+    config.user_config.agents.offload_without_asking = None;
+    state.owned.config_projection.update(config);
+    let session = state
+        .owned
+        .session_store
+        .list_sessions()
+        .into_iter()
+        .next()
+        .unwrap();
+    let (room, owner) = (session.id().to_owned(), session.owner_user_id().to_owned());
+    let waiting = state
+        .machine_tool(&token, "chariox.machines.acquire", serde_json::json!({}))
+        .await
+        .unwrap()
+        .payload;
+    assert_eq!(waiting["status"], "waiting_for_owner", "{waiting}");
+    let request_id = waiting["request_id"]
+        .as_str()
+        .expect("the id the kernel chose");
+    assert!(request_id.starts_with("machine-"), "{waiting}");
+    let card = state
+        .list_owner_interactions(&owner)
+        .into_iter()
+        .find(|card| card.interaction_id.starts_with("machine-acquisition-"))
+        .expect("the owner's card is open")
+        .interaction_id;
+    state
+        .resolve_terminal_runtime_interaction(&room, &card, "approve", None, Some(&owner))
+        .await
+        .unwrap();
+    // The approval is recorded in the background; the retry with the same id acquires.
+    let mut acquired = None;
+    for _ in 0..100 {
+        match state
+            .machine_tool(
+                &token,
+                "chariox.machines.acquire",
+                serde_json::json!({"request_id": request_id}),
+            )
+            .await
+        {
+            Ok(result) if result.payload["status"] != "waiting_for_owner" => {
+                acquired = Some(result.payload);
+                break;
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
+    let acquired = acquired.expect("the retry with the same id acquires");
+    assert!(acquired["allocation_ref"].is_string(), "{acquired}");
+    assert_eq!(service.acquires.lock().unwrap().len(), 1);
+    assert!(state
+        .list_owner_interactions(&owner)
+        .iter()
+        .all(|card| !card.interaction_id.starts_with("machine-acquisition-")));
 }

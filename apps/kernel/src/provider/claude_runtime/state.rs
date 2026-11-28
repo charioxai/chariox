@@ -5,7 +5,7 @@ use std::process::ChildStdin;
 use serde_json::Value;
 
 use super::handover::AdoptedTurn;
-use super::process::{stop_child, ClaudeChild, ClaudeOutput};
+use super::process::{ClaudeOutput, ClaudeRuntimeProcess};
 use super::watchdog::ClaudeTurnWatchdog;
 use super::{AgentExecutionMode, AgentPermissionLevel};
 use crate::provider::claude::ClaudeMcpConfigFile;
@@ -22,6 +22,8 @@ pub(crate) struct ClaudeRuntimeBinding {
 }
 
 pub struct ClaudeRuntimeState {
+    // Keep this generation's actual run available after its registry entry retires.
+    pub(super) run_context: crate::provider::RuntimeProviderRun,
     pub(super) program: String,
     pub(super) args: Vec<String>,
     pub(super) env: BTreeMap<String, String>,
@@ -36,7 +38,7 @@ pub struct ClaudeRuntimeState {
     pub(super) usage_file: Option<PathBuf>,
     pub(super) last_usage_file_contents: Option<String>,
     pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
-    pub(super) child: ClaudeChild,
+    pub(super) child: ClaudeRuntimeProcess,
     pub(super) resources: Option<crate::runtime::process_resources::ProcessDomain>,
     // Shared with the actor registry while the runtime state is leased for I/O.
     pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
@@ -46,6 +48,7 @@ pub struct ClaudeRuntimeState {
     pub(super) run_process_start: Option<crate::provider::ProcessStart>,
     pub(super) stdin: ChildStdin,
     pub(super) output: ClaudeOutput,
+    pub(super) pending_cancelled_output: Vec<crate::provider::ProviderPromptSignalBatch>,
     pub(in crate::provider) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
     pub(super) active_model: String,
     pub(super) active_variant: Option<String>,
@@ -147,6 +150,10 @@ impl ClaudeRuntimeState {
         self.run_process_start = Some(start);
     }
 
+    pub(crate) fn owned_process(&self) -> ClaudeRuntimeProcess {
+        self.child.clone()
+    }
+
     pub(crate) fn process_identity_slot(
         &self,
     ) -> crate::runtime::kernel_access::process::ProcessIdentitySlot {
@@ -165,6 +172,6 @@ impl ClaudeRuntimeState {
 
 impl Drop for ClaudeRuntimeState {
     fn drop(&mut self) {
-        stop_child(&mut self.child);
+        self.child.retire();
     }
 }

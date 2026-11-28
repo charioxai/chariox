@@ -23,7 +23,7 @@ fn idle_child_exit_refuses_the_next_prompt_before_writing() {
         },
     );
     let mut binding = initialize_claude_runtime(&run).unwrap();
-    stop_child(&mut binding.state.child);
+    binding.state.child.stop();
     assert!(binding.state.child.try_wait().unwrap().is_some());
     let envelope = crate::prompt_assembly::PromptEnvelope::new(
         "next prompt",

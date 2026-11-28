@@ -114,7 +114,7 @@ async fn the_owner_lists_options_rents_reads_and_releases_one_machine() {
     let status = acquisition(
         &state,
         MachineAcquisitionRequest::Status {
-            allocation_ref: reference.clone(),
+            allocation_ref: Some(reference.clone()),
         },
         None,
     )
@@ -259,7 +259,7 @@ async fn an_unknown_allocation_is_refused_in_plain_words() {
     let (state, _token, _workspace) = agent_kernel(service.api_url.clone()).await;
     for request in [
         MachineAcquisitionRequest::Status {
-            allocation_ref: "unknown-machine".into(),
+            allocation_ref: Some("unknown-machine".into()),
         },
         MachineAcquisitionRequest::Release {
             allocation_ref: "unknown-machine".into(),

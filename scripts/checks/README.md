@@ -18,6 +18,7 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `protocol-hashes-rehashed` | Protocol changes: a bump updates the snapshot and hash tests | run `pnpm protocol:rehash` (through `cargo-slot.sh` like any cargo job) and commit the rewritten tests and `fixtures/protocol-hash-pins.json` |
 | `retired-names` | Names the owner retired are never written | use the current name; rename in files you touch |
 | `slice-image-closure` | A module a slice entrypoint imports must be in the slice image | add the `COPY` line to `apps/kernel/slice-linux-docker/docker/Dockerfile` |
+| `agent-tools-on-demand` | no agent tool is exposed unless needed: `apps/kernel/agent_upfront_tools.json` is the one list of tools a provider's agent holds before its first call (Cloud: not applicable, it has no agent runtime tools) | leave the tool deferred (tool search / `chariox.tools.find`), or add `budget raised: agent_upfront_tools.<provider>.<role>: <why>` to a commit message and get it approved in review |
 | `perf-budget-tighten-only` | `docs/PERFORMANCE_BUDGETS.md`: performance budgets only tighten | bring the number back under the budget, or add `budget raised: <id>: <why>` to a commit message and get it approved in review |
 | `tracked-state` | State, logs and recordings never live in a repository | `git rm` it and keep it under `~/.chariox/dev/<task>/` |
 | `project-id-required` | Rooms always live under a Project: a Room is built with a non-empty `ProjectId`, required in storage and protocol | build the Room with `ProjectId::new` where the id enters the kernel; keep `project_id` required (no `Option`, no default, no empty-then-assign) |
@@ -51,7 +52,7 @@ Each core rule of `AGENTS.md` has one check that fails the build with the file, 
 
 The rule runner prints the commit it uses. It uses `CHARIOX_BOUNDARY_BASE` when set, or the merge base of `HEAD` and `origin/main`. If the remote-tracking reference is missing, it fetches `main` from `origin`.
 
-A check with an empty list holds the rule everywhere. `protocol-shape-needs-version`, `perf-budget-tighten-only` and `commit-message-rules` have no list: their ratchet is the diff against the merge base.
+A check with an empty list holds the rule everywhere. `protocol-shape-needs-version`, `perf-budget-tighten-only`, `agent-tools-on-demand` and `commit-message-rules` have no list: their ratchet is the diff against the merge base.
 
 ## Adding a check
 

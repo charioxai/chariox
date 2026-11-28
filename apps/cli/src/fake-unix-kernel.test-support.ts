@@ -56,7 +56,7 @@ export function serveKernelFiles(store: FakeKernelFiles): (socket: WebSocket, fr
     if (name === "RelayStatus") {
       replyWith(socket, frame, { response: { RelayStatus: { status: { daemon_id: "d", machine_id: "m", capabilities: ["kernel_gateway_v1"] } } } })
     } else if (name === "StatKernelFile") {
-      const stat = { path: body.path, exists: !!file, kind: file ? "file" : null, size: file?.length ?? null, modified_ms: file ? 1 : null, sha256: file && body.with_sha256 ? sha256(file) : null, partial_size: store.partials.get(body.path)?.length ?? null }
+      const stat = { path: body.path, exists: !!file, kind: file ? "file" : null, size: file?.length ?? null, modified_ms: file ? 1 : null, sha256: file && body.with_sha256 ? sha256(file) : null, partial_size: store.partials.get(body.path)?.length ?? null, partial_upload_id: store.partials.has(body.path) ? "00000000-0000-0000-0000-000000000001" : null }
       replyWith(socket, frame, { response: { KernelFileStat: { stat } } })
     } else if (name === "ListKernelDirectory") {
       const entries = [...store.files].filter(([path]) => path.startsWith(`${body.path}/`)).map(([path, bytes]) => ({ name: path.slice(body.path.length + 1), kind: "file", size: bytes.length, modified_ms: 1 }))

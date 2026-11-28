@@ -1134,6 +1134,8 @@ mod tests {
                     },
                 )),
                 usage: ProviderRunTokenUsage {
+                    accounting: None,
+                    turn_accounting: None,
                     total_tokens: Some(42100),
                     last_tokens: Some(8900),
                     context_tokens: Some(8900),
@@ -1168,6 +1170,8 @@ mod tests {
                 turn_id: "turn-2".to_string(),
                 counters: None,
                 usage: ProviderRunTokenUsage {
+                    accounting: None,
+                    turn_accounting: None,
                     total_tokens: Some(36_000_000),
                     last_tokens: Some(36_000_000),
                     context_tokens: None,

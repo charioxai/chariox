@@ -4,7 +4,10 @@ pub(super) struct WorkflowPromptDispatches {
     // activation to the same Vault-aware runtime boundary as ordinary turns.
     pub(super) project_queue_promotions: Vec<(String, String)>,
     pub(super) provider_auth_failures: Vec<crate::provider::FinishedProviderPromptSubmitJob>,
+    pub(super) completed_prompt_aborts: Vec<crate::app::KernelPromptAbortDispatch>,
     pub(super) local: Vec<crate::app::KernelPromptDispatch>,
+    /// Started prompts that already failed on their run; each settles failed with its error.
+    pub(super) failed_local: Vec<(crate::app::KernelPromptDispatch, crate::error::DaemonError)>,
     pub(super) remote: Vec<crate::app::KernelRemotePromptDispatch>,
     pub(super) starting_provider_runs: Vec<String>,
     pub(super) provider_run_retirements: std::collections::BTreeMap<String, Vec<String>>,
@@ -31,7 +34,9 @@ impl WorkflowPromptDispatches {
     pub(super) fn is_empty(&self) -> bool {
         self.project_queue_promotions.is_empty()
             && self.provider_auth_failures.is_empty()
+            && self.completed_prompt_aborts.is_empty()
             && self.local.is_empty()
+            && self.failed_local.is_empty()
             && self.remote.is_empty()
             && self.starting_provider_runs.is_empty()
             && self.provider_run_retirements.is_empty()
@@ -40,11 +45,14 @@ impl WorkflowPromptDispatches {
     }
 
     pub(super) fn extend(&mut self, other: Self) {
+        self.completed_prompt_aborts
+            .extend(other.completed_prompt_aborts);
         self.project_queue_promotions
             .extend(other.project_queue_promotions);
         self.provider_auth_failures
             .extend(other.provider_auth_failures);
         self.local.extend(other.local);
+        self.failed_local.extend(other.failed_local);
         self.remote.extend(other.remote);
         self.starting_provider_runs
             .extend(other.starting_provider_runs);

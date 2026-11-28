@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +105,13 @@ pub(crate) enum MachineApprovalReceiptState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSubscriptionError {
+    pub agent_id: String,
+    pub subscription_id: String,
+    pub health: crate::local::NotificationSubscriptionHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
     project_id: ProjectId,
@@ -139,7 +147,8 @@ pub struct RuntimeSession {
     agent_defaults: SessionAgentDefaults,
     active_provider_run_id: Option<String>,
     focused_agent_id: Option<String>,
-    agents: Vec<AgentInstance>,
+    /// Shared on copy: a Room with many agents is read far more often than it changes.
+    agents: Arc<Vec<AgentInstance>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     collaboration_agent_counts: Option<SessionCollaborationAgentCounts>,
     #[serde(skip)]
@@ -153,19 +162,21 @@ pub struct RuntimeSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     active_interactions: Vec<RuntimeInteraction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notification_errors: Vec<AgentSubscriptionError>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     machine_approval_receipts: Vec<MachineApprovalReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     metaagent_tasks: Vec<MetaagentTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    agent_tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    agent_tasks: Arc<Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>>,
     /// Protocol 460: live sudo windows projected for every client's status row.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sudo_windows: Vec<crate::local::KernelSudoTurn>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
+    agent_wakes: Arc<Vec<crate::durable_state::agent_lifecycle::AgentWake>>,
     /// Messages from other agents waiting for their recipients' next turn, projected from the inbox; never stored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    queued_agent_messages: Vec<super::QueuedAgentMessage>,
+    queued_agent_messages: Arc<Vec<super::QueuedAgentMessage>>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
@@ -174,7 +185,7 @@ pub struct RuntimeSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     trigger_deliveries: Vec<TriggerDelivery>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
+    agent_output_read_state: Arc<BTreeMap<String, AgentOutputReadState>>,
     config_state: SessionConfigState,
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -223,13 +234,15 @@ impl RuntimeSession {
         &mut self,
         tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
     ) {
-        self.agent_tasks = tasks
-            .into_iter()
-            .map(|mut task| {
-                task.reason = crate::terminal::public_task_failure_reason(&task.reason);
-                task
-            })
-            .collect();
+        self.agent_tasks = Arc::new(
+            tasks
+                .into_iter()
+                .map(|mut task| {
+                    task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                    task
+                })
+                .collect(),
+        );
     }
     pub(crate) fn set_sudo_windows(&mut self, windows: Vec<crate::local::KernelSudoTurn>) {
         self.sudo_windows = windows;
@@ -247,7 +260,7 @@ impl RuntimeSession {
         &self.queued_agent_messages
     }
     pub(crate) fn set_queued_agent_messages(&mut self, messages: Vec<super::QueuedAgentMessage>) {
-        self.queued_agent_messages = messages;
+        self.queued_agent_messages = Arc::new(messages);
     }
     pub(crate) fn agent_wakes(&self) -> &[crate::durable_state::agent_lifecycle::AgentWake] {
         &self.agent_wakes
@@ -256,7 +269,7 @@ impl RuntimeSession {
         &mut self,
         wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
     ) {
-        self.agent_wakes = wakes;
+        self.agent_wakes = Arc::new(wakes);
     }
 
     pub(crate) fn durable_workflow_hot_state(&self) -> DurableWorkflowHotState {
@@ -352,23 +365,24 @@ impl RuntimeSession {
             agent_defaults: SessionAgentDefaults::default(),
             active_provider_run_id: None,
             focused_agent_id: None,
-            agents: Vec::new(),
+            agents: Arc::default(),
             collaboration_agent_counts: None,
             attachment_ids: BTreeSet::new(),
             attachment_revision: 0,
             connected_cli_count: 0,
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
+            notification_errors: Vec::new(),
             machine_approval_receipts: Vec::new(),
             metaagent_tasks: Vec::new(),
-            agent_tasks: Vec::new(),
+            agent_tasks: Arc::default(),
             sudo_windows: Vec::new(),
-            agent_wakes: Vec::new(),
-            queued_agent_messages: Vec::new(),
+            agent_wakes: Arc::default(),
+            queued_agent_messages: Arc::default(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_triggers: AgentTriggers::default(),
             trigger_deliveries: Vec::new(),
-            agent_output_read_state: BTreeMap::new(),
+            agent_output_read_state: Arc::default(),
             pinned: false,
             pinned_at_ms: None,
             config_state: SessionConfigState::default(),
@@ -553,7 +567,7 @@ impl RuntimeSession {
                 );
             }
         }
-        for agent in &mut self.agents {
+        for agent in Arc::make_mut(&mut self.agents) {
             if agent.owner_user_id() == local {
                 agent.set_owner_user_id(owner);
             }
@@ -741,7 +755,7 @@ impl RuntimeSession {
     }
 
     pub fn set_agents(&mut self, agents: Vec<AgentInstance>) {
-        self.agents = agents;
+        self.agents = Arc::new(agents);
         self.collaboration_agent_counts = None;
     }
 
@@ -757,8 +771,7 @@ impl RuntimeSession {
         if sequence == 0 {
             return false;
         }
-        let state = self
-            .agent_output_read_state
+        let state = Arc::make_mut(&mut self.agent_output_read_state)
             .entry(agent_id.to_string())
             .or_default();
         if sequence <= state.latest_output_sequence {
@@ -769,7 +782,7 @@ impl RuntimeSession {
     }
 
     pub fn acknowledge_agent_output_seen(&mut self, user_id: &str, agent_id: &str) -> bool {
-        let Some(state) = self.agent_output_read_state.get_mut(agent_id) else {
+        let Some(state) = Arc::make_mut(&mut self.agent_output_read_state).get_mut(agent_id) else {
             return false;
         };
         let previous = state
@@ -792,7 +805,7 @@ impl RuntimeSession {
     }
 
     pub(crate) fn clear_agent_unread_output(&mut self, agent_id: &str) {
-        self.agent_output_read_state.remove(agent_id);
+        Arc::make_mut(&mut self.agent_output_read_state).remove(agent_id);
     }
 
     pub fn agent_has_unread_output(&self, user_id: &str, agent_id: &str) -> bool {
@@ -1211,8 +1224,22 @@ impl RuntimeSession {
         }
     }
 
-    /// Insert a card admitted by the kernel registry.
-    pub(crate) fn add_active_interaction(&mut self, card: crate::runtime::state::LiveRoomCard) {
+    pub(crate) fn notification_errors(&self) -> &[AgentSubscriptionError] {
+        &self.notification_errors
+    }
+    pub(crate) fn set_notification_errors(&mut self, errors: Vec<AgentSubscriptionError>) -> bool {
+        if self.notification_errors == errors {
+            return false;
+        }
+        self.notification_errors = errors;
+        true
+    }
+
+    /// Insert a live operation presentation admitted by the kernel registry.
+    pub(crate) fn add_active_interaction(
+        &mut self,
+        card: crate::runtime::state::LiveRoomInteraction,
+    ) {
         self.insert_interaction(card.into_presentation());
     }
 
@@ -1572,7 +1599,7 @@ impl RuntimeSession {
     pub fn note_prompt_sent_at(&mut self, agent_id: &str, timestamp_ms: u64) {
         self.last_prompt_sent_at_ms = Some(timestamp_ms);
         self.note_activity_at(timestamp_ms);
-        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id() == agent_id) {
+        if let Some(agent) = Arc::make_mut(&mut self.agents).iter_mut().find(|agent| agent.id() == agent_id) {
             agent.note_prompt_sent_at(timestamp_ms);
         }
     }

@@ -53,7 +53,7 @@ async fn an_agent_resolves_repository_imports_and_updates_through_manage_skills(
         .dispatch_capability_runtime_tool_call(
             &run,
             MANAGE_SKILLS_TOOL,
-            serde_json::json!({"action":"resolve_repository_update","package_id":"package-repo","origin_prompt_id":prompt.id()}),
+            serde_json::json!({"origin_prompt_id":prompt.id(),"request":{"action":"resolve_repository_update","package_id":"package-repo"}}),
         )
         .await
         .unwrap();
@@ -68,7 +68,7 @@ async fn an_agent_resolves_repository_imports_and_updates_through_manage_skills(
         .dispatch_capability_runtime_tool_call(
             &run,
             MANAGE_SKILLS_TOOL,
-            serde_json::json!({"action":"preview","mutation":update.payload["mutation"],"origin_prompt_id":prompt.id()}),
+            serde_json::json!({"origin_prompt_id":prompt.id(),"request":{"action":"preview","mutation":update.payload["mutation"]}}),
         )
         .await;
     let preview = format!("{preview:?}");
@@ -82,7 +82,7 @@ async fn an_agent_resolves_repository_imports_and_updates_through_manage_skills(
             .dispatch_capability_runtime_tool_call(
                 &run,
                 MANAGE_SKILLS_TOOL,
-                serde_json::json!({"action":"resolve_repository","url":url,"origin_prompt_id":prompt.id()}),
+                serde_json::json!({"origin_prompt_id":prompt.id(),"request":{"action":"resolve_repository","url":url}}),
             )
             .await;
         let resolved = format!("{resolved:?}");
@@ -95,7 +95,7 @@ async fn an_agent_resolves_repository_imports_and_updates_through_manage_skills(
         .dispatch_capability_runtime_tool_call(
             &run,
             MANAGE_SKILLS_TOOL,
-            serde_json::json!({"action":"resolve_repository_update","package_id":"package-repo","origin_prompt_id":"an-old-turn"}),
+            serde_json::json!({"origin_prompt_id":"an-old-turn","request":{"action":"resolve_repository_update","package_id":"package-repo"}}),
         )
         .await;
     assert!(
@@ -115,9 +115,8 @@ async fn a_leased_agent_resolves_a_repository_update_on_the_home() {
     let prepared = service.prepare(&installed).unwrap();
     service.publish_authorized(&installed, &prepared).unwrap();
     let arguments = serde_json::json!({
-        "action":"resolve_repository_update",
-        "package_id":"package-repo",
         "origin_prompt_id":context.home_prompt_id.clone().unwrap(),
+        "request":{"action":"resolve_repository_update","package_id":"package-repo"},
     });
     let request = crate::transport::relay_peer::RelayPeerRequest::ForwardCapabilityRuntimeTool {
         context: context.clone(),

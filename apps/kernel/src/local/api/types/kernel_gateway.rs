@@ -20,6 +20,34 @@ pub struct OnBehalfOf {
 #[serde(deny_unknown_fields)]
 pub struct ListGatewayKernelsRequest {}
 
+/// Read the outcome recorded for one command sent through the same gateway grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetGatewayCommandStatusRequest {
+    pub command_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum GatewayCommandStatus {
+    NotRun,
+    Running,
+    Ran { result: GatewayCommandResult },
+    Interrupted { next_step: String },
+    Expired { next_step: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayCommandResult {
+    Response(serde_json::Value),
+    Error {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
+}
+
 /// Protocol 568, human-only: pair this kernel's gateway with a self-hosted kernel
 /// through the terminal pairing link that kernel made. A scoped relay needs the
 /// operator's CLIENT transport token as well; it is stored privately and never returned.
@@ -70,6 +98,17 @@ pub enum GatewayKernelStatus {
     Unpaired,
 }
 
+/// Whether a listed kernel is new enough for this kernel's gateway: the same rule as the
+/// `kernel_update_needed` refusal (its protocol is below the one the gateway needs, or it reports
+/// none). It answers "can this kernel's gateway use it", not "can a client open it": the web keeps
+/// its own, lower minimum, so a kernel can be `update_needed` here and open there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayKernelUpdate {
+    Current,
+    UpdateNeeded,
+}
+
 /// Where the kernel list comes from (the inventory source).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,4 +134,10 @@ pub struct GatewayKernel {
     /// Whether the kernel speaks the gateway `on_behalf_of` contract.
     pub gateway_ready: bool,
     pub via: GatewayKernelVia,
+    /// The local protocol the kernel last reported (its own registration, or its status answer
+    /// for a paired kernel); `null` for a kernel too old to report one. Kept while it is offline.
+    #[serde(default)]
+    pub protocol: Option<u32>,
+    /// Computed by this kernel from `protocol`; see [`GatewayKernelUpdate`].
+    pub update: GatewayKernelUpdate,
 }

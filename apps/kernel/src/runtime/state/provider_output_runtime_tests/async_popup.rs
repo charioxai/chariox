@@ -1,6 +1,10 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 AM-ASK: authenticated non-blocking questions.
 use super::*;
 
+#[cfg(unix)]
+#[path = "async_popup/local_card_factory.rs"]
+mod local_card_factory;
+
 fn browser_region() -> crate::session::RuntimeInteractionBrowserRegion {
     crate::session::RuntimeInteractionBrowserRegion {
         tab_id: "tab-one".into(),
@@ -621,6 +625,17 @@ async fn answer_choice_through_router(
     user: &str,
     client: &str,
 ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+    answer_reply_through_router(f, id, choice, None, user, client).await
+}
+
+async fn answer_reply_through_router(
+    f: &Fixture,
+    id: &str,
+    choice: &str,
+    reply: Option<&str>,
+    user: &str,
+    client: &str,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
     use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(f.app.clone(), 8);
     let mut caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
@@ -633,7 +648,7 @@ async fn answer_choice_through_router(
             session_id: f.room.clone(),
             interaction_id: id.into(),
             choice_id: choice.into(),
-            custom_reply: None,
+            custom_reply: reply.map(str::to_owned),
             passkey: None,
             passkey_remember_minutes: None,
         },
@@ -901,7 +916,7 @@ async fn async_popup_keeps_multiple_questions_and_prioritizes_a_blocking_card() 
     let receiver = f
         .runtime
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.room,
             blocking,
         )
@@ -1660,7 +1675,7 @@ async fn answering_a_card_on_a_managed_kernel_does_not_wait_for_itself() {
     let receiver = f
         .runtime
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.room,
             card,
         )
@@ -1899,4 +1914,155 @@ fn row574_a_plain_browser_card_gets_a_done_choice_and_a_self_closing_one_does_no
         ["cancel"],
         "a question without a page gets no Done"
     );
+}
+
+/// Row 655 (one card per Tab, Mac 11-26): the agent's newer plain card on the same Tab replaces its open plain card
+/// (the older one ends unavailable, so card and durable wake stay one record); a page-text, verification or
+/// condition-bound card is never replaced.
+#[tokio::test]
+async fn row655_a_newer_card_on_the_same_tab_replaces_the_open_one_but_never_a_special_card() {
+    let f = fixture("async-popup-one-card-per-tab", true).await;
+    f.begin(&f.prompt_id);
+    let first = seed_card(&f, browser_region()).await;
+    let agent = f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()[0]
+        .agent_id()
+        .unwrap()
+        .to_owned();
+    let request = |region: crate::session::RuntimeInteractionBrowserRegion| {
+        crate::session::RuntimeInteraction::new(
+            format!("interaction-new-{:x}", rand::random::<u64>()),
+            &agent,
+            crate::session::RuntimeInteractionKind::Choice,
+            crate::session::RuntimeInteractionLevel::Info,
+            None,
+            "Now type the code from the email".to_owned(),
+            vec![crate::session::RuntimeInteractionChoice::new(
+                "cancel", "Cancel", "cancel", None,
+            )],
+            None,
+            None,
+            None,
+        )
+        .with_view(crate::session::RuntimeInteractionView {
+            browser_region: region,
+        })
+    };
+    let replaced = f
+        .runtime
+        .one_card_per_tab(&f.room, &agent, &request(browser_region()))
+        .unwrap();
+    assert_eq!(
+        replaced.as_deref(),
+        Some(first.as_str()),
+        "the open plain card on the Tab is replaced"
+    );
+    let open = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(
+        open.active_interactions()
+            .iter()
+            .all(|card| card.id() != first),
+        "the older card is closed"
+    );
+    let told = answers(&f, &first);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["status"], "unavailable");
+    assert_eq!(
+        told[0]["reply"],
+        "Replaced by the agent's newer card on the same page"
+    );
+    // A page-text card on the Tab keeps its own lifecycle; so does a new request that waits for page text.
+    let mut waiting = browser_region();
+    waiting.done_text = Some("Signed in".into());
+    let text_card = seed_card(&f, waiting.clone()).await;
+    assert_eq!(
+        f.runtime
+            .one_card_per_tab(&f.room, &agent, &request(browser_region()))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        f.runtime
+            .one_card_per_tab(&f.room, &agent, &request(waiting))
+            .unwrap(),
+        None
+    );
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|card| card.id() == text_card));
+}
+
+async fn seed_card(f: &Fixture, region: crate::session::RuntimeInteractionBrowserRegion) -> String {
+    let id = ask(f, serde_json::json!({})).await["interaction_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut sessions = f.runtime.owned.session_store.write();
+    let mut session = sessions.get_session(&f.room).unwrap();
+    let card = session.remove_active_interaction(&id).unwrap();
+    session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
+        browser_region: region,
+    }));
+    sessions.restore_session(session);
+    id
+}
+
+#[tokio::test]
+async fn taxonomy_question_both_answer_shapes_use_one_type_and_deliver_exact_free_text() {
+    for (label, extra, fixed_count) in [
+        ("taxonomy-question-choices", serde_json::json!({}), 2),
+        (
+            "taxonomy-question-text-only",
+            serde_json::json!({"choices":[]}),
+            0,
+        ),
+    ] {
+        let f = fixture(label, true).await;
+        f.begin(&f.prompt_id);
+        let result = ask(&f, extra).await;
+        let id = result["interaction_id"].as_str().unwrap();
+        let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+        let card = session
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == id)
+            .unwrap();
+        assert_eq!(card.card_type(), "Question");
+        assert_eq!(
+            crate::session::runtime_card_class(card.card_type()),
+            Some("person action or answer")
+        );
+        assert_eq!(card.choices().len(), fixed_count);
+        let reply = card.custom_choice().expect("both shapes offer free text");
+        answer_reply_through_router(
+            &f,
+            id,
+            reply.id(),
+            Some("Something else exactly"),
+            "local",
+            "owner-client",
+        )
+        .await
+        .unwrap();
+        assert_eq!(answers(&f, id)[0]["reply"], "Something else exactly");
+        assert!(f
+            .runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+    }
 }

@@ -56,6 +56,7 @@ impl EnvironmentSource for PeerSource {
                 source_label,
                 record,
                 secrets,
+                linked,
                 files,
                 mcps,
                 skills,
@@ -63,6 +64,7 @@ impl EnvironmentSource for PeerSource {
                 label: source_label,
                 record,
                 secrets,
+                linked,
                 files,
                 mcps,
                 skills,
@@ -216,6 +218,7 @@ impl KernelRuntimeState {
             .copy_origin()
             .filter(|origin| origin.kernel_id == request.source_kernel_id)
             .map_or(project.id(), |origin| origin.project_id.as_str());
+        let source_kernel = request.source_kernel_id.clone();
         let source = PeerSource {
             runtime: self.clone(),
             owner: caller_user_id.into(),
@@ -234,6 +237,7 @@ impl KernelRuntimeState {
             };
             let store = runtime.environment_store();
             let registrations = runtime.user_registrations(&project_id);
+            let links = runtime.secret_links();
             let on_record = move |record: &crate::project_environment::ProjectEnvironmentRecord| {
                 register_environment_files(&checkouts, &record.files)
             };
@@ -246,6 +250,8 @@ impl KernelRuntimeState {
                     store: &store,
                     vault: vault.as_ref(),
                     registrations: &registrations,
+                    links: &links,
+                    source_kernel: &source_kernel,
                     on_record: &on_record,
                 },
                 entries,
@@ -300,6 +306,7 @@ impl KernelRuntimeState {
                         source_label: label,
                         record: None,
                         secrets: Vec::new(),
+                        linked: Vec::new(),
                         files: Vec::new(),
                         mcps: Vec::new(),
                         skills: Vec::new(),
@@ -382,12 +389,14 @@ impl KernelRuntimeState {
             vault.as_ref(),
             &self.user_registrations(project.id()),
             &checkout,
+            &self.secret_links(),
             label,
         )?;
         Ok(RelayPeerResponse::ProjectEnvironmentRead {
             source_label: held.label,
             record: held.record,
             secrets: held.secrets,
+            linked: held.linked,
             files: held.files,
             mcps: held.mcps,
             skills: held.skills,

@@ -156,6 +156,8 @@ impl KernelRuntimeState {
             request.prompt = control.prompt;
         }
         self.sweep_sudo();
+        // Only the owner's own typed prompt names a grant. Parse once, before creating the window.
+        let limit_grant = requester.is_none().then(|| super::limit_grant::LimitGrant::parse(prompt)).flatten();
         let entry = KernelSudoTurn {
             entry_id: format!("sudo:{:016x}", rand::random::<u64>()),
             session_id: session.id().into(),
@@ -174,6 +176,7 @@ impl KernelRuntimeState {
             placement: agent
                 .remote_execution()
                 .map(|remote| remote.execution_lease_id.clone()),
+            limit_grant,
         };
         {
             let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
@@ -338,7 +341,7 @@ impl KernelRuntimeState {
         }
         let rx = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("sudo_task_approval"),
                 &entry.session_id,
                 &entry.owner_user_id,
                 interaction,

@@ -1,16 +1,18 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use super::{RuntimeSession, SessionCollaborationAgentCounts};
 use crate::session::CollaborationLevel;
 
 pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> RuntimeSession {
     // A4: sub-agents are hidden before anything is counted or redacted (redaction clears the edge).
-    session.agents.retain(|agent| agent.is_room_agent());
-    session.agents = session
-        .agents
-        .into_iter()
-        .map(crate::agent::AgentInstance::without_inactive_usage_limit_stop)
-        .collect();
+    Arc::make_mut(&mut session.agents).retain(|agent| agent.is_room_agent());
+    session.agents = Arc::new(
+        Arc::unwrap_or_clone(session.agents)
+            .into_iter()
+            .map(crate::agent::AgentInstance::without_inactive_usage_limit_stop)
+            .collect(),
+    );
     // MP-08 / MP-10 / MP-11: private runs need participant ownership, too.
     session.workflow_runs = session
         .visible_workflow_runs_for_user(user_id, None)
@@ -55,15 +57,14 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
         owned_agent_ids.clone()
     };
     if collaboration_level.can_view_agent_parameters() {
-        session.agents.retain(|agent| {
+        Arc::make_mut(&mut session.agents).retain(|agent| {
             collaboration_level.can_view_agent_trace() || agent.owner_user_id() == user_id
         });
-        for agent in &mut session.agents {
+        for agent in Arc::make_mut(&mut session.agents) {
             agent.set_visible_in_freeform(visible_agent_ids.contains(agent.id()));
         }
     } else {
-        session.agents = session
-            .agents
+        session.agents = Arc::new(Arc::unwrap_or_clone(session.agents)
             .into_iter()
             .map(|agent| {
                 if agent.owner_user_id() == user_id {
@@ -76,10 +77,10 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
                     agent
                 }
             })
-            .collect();
+            .collect());
     }
     if user_id != session.owner_user_id() {
-        for agent in &mut session.agents {
+        for agent in Arc::make_mut(&mut session.agents) {
             if agent.parent_room_id().is_some() {
                 agent.set_parent_agent(None);
             }
@@ -105,15 +106,12 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
         .metaagent_tasks
         .retain(|task| visible_agent_ids.contains(task.metaagent_id()));
     // MP-08/MP-09/MP-10/MP-11: lifecycle reasons and process argv follow trace visibility.
-    session
-        .agent_tasks
+    Arc::make_mut(&mut session.agent_tasks)
         .retain(|task| visible_agent_ids.contains(&task.agent_id));
-    session
-        .agent_wakes
+    Arc::make_mut(&mut session.agent_wakes)
         .retain(|wake| visible_agent_ids.contains(&wake.agent_id));
     // A queued message carries the start of the sender's text for the recipient agent.
-    session
-        .queued_agent_messages
+    Arc::make_mut(&mut session.queued_agent_messages)
         .retain(|message| visible_agent_ids.contains(&message.agent_id));
     // A trigger and its unconfirmed firings carry the owner's prompt text.
     session
@@ -141,6 +139,6 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
         .workflow_publication_state
         .workflow_publication_snapshots
         .clear();
-    session.agent_output_read_state.clear();
+    session.agent_output_read_state = Arc::default();
     session
 }

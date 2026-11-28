@@ -8,7 +8,7 @@ use sha2::Digest;
 /// The owner answers within the code's own lifetime; the card never outlives it.
 const MAX_WAIT: Duration = Duration::from_secs(600);
 /// How long one tool call waits for the owner before saying the card is still open.
-const ANSWER_WINDOW: Duration = if cfg!(test) {
+pub(super) const ANSWER_WINDOW: Duration = if cfg!(test) {
     Duration::from_secs(2)
 } else {
     Duration::from_secs(60)
@@ -374,7 +374,7 @@ impl KernelRuntimeState {
             .with_timeout_sec(lifetime.min(MAX_WAIT).as_secs().max(1));
         let receiver = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("kernel_enrollment"),
                 room,
                 session.owner_user_id(),
                 interaction,

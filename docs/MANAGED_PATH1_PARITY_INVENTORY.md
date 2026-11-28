@@ -369,7 +369,7 @@ local output writes are pending, the CLI renews the lease at its last consumed
 cursor; SIGKILL still abandons the reader and permits expiry. Transport loss
 retains normalized failure codes and resume cursors. This is the existing mandatory-shutdown exception: no new placement rule,
 provider adapter, history format, credential path or Cloud stop policy is added.
-The wire contract is local 632 / peer 235, advertised by `room_exec_v1`.
+Use `RunCommand` for binary command execution. Kernels advertise it as `run_command_v1`.
 See `docs/PROTOCOL.md` (Binary Room exec) and the executable scenarios in
 `scripts/e2e-stack/room-exec/README.md`; they do not close the whole MP matrix.
 

@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::runtime_transport::command_cache::{
     is_receipt_capacity_error, CommandFingerprint, CommandReservation, CommandResultCache,
+    ReceiptStatus,
 };
 
 /// A refusal or failure the request itself ended with.
@@ -41,7 +42,56 @@ fn interrupted() -> Value {
     json!({"gateway": "outcome_unknown"})
 }
 
+/// Keep the gateway's existing command namespace so an earlier reservation still fences a retry.
+pub(crate) fn key(gateway_public_key: &str, command_id: &str) -> String {
+    json!([gateway_public_key, command_id]).to_string()
+}
+
 impl GatewayLedger {
+    pub(crate) async fn status(
+        &self,
+        key: &str,
+        grant_id: &str,
+    ) -> Result<crate::local::GatewayCommandStatus, Failure> {
+        use crate::local::{GatewayCommandResult, GatewayCommandStatus};
+        let cache = self.0.as_ref().ok_or_else(|| Failure {
+            code: "ledger_unavailable".into(),
+            message:
+                "The kernel could not open the command receipts. Try reading the status again."
+                    .into(),
+            retryable: true,
+        })?;
+        Ok(match cache.receipt_status(key, grant_id).await {
+            ReceiptStatus::Missing => GatewayCommandStatus::NotRun,
+            ReceiptStatus::Pending => GatewayCommandStatus::Running,
+            ReceiptStatus::Inaccessible => {
+                return Err(Failure {
+                    code: "command_receipt_unavailable".into(),
+                    message: "The original receipt is unavailable to this gateway grant. Check the target Room before submitting a new command.".into(),
+                    retryable: false,
+                });
+            }
+            ReceiptStatus::Expired => GatewayCommandStatus::Expired {
+                next_step: "Check the target Room before submitting a new command.".into(),
+            },
+            ReceiptStatus::Recorded(stored) => match decode(stored) {
+                Settled::Done(Ok(value)) => GatewayCommandStatus::Ran {
+                    result: GatewayCommandResult::Response(value),
+                },
+                Settled::Done(Err(error)) => GatewayCommandStatus::Ran {
+                    result: GatewayCommandResult::Error {
+                        code: error.code,
+                        message: error.message,
+                        retryable: error.retryable,
+                    },
+                },
+                _ => GatewayCommandStatus::Interrupted {
+                    next_step: "The effect is unknown. Check the target Room before submitting a new command.".into(),
+                },
+            },
+        })
+    }
+
     pub(crate) fn open(path: PathBuf) -> Self {
         Self::open_expiring(path, RECEIPT_WINDOW_MS, LEDGER_ENTRIES)
     }
@@ -253,12 +303,18 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
                 | RoomTerminalOperation::Snapshot { .. }
                 | RoomTerminalOperation::ReadOutput { .. }
                 | RoomTerminalOperation::Wait { .. }
-                | RoomTerminalOperation::ExecList
-                | RoomTerminalOperation::ExecWrite { .. }
-                | RoomTerminalOperation::ExecStdinClose { .. }
-                | RoomTerminalOperation::ExecRead { .. }
-                | RoomTerminalOperation::ExecCancel { .. }
-                | RoomTerminalOperation::ExecClose { .. }
+        );
+    }
+    if let crate::local::LocalDaemonRequest::RunCommand(request) = request {
+        use crate::local::RunCommandOperation as Op;
+        return matches!(
+            request.operation,
+            Op::ExecList
+                | Op::ExecRead { .. }
+                | Op::ExecWrite { .. }
+                | Op::ExecStdinClose { .. }
+                | Op::ExecCancel { .. }
+                | Op::ExecClose { .. }
         );
     }
     let variant = variant_name(request);
@@ -287,9 +343,6 @@ pub(crate) fn is_audited(request: &crate::local::LocalDaemonRequest) -> bool {
     }
 }
 
-/// The longest a forwarded shell command is waited for: its `timeout_ms`, up to one hour.
-const MAX_SHELL_WAIT_MS: u64 = 60 * 60 * 1_000;
-
 /// The target's default for waiting on an access answer (`kernel_access.request_timeout_minutes`).
 const SUDO_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -299,21 +352,17 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
     use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
     let wait_ms = match terminal_operation(request) {
         Some(RoomTerminalOperation::Wait { timeout_ms, .. }) => *timeout_ms,
-        Some(
-            RoomTerminalOperation::ReadOutput { wait_ms, .. }
-            | RoomTerminalOperation::ExecRead { wait_ms, .. },
-        ) => *wait_ms,
-        _ => 0,
+        Some(RoomTerminalOperation::ReadOutput { wait_ms, .. }) => *wait_ms,
+        _ => match request {
+            LocalDaemonRequest::RunCommand(request) => match request.operation {
+                crate::local::RunCommandOperation::ExecRead { wait_ms, .. } => wait_ms,
+                _ => 0,
+            },
+            _ => 0,
+        },
     };
     // The terminal service caps a wait at four minutes.
     let wait = std::time::Duration::from_millis(wait_ms.min(240_000));
-    // A shell command answers when it ends, and it ends by its own `timeout_ms`.
-    let wait = match request {
-        LocalDaemonRequest::RunShellCommand(shell) => {
-            std::time::Duration::from_millis(shell.timeout_ms.unwrap_or(0).min(MAX_SHELL_WAIT_MS))
-        }
-        _ => wait,
-    };
     match request {
         // The answer comes when the person has answered the popup there.
         LocalDaemonRequest::RequestKernelSudo(_) => super::REQUEST_DEADLINE + SUDO_ANSWER_WAIT,
@@ -369,6 +418,117 @@ mod tests {
         dir.join("ledger.jsonl")
     }
 
+    #[tokio::test]
+    async fn reconnected_steer_replays_the_first_result_and_still_conflicts_on_changed_text() {
+        let dir = crate::test_support::TestTempDir::new("reconnected-steer-receipt");
+        let path = dir.join("ledger.jsonl");
+        let steer = |attachment: &str, text: &str| {
+            LocalDaemonRequest::SteerActivePrompt(crate::local::SteerActivePromptRequest {
+                session_id: "room".into(),
+                attachment_id: attachment.into(),
+                target_agent_id: "agent".into(),
+                expected_active_prompt_id: "turn".into(),
+                require_exact_turn: false,
+                prompt: text.into(),
+                attachments: vec![],
+            })
+        };
+        let first = steer("before-reconnect", "change direction");
+        let retry = steer("after-reconnect", "change direction");
+        let ledger = GatewayLedger::open(path.clone());
+        let result = json!({"PromptSteered": {"id": "first-delivery"}});
+        assert!(matches!(
+            ledger
+                .run("same-id", fingerprint(&first), async { Ok(result.clone()) })
+                .await,
+            Settled::Done(Ok(_))
+        ));
+        for _ in 0..2 {
+            assert!(
+                matches!(ledger.run("same-id", fingerprint(&retry), async { panic!("retry must not execute") }).await,
+                Settled::Done(Ok(value)) if value == result)
+            );
+        }
+        drop(ledger);
+        let ledger = GatewayLedger::open(path.clone());
+        assert!(
+            matches!(ledger.run("same-id", fingerprint(&retry), async { panic!("cold retry must not execute") }).await,
+            Settled::Done(Ok(value)) if value == result)
+        );
+        assert!(matches!(
+            ledger
+                .run(
+                    "same-id",
+                    fingerprint(&steer("after-reconnect", "different text")),
+                    async { panic!("conflict must not execute") }
+                )
+                .await,
+            Settled::Conflict
+        ));
+        drop(ledger);
+    }
+
+    #[tokio::test]
+    async fn a_command_status_reads_pending_and_recovers_its_original_receipt() {
+        use crate::local::{GatewayCommandResult, GatewayCommandStatus};
+        let path = journal();
+        let ledger = Arc::new(GatewayLedger::open(path.clone()));
+        let id = key("paired-key", "spawn");
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap(),
+            GatewayCommandStatus::NotRun
+        );
+        let (entered, running) = tokio::sync::oneshot::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let work = tokio::spawn({
+            let ledger = Arc::clone(&ledger);
+            let id = id.clone();
+            async move {
+                ledger
+                    .run(
+                        &id,
+                        fingerprint(&create()).with_gateway_grant("grant-a"),
+                        async {
+                            entered.send(()).unwrap();
+                            waiting.await.unwrap();
+                            Ok(json!({"AgentSpawned": {"id": "original"}}))
+                        },
+                    )
+                    .await
+            }
+        });
+        running.await.unwrap();
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap(),
+            GatewayCommandStatus::Running
+        );
+        assert_eq!(
+            ledger.status(&id, "grant-b").await.unwrap_err().code,
+            "command_receipt_unavailable"
+        );
+        release.send(()).unwrap();
+        assert!(matches!(work.await.unwrap(), Settled::Done(Ok(_))));
+        drop(ledger);
+
+        let ledger = GatewayLedger::open(path.clone());
+        let expected = json!({"AgentSpawned": {"id": "original"}});
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap(),
+            GatewayCommandStatus::Ran {
+                result: GatewayCommandResult::Response(expected.clone()),
+            }
+        );
+        let replay = ledger
+            .run(
+                &id,
+                fingerprint(&create()).with_gateway_grant("grant-a"),
+                async { panic!("reading a receipt must not redispatch the command") },
+            )
+            .await;
+        assert!(matches!(replay, Settled::Done(Ok(value)) if value == expected));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     // EA2-09(e): the side effect ran, the kernel went away before its receipt, and the
     // retry of the same command id after the restart is NOT run again.
     #[tokio::test]
@@ -378,21 +538,33 @@ mod tests {
         let ledger = GatewayLedger::open(path.clone());
         let attempt = tokio::time::timeout(
             Duration::from_millis(50),
-            ledger.run("k1", fingerprint(&create()), async {
-                runs.fetch_add(1, Ordering::SeqCst);
-                std::future::pending::<()>().await;
-                Ok(json!({}))
-            }),
+            ledger.run(
+                "k1",
+                fingerprint(&create()).with_gateway_grant("grant-a"),
+                async {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    std::future::pending::<()>().await;
+                    Ok(json!({}))
+                },
+            ),
         )
         .await;
         assert!(attempt.is_err(), "the request never settled");
         drop(ledger);
         let ledger = GatewayLedger::open(path.clone());
+        assert!(matches!(
+            ledger.status("k1", "grant-a").await.unwrap(),
+            crate::local::GatewayCommandStatus::Interrupted { .. }
+        ));
         let retry = ledger
-            .run("k1", fingerprint(&create()), async {
-                runs.fetch_add(1, Ordering::SeqCst);
-                Ok(json!({}))
-            })
+            .run(
+                "k1",
+                fingerprint(&create()).with_gateway_grant("grant-a"),
+                async {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({}))
+                },
+            )
             .await;
         assert!(matches!(retry, Settled::OutcomeUnknown));
         assert_eq!(
@@ -400,6 +572,35 @@ mod tests {
             1,
             "the effect ran exactly once"
         );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reservation_keeps_its_duplicate_fence_when_its_receipt_has_no_grant() {
+        let path = journal();
+        let ledger = GatewayLedger::open(path.clone());
+        let id = key("paired-key", "older-command");
+        let request = create();
+        assert!(matches!(
+            ledger
+                .run(&id, fingerprint(&request), async { Ok(json!({})) })
+                .await,
+            Settled::Done(Ok(_))
+        ));
+        drop(ledger);
+        let ledger = GatewayLedger::open(path.clone());
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap_err().code,
+            "command_receipt_unavailable"
+        );
+        let retry = ledger
+            .run(
+                &id,
+                fingerprint(&request).with_gateway_grant("grant-a"),
+                async { panic!("an older reservation must fence this retry") },
+            )
+            .await;
+        assert!(matches!(retry, Settled::Conflict));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -668,7 +869,6 @@ mod tests {
         use crate::local::RoomTerminalOperation as Op;
         for repeats in [
             Op::List,
-            Op::ExecList,
             Op::Snapshot {
                 terminal_id: "t".into(),
             },
@@ -735,29 +935,61 @@ mod tests {
         assert!(!is_repeatable(&forget));
     }
 
-    // A forwarded shell command is waited for as long as it may run, not the usual 30 s.
     #[test]
-    fn a_forwarded_shell_command_waits_for_its_own_timeout() {
-        let shell = |timeout_ms| {
-            LocalDaemonRequest::RunShellCommand(crate::local::RunShellCapabilityRequest {
-                session_id: "s".into(),
-                attachment_id: "a".into(),
-                command: "sleep".into(),
-                args: vec!["400".into()],
-                working_directory: None,
-                timeout_ms,
+    fn command_start_returns_without_waiting_for_its_deadline() {
+        use crate::local::{CommandTarget, RunCommandOperation as Op, RunCommandRequest};
+        let command = |operation| {
+            LocalDaemonRequest::RunCommand(RunCommandRequest {
+                target: CommandTarget::Kernel,
+                acting_agent: None,
+                operation,
             })
         };
+        let opening = command(Op::ExecOpen {
+            command: vec!["sleep".into(), "400".into()],
+            directory: None,
+            timeout_ms: Some(400_000),
+            deadline_unix_ms: None,
+            stdin_file: None,
+        });
+        assert_eq!(deadline_for(&opening), super::super::REQUEST_DEADLINE);
+        assert!(!is_long_wait(&opening));
+        assert!(!is_repeatable(&opening));
+        for operation in [
+            Op::ExecList,
+            Op::ExecRead {
+                exec_id: "e".into(),
+                after_cursor: 0,
+                wait_ms: 0,
+            },
+            Op::ExecWrite {
+                exec_id: "e".into(),
+                offset: 0,
+                data_base64: "YQ==".into(),
+            },
+            Op::ExecStdinClose {
+                exec_id: "e".into(),
+                offset: 0,
+            },
+            Op::ExecCancel {
+                exec_id: "e".into(),
+            },
+            Op::ExecClose {
+                exec_id: "e".into(),
+            },
+        ] {
+            assert!(is_repeatable(&command(operation)));
+        }
+        let read = command(Op::ExecRead {
+            exec_id: "e".into(),
+            after_cursor: 0,
+            wait_ms: 400_000,
+        });
         assert_eq!(
-            deadline_for(&shell(Some(400_000))),
-            super::super::REQUEST_DEADLINE + Duration::from_secs(400)
+            deadline_for(&read),
+            super::super::REQUEST_DEADLINE + Duration::from_secs(240)
         );
-        assert_eq!(deadline_for(&shell(None)), super::super::REQUEST_DEADLINE);
-        assert_eq!(
-            deadline_for(&shell(Some(u64::MAX))),
-            super::super::REQUEST_DEADLINE + Duration::from_secs(3_600)
-        );
-        assert!(is_long_wait(&shell(Some(400_000))));
+        assert!(is_long_wait(&read));
     }
 
     // EA2-11: the answer to a forwarded sudo request is the person's, so the origin waits

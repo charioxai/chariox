@@ -5,7 +5,7 @@ import { createProviderLoginInteractionController, type ProviderLoginInteraction
 
 const url = "https://claude.ai/oauth/authorize?code=true&state=fixture"
 const interaction: RuntimeInteraction = {
-  id: "provider-auth-recovery:login-1", agent_id: "agent-1", kind: "choice", level: "warning", message: "Sign in",
+  id: "provider-auth-recovery:login-1", surface: "card", card_type: "provider_auth_recovery", agent_id: "agent-1", kind: "choice", level: "warning", message: "Sign in",
   choices: [{ id: "cancel", label: "Cancel", reply: "cancel" }],
   custom_choice: { id: "provider-response", label: "Send response", input_kind: "secret", min_length: 1 },
   timeout_sec: 600, requested_at_ms: 1_000,

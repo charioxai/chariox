@@ -800,16 +800,14 @@ async fn a_steer_skipped_at_the_native_write_is_delivered_again() {
 }
 
 impl Fixture {
-    fn deadline_cards(&self) -> usize {
+    /// The person's open cards: a time limit is the parent agent's setting, so none of them may
+    /// be a deadline card (row 754).
+    fn owner_cards(&self) -> Vec<String> {
         self.runtime
-            .owned
-            .session_store
-            .get_session(&self.room)
-            .unwrap()
-            .active_interactions()
-            .iter()
-            .filter(|card| super::agent_deadline_cards::is_deadline_card(card.id()))
-            .count()
+            .list_owner_interactions(&self.owner)
+            .into_iter()
+            .map(|card| card.interaction_id)
+            .collect()
     }
 
     async fn expire_the_limit(&self) -> u64 {
@@ -829,32 +827,85 @@ impl Fixture {
     }
 }
 
-/// A message queued before the limit ended is retired by the deadline sweep; the owner is told.
+/// Row 754 (D189): a message retired by the deadline sweep raises no card for the person. This
+/// fixture's agent has no parent, so the Room's stop notice — which names the extend command — is
+/// the whole story; an agent with a parent is covered by the parent-notice tests.
 #[tokio::test]
-async fn a_message_retired_by_the_deadline_sweep_raises_the_recovery_card() {
+async fn a_message_retired_by_the_deadline_sweep_raises_no_person_card() {
     let f = Fixture::with_child_provider("dev-stub");
     let message = f.message("queued-before-expiry", false, false);
     let now = f.expire_the_limit().await;
-    assert_eq!(f.deadline_cards(), 0);
+    assert!(f.owner_cards().is_empty());
     f.runtime.tick_agent_deadlines(now).await.unwrap();
     assert_eq!(f.state_of(message.sequence), "failed");
-    assert_eq!(f.deadline_cards(), 1);
+    assert!(
+        f.owner_cards().is_empty(),
+        "a time limit is not the person's card"
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(
+        session.active_interactions().len(),
+        1,
+        "one recovery status"
+    );
+    assert!(
+        session
+            .active_interactions()
+            .iter()
+            .all(|item| item.is_pane_status()),
+        "the recovery is only pane status"
+    );
     f.runtime.tick_agent_deadlines(now + 1).await.unwrap();
-    assert_eq!(f.deadline_cards(), 1, "one card per ended limit");
+    assert_eq!(
+        f.runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1,
+        "one status per ended limit"
+    );
+    let notices = f.runtime.agent_notices_for_test(&f.room, &f.child);
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("time limit ended at")
+                && notice.contains("`agent deadline")),
+        "the Room notice names the next step: {notices:?}"
+    );
 }
 
-/// A message queued before the limit ended is delivered after it: the attempt is refused first.
+/// Row 754 (D189): a delivery the ended limit refuses raises no card for the person; the
+/// refusal itself already says the limit ended.
 #[tokio::test]
-async fn a_delivery_attempt_refused_by_the_ended_limit_raises_the_recovery_card() {
+async fn a_delivery_attempt_refused_by_the_ended_limit_raises_no_person_card() {
     let f = Fixture::with_child_provider("dev-stub");
     f.message("delivered-after-expiry", true, false);
     f.expire_the_limit().await;
-    assert_eq!(f.deadline_cards(), 0);
+    assert!(f.owner_cards().is_empty());
     let error = f
         .runtime
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
     assert!(crate::error::is_agent_deadline_refusal(&error), "{error}");
-    assert_eq!(f.deadline_cards(), 1);
+    assert!(
+        f.owner_cards().is_empty(),
+        "a time limit is not the person's card"
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(
+        session.active_interactions().len(),
+        1,
+        "one recovery status"
+    );
+    assert!(
+        session
+            .active_interactions()
+            .iter()
+            .all(|item| item.is_pane_status()),
+        "the recovery is only pane status"
+    );
 }

@@ -13,9 +13,22 @@ async fn request_decode_refusal_uses_existing_relay_message_field() {
         relay_crypto::public_key_from_private_key_base64(&router.relay_private_key()).unwrap();
     let sender = relay_crypto::generate_private_key_base64();
     let cache = Arc::new(CommandResultCache::default());
-    for payload in [
-        br#"{"FutureRequest":{}}"#.as_slice(),
-        br#"{"AcceptAppHostAction":{"session_id":"s","operation_id":17}}"#.as_slice(),
+    for (payload, expected, suggests_upgrade) in [
+        (
+            br#"{"FutureRequest":{}}"#.as_slice(),
+            "unknown request type `FutureRequest`",
+            true,
+        ),
+        (
+            br#"{"AcceptAppHostAction":{"session_id":"s","operation_id":17}}"#.as_slice(),
+            "AcceptAppHostAction.operation_id: invalid type: integer `17`, expected a string",
+            false,
+        ),
+        (
+            br#"{"local_terminal_connect":17}"#.as_slice(),
+            "local_terminal_connect: invalid type: integer `17`",
+            false,
+        ),
     ] {
         let encrypted =
             relay_crypto::encrypt_payload_for_peer(&sender, &receiver, payload).unwrap();
@@ -33,7 +46,15 @@ async fn request_decode_refusal_uses_existing_relay_message_field() {
         let error = outcome.error.unwrap();
         assert_eq!(error.code, "invalid_request");
         assert!(!error.retryable);
-        assert!(error.message.contains(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
+        assert_eq!(
+            error
+                .message
+                .contains("update the Chariox client or kernel"),
+            suggests_upgrade,
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains(expected), "{}", error.message);
     }
 }
 

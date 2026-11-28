@@ -38,11 +38,14 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: OWNER_VIEW_TOOL.to_string(),
-            description: "Watch the owner's hosted Web Navigator and Settings. The owner sees who is watching and can end the view. Use watch to attach, read for the latest presentation, and leave to detach.".to_string(),
+            description: "Watch the owner's hosted Web view read-only: Navigator, Settings, and each shown Room Browser pane's delivered frames/s, path and input-to-paint. The owner sees who is watching and can end the view. Use watch to attach, read (snapshot: true adds the picture the viewer drew), and leave to detach.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["operation"],
-                "properties": { "operation": { "enum": ["watch", "read", "leave"] } },
+                "properties": {
+                    "operation": { "enum": ["watch", "read", "leave"] },
+                    "snapshot": { "type": "boolean" }
+                },
                 "additionalProperties": false
             }),
         },

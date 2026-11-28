@@ -2,6 +2,33 @@ use super::super::{MetaCommandDoc, MetaCommandPolicy};
 
 pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
+        name: "provider accounts copy-targets", aliases: &[], usage: "provider accounts copy-targets", examples: &[],
+        tags: &["provider", "account", "copy"], intents: &["find account copy target key"], scope: "kernel",
+        mutates: false, policy: MetaCommandPolicy::Allow, authority: "kernel owner access", routed: true,
+        description: "List enrolled same-owner copy targets and pinned keys. Copy checks reachability.",
+    },
+    MetaCommandDoc {
+        name: "provider accounts copy-offers", aliases: &[], usage: "provider accounts copy-offers", examples: &[],
+        tags: &["provider", "account", "copy"], intents: &["copy provider login"], scope: "kernel",
+        mutates: false, policy: MetaCommandPolicy::Allow,
+        authority: "kernel owner access; existing account-copy authority", routed: true,
+        description: "List login-copy offers with pinned source keys.",
+    },
+    MetaCommandDoc {
+        name: "provider accounts copy-from", aliases: &[], usage: "provider accounts copy-from <provider> <profile> <source-kernel> <source-key-thumbprint> <operation-id> [--replace]", examples: &[],
+        tags: &["provider", "account", "copy"], intents: &["copy provider login"], scope: "kernel",
+        mutates: true, policy: MetaCommandPolicy::Allow,
+        authority: "kernel owner access; existing account-copy authority", routed: true,
+        description: "Copy an offered login here; the owner answers recipient consent.",
+    },
+    MetaCommandDoc {
+        name: "provider accounts copy-to", aliases: &[], usage: "provider accounts copy-to <provider> <profile> <target-kernel> <target-key-thumbprint> <operation-id> [--replace]", examples: &[],
+        tags: &["provider", "account", "copy"], intents: &["copy provider login"], scope: "kernel",
+        mutates: true, policy: MetaCommandPolicy::Allow,
+        authority: "kernel owner access; existing account-copy authority", routed: true,
+        description: "Copy one login to an enrolled same-owner kernel. Keep operation and key stable on retry.",
+    },
+    MetaCommandDoc {
         name: "kernel list-account",
         aliases: &[],
         usage: "kernel list-account",

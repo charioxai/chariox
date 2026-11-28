@@ -46,6 +46,7 @@ pub(crate) use place_command::{
 pub(crate) const TEST_READER_LEASE: Duration = lease::READER_LEASE;
 
 pub const CHUNK_BYTES: usize = 256 * 1024;
+pub(crate) const KERNEL_SCOPE: &str = "kernel";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -54,6 +55,15 @@ pub enum ExecOutcome {
     Signaled { signal: i32 },
     MemoryLimit { limit_bytes: u64 },
     Failed { message: String },
+    TimedOut { timeout_ms: u64, exit: CommandExit },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CommandExit {
+    NotStarted,
+    Exited { code: i32 },
+    Signaled { signal: i32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +85,7 @@ pub struct LaunchIntent {
     pub acting_agent: Option<String>,
     pub cwd: PathBuf,
     pub command: Vec<String>,
+    pub timeout_ms: Option<u64>,
 }
 
 impl LaunchIntent {
@@ -130,13 +141,17 @@ enum CancelReason {
 
 pub(super) struct Record {
     intent: LaunchIntent,
+    scope: String,
     launch_command: Vec<String>,
+    stdin_file: Option<PathBuf>,
     job: bool,
     minimum_memory: u64,
     state: Mutex<ExecState>,
     force: watch::Sender<bool>,
     place: watch::Sender<Option<Arc<placement::Placed>>>,
     created_at: tokio::time::Instant,
+    deadline_at: Option<tokio::time::Instant>,
+    deadline_unix_ms: Option<u64>,
     reader_deadline: watch::Sender<tokio::time::Instant>,
     reader_lease: Duration,
     input: Mutex<Input>,
@@ -148,6 +163,20 @@ pub(super) struct Record {
 }
 
 impl Record {
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.deadline_at
+    }
+
+    fn expired_before_start(&self) -> Option<ExecOutcome> {
+        let timeout_ms = self.intent.timeout_ms?;
+        self.deadline()
+            .filter(|deadline| *deadline <= tokio::time::Instant::now())?;
+        Some(ExecOutcome::TimedOut {
+            timeout_ms,
+            exit: CommandExit::NotStarted,
+        })
+    }
+
     fn renew_reader(&self) {
         self.reader_deadline
             .send_replace(tokio::time::Instant::now() + self.reader_lease);
@@ -218,6 +247,7 @@ impl RoomExecService {
     ) -> Result<String, DaemonError> {
         self.open_launch(
             session_id,
+            session_id,
             owner_user_id,
             cwd,
             command,
@@ -225,6 +255,39 @@ impl RoomExecService {
             acting_agent,
             false,
             0,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_command(
+        &self,
+        session_id: &str,
+        scope: &str,
+        owner_user_id: &str,
+        cwd: &Path,
+        command: &[String],
+        authority: crate::runtime::state::KernelRuntimeState,
+        acting_agent: Option<String>,
+        timeout_ms: Option<u64>,
+        deadline_unix_ms: Option<u64>,
+        stdin_file: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        self.open_launch(
+            session_id,
+            scope,
+            owner_user_id,
+            cwd,
+            command,
+            Some(authority),
+            acting_agent,
+            false,
+            0,
+            timeout_ms,
+            deadline_unix_ms,
+            stdin_file,
         )
     }
 
@@ -241,6 +304,7 @@ impl RoomExecService {
     ) -> Result<String, DaemonError> {
         self.open_launch(
             session_id,
+            session_id,
             owner_user_id,
             cwd,
             command,
@@ -248,6 +312,9 @@ impl RoomExecService {
             acting_agent,
             true,
             u64::from(needs.memory_gib.unwrap_or(0)) * 1024 * 1024 * 1024,
+            None,
+            None,
+            None,
         )
     }
 
@@ -255,6 +322,7 @@ impl RoomExecService {
     fn open_launch(
         &self,
         session_id: &str,
+        scope: &str,
         owner_user_id: &str,
         cwd: &Path,
         command: &[String],
@@ -262,7 +330,25 @@ impl RoomExecService {
         acting_agent: Option<String>,
         job: bool,
         minimum_memory: u64,
+        timeout_ms: Option<u64>,
+        deadline_unix_ms: Option<u64>,
+        stdin_file: Option<&str>,
     ) -> Result<String, DaemonError> {
+        let created_at = tokio::time::Instant::now();
+        let created_unix_ms = crate::session::unix_epoch_ms();
+        if deadline_unix_ms.is_some() && timeout_ms.is_none() {
+            return Err(error(
+                "exec_invalid_timeout",
+                "an absolute command deadline requires its original timeout",
+            ));
+        }
+        let deadline_unix_ms = timeout_ms.map(|limit| {
+            let local_expiry = created_unix_ms.saturating_add(limit);
+            deadline_unix_ms.map_or(local_expiry, |expiry| expiry.min(local_expiry))
+        });
+        let deadline_at = deadline_unix_ms.map(|expiry| {
+            created_at + Duration::from_millis(expiry.saturating_sub(created_unix_ms))
+        });
         if command.is_empty()
             || command.len() > 64
             || command[0].is_empty()
@@ -278,12 +364,18 @@ impl RoomExecService {
         let cwd = cwd.canonicalize().map_err(|failure| {
             error(
                 "exec_invalid",
-                format!("cannot resolve Room directory: {failure}"),
+                format!("cannot resolve command directory: {failure}"),
             )
         })?;
         if !cwd.is_dir() {
-            return Err(error("exec_invalid", "Room directory is not a directory"));
+            return Err(error(
+                "exec_invalid",
+                "command directory is not a directory",
+            ));
         }
+        let stdin_file = stdin_file
+            .map(|path| crate::room_terminal::resolve_stdin_file(path, &cwd))
+            .transpose()?;
         crate::runtime::process_resources::validate_executable(
             &command[0],
             Some(&cwd),
@@ -294,7 +386,6 @@ impl RoomExecService {
         let mut records = self.inner.records.lock().expect("exec records poisoned");
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(None);
-        let created_at = tokio::time::Instant::now();
         let reader_lease = if job {
             lease::JOB_READER_LEASE
         } else {
@@ -312,6 +403,8 @@ impl RoomExecService {
             (None, None)
         };
         let record = Arc::new(Record {
+            scope: scope.to_owned(),
+            stdin_file,
             job,
             minimum_memory,
             launch_command: if job {
@@ -330,11 +423,14 @@ impl RoomExecService {
                 acting_agent,
                 cwd,
                 command: command.to_vec(),
+                timeout_ms,
             },
             state: Mutex::new(ExecState::Starting),
             force,
             place,
             created_at,
+            deadline_at,
+            deadline_unix_ms,
             reader_deadline,
             reader_lease,
             input: Mutex::new(Input {
@@ -376,7 +472,7 @@ impl RoomExecService {
             .lock()
             .expect("exec records poisoned")
             .iter()
-            .filter(|(_, record)| record.intent.session_id == session_id)
+            .filter(|(_, record)| record.scope == session_id)
             .map(|(exec_id, record)| {
                 let output = record.output.lock().expect("exec output poisoned");
                 ExecSummary {
@@ -401,12 +497,12 @@ impl RoomExecService {
             .lock()
             .expect("exec records poisoned")
             .get(exec_id)
-            .filter(|record| record.intent.session_id == session_id)
+            .filter(|record| record.scope == session_id)
             .cloned()
             .ok_or_else(|| {
                 error(
                     "exec_not_found",
-                    "this Room has no such command; its reader lease may have expired",
+                    "this target has no such command; its reader lease may have expired",
                 )
             })
     }
@@ -434,6 +530,12 @@ impl RoomExecService {
             ));
         }
         let record = self.record(session_id, exec_id)?;
+        if record.stdin_file.is_some() {
+            return Err(error(
+                "exec_stdin_file",
+                "this command reads its named stdin file; do not send additional stdin bytes",
+            ));
+        }
         let mut input = record.input.lock().expect("exec input poisoned");
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         if input.last == Some((offset, digest)) {
@@ -615,9 +717,9 @@ impl RoomExecService {
         let mut records = self.inner.records.lock().expect("exec records poisoned");
         if records
             .get(exec_id)
-            .is_some_and(|record| record.intent.session_id != session_id)
+            .is_some_and(|record| record.scope != session_id)
         {
-            return Err(error("exec_not_found", "this Room has no such exec"));
+            return Err(error("exec_not_found", "this target has no such command"));
         }
         if let Some(record) = records.remove(exec_id) {
             record.cancel.send_replace(Some(CancelReason::Canceled));

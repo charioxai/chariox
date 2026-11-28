@@ -27,10 +27,12 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY docs/runtime-card-types.json docs/card-decisions.json docs/
 COPY fixtures fixtures
 COPY patches/ureq patches/ureq
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
+COPY deploy/managed-kernel deploy/managed-kernel
 COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
 COPY deploy/runtime-release deploy/runtime-release
@@ -38,6 +40,7 @@ COPY deploy/local-linux deploy/local-linux
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
+COPY packages/kernel-release-tests packages/kernel-release-tests
 COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
 COPY packages/app-wit packages/app-wit
@@ -421,6 +424,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-header.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-payment.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-card-frame.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-card-verification.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-recovery.mjs \

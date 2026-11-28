@@ -637,6 +637,9 @@ impl KernelRuntimeState {
             }) {
             Ok(NotificationOutcome::Parked(true)) => {
                 self.record_person_inbox_change();
+                if let Err(error) = self.sync_agent_subscription_errors() {
+                    tracing::warn!(%error, "subscription status projection deferred to inventory reconciliation");
+                }
                 crate::logging::warn_with_fields(
                     "daemon.agent_notification",
                     "notification subscription parked",

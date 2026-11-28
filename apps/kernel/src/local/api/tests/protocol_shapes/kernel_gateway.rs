@@ -1,10 +1,10 @@
 use super::*;
 use crate::local::{
     ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
-    GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelDirectoryEntry,
-    KernelFileKind, KernelFileStat, ListGatewayKernelsRequest, ListKernelDirectoryRequest,
-    OnBehalfOf, ReadKernelFileRequest, StatKernelFileRequest, WriteKernelFileRequest,
-    KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
+    GatewayKernelUpdate, GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest,
+    KernelDirectoryEntry, KernelFileKind, KernelFileStat, ListGatewayKernelsRequest,
+    ListKernelDirectoryRequest, OnBehalfOf, ReadKernelFileRequest, StatKernelFileRequest,
+    WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 use crate::transport::kernel_protocol::{KernelEvent, KernelIncomingFrame, KernelOutgoingFrame};
 
@@ -60,6 +60,8 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             last_seen_ms: 1_000,
             gateway_ready: true,
             via: GatewayKernelVia::Hosted,
+            protocol: Some(1015),
+            update: GatewayKernelUpdate::Current,
         }],
     };
     let frame: KernelIncomingFrame = serde_json::from_value(serde_json::json!({
@@ -99,12 +101,13 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
         "list": LocalDaemonRequest::ListKernelDirectory(ListKernelDirectoryRequest { path: "~/".into(), offset: 0 }),
         "read": LocalDaemonRequest::ReadKernelFile(ReadKernelFileRequest { path: "/srv/b.bundle".into(), offset: 0, length: 4 }),
         "write": LocalDaemonRequest::WriteKernelFile(WriteKernelFileRequest {
+            upload_id: uuid::Uuid::from_u128(1),
             path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), total_size: 3,
             sha256: Some("ab".repeat(32)), overwrite: false,
         }),
         "stat_answer": LocalDaemonResponse::KernelFileStat { stat: KernelFileStat {
             path: "/srv/b.bundle".into(), exists: true, kind: Some(KernelFileKind::File), size: Some(3),
-            modified_ms: Some(5), revision: Some("2049:17:3:5.0:5.0".into()), mode: Some(0o644), sha256: None, partial_size: None,
+            modified_ms: Some(5), revision: Some("2049:17:3:5.0:5.0".into()), mode: Some(0o644), sha256: None, partial_size: None, partial_upload_id: None,
         } },
         "listed": LocalDaemonResponse::KernelDirectoryListed { path: "/".into(), entries: vec![KernelDirectoryEntry {
             name: "a".into(), kind: KernelFileKind::Directory, target_kind: None, size: 0, modified_ms: None,
@@ -262,7 +265,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "fd85ccfb6b444d5f0bf78b8a743a3d1fa5ea15f4ec80ce04cc3cae65c1d49af5"
+        "4877a3d67a78edd7a40fe3ac26a7e683f80d9b37abc35ceb0ce3a39aa5d22ef6"
     );
 }
 
@@ -336,4 +339,37 @@ fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
         let decoded: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);
     }
+}
+
+#[test]
+fn gateway_command_status_keeps_the_original_result_and_distinguishes_interruption() {
+    let request =
+        LocalDaemonRequest::GetGatewayCommandStatus(crate::local::GetGatewayCommandStatusRequest {
+            command_id: "c1".into(),
+        });
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"GetGatewayCommandStatus":{"command_id":"c1"}})
+    );
+    let status = LocalDaemonResponse::GatewayCommandStatus {
+        command_id: "c1".into(),
+        status: crate::local::GatewayCommandStatus::Ran {
+            result: crate::local::GatewayCommandResult::Response(
+                serde_json::json!({"AgentSpawned":{"agent":{"id":"a1"}}}),
+            ),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(status).unwrap(),
+        serde_json::json!({"GatewayCommandStatus":{"command_id":"c1","status":{
+            "state":"ran","result":{"response":{"AgentSpawned":{"agent":{"id":"a1"}}}}
+        }}})
+    );
+    let interrupted = crate::local::GatewayCommandStatus::Interrupted {
+        next_step: "Check the target Room.".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(interrupted).unwrap(),
+        serde_json::json!({"state":"interrupted","next_step":"Check the target Room."})
+    );
 }

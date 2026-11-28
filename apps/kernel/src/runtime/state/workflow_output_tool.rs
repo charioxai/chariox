@@ -420,8 +420,14 @@ impl KernelRuntimeOwnedState {
                     .project_queue_promotions
                     .push((session_id.to_string(), agent_id.clone()));
             }
-            if let Some(dispatch) = completion.dispatch.take() {
-                dispatches.local.push(dispatch);
+            match completion.dispatch.take() {
+                Some(super::owned::NextPromptDispatch::Submit(dispatch)) => {
+                    dispatches.local.push(dispatch)
+                }
+                Some(super::owned::NextPromptDispatch::Failed(dispatch, error)) => {
+                    dispatches.failed_local.push((dispatch, error))
+                }
+                None => {}
             }
             if completion.released_claim || released_workflow_claims > 0 {
                 dispatches.extend(self.workflow_retry_blocked_claims());

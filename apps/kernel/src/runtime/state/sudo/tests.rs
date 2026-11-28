@@ -16,7 +16,7 @@ async fn a12_owner_sudo_reaches_passkey_when_agent_decisions_fill_the_cap() {
         receivers.push(
             f.state
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     &f.request.session_id,
                     "local",
                     RuntimeInteraction::for_kernel_operation(
@@ -68,7 +68,9 @@ async fn a12_external_sudo_still_asks_the_owner_with_many_agent_decisions_pendin
             receivers.push(
                 f.state
                     .create_kernel_operation_interaction(
-                        crate::runtime::state::CardKind::NativePermissionInput,
+                        crate::runtime::state::InteractionSurface::named(
+                            "provider_native_permission",
+                        ),
                         &f.request.session_id,
                         "local",
                         RuntimeInteraction::for_kernel_operation(
@@ -379,7 +381,7 @@ async fn sudo_room_tools_keep_approvals_and_elevation_with_the_person() {
     let responder = f
         .state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             other.id(),
             "local",
             RuntimeInteraction::for_kernel_operation(
@@ -551,6 +553,7 @@ pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
         .submit_prepared_prompt_with_queue_policy(&session, prompt, false, false)
         .unwrap();
     let turn = KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:fixture".into(),
         session_id: session.id().into(),
         agent_id: agent.into(),
@@ -685,7 +688,7 @@ async fn sudo_cannot_mint_authority_answer_sudo_popup_or_submit_passkeys() {
     let _responder = f
         .state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &turn.session_id,
             "local",
             RuntimeInteraction::for_kernel_operation(
@@ -1013,6 +1016,7 @@ async fn sudo_rotation_cancels_authorized_queue_before_idle_dispatch() {
 async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content() {
     let f = fixture();
     let entry = KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:restart-pending".into(),
         session_id: f.request.session_id.clone(),
         agent_id: f.request.target_agent_id.clone().unwrap(),
@@ -1838,7 +1842,7 @@ async fn sudo_admission_waiting_for_grants_does_not_block_an_owner_decision() {
     let responder = f
         .state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.request.session_id,
             "local",
             RuntimeInteraction::for_kernel_operation(
@@ -1973,6 +1977,9 @@ async fn sudo_bound_turn_refuses_queued_steering_from_terminals_and_external_gra
             .err()
             .expect("sudo steering must be refused");
         assert!(error.to_string().contains("sudo"), "{error}");
+        let projected = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(projected.code, "prompt_steer_rejected");
+        assert!(!projected.retryable, "the admission refusal is definitive");
         let (active, queued) = f
             .state
             .owned

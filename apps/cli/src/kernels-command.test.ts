@@ -3,7 +3,7 @@ import test from "node:test"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor } from "./agent-command-table.js"
 import { eventsMcpRoutes, failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withAgentKernel, withKernel } from "./kernels-command.js"
-import { Readable, Writable } from "node:stream"
+import { PassThrough, Readable, Writable } from "node:stream"
 import { runExec } from "./exec-command.js"
 import type { WebSocket } from "ws"
 import { replyWith, startFakeKernel, type FakeKernelFrame } from "./fake-unix-kernel.test-support.js"
@@ -249,24 +249,19 @@ test("terminal send --wait-ms keeps its request open for the whole wait, whateve
   assert.equal(JSON.parse(printed.at(-1)!).text, "done\r\n")
 })
 
-test("workspace exec uses the Room id from the direct or forwarded create receipt", async () => {
-  const room = "room-for-exec"
+test("workspace exec uses a kernel command in that directory without creating a Room", async () => {
   const kernel = await startFakeKernel((socket, frame) => {
-    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1", "room_exec_v1"]))
-    if ("CreateSession" in frame.request) {
-      return replyWith(socket, frame, { response: { SessionCreated: frame.kernel
-        ? { session_id: room }
-        : { session: { id: room } }
-      } })
-    }
-    if ("EndSession" in frame.request) return replyWith(socket, frame, { response: { SessionEnded: {} } })
-    const request = frame.request.RoomTerminal as { session_id: string; operation: { operation: string } }
-    if (!request || request.session_id !== room) return replyWith(socket, frame, refusal("unexpected_exec_room"))
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1", "run_command_v1"]))
+    const request = frame.request.RunCommand as { target: unknown; operation: { operation: string; directory?: string; offset?: number } }
+    assert.ok(request, "exec sends the unified command family")
+    assert.deepEqual(request.target, { kind: "kernel" })
     const op = request.operation.operation
-    const result = op === "exec_open" ? { result: "exec_opened", exec_id: "exec-room" }
+    if (op === "exec_open") assert.equal(request.operation.directory, "/work")
+    const result = op === "exec_open" ? { result: "exec_opened", exec_id: "exec-workspace" }
       : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "exited", code: 0 } } }
+      : op === "exec_stdin_close" ? { result: "exec_input", next_offset: request.operation.offset }
       : { result: "exec_closed" }
-    replyWith(socket, frame, { response: { RoomTerminal: { result } } })
+    replyWith(socket, frame, { response: { RunCommand: { result } } })
   })
   const sink = () => new Writable({ write(_chunk, _encoding, done) { done() } })
   try {
@@ -277,18 +272,18 @@ test("workspace exec uses the Room id from the direct or forwarded create receip
       ))
       assert.equal(exit, 0)
     }
-    assert.deepEqual(kernel.frames.filter(frame => "CreateSession" in frame.request).map(frame => frame.kernel), [undefined, "b3"])
+    assert.equal(kernel.frames.filter(frame => "CreateSession" in frame.request || "EndSession" in frame.request || "RoomTerminal" in frame.request).length, 0)
   } finally { await kernel.close() }
 })
 
 for (const ended of [false, true]) test(`exec real socket loss preserves resume details and probes access (ended=${ended})`, async () => {
   let dropped = false
   const kernel = await startFakeKernel((socket, frame) => {
-    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["room_exec_v1"]))
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["run_command_v1"]))
     if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, ended ? refusal("kernel_access_ended") : { response: { GatewayKernelsListed: {} } })
-    const operation = (frame.request.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const operation = (frame.request.RunCommand as { operation: { operation: string } }).operation.operation
     if (operation === "exec_read") { dropped = true; socket.close(); return }
-    replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "exec_opened", exec_id: "exec-live" } } } })
+    replyWith(socket, frame, { response: { RunCommand: { result: { result: "exec_opened", exec_id: "exec-live" } } } })
   })
   const sink = () => new Writable({ write(_chunk, _encoding, done) { done() } })
   try {
@@ -340,9 +335,9 @@ test("--help answers with usage and exit 0 for every agent command; bare termina
 test("exec place sends exec_place to this kernel and names the target in the operation, not as a route", async () => {
   const seen: { operation: unknown; kernel: unknown }[] = []
   const kernel = await startFakeKernel((socket, frame) => {
-    const body = frame.request.RoomTerminal as { session_id: string; operation: unknown }
-    seen.push({ operation: { session: body.session_id, ...(body.operation as object) }, kernel: (frame as { kernel?: unknown }).kernel })
-    replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "exec_opened", exec_id: "exec-held" } } } })
+    const body = frame.request.RunCommand as { target: { session_id: string }; operation: unknown }
+    seen.push({ operation: { session: body.target.session_id, ...(body.operation as object) }, kernel: (frame as { kernel?: unknown }).kernel })
+    replyWith(socket, frame, { response: { RunCommand: { result: { result: "exec_opened", exec_id: "exec-held" } } } })
   })
   const printed: string[] = []
   const log = console.log
@@ -438,5 +433,170 @@ test("a process the kernel cannot confirm, inside an agent's shell, is told what
     }
   } finally {
     names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index] })
+  }
+})
+
+// The actual CLI entry and websocket timer must distinguish a typed kernel deadline
+// from uncertain output after a dropped connection.
+const execThroughFakeKernel = async (timeoutSeconds: number, onRead: (socket: WebSocket, frame: FakeKernelFrame, timeoutMs: number) => void) => {
+  const operations: string[] = []
+  let timeoutMs = 0
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, { response: { GatewayKernelsListed: { kernels: [] } } })
+    assert.ok("RunCommand" in frame.request, "exec uses only the unified command family")
+    const body = frame.request.RunCommand as { target: unknown; operation: { operation: string; timeout_ms?: number } }
+    assert.deepEqual(body.target, { kind: "kernel" })
+    const operation = body.operation.operation
+    operations.push(operation)
+    const answer = (result: unknown) => replyWith(socket, frame, { response: { RunCommand: { result } } })
+    if (operation === "exec_open") {
+      timeoutMs = body.operation.timeout_ms ?? 0
+      return answer({ result: "exec_opened", exec_id: "exec-1" })
+    }
+    if (operation === "exec_read") return onRead(socket, frame, timeoutMs)
+    if (operation === "exec_stdin_close") return answer({ result: "exec_input", next_offset: 0 })
+    assert.equal(operation, "exec_close")
+    answer({ result: "exec_closed" })
+  })
+  const written: string[] = []
+  const write = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true }) as typeof process.stderr.write
+  const code = process.exitCode
+  const started = Date.now()
+  try {
+    await runKernelsCommand(["exec", "--kernel", "b3", "--timeout", String(timeoutSeconds), "--stdin-file", "input.bin", "--socket", kernel.path, "--", "sleep", "40"])
+  } finally { process.stderr.write = write; process.exitCode = code; await kernel.close() }
+  return { operations, timeoutMs, stderr: written.join(""), seconds: (Date.now() - started) / 1000 }
+}
+
+test("exec: a command still running at --timeout reports the kernel stop and collects it", async () => {
+  const timedOut = (socket: WebSocket, frame: FakeKernelFrame, timeoutMs: number) => setTimeout(() => replyWith(socket, frame, {
+    response: { RunCommand: { result: { result: "exec_output", output: { chunks: [], next_cursor: 0,
+      outcome: { kind: "timed_out", timeout_ms: timeoutMs, exit: { kind: "signaled", signal: 15 } },
+    } } } },
+  }), timeoutMs + 150)
+  const run = await execThroughFakeKernel(1, timedOut)
+  assert.equal(run.timeoutMs, 1000)
+  assert.match(run.stderr, /exec_timed_out/)
+  assert.match(run.stderr, /didn't finish in 1 s and was stopped/)
+  assert.doesNotMatch(run.stderr, /kernel_connection_lost|next_step/)
+  assert.deepEqual(run.operations.filter(op => op !== "exec_stdin_close"), ["exec_open", "exec_read", "exec_close"])
+})
+
+test("exec: a dropped output connection keeps the admitted command resumable", async () => {
+  const run = await execThroughFakeKernel(1, socket => socket.terminate())
+  assert.match(run.stderr, /kernel_connection_lost/)
+  assert.match(run.stderr, /"exec_id":"exec-1"/)
+  assert.match(run.stderr, /resume this command with RunCommand exec_read/)
+  assert.ok(!run.operations.includes("exec_close"), "an uncertain command is not restarted or discarded")
+})
+
+// Row 490: the list is the kernel's answer as it is: protocol and update state per kernel, null for a kernel too old
+// to report one, no client logic and no error text.
+test("kernels prints each kernel's protocol and update state exactly as the kernel listed them", async () => {
+  const listed = [
+    { name: "b3", kernel_id: "k-b3", label: "b3", machine_id: "m-b3", machine_alias: null, status: "online", last_seen_ms: 1, gateway_ready: true, via: "hosted", protocol: 1015, update: "current" },
+    { name: "old", kernel_id: "k-old", label: "old", machine_id: "m-old", machine_alias: "old", status: "offline", last_seen_ms: 2, gateway_ready: false, via: "hosted", protocol: null, update: "update_needed" },
+  ]
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    replyWith(socket, frame, { response: { GatewayKernelsListed: { kernels: listed } } })
+  })
+  const printed: string[] = [], log = console.log
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    await runKernelsCommand(["kernels", "--socket", kernel.path])
+  } finally { console.log = log; await kernel.close() }
+  assert.equal(printed.length, 1)
+  const { kernels } = JSON.parse(printed[0]!) as { kernels: typeof listed }
+  assert.deepEqual(kernels, listed)
+  assert.equal(kernels[1]!.protocol, null)
+  assert.equal(kernels[1]!.update, "update_needed")
+})
+
+test("workspace binary output resumes through a fresh websocket without creating a Room", async () => {
+  const cursors: number[] = []
+  const chunks: Buffer[] = []
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, { response: { GatewayKernelsListed: { kernels: [] } } })
+    assert.ok("RunCommand" in frame.request)
+    const command = frame.request.RunCommand as { target: unknown; operation: Record<string, unknown> }
+    assert.deepEqual(command.target, { kind: "kernel" })
+    const op = command.operation
+    const answer = (result: unknown) => replyWith(socket, frame, { response: { RunCommand: { result } } })
+    if (op.operation === "exec_open") {
+      assert.equal(op.directory, "/workspace")
+      return answer({ result: "exec_opened", exec_id: "socket-recovery" })
+    }
+    if (op.operation === "exec_stdin_close") return answer({ result: "exec_input", next_offset: 0 })
+    if (op.operation === "exec_close") return answer({ result: "exec_closed" })
+    assert.equal(op.operation, "exec_read")
+    cursors.push(Number(op.after_cursor))
+    if (cursors.length === 2) return socket.terminate()
+    const first = cursors.length === 1
+    answer({ result: "exec_output", output: {
+      chunks: [{ cursor: first ? 1 : 2, stream: "stdout", data_base64: (first ? Buffer.from([0, 255]) : Buffer.from([13, 10])).toString("base64") }],
+      next_cursor: first ? 1 : 2, outcome: first ? null : { kind: "exited", code: 23 },
+    } })
+  })
+  const stdout = new Writable({ write(bytes: Buffer, _encoding, done) { chunks.push(Buffer.from(bytes)); done() } })
+  try {
+    assert.equal(await withKernel({ socket: kernel.path, kernel: "b3", timeoutSeconds: 2 }, send => runExec(
+      { workspace: "/workspace", command: ["/bin/cat"], timeoutSeconds: 10 }, send,
+      { stdin: undefined, stdout, stderr: stdout },
+    )), 23)
+    assert.deepEqual(cursors, [0, 1, 1])
+    assert.deepEqual(Buffer.concat(chunks), Buffer.from([0, 255, 13, 10]))
+    assert.equal(kernel.frames.filter(frame => (frame.request.RunCommand as { operation?: { operation?: string } } | undefined)?.operation?.operation === "exec_open").length, 1)
+    assert.ok(kernel.frames.every(frame => !('CreateSession' in frame.request) && !('EndSession' in frame.request)))
+  } finally { await kernel.close() }
+})
+
+
+for (const args of [["--session", "room"], ["--workspace", "/workspace"]]) test(`exec sends EOF for interactive stdin on ${args[0]}`, async () => {
+  const input = new PassThrough() as PassThrough & { isTTY: boolean }
+  input.isTTY = true
+  const saved = Object.getOwnPropertyDescriptor(process, "stdin")!
+  Object.defineProperty(process, "stdin", { configurable: true, value: input })
+  let closed = false
+  const waiting: [WebSocket, FakeKernelFrame][] = []
+  const finish = (socket: WebSocket, frame: FakeKernelFrame) => replyWith(socket, frame, { response: { RunCommand: {
+    result: { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "exited", code: 0 } } },
+  } } })
+  const kernel = await startFakeKernel((socket, frame) => {
+    const request = frame.request.RunCommand as { operation: { operation: string } }
+    assert.ok(request)
+    const op = request.operation.operation
+    const answer = (result: unknown) => replyWith(socket, frame, { response: { RunCommand: { result } } })
+    if (op === "exec_open") return answer({ result: "exec_opened", exec_id: "tty" })
+    if (op === "exec_stdin_close") {
+      closed = true
+      answer({ result: "exec_input", next_offset: 0 })
+      for (const [reader, pending] of waiting) finish(reader, pending)
+      return
+    }
+    if (op === "exec_read") { if (closed) finish(socket, frame); else waiting.push([socket, frame]); return }
+    assert.equal(op, "exec_close")
+    answer({ result: "exec_closed" })
+  })
+  const code = process.exitCode
+  let timer: NodeJS.Timeout | undefined
+  try {
+    const running = runKernelsCommand(["exec", ...args, "--socket", kernel.path, "--", "/bin/cat"])
+    const completed = await Promise.race([running.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 500) })])
+    clearTimeout(timer)
+    // The old path is drained before asserting so a RED leaves no live input/socket.
+    if (!completed) input.end()
+    await running
+    assert.ok(completed, "an interactive stdin stream is not awaited by a command reading EOF")
+    assert.ok(closed)
+  } finally {
+    clearTimeout(timer)
+    input.destroy()
+    Object.defineProperty(process, "stdin", saved)
+    process.exitCode = code
+    await kernel.close()
   }
 })

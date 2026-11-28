@@ -289,7 +289,7 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
     .unwrap();
     assert!(matches!(
         request,
-        crate::local::LocalDaemonRequest::ListDescendants(r) if r.agent_id == "root"
+        crate::local::LocalDaemonRequest::ListDescendants(r) if r.agent_id == "root" && r.session_id == "room"
     ));
     let tree = crate::local::AgentTree {
         root: "root".into(),

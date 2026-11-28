@@ -1,124 +1,93 @@
 use super::*;
 
 #[test]
-fn local_request_api_runs_shell_command_capability() {
-    run_workspace_capability_test(
-        "local_request_api_runs_shell_command_capability",
-        local_request_api_runs_shell_command_capability_inner,
-    );
-}
-
-fn local_request_api_runs_shell_command_capability_inner() {
-    let _tmp = crate::test_support::TestTempDir::new("shell-local-api-test");
-    let worktree_root = _tmp.join("chariox-shell-local-api-test");
-    std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
-    let harness = LocalRouterTestHarness::new();
-    let session = match harness
-        .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                worktree_root.display().to_string(),
-                worktree_root.display().to_string(),
-            ),
-        ))
-        .expect("session create should succeed")
-    {
-        LocalDaemonResponse::SessionCreated { session, .. } => session,
-        _ => panic!("unexpected local response"),
-    };
-    let attachment = match harness
-        .dispatch(LocalDaemonRequest::AttachToSession(
-            AttachToSessionRequest {
-                session_id: session.id().to_string(),
-                client_id: "client-shell".to_string(),
-                capability_level: ClientCapabilityLevel::FullTerminal,
-            },
-        ))
-        .expect("attach should succeed")
-    {
-        LocalDaemonResponse::SessionAttached { attachment } => attachment,
-        _ => panic!("unexpected local response"),
-    };
-
-    let response = harness
-        .dispatch(LocalDaemonRequest::RunShellCommand(
-            RunShellCapabilityRequest {
-                session_id: session.id().to_string(),
-                attachment_id: attachment.id().to_string(),
-                command: "/bin/sh".to_string(),
-                args: vec!["-lc".to_string(), "printf capability".to_string()],
-                working_directory: None,
-                timeout_ms: None,
-            },
-        ))
-        .expect("shell capability should succeed");
-
-    match response {
-        LocalDaemonResponse::ShellCommandCompleted { result } => {
-            assert_eq!(result.exit_code, 0);
-            assert_eq!(result.stdout, "capability");
+fn local_request_api_runs_command_without_attachment() {
+    run_workspace_capability_test("local_request_api_runs_command_without_attachment", || {
+        let tmp = crate::test_support::TestTempDir::new("command-local-api");
+        let cwd = tmp.join("work");
+        std::fs::create_dir(&cwd).unwrap();
+        let harness = LocalRouterTestHarness::new();
+        let LocalDaemonResponse::SessionCreated { session, .. } = harness
+            .dispatch(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new(cwd.display().to_string(), cwd.display().to_string()),
+            ))
+            .unwrap()
+        else {
+            panic!("expected a Room")
+        };
+        let dispatch = |operation| {
+            harness.dispatch(LocalDaemonRequest::RunCommand(RunCommandRequest {
+                target: CommandTarget::RoomWorkspace {
+                    session_id: session.id().to_string(),
+                },
+                acting_agent: None,
+                operation,
+            }))
+        };
+        let LocalDaemonResponse::RunCommand {
+            result: RunCommandResult::ExecOpened { exec_id },
+        } = dispatch(RunCommandOperation::ExecOpen {
+            command: vec!["/bin/sh".into(), "-c".into(), "cat; printf result".into()],
+            directory: None,
+            timeout_ms: Some(1000),
+            deadline_unix_ms: None,
+            stdin_file: None,
+        })
+        .unwrap()
+        else {
+            panic!("expected a command ID")
+        };
+        let cross_target = harness
+            .dispatch(LocalDaemonRequest::RunCommand(RunCommandRequest {
+                target: CommandTarget::Kernel,
+                acting_agent: None,
+                operation: RunCommandOperation::ExecRead {
+                    exec_id: exec_id.clone(),
+                    after_cursor: 0,
+                    wait_ms: 0,
+                },
+            }))
+            .unwrap_err();
+        assert!(
+            matches!(cross_target, DaemonError::MachineRequest { code, .. } if code == "exec_not_found")
+        );
+        dispatch(RunCommandOperation::ExecStdinClose {
+            exec_id: exec_id.clone(),
+            offset: 0,
+        })
+        .unwrap();
+        let mut cursor = 0;
+        let mut stdout = Vec::new();
+        loop {
+            let LocalDaemonResponse::RunCommand {
+                result: RunCommandResult::ExecOutput { output },
+            } = dispatch(RunCommandOperation::ExecRead {
+                exec_id: exec_id.clone(),
+                after_cursor: cursor,
+                wait_ms: 1000,
+            })
+            .unwrap()
+            else {
+                panic!("expected command output")
+            };
+            for chunk in output.chunks {
+                use base64::Engine as _;
+                assert_eq!(chunk.stream, crate::room_exec::ExecStream::Stdout);
+                stdout.extend(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(chunk.data_base64)
+                        .unwrap(),
+                );
+            }
+            cursor = output.next_cursor;
+            if let Some(outcome) = output.outcome {
+                assert_eq!(outcome, crate::room_exec::ExecOutcome::Exited { code: 0 });
+                break;
+            }
         }
-        _ => panic!("unexpected shell response"),
-    }
-}
-
-#[test]
-fn local_request_api_rejects_shell_command_for_unauthorized_attachment() {
-    run_workspace_capability_test(
-        "local_request_api_rejects_shell_command_for_unauthorized_attachment",
-        local_request_api_rejects_shell_command_for_unauthorized_attachment_inner,
-    );
-}
-
-fn local_request_api_rejects_shell_command_for_unauthorized_attachment_inner() {
-    let _tmp = crate::test_support::TestTempDir::new("shell-local-api-denied-test");
-    let worktree_root = _tmp.join("chariox-shell-local-api-denied-test");
-    std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
-    let harness = LocalRouterTestHarness::new();
-    let session = match harness
-        .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                worktree_root.display().to_string(),
-                worktree_root.display().to_string(),
-            ),
-        ))
-        .expect("session create should succeed")
-    {
-        LocalDaemonResponse::SessionCreated { session, .. } => session,
-        _ => panic!("unexpected local response"),
-    };
-    let attachment = match harness
-        .dispatch(LocalDaemonRequest::AttachToSession(
-            AttachToSessionRequest {
-                session_id: session.id().to_string(),
-                client_id: "client-automation".to_string(),
-                capability_level: ClientCapabilityLevel::AutomationOnly,
-            },
-        ))
-        .expect("attach should succeed")
-    {
-        LocalDaemonResponse::SessionAttached { attachment } => attachment,
-        _ => panic!("unexpected local response"),
-    };
-
-    let error = harness
-        .dispatch(LocalDaemonRequest::RunShellCommand(
-            RunShellCapabilityRequest {
-                session_id: session.id().to_string(),
-                attachment_id: attachment.id().to_string(),
-                command: "/bin/sh".to_string(),
-                args: vec!["-lc".to_string(), "printf denied".to_string()],
-                working_directory: None,
-                timeout_ms: None,
-            },
-        ))
-        .expect_err("automation-only attachment should not run shell commands");
-
-    match error {
-        DaemonError::AttachmentCapabilityDenied { session_id, .. } => {
-            assert_eq!(session_id, session.id());
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+        assert_eq!(stdout, b"result");
+        dispatch(RunCommandOperation::ExecClose { exec_id }).unwrap();
+    });
 }
 
 #[test]

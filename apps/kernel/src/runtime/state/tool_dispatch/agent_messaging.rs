@@ -607,7 +607,7 @@ pub(super) fn session_agent_description(
             .map(|grant| grant.name.clone())
             .collect::<Vec<_>>()
     };
-    serde_json::json!({
+    let mut description = serde_json::json!({
         "id": agent.id(),
         "agent_ref": agent.agent_ref(),
         "alias": agent.alias(),
@@ -618,6 +618,7 @@ pub(super) fn session_agent_description(
         "model": agent.model(),
         "effort": agent.effort(),
         "account_profile": agent.provider_account_profile(),
+        "usage_limit_stop": agent.usage_limit_stop(),
         "execution_mode": effective.mode.as_str(),
         "permission_level": effective.permission_level.as_str(),
         "operating_mode": match agent.operating_mode() {
@@ -642,7 +643,16 @@ pub(super) fn session_agent_description(
             "scripts": extension_names(crate::extension::ExtensionKind::Script),
             "connectors": extension_names(crate::extension::ExtensionKind::Connector),
         },
-    })
+    });
+    if let Some(failure) = activity
+        .filter(|activity| activity.status == crate::runtime::projection::AgentRuntimeStatus::Error)
+        .and_then(|activity| activity.last_completed_turn.as_ref())
+        .and_then(|turn| turn.outcome.as_ref())
+        .filter(|outcome| outcome.is_error() && !outcome.reason.is_empty())
+    {
+        description["failure_reason"] = serde_json::json!(failure.reason);
+    }
+    description
 }
 
 fn agent_message_failure(

@@ -238,6 +238,7 @@ impl crate::room_exec::gateway_placement::GrantedSend for Worker {
                         mode: Some(0o755),
                         sha256: None,
                         partial_size: None,
+                        partial_upload_id: None,
                     },
                 })
                 .unwrap());

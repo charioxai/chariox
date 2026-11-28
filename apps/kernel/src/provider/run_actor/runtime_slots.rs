@@ -9,11 +9,23 @@ pub(super) type ClaudeRuntimeSlot = Arc<Mutex<Option<ClaudeRuntimeState>>>;
 pub(super) type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 pub(super) type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 
+struct RetiringClaudeRuntime {
+    process: crate::provider::claude_runtime::ClaudeRuntimeProcess,
+    // Keep the old I/O slot alive until its exact child and descendants exit.
+    slot: Option<ClaudeRuntimeSlot>,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct ProviderRunRuntimeRegistry {
+    pub(super) finished_output_polls:
+        Arc<Mutex<Vec<super::finished_jobs::FinishedProviderOutputPollJob>>>,
+    pub(super) output_publications: super::finished_jobs::OutputPublications,
     claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     claude_processes:
         Arc<Mutex<BTreeMap<String, crate::runtime::kernel_access::process::ProcessIdentitySlot>>>,
+    claude_owned_processes:
+        Arc<Mutex<BTreeMap<String, crate::provider::claude_runtime::ClaudeRuntimeProcess>>>,
+    retiring_claude_runs: Arc<Mutex<BTreeMap<String, Vec<Arc<RetiringClaudeRuntime>>>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -48,7 +60,12 @@ impl ProviderRunRuntimeRegistry {
             .remove(run_id)
     }
     pub(super) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
+        self.retire_claude_runtime(&run_id);
         self.clear_tombstone(&run_id);
+        self.claude_owned_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.clone(), state.owned_process());
         self.claude_processes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -140,19 +157,119 @@ impl ProviderRunRuntimeRegistry {
             .collect()
     }
 
-    pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
-        self.take_assessment_output(run_id);
+    pub(super) fn claude_owned_process(
+        &self,
+        run_id: &str,
+    ) -> Option<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.claude_owned_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(run_id)
+            .cloned()
+    }
+
+    pub(super) fn claude_owned_processes(
+        &self,
+        run_id: &str,
+    ) -> Vec<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        let mut processes: Vec<_> = self.claude_owned_process(run_id).into_iter().collect();
+        if let Some(retiring) = self
+            .retiring_claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(run_id)
+        {
+            processes.extend(retiring.iter().map(|record| record.process.clone()));
+        }
+        processes
+    }
+
+    fn retire_claude_runtime(&self, run_id: &str) {
+        let process = self
+            .claude_owned_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(run_id);
         self.claude_processes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
-        clear_runtime_state(
-            &self.claude_runs,
-            &self.codex_runs,
-            &self.opencode_runs,
-            run_id,
-            stop_opencode,
-        );
+        let slot = self
+            .claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(run_id);
+        let Some(process) = process else {
+            return;
+        };
+        process.begin_retirement();
+        let record = Arc::new(RetiringClaudeRuntime { process, slot });
+        self.retiring_claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(run_id.to_string())
+            .or_default()
+            .push(record.clone());
+        let retiring = self.retiring_claude_runs.clone();
+        let finished_output_polls = self.finished_output_polls.clone();
+        let publications = self.output_publications.clone();
+        let run_id = run_id.to_string();
+        super::worker::provider_actor_runtime().spawn(async move {
+            let mut reported = false;
+            loop {
+                let retired = record.clone();
+                let output_run_id = run_id.clone();
+                let finished = finished_output_polls.clone();
+                let publications = publications.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    retired.process.settle_prompt_abort(true)?;
+                    if let Some(slot) = &retired.slot {
+                        let state = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                        if let Some(prompt_id) = retired.process.prompt_abort_context() {
+                            let Some(mut state) = state else {
+                                return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock,
+                                    "the cancelled Claude actor still owns its receiver"));
+                            };
+                            let output = crate::provider::claude_runtime::drain_retired_claude_output(
+                                &output_run_id, &mut state,
+                            ).map_err(|error| std::io::Error::other(error.to_string()))?;
+                            for batch in output {
+                                super::finished_jobs::push_finished_output_poll(&finished, &publications,
+                                    super::finished_jobs::FinishedProviderOutputPollJob {
+                                        prompt_identity: super::finished_jobs::ProviderOutputPromptIdentity::Captured(prompt_id.clone()),
+                                        provider_run_id: output_run_id.clone(), result: Ok(Some(batch)),
+                                        publication: None, settlement_retry_attempt: 0,
+                                    });
+                            }
+                        } else { drop(state); }
+                    }
+                    Ok::<(), std::io::Error>(())
+                }).await;
+                match result {
+                    Ok(Ok(_)) => break,
+                    failure if !reported => {
+                        crate::logging::warn_with_fields("daemon.provider", "Claude runtime retirement is pending",
+                            serde_json::json!({"provider_run_id":run_id,"error":format!("{failure:?}")}));
+                        reported = true;
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            // Register every final batch's publication before this generation stops
+            // counting as a pending reader. A finisher cannot miss the handoff.
+            let mut records = retiring.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(generations) = records.get_mut(&run_id) {
+                generations.retain(|other| !Arc::ptr_eq(other, &record));
+                if generations.is_empty() { records.remove(&run_id); }
+            }
+        });
+    }
+
+    pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
+        self.take_assessment_output(run_id);
+        self.retire_claude_runtime(run_id);
+        clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id, stop_opencode);
     }
 
     /// What a terminated Claude run still owes the history (see `take_closing_compaction_chunks`).
@@ -172,6 +289,38 @@ impl ProviderRunRuntimeRegistry {
                 crate::provider::claude_runtime::take_closing_compaction_chunks(run_id, state)
             })
             .unwrap_or_default()
+    }
+
+    pub(super) fn take_cancelled_claude_output(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<crate::provider::ProviderPromptSignalBatch>, DaemonError> {
+        let retiring = self
+            .retiring_claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retiring
+            .get(run_id)
+            .is_some_and(|records| !records.is_empty())
+        {
+            return Err(DaemonError::PtyCleanup {
+                provider_run_id: run_id.into(),
+                message: "cancelled Claude readers have not handed off their final output".into(),
+            });
+        }
+        let Ok(slot) = claude_slot(&self.claude_runs, run_id) else {
+            return Ok(Vec::new());
+        };
+        let mut state = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(state) = state.as_mut() else {
+            return Err(DaemonError::PtyCleanup {
+                provider_run_id: run_id.into(),
+                message: "cancelled Claude actor output is still leased".into(),
+            });
+        };
+        Ok(crate::provider::claude_runtime::take_cancelled_claude_output(state))
     }
 
     pub(super) fn take_claude_runtime(
@@ -242,6 +391,27 @@ impl ProviderRunRuntimeRegistry {
         slot: &ClaudeRuntimeSlot,
         state: ClaudeRuntimeState,
     ) {
+        let retiring = self
+            .retiring_claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retiring.get(run_id).is_some_and(|records| {
+            records.iter().any(|record| {
+                record.process.prompt_abort_context().is_some()
+                    && record
+                        .slot
+                        .as_ref()
+                        .is_some_and(|old| Arc::ptr_eq(old, slot))
+            })
+        }) {
+            // Return a leased old generation only to its retained private slot;
+            // it never becomes a live runtime or replaces the current generation.
+            *slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
+            return;
+        }
+        drop(retiring);
         restore_claude_runtime_if_live(&self.claude_runs, &self.cleared_runs, run_id, slot, state);
     }
 
@@ -516,22 +686,11 @@ pub(super) fn runtime_should_restore<T>(
 }
 
 pub(super) fn clear_runtime_state(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     run_id: &str,
     stop_opencode: bool,
 ) {
-    if let Some(slot) = claude_runs
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(run_id)
-    {
-        let _ = slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-    }
     if let Some(slot) = codex_runs
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -777,6 +936,227 @@ mod process_identity_tests {
     };
 
     #[test]
+    fn abort_actor_preserves_a_tool_result_already_queued_by_the_real_reader() {
+        let worktree = crate::test_support::TestWorktree::new("abort-reader-result");
+        let gate = worktree.path().join("release-result");
+        let run = RuntimeProviderRun::new(
+            "abort-reader-result",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "default"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "reader-fixture".into(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".into()),
+                pty_args: vec!["-c".into(), r#"
+read -r initial
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"before-stop","name":"mcp__chariox__run_command","input":{"command":"printf done"}}]}}'
+while [ ! -e "$RESULT_GATE" ]; do sleep 0.01; done
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"before-stop","content":"done"}]}}'
+while IFS= read -r line; do :; done
+"#.into()],
+                pty_env: BTreeMap::from([("RESULT_GATE".into(), gate.display().to_string())]),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        assert!(run.client_interface().is_chariox());
+        let binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let mailbox = crate::provider::ProviderRunActorMailbox::default();
+        mailbox.insert_claude_runtime(run.id().into(), binding.state);
+        struct Cleanup(crate::provider::ProviderRunActorMailbox, String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                self.0.clear_runtime(&self.1);
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                while !self.0.claude_owned_processes(&self.1).is_empty() {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "the reader fixture must physically finish"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+        let _cleanup = Cleanup(mailbox.clone(), run.id().into());
+        let mut acceptance = mailbox
+            .spawn_submit(
+                "room".into(),
+                run.id().into(),
+                "agent".into(),
+                "kernel-prompt".into(),
+                run.clone(),
+                crate::prompt_assembly::PromptEnvelope::new(
+                    "begin",
+                    "",
+                    vec![],
+                    crate::prompt_assembly::PromptManifest::current(),
+                ),
+            )
+            .unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(done) = mailbox.drain_finished_submits().pop() {
+                done.result.unwrap();
+                break;
+            }
+            assert!(std::time::Instant::now() < until, "submit must finish");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        loop {
+            match acceptance.try_recv() {
+                Ok(receipt) => {
+                    assert_eq!(
+                        receipt,
+                        crate::provider::ProviderPromptSubmitReceipt::Accepted
+                    );
+                    break;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "submit acceptance must finish"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("submit receipt closed: {error}"),
+            }
+        }
+        let mut poll_in_progress = false;
+        loop {
+            if !poll_in_progress {
+                poll_in_progress = mailbox
+                    .spawn_output_poll(run.id().into(), run.clone())
+                    .unwrap();
+            }
+            let finished = mailbox.drain_finished_output_polls();
+            if !finished.is_empty() {
+                poll_in_progress = false;
+                if finished.into_iter().any(|job| {
+                    job.result.unwrap().is_some_and(|batch| {
+                        batch
+                            .chunks
+                            .iter()
+                            .any(|chunk| chunk.merge_key.as_deref() == Some("before-stop"))
+                    })
+                }) {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the normal actor must observe the invocation first"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        mailbox.output_ready_signal.take_ready_provider_run_ids();
+        let before_result = mailbox.output_ready_signal.sequence();
+        std::fs::write(&gate, b"ready").unwrap();
+        while mailbox.output_ready_signal.sequence() == before_result {
+            assert!(
+                std::time::Instant::now() < until,
+                "the real reader must queue the result before abort"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let owned_process = mailbox.claude_owned_process(run.id()).unwrap();
+        owned_process.capture_prompt_abort().unwrap();
+        owned_process.set_prompt_abort_context(Some("kernel-prompt"));
+        mailbox.close_prompt_abort_output_admission(run.id());
+        // This steer was admitted while the original turn still ran. Executing
+        // its real write after capture must not erase the cancelled reader's owner.
+        let mut steering = crate::prompt_assembly::PromptEnvelope::new(
+            "finish the accepted work",
+            "",
+            vec![],
+            crate::prompt_assembly::PromptManifest::current(),
+        );
+        steering.steering = true;
+        let mut steering_receipt = mailbox
+            .spawn_submit(
+                "room".into(),
+                run.id().into(),
+                "agent".into(),
+                "steer-before-stop".into(),
+                run.clone(),
+                steering,
+            )
+            .unwrap();
+        loop {
+            if let Some(done) = mailbox.drain_finished_submits().pop() {
+                done.result.unwrap();
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the admitted steer must finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        loop {
+            match steering_receipt.try_recv() {
+                Ok(receipt) => {
+                    assert_eq!(
+                        receipt,
+                        crate::provider::ProviderPromptSubmitReceipt::Accepted
+                    );
+                    break;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "the steer receipt must finish"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("steer receipt closed: {error}"),
+            }
+        }
+        assert_eq!(
+            owned_process.prompt_abort_context().as_deref(),
+            Some("kernel-prompt"),
+            "an admitted steer erased the cancelled old reader's prompt owner"
+        );
+        assert!(
+            !mailbox
+                .spawn_output_poll(run.id().into(), run.clone())
+                .unwrap(),
+            "steering must not reopen cancelled output admission"
+        );
+        mailbox
+            .spawn_abort(
+                "room".into(),
+                run.id().into(),
+                "kernel-prompt".into(),
+                run.clone(),
+            )
+            .unwrap();
+        loop {
+            if let Some(done) = mailbox.drain_finished_aborts().pop() {
+                done.result.unwrap();
+                break;
+            }
+            assert!(std::time::Instant::now() < until, "abort must finish");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let (slot, mut state) = mailbox
+            .runtime_registry
+            .take_claude_runtime(run.id())
+            .unwrap();
+        let batch = crate::provider::claude_runtime::drain_claude_events(&run, &mut state).unwrap();
+        mailbox
+            .runtime_registry
+            .restore_claude_runtime_if_live(run.id(), &slot, state);
+        assert!(
+            batch.chunks.iter().any(|chunk| {
+                let value: serde_json::Value = serde_json::from_slice(&chunk.bytes).unwrap();
+                value["id"] == "before-stop" && value["status"] == "completed"
+            }),
+            "abort discarded a completion already queued by its old reader"
+        );
+    }
+
+    #[test]
     fn claude_process_identity_registry_recovers_poisoned_map_and_slot() {
         let registry = ProviderRunRuntimeRegistry::default();
         let identity = crate::runtime::kernel_access::process::inspect(std::process::id())
@@ -807,6 +1187,62 @@ mod process_identity_tests {
         );
         registry.clear_runtime_state("fixture", false);
         assert!(registry.claude_process_identities().is_empty());
+    }
+
+    #[test]
+    fn finishing_old_claude_retirement_preserves_the_replacement_generation() {
+        let run = RuntimeProviderRun::new(
+            "retirement-generation",
+            &LaunchProviderRequest::new("s", "claude", "claude", "default", "default"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "fixture-pipe".into(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".into()),
+                pty_args: vec!["-c".into(), "while IFS= read -r line; do :; done".into()],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let registry = ProviderRunRuntimeRegistry::default();
+        let old = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let process = old.state.owned_process();
+        struct Release(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let release = Release(process.defer_cleanup_for_test());
+        registry.insert_claude_runtime(run.id().into(), old.state);
+        registry.clear_runtime(run.id(), false);
+        let fresh = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let fresh_identity = fresh
+            .state
+            .process_identity_slot()
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        registry.insert_claude_runtime(run.id().into(), fresh.state);
+        assert_eq!(registry.claude_owned_processes(run.id()).len(), 2);
+        drop(release);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while registry.claude_owned_processes(run.id()).len() != 1 {
+            assert!(
+                std::time::Instant::now() < until,
+                "old generation cleanup must finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            registry.claude_process_identities(),
+            vec![(run.id().to_string(), fresh_identity)]
+        );
+        assert!(registry.state_bound(run.id()));
+        registry.clear_runtime(run.id(), false);
     }
 
     #[test]

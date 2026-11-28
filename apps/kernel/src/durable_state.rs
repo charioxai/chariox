@@ -117,6 +117,7 @@ pub struct DurableKernelStateStore {
     skill_catalog_owner: bool,
     agent_release_delivery: Option<Arc<crate::agent_release_notes::Delivery>>,
     workflow_instruction_root: Option<Arc<Path>>,
+    deleted_agents: Arc<Mutex<agent_subtree_deletion::DeletedAgents>>,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -672,6 +673,7 @@ impl DurableKernelStateStore {
             skill_catalog_owner: false,
             agent_release_delivery: None,
             workflow_instruction_root: None,
+            deleted_agents: Default::default(),
         })
     }
 
@@ -1522,6 +1524,15 @@ impl DurableKernelStateStore {
             }
         }
         Ok(None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_connection_locked_for_test<T>(
+        &self,
+        hold: impl FnOnce() -> T,
+    ) -> Result<T, DaemonError> {
+        let _connection = self.lock_connection("test held durable connection")?;
+        Ok(hold())
     }
 
     pub fn path(&self) -> &Path {

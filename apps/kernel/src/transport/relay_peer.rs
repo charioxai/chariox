@@ -262,7 +262,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 453 (local 1016, Landing 15, row 577): a leased native-launch or prompt request carries no provider launch
 /// credential; a worker launches a leased Claude agent from its own tracked copy of the account. A request that
 /// still carries the field is refused as an unknown field.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 453;
+/// Peer 454 carries the recipient's urgent Room message delivery disposition.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 454;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -812,9 +813,43 @@ pub enum LeasedPromptReceiptPhase {
     WaitingForMemory,
     Active,
     Completed,
+    AdmissionRejected(LeasedPromptRejection),
     SteerDispatching,
     SteerAccepted,
     SteerRejected,
+}
+
+/// A rejection receipt can outlive the original reply. Keep only the cause
+/// needed for recovery, without the provider's diagnostic or filesystem paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeasedPromptRejection {
+    AccountMissing,
+    AccountUnusable,
+    ExecutableMissing,
+    VaultLocked,
+    Other,
+}
+
+impl LeasedPromptRejection {
+    pub(crate) fn from_error(error: &crate::error::DaemonError) -> Self {
+        use crate::error::DaemonError;
+        match error {
+            DaemonError::ProviderExecutableNotFound { .. } => Self::ExecutableMissing,
+            DaemonError::LocalTransport {
+                operation: REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION | "resolve account profile",
+                ..
+            } => Self::AccountMissing,
+            DaemonError::LocalTransport {
+                operation: ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION,
+                ..
+            }
+            | DaemonError::ProviderProfileRefused { .. } => Self::AccountUnusable,
+            DaemonError::VaultUnlock { .. } => Self::VaultLocked,
+            error if crate::secret::is_chariox_vault_locked_error(error) => Self::VaultLocked,
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1301,6 +1336,11 @@ pub enum RelayPeerRequest {
         actor: crate::room_terminal::TerminalActor,
         operation: crate::local::RoomTerminalOperation,
     },
+    RunAgentCommand {
+        leased_agent_id: String,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RunCommandOperation,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
@@ -1503,6 +1543,8 @@ pub enum RelayPeerRequest {
     InstallProviderAccountCopy {
         binding: crate::provider_account_copy::ProviderAccountCopyBinding,
         credential: crate::provider_account_copy::ProviderAccountCopyCredential,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume_after_unlock: bool,
     },
     EnsureRemoteProviderAccount {
         context: RemoteProviderAccountSyncContext,
@@ -1595,6 +1637,9 @@ pub enum RelayPeerResponse {
         record: Option<crate::project_environment::ProjectEnvironmentRecord>,
         /// Secret names the source's Vault holds a value for.
         secrets: Vec<String>,
+        /// Of those, the names linked on the source (filled from a Vault entry or copied from a linked
+        /// Secret): a copy of one follows the source's value at each Update. Names only, never a value.
+        linked: Vec<String>,
         /// Listed Files that exist in the source's checkout.
         files: Vec<String>,
         /// Listed MCP registrations and skills this source holds.
@@ -1651,6 +1696,7 @@ pub enum RelayPeerResponse {
         protocol_version: u32,
         duplicate: bool,
         target: PeerAgentStamp,
+        delivery: Option<crate::transport::relay_peer_agents::AgentMessageDelivery>,
     },
     PeerAgentSubscribed {
         protocol_version: u32,
@@ -1827,6 +1873,9 @@ pub enum RelayPeerResponse {
     RoomTerminal {
         result: crate::local::RoomTerminalResult,
     },
+    RunAgentCommand {
+        result: crate::local::RunCommandResult,
+    },
     LeasedPromptSubmitted {
         provider_run_id: String,
         outcome: PromptSubmissionOutcome,
@@ -1932,6 +1981,12 @@ pub enum RelayPeerResponse {
         context: RemoteSkillSyncContext,
         manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    ProviderAccountCopyTargetVaultLocked {
+        expires_at_ms: u64,
+    },
+    ProviderAccountCopyWaiting {
+        wait: crate::provider_account_copy::ProviderAccountCopyWait,
     },
     ProviderAccountCopyFailed {
         code: String,
@@ -2346,13 +2401,18 @@ mod tests {
         for (phase, phase_wire) in [
             (
                 LeasedPromptReceiptPhase::WaitingForMemory,
-                "waiting_for_memory",
+                serde_json::json!("waiting_for_memory"),
             ),
             (
                 LeasedPromptReceiptPhase::SteerDispatching,
-                "steer_dispatching",
+                serde_json::json!("steer_dispatching"),
             ),
-            (LeasedPromptReceiptPhase::SteerRejected, "steer_rejected"),
+            (
+                LeasedPromptReceiptPhase::AdmissionRejected(
+                    LeasedPromptRejection::ExecutableMissing,
+                ),
+                serde_json::json!({ "admission_rejected": "executable_missing" }),
+            ),
         ] {
             let original_prompt = RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(LeasedPromptReceipt {
@@ -2559,7 +2619,7 @@ mod native_approval_protocol_tests {
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
-            "interaction": {"id":"approval", "agent_id":"worker-agent", "kind":"permission", "level":"warning",
+            "interaction": {"surface":"card", "card_type":"provider_native_permission", "id":"approval", "agent_id":"worker-agent", "kind":"permission", "level":"warning",
                 "message":"Allow?", "choices":[], "native_origin":{"scope":"prompt", "provider_run_id":"run", "prompt_id":"worker-prompt-A"},
                 "requested_at_ms":1}
         });
@@ -2571,7 +2631,7 @@ mod native_approval_protocol_tests {
         let encoded = serde_json::to_vec(&snapshot).unwrap();
         assert_eq!(
             format!("{:x}", Sha256::digest(encoded)),
-            "dee36b9bf4d4a4e4877a46ea81e1be63d696f78ebc07ebf90d964606c6d93084"
+            "e5bf67a5bce541db7e9117c14e7a588cfa3b6c5fb4412c6fd1971a9a440c19f3"
         );
     }
 }
@@ -2806,7 +2866,7 @@ mod room_terminal_peer_shapes {
         let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&response).unwrap(), wire);
         let RelayPeerResponse::RoomTerminal {
-            result: RoomTerminalResult::Listed { terminals },
+            result: RoomTerminalResult::Listed { terminals, .. },
         } = response
         else {
             panic!("a list answers a list");
@@ -2822,6 +2882,27 @@ mod room_terminal_peer_shapes {
             .unwrap()
             .remove("scope");
         assert!(serde_json::from_value::<RelayPeerResponse>(old).is_err());
+    }
+
+    /// A Room-wide list names the machines it could not ask; an empty list stays off the wire.
+    #[test]
+    fn a_terminal_list_names_the_machines_it_could_not_ask() {
+        let wire = serde_json::json!({"kind": "room_terminal", "result": {
+            "result": "listed", "terminals": [],
+            "unavailable": [{"host_agent": "agent-2", "message": "worker kernel `k` is too old to list its terminals, which may still be running there; update it"}]
+        }});
+        let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
+        let RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Listed { unavailable, .. },
+        } = &response
+        else {
+            panic!("a list answers with terminals: {response:?}");
+        };
+        assert_eq!(unavailable[0].host_agent, "agent-2");
+        assert_eq!(serde_json::to_value(&response).unwrap(), wire);
+        let empty = serde_json::json!({"kind": "room_terminal", "result": {"result": "listed", "terminals": []}});
+        let response: RelayPeerResponse = serde_json::from_value(empty.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&response).unwrap(), empty);
     }
 
     #[test]
@@ -3004,5 +3085,26 @@ mod mp08_transport_compatibility_tests {
                 .unwrap();
             assert_eq!(binding.relay_peer_protocol_compatible(), compatible);
         }
+    }
+}
+
+#[cfg(test)]
+mod run_agent_command_shapes {
+    use super::*;
+
+    #[test]
+    fn command_pipes_round_trip_on_the_original_agent_slice_peer_seam() {
+        let request = serde_json::json!({"kind":"run_agent_command", "leased_agent_id":"leased-1",
+            "actor":{"kind":"agent","agent_id":"agent-2"}, "operation":{"operation":"exec_list"}});
+        let typed: RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), request);
+        let response = serde_json::json!({"kind":"run_agent_command", "result":{"result":"exec_listed","execs":[]}});
+        let typed: RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), response);
+        assert!(serde_json::from_value::<RelayPeerRequest>(
+            serde_json::json!({"kind":"run_agent_command",
+            "actor":{"kind":"agent","agent_id":"agent-2"},"operation":{"operation":"exec_list"}})
+        )
+        .is_err());
     }
 }

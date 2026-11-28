@@ -10,7 +10,7 @@ use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
 
 use super::buffer::PIPE_READ_BYTES;
-use super::{error, CancelReason, ExecOutcome, ExecStream, Record, RoomExecService};
+use super::{error, CancelReason, CommandExit, ExecOutcome, ExecStream, Record, RoomExecService};
 use crate::error::DaemonError;
 use crate::runtime::owned_process_signals::OwnedProcessSignals;
 
@@ -18,6 +18,7 @@ use crate::runtime::owned_process_signals::OwnedProcessSignals;
 mod tests;
 
 pub(super) struct Process {
+    pub(super) stdin_file: Option<std::fs::File>,
     pub(super) child: Child,
     pub(super) signals: OwnedProcessSignals,
     pub(super) domain: crate::runtime::process_resources::ProcessDomain,
@@ -31,13 +32,24 @@ impl Drop for Process {
     }
 }
 
+#[cfg(test)]
 pub(super) fn spawn(
     cwd: &Path,
     argv: &[String],
     permit: &crate::runtime::process_resources::LaunchPermit,
     intent: &super::LaunchIntent,
 ) -> Result<Process, DaemonError> {
-    spawn_with_environment(cwd, argv, permit, intent, None)
+    spawn_command(cwd, argv, permit, intent, None)
+}
+
+pub(super) fn spawn_command(
+    cwd: &Path,
+    argv: &[String],
+    permit: &crate::runtime::process_resources::LaunchPermit,
+    intent: &super::LaunchIntent,
+    environment: Option<&crate::provider::ProviderCredentialEnvironment>,
+) -> Result<Process, DaemonError> {
+    spawn_with_environment(cwd, argv, permit, intent, None, environment)
 }
 
 pub(super) fn spawn_job(
@@ -73,6 +85,7 @@ pub(super) fn spawn_job(
         permit,
         intent,
         Some(&launch.pty_env),
+        None,
     )
 }
 
@@ -82,6 +95,7 @@ fn spawn_with_environment(
     permit: &crate::runtime::process_resources::LaunchPermit,
     intent: &super::LaunchIntent,
     environment: Option<&std::collections::BTreeMap<String, String>>,
+    project_environment: Option<&crate::provider::ProviderCredentialEnvironment>,
 ) -> Result<Process, DaemonError> {
     let prepared = permit.prepare().map_err(|failure| {
         error(
@@ -104,6 +118,12 @@ fn spawn_with_environment(
     for name in crate::room_terminal::KERNEL_SECRET_ENVIRONMENT {
         command.env_remove(name);
     }
+    for name in crate::provider::managed_provider_control_env_remove() {
+        command.env_remove(name);
+    }
+    if let Some(project_environment) = project_environment {
+        command.envs(project_environment.iter());
+    }
     // Everything the command starts inherits this claim, so cleanup owns a job that detached
     // before anything looked at the command's tree.
     let claim = format!("room-exec-{:032x}", rand::random::<u128>());
@@ -123,7 +143,7 @@ fn spawn_with_environment(
     let mut child = command.spawn().map_err(|failure| {
         error(
             "exec_spawn_failed",
-            format!("cannot start command: {failure}; check the program and Room directory"),
+            format!("cannot start command: {failure}; check the program and working directory"),
         )
     })?;
     let mut signals = match OwnedProcessSignals::for_claimed_tokio_session_child(&child, &claim) {
@@ -149,8 +169,11 @@ fn spawn_with_environment(
         }
     };
     domain.bind_key(permit.id());
-    domain.list_as(&intent.session_id, intent.process_owner());
+    if intent.session_id != super::KERNEL_SCOPE {
+        domain.list_as(&intent.session_id, intent.process_owner());
+    }
     Ok(Process {
+        stdin_file: None,
         child,
         signals,
         domain,
@@ -215,7 +238,9 @@ pub(super) fn name_the_kill(
     let failed = match &outcome {
         ExecOutcome::Signaled { .. } => true,
         ExecOutcome::Exited { code } => *code != 0,
-        ExecOutcome::MemoryLimit { .. } | ExecOutcome::Failed { .. } => return outcome,
+        ExecOutcome::MemoryLimit { .. }
+        | ExecOutcome::Failed { .. }
+        | ExecOutcome::TimedOut { .. } => return outcome,
     };
     let (line, outcome) = match (oom, &outcome) {
         (Some(kill), _) if failed => (
@@ -262,31 +287,60 @@ pub(super) fn run(
         ExecStream::Stderr,
         cancel.clone(),
     ));
-    let writer = start_input(stdin, input, cancel.clone());
+    let (writer, file_input_result) = if let Some(file) = process.stdin_file.take() {
+        let (sent, result) = tokio::sync::oneshot::channel();
+        let mut stop = cancel.clone();
+        let writer = tokio::spawn(async move {
+            let mut file = tokio::fs::File::from_std(file);
+            let mut stdin = stdin;
+            let result = tokio::select! {
+                result = tokio::io::copy(&mut file, &mut stdin) => result.map(|_| ()),
+                _ = cancelled(&mut stop) => Ok(()),
+            };
+            // Publish a read failure before dropping the pipe and allowing EOF to look successful.
+            let result = result.or_else(|failure| {
+                if failure.kind() == io::ErrorKind::BrokenPipe {
+                    Ok(())
+                } else {
+                    Err(failure)
+                }
+            });
+            let _ = sent.send(result);
+        });
+        (writer, Some(result))
+    } else {
+        (start_input(stdin, input, cancel.clone()), None)
+    };
     tokio::spawn(async move {
-        let outcome = supervise(&mut process, &mut cancel, &mut permit).await;
+        let deadline = record.deadline().zip(record.intent.timeout_ms);
+        let outcome = supervise(&mut process, &mut cancel, &mut permit, deadline).await;
         writer.abort();
         let _ = writer.await;
         let (out, err) = tokio::join!(out, err);
-        let outcome = match (out, err) {
-            (Ok(Ok(OutputEnd::Eof)), Ok(Ok(OutputEnd::Eof))) => outcome,
-            (Ok(Err(failure)), _) | (_, Ok(Err(failure))) => ExecOutcome::Failed {
+        let file_input_failure = file_input_result
+            .and_then(|mut result| result.try_recv().ok())
+            .and_then(Result::err);
+        let outcome = match (file_input_failure, out, err) {
+            (Some(failure), _, _) => ExecOutcome::Failed {
+                message: format!("stdin file could not be read: {failure}"),
+            },
+            (None, Ok(Ok(OutputEnd::Eof)), Ok(Ok(OutputEnd::Eof))) => outcome,
+            (None, Ok(Err(failure)), _) | (None, _, Ok(Err(failure))) => ExecOutcome::Failed {
                 message: format!("command output pipe failed: {failure}; the stream is incomplete"),
             },
-            (Err(failure), _) | (_, Err(failure)) => ExecOutcome::Failed {
+            (None, Err(failure), _) | (None, _, Err(failure)) => ExecOutcome::Failed {
                 message: format!("command output task failed: {failure}; the stream is incomplete"),
             },
-            (Ok(Ok(OutputEnd::Canceled(reason))), _) | (_, Ok(Ok(OutputEnd::Canceled(reason)))) => {
-                ExecOutcome::Failed {
-                    message: format!(
-                        "command {} before its output ended; the stream is incomplete",
-                        match reason {
-                            CancelReason::Canceled => "canceled",
-                            CancelReason::Expired => "expired",
-                        }
-                    ),
-                }
-            }
+            (None, Ok(Ok(OutputEnd::Canceled(reason))), _)
+            | (None, _, Ok(Ok(OutputEnd::Canceled(reason)))) => ExecOutcome::Failed {
+                message: format!(
+                    "command {} before its output ended; the stream is incomplete",
+                    match reason {
+                        CancelReason::Canceled => "canceled",
+                        CancelReason::Expired => "expired",
+                    }
+                ),
+            },
         };
         let outcome = match process.domain.memory_limit_bytes() {
             Some(limit_bytes) => ExecOutcome::MemoryLimit { limit_bytes },
@@ -324,13 +378,33 @@ async fn supervise(
     process: &mut Process,
     cancel: &mut watch::Receiver<Option<CancelReason>>,
     permit: &mut Option<crate::runtime::process_resources::LaunchPermit>,
+    deadline: Option<(tokio::time::Instant, u64)>,
 ) -> ExecOutcome {
     // Observe exit without reaping first: the root's birth still witnesses its
     // complete private session when descendants must be cleaned up.
     let mut sampled = std::time::Instant::now();
+    let deadline = async {
+        match deadline {
+            Some((deadline, timeout_ms)) => {
+                tokio::time::sleep_until(deadline).await;
+                timeout_ms
+            }
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(deadline);
+    let mut timed_out = None;
     let failure = loop {
         tokio::select! {
             _ = cancelled(cancel) => break None,
+            limit = &mut deadline => {
+                match exited(&process.child) {
+                    Ok(true) => {}
+                    Ok(false) => timed_out = Some(limit),
+                    Err(failure) => break Some(failure.to_string()),
+                }
+                break None;
+            },
             _ = tokio::time::sleep(Duration::from_millis(25)) => {},
         }
         if sampled.elapsed() >= Duration::from_millis(250) {
@@ -371,7 +445,17 @@ async fn supervise(
             message: format!("command cleanup failed: {message}"),
         };
     }
-    exit_outcome(status)
+    match (timed_out, exit_outcome(status)) {
+        (Some(timeout_ms), ExecOutcome::Exited { code }) => ExecOutcome::TimedOut {
+            timeout_ms,
+            exit: CommandExit::Exited { code },
+        },
+        (Some(timeout_ms), ExecOutcome::Signaled { signal }) => ExecOutcome::TimedOut {
+            timeout_ms,
+            exit: CommandExit::Signaled { signal },
+        },
+        (_, outcome) => outcome,
+    }
 }
 
 pub(super) fn exit_outcome(status: io::Result<std::process::ExitStatus>) -> ExecOutcome {

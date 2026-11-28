@@ -33,7 +33,7 @@ const FILLER_SETTLE: Duration = Duration::from_secs(2);
 /// Miguel 11-24: 5 s to full. A volume that its free space says is within this many seconds
 /// of full at the rate it is losing room is short of room now, whatever its floor: a
 /// runaway copy fills gigabytes in seconds (docs/PROCESS_RESOURCES.md).
-const FILL_HORIZON_SECONDS: u64 = 5;
+pub(super) const FILL_HORIZON_SECONDS: u64 = 5;
 /// Miguel 11-24: 128 MiB/s. An agent command writing this fast is a runaway (the memory
 /// runaway rate): within the fill horizon the fastest of them is stopped, and no slower
 /// writer is.
@@ -134,10 +134,17 @@ pub(super) struct Entry {
     refused: Option<u64>,
     /// It is the process filling a nearly full disk: it is ended, not held.
     filling: Option<Filling>,
+    /// Command and stream byte deltas over matching sample boundaries.
+    stream_writes: Option<StreamWrites>,
     /// Real memory exhaustion paused or stopped it: that policy alone ends
     /// the wait, and these lines are what the command, its agent and its pane
     /// are told in place of the generic wait lines.
     pub exhaustion: Option<ExhaustionNote>,
+    /// The system's count of OS out-of-memory kills when it arrived. When the
+    /// count has grown by the time it ends, the OS may have killed it: the
+    /// peak it reached is where it was cut off, not a size to start it from.
+    /// `None` when unknown (arrived before a hot reload, or not Linux).
+    os_oom_kills: Option<u64>,
 }
 
 /// What an exhaustion pause tells, now and when it ends.
@@ -159,6 +166,14 @@ pub(super) struct Filling {
     pub full_in: Option<u64>,
 }
 impl Entry {
+    /// The OS's out-of-memory killer killed something since this run began, so
+    /// the peak it reached may be where it was cut off, not what it needs.
+    fn os_may_have_cut_it_off(&self) -> bool {
+        self.os_oom_kills
+            .zip(os_oom_kills())
+            .is_some_and(|(arrived, now)| now > arrived)
+    }
+
     /// It waits from now on, for the reason `wait` names.
     fn wait_for(&mut self, wait: Wait) {
         if self.wait.is_none() {
@@ -708,6 +723,22 @@ impl Ledger {
                 }
                 continue;
             };
+            // Row 541 (2026-11-26): the OS killed a 72.9 GB run, and the next run
+            // was started because that peak "fitted". A peak the OS cut off is
+            // a lower bound; the next run starts unknown, and only a pause or
+            // the runaway horizon can stop its growth.
+            if entry.os_may_have_cut_it_off() {
+                if heavy {
+                    entry.decision(
+                        pid,
+                        "forgot",
+                        WaitReason::Memory,
+                        "it ended while the system was killing processes for lack of memory, so the peak it reached is not a size to start it from",
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                continue;
+            }
             let kept = self.peaks.record(
                 &seen.key,
                 Peak {
@@ -779,6 +810,7 @@ impl Ledger {
                         vacant.insert(Entry {
                             arrived: self.arrivals,
                             holdable,
+                            os_oom_kills: os_oom_kills(),
                             ..Entry::default()
                         })
                     }
@@ -798,16 +830,18 @@ impl Ledger {
                         && inspect(seen.pid).is_err()
                 })
             {
-                let kept = entry.seen.as_ref().is_some_and(|seen| {
-                    self.peaks.record(
-                        &seen.key,
-                        Peak {
-                            exact: seen.exact,
-                            ..entry.peak.clone()
-                        },
-                        light,
-                    )
-                });
+                let cut_off = entry.os_may_have_cut_it_off();
+                let kept = !cut_off
+                    && entry.seen.as_ref().is_some_and(|seen| {
+                        self.peaks.record(
+                            &seen.key,
+                            Peak {
+                                exact: seen.exact,
+                                ..entry.peak.clone()
+                            },
+                            light,
+                        )
+                    });
                 if entry.peak.memory >= light {
                     entry.decision(
                         command.pid,
@@ -815,6 +849,8 @@ impl Ledger {
                         WaitReason::Memory,
                         if kept {
                             "its run ended at the shell's prompt; its peak is kept, so the next run waits when the pool cannot fit it"
+                        } else if cut_off {
+                            "its run ended at the shell's prompt while the system was killing processes for lack of memory, so the peak it reached is not a size to start it from"
                         } else {
                             "its run ended at the shell's prompt; its peak was not kept"
                         },
@@ -825,6 +861,7 @@ impl Ledger {
                 *entry = Entry {
                     arrived: self.arrivals,
                     holdable: entry.holdable,
+                    os_oom_kills: os_oom_kills(),
                     ..Entry::default()
                 };
             }
@@ -969,7 +1006,8 @@ impl Ledger {
             return None;
         }
         let lost = self.free_loss(members, room);
-        let writers = writers(members);
+        let mut writers = writers(members);
+        writers.extend(unplaced_writers(members, &lost));
         let mut chosen: Option<((bool, u64), &Writer, Filling)> = None;
         for writer in &writers {
             // A descriptor can close or be reused between samples.
@@ -979,7 +1017,7 @@ impl Ledger {
                 continue;
             };
             // The rate the volume is really being filled at: what its free space lost.
-            let observed = lost.get(&writer.volume).copied().unwrap_or_default();
+            let observed = lost.get(&writer.volume).map_or(0, |(rate, _)| *rate);
             let below = disk.free < disk.floor / 2;
             let near_full =
                 observed > 0 && disk.free < observed.saturating_mul(FILL_HORIZON_SECONDS);
@@ -1028,9 +1066,9 @@ impl Ledger {
         &mut self,
         members: &[Arc<Mutex<Observation>>],
         room: &Room,
-    ) -> BTreeMap<u64, u64> {
+    ) -> BTreeMap<u64, (u64, PathBuf)> {
         let now = Instant::now();
-        let mut seen = BTreeMap::<u64, u64>::new();
+        let mut seen = BTreeMap::<u64, (u64, PathBuf)>::new();
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
             for output in observation.disk_writes.values().flatten() {
@@ -1040,7 +1078,7 @@ impl Ledger {
                 if let Some(disk) =
                     disk_room(room.volume, &output.path).filter(|disk| disk.id == output.id)
                 {
-                    seen.insert(output.id, disk.free);
+                    seen.insert(output.id, (disk.free, output.path.clone()));
                 }
             }
             // The volume each command works in is watched from the moment the command is
@@ -1051,13 +1089,14 @@ impl Ledger {
                 .filter_map(|entry| entry.seen.as_ref()?.cwd.as_deref())
             {
                 if let Some(disk) = disk_room(room.volume, cwd) {
-                    seen.entry(disk.id).or_insert(disk.free);
+                    seen.entry(disk.id)
+                        .or_insert_with(|| (disk.free, cwd.to_path_buf()));
                 }
             }
         }
         self.free_seen.retain(|id, _| seen.contains_key(id));
         let mut lost = BTreeMap::new();
-        for (id, free) in seen {
+        for (id, (free, path)) in seen {
             let history = self.free_seen.entry(id).or_default();
             history.push_back((now, free));
             while history
@@ -1075,7 +1114,7 @@ impl Ledger {
             } else {
                 0
             };
-            lost.insert(id, rate);
+            lost.insert(id, (rate, path));
         }
         lost
     }
@@ -1830,6 +1869,34 @@ fn number(
     }
 }
 
+/// How many processes the OS's out-of-memory killer has killed so far
+/// (`oom_kill` of `/proc/vmstat`).
+#[cfg(all(target_os = "linux", not(test)))]
+fn os_oom_kills() -> Option<u64> {
+    std::fs::read_to_string("/proc/vmstat")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("oom_kill "))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[cfg(all(not(target_os = "linux"), not(test)))]
+fn os_oom_kills() -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_OS_OOM_KILLS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn os_oom_kills() -> Option<u64> {
+    TEST_OS_OOM_KILLS.with(std::cell::Cell::get)
+}
+
 pub(super) fn light(ceiling: u64) -> u64 {
     MAX_LIGHT.min(ceiling / 16)
 }
@@ -1941,6 +2008,248 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
                     written,
                     deleted_open: command.deleted_open,
                 });
+            }
+        }
+    }
+    writers
+}
+
+/// Redirected growth and command writes must cover the same samples: a quiet
+/// stream interval must not move an earlier burst onto another volume.
+#[derive(Default)]
+struct StreamWrites {
+    process_id: String,
+    outputs: BTreeMap<(u64, u64), u64>,
+    previous: Option<(u64, u64)>,
+    streams_changed: bool,
+    pending_streamed: u64,
+    /// Command and stream bytes from intervals with measurable destinations.
+    samples: VecDeque<(u64, u64, u64)>,
+}
+
+impl StreamWrites {
+    fn rate(
+        &mut self,
+        sample: &sampling::ProcessSample,
+        writes: u64,
+        outputs: &[disk_use::VolumeWrites],
+    ) -> u64 {
+        if self.process_id != sample.process_id {
+            *self = Self {
+                process_id: sample.process_id.clone(),
+                ..Self::default()
+            };
+        }
+        let at = sample.sampled_at_ms;
+        let window = FREE_WINDOW.as_millis() as u64;
+        // An unknown interval excludes its command delta, not the earlier
+        // valid history. Keep each proven inode baseline so the next quiet
+        // interval can be measured without starting the whole window again.
+        let complete = outputs.iter().all(|output| {
+            output
+                .open
+                .iter()
+                .all(|inode| output.position_written_by_inode.contains_key(inode))
+        });
+        let observed = outputs
+            .iter()
+            .flat_map(|output| output.open.iter().map(move |inode| (output, *inode)))
+            .map(|(output, inode)| {
+                let key = (output.id, inode);
+                let position = output
+                    .position_written_by_inode
+                    .get(&inode)
+                    .copied()
+                    .or_else(|| self.outputs.get(&key).copied())
+                    .unwrap_or(0);
+                // Physical allocation can become visible after an excluded
+                // write. Only the proven stream counter may debit valid
+                // command history; do not charge those physical bytes again.
+                let written = position;
+                (key, written)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let retained = observed.len() == self.outputs.len()
+            && observed.iter().all(|(key, written)| {
+                self.outputs
+                    .get(key)
+                    .is_some_and(|before| written >= before)
+            });
+        let continuous = complete && retained;
+        let bounded = retained
+            && outputs.iter().all(|output| {
+                output.open.iter().all(|inode| {
+                    output.position_written_by_inode.contains_key(inode)
+                        || output.stream_upper_by_inode.contains_key(inode)
+                })
+            });
+        let upper = outputs.iter().fold(0u64, |sum, output| {
+            output.open.iter().fold(sum, |sum, inode| {
+                if output.position_written_by_inode.contains_key(inode) {
+                    sum
+                } else {
+                    sum.saturating_add(
+                        output
+                            .stream_upper_by_inode
+                            .get(inode)
+                            .copied()
+                            .unwrap_or(0),
+                    )
+                }
+            })
+        });
+        let streamed = observed.iter().fold(0u64, |sum, (key, written)| {
+            sum.saturating_add(
+                self.outputs
+                    .get(key)
+                    .map_or(0, |before| written.saturating_sub(*before)),
+            )
+        });
+        // A newer I/O read on a cached process-table timestamp belongs to
+        // the next interval, just as it does in the command/file samplers.
+        if self.previous.is_some_and(|(before_at, _)| at == before_at) {
+            // The file sampler retains its first baseline on a cached
+            // timestamp. Defer its interval bound until the next fresh sample.
+            self.streams_changed |= !bounded;
+            self.pending_streamed = self.pending_streamed.saturating_add(streamed);
+            // The file sampler rescans even on a cached table timestamp.
+            // Follow its inode baselines while keeping the first command count.
+            self.outputs = observed;
+            return self.rate_at(at);
+        }
+        if self.previous.is_some_and(|(before_at, before)| {
+            at < before_at || at.saturating_sub(before_at) > window || writes < before
+        }) {
+            self.previous = None;
+            self.samples.clear();
+            self.pending_streamed = 0;
+            self.streams_changed = false;
+        }
+        let (mut known_writes, mut known_streamed) = self
+            .samples
+            .back()
+            .map_or((0, 0), |&(_, command, stream)| (command, stream));
+        if let Some((_, before)) = self.previous {
+            let command = writes - before;
+            let streamed = streamed.saturating_add(self.pending_streamed);
+            if continuous && !self.streams_changed {
+                known_writes = known_writes.saturating_add(command);
+                known_streamed = known_streamed.saturating_add(streamed);
+            } else if bounded && !self.streams_changed {
+                known_writes = known_writes.saturating_add(command);
+                known_streamed = known_streamed.saturating_add(streamed);
+                // An alias bound can count one write more than once. It may
+                // consume this command interval, never earlier valid history.
+                known_streamed =
+                    known_streamed.saturating_add(upper.min(command.saturating_sub(streamed)));
+            } else {
+                // The excluded command delta can cover new writes on a
+                // stable stream. Only growth beyond those bytes can correct
+                // an earlier credited residual.
+                known_streamed = known_streamed.saturating_add(streamed.saturating_sub(command));
+            }
+        }
+        // A changed or closed stream may have received this interval's
+        // final writes after its last sighting. Exclude its command delta,
+        // not measured stream growth or the earlier valid intervals.
+        self.outputs = observed;
+        self.previous = Some((at, writes));
+        self.streams_changed = false;
+        self.pending_streamed = 0;
+        if self
+            .samples
+            .back()
+            .is_none_or(|&(before_at, _, _)| at > before_at)
+        {
+            self.samples.push_back((at, known_writes, known_streamed));
+        }
+        // Match the command sampler: keep one point at or before the start,
+        // and count a young command's time before its baseline as idle.
+        while self.samples.len() > 2
+            && self
+                .samples
+                .get(1)
+                .is_some_and(|&(then, _, _)| at.saturating_sub(then) >= window)
+        {
+            self.samples.pop_front();
+        }
+        self.rate_at(at)
+    }
+
+    fn rate_at(&self, at: u64) -> u64 {
+        let window = FREE_WINDOW.as_millis() as u64;
+        let &(from, before, stream_before) = self.samples.front().unwrap();
+        let &(_, known_writes, known_streamed) = self.samples.back().unwrap();
+        // Subtract after summing the whole window: later observed growth
+        // can correct an earlier apparent residual on the same stream.
+        let unplaced = known_writes
+            .saturating_sub(before)
+            .saturating_sub(known_streamed.saturating_sub(stream_before));
+        unplaced.saturating_mul(1000) / at.saturating_sub(from).max(window)
+    }
+}
+
+/// Agent commands writing at a runaway rate whose output volume the samples
+/// never caught: a generator that closes each file and opens the next holds
+/// one open for a few milliseconds in every few hundred, and a file seen for
+/// the first time has no growth. Such a command writes to a watched volume
+/// that is losing room at a runaway rate itself, as far as anything can tell:
+/// the fastest of them is the one to stop when that volume is within the fill
+/// horizon (D84), as it would be had its file been caught open.
+fn unplaced_writers<'a>(
+    members: &'a [Arc<Mutex<Observation>>],
+    watched: &BTreeMap<u64, (u64, PathBuf)>,
+) -> Vec<Writer<'a>> {
+    let mut writers = Vec::new();
+    for member in members {
+        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        let Observation {
+            commands,
+            disk_writes,
+            samples,
+            admission,
+            ..
+        } = &mut *observation;
+        for command in commands {
+            let outputs = disk_writes
+                .get(&command.pid)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let Some(entry) = admission.get_mut(&command.pid) else {
+                continue;
+            };
+            if !entry.holdable || outputs.iter().any(|output| output.receiving) {
+                entry.stream_writes = None;
+                continue;
+            }
+            let rate = if outputs.is_empty() && entry.stream_writes.is_none() {
+                command.write_rate
+            } else {
+                let Some(sample) = samples.iter().find(|sample| sample.pid == command.pid) else {
+                    continue;
+                };
+                entry
+                    .stream_writes
+                    .get_or_insert_with(StreamWrites::default)
+                    .rate(sample, command.writes, outputs)
+                    .min(command.write_rate)
+            };
+            if rate < RUNAWAY_WRITE {
+                continue;
+            }
+            for (volume, (lost, path)) in watched {
+                if *lost >= RUNAWAY_WRITE {
+                    writers.push(Writer {
+                        member,
+                        pid: command.pid,
+                        volume: *volume,
+                        path: path.clone(),
+                        rate,
+                        grown: 0,
+                        written: command.writes,
+                        deleted_open: command.deleted_open,
+                    });
+                }
             }
         }
     }

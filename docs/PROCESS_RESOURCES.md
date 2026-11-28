@@ -38,6 +38,18 @@ process itself, or a job it left running. It is killed at once, without a grace
 period in which a runaway keeps growing, and no second command is stopped for
 the same cause within one second. The owner keeps running.
 
+A command that takes memory faster than the OS can free it is judged by the same fill horizon as a disk,
+without waiting for pressure to show (row 541, 2026-11-26: a test that grew at 2 GB/s took 71 GB in 50 s while
+the pressure average and `MemAvailable` still looked healthy). When one command's growth is the runaway rate
+(128 MiB/s) or more and the memory the host can give it is less than that growth over the fill horizon (5 s), the
+exhaustion steps below start at once: throttle, pause 3 s later, stop 13 s after the throttle, each told to the
+agent with the rate and the room left (Miguel D138, 2026-11-26: the two existing numbers, no new one). The room is
+free memory plus file cache (and the headroom of a limiting ancestor cgroup), not `MemAvailable`, which counts
+reclaimable slab the OS cannot free at that speed. A slower command, or one with more than the horizon of room left,
+is never touched by this rule. The steps go on while that room stays below the horizon of the runaway's rate.
+A run the OS's out-of-memory killer may have cut off (the system's kill count grew while it ran) leaves no peak
+for admission: the next run starts unknown, not at the size where it was cut off.
+
 A full disk is the same last resort, for the volume a command writes to.
 A volume is short when its free space is below half its floor (1% of the
 volume, 64–512 MiB) or when it is within the fill horizon of full at the rate

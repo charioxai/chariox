@@ -1388,6 +1388,7 @@ pub(crate) fn logout_provider_response(
             Ok(LocalDaemonResponse::ProviderLoggedOut {
                 provider: "codex".to_string(),
                 account_profile: profile.profile_id,
+                local_only: false,
             })
         }
         Some("claude") => {
@@ -1422,6 +1423,7 @@ pub(crate) fn logout_provider_response(
             Ok(LocalDaemonResponse::ProviderLoggedOut {
                 provider: "claude".to_string(),
                 account_profile: profile.profile_id,
+                local_only: false,
             })
         }
         _ => Err(DaemonError::LocalTransport {

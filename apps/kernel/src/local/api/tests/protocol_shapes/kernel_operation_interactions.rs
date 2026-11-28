@@ -17,12 +17,13 @@ fn kernel_operation_interaction_subject_is_versioned_and_uses_the_existing_reply
             crate::session::RuntimeInteractionChoice::new("approve", "Approve", "allow", None)
                 .requiring_passkey(),
         ],
-    );
+    )
+    .with_card_type("app_install");
     let mut wire = serde_json::to_value(interaction).unwrap();
     wire["requested_at_ms"] = serde_json::json!(1);
     assert_eq!(
         wire,
-        serde_json::json!({
+        serde_json::json!({"surface":"card", "card_type":"app_install",
             "id":"decision", "kernel_operation_id":"operation", "kind":"permission", "level":"warning",
             "title":"Install App?", "message":"Reviewed release", "choices":[{"id":"deny","label":"Cancel","reply":"deny"},{"id":"approve","label":"Approve","reply":"allow","requires_passkey":true}],
             "timeout_sec":300, "requested_at_ms":1,
@@ -47,7 +48,7 @@ fn kernel_operation_interaction_subject_is_versioned_and_uses_the_existing_reply
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "f99643ab4565e2b70faf49e82759b7558094013399f394f6aa19398db7ebba49"
+        "cc79a6a9f33a7e5883fdce7bc106cae0476723312cd6264ea4c176f13ca4a568"
     );
 }
 

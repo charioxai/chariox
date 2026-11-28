@@ -48,12 +48,16 @@ concurrency:
 
 jobs:
   contracts:
-    name: App contracts (${{ matrix.os }})
+    name: ${{ matrix.check == 'components' && 'App contracts' || 'App native CLI' }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        os: [ubuntu-latest, macos-14]
+        # macOS14 retired from GitHub Actions on 2026-11-02.
+        os: [ubuntu-latest, macos-15]
+        # libtest and the native CLI compile different kernel artifacts. Each
+        # keeps the existing deadline; the admission limit stays one job.
+        check: [components, native-cli]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -69,12 +73,16 @@ jobs:
           node-version: '24.20.0'
       - uses: dtolnay/rust-toolchain@1.99.1
       - name: Test package, persistence and Rust/Node wire contract
+        if: matrix.check == 'components'
         run: cargo test --locked -p chariox-app-package -p chariox-app-runtime -- --test-threads=1
       - name: Test actual native SDK fixture through the worker peer
+        if: matrix.check == 'components'
         run: cargo test --locked -p chariox-app-runtime --features test-fixtures --test worker_sdk_fixture -- --test-threads=1
       - name: Test Node SDK
+        if: matrix.check == 'components'
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
       - name: Test pinned Fetch clients through the broker adapter
+        if: matrix.check == 'components'
         run: node scripts/test-app-fetch-clients.mjs
       - uses: pnpm/action-setup@v4
         with:
@@ -87,6 +95,7 @@ jobs:
       - name: Build shared command contracts
         run: pnpm build:kernel-client
       - name: Typecheck and test App developer and terminal installation commands
+        if: matrix.check == 'components'
         shell: bash
         run: |
           node --input-type=module <<'NODE'
@@ -115,7 +124,7 @@ jobs:
             apps/cli/dist/commands.test.js apps/cli/dist/cli-exit-controller.test.js \
             apps/cli/dist/prompt-input-history-controller.test.js
       - name: Remove developer command build output
-        if: always()
+        if: always() && matrix.check == 'components'
         shell: bash
         run: |
           node --input-type=module <<'NODE'
@@ -125,12 +134,24 @@ jobs:
           rmSync(join(process.env.RUNNER_TEMP, 'app-developer-tsconfig.json'), { force: true });
           NODE
       - name: Test Chromium launch and sandbox probing
+        if: matrix.check == 'components'
         run: >-
           node --test --test-concurrency=1
           apps/kernel/slice-linux-docker/chromium-sandbox.test.mjs
           apps/kernel/slice-linux-docker/provision-desktop-audio.test.mjs
           apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.test.mjs
+      - name: Add swap for the kernel test build
+        if: runner.os == 'Linux'
+        # Match the main CI's memory preparation for the same large libtest build.
+        # The selected App assertions and their job deadline stay unchanged.
+        run: |
+          sudo fallocate -l 24G /mnt/chariox-swap
+          sudo chmod 600 /mnt/chariox-swap
+          sudo mkswap /mnt/chariox-swap
+          sudo swapon /mnt/chariox-swap
+          free -h
       - name: Test kernel App routing and durable writer
+        if: matrix.check == 'components'
         env:
           RUST_MIN_STACK: '16777216'
         run: |
@@ -185,9 +206,11 @@ jobs:
           done
           exit "$app_kernel_failures"
       - name: Test native CLI developer dispatch
+        if: matrix.check == 'native-cli'
         run: >-
           cargo test --locked -p chariox-kernel --bin chariox-cli app_developer::tests:: -- --test-threads=1
       - name: Check shared protocol snapshots and terminal catalog
+        if: matrix.check == 'components'
         env:
           RUST_MIN_STACK: '16777216'
         run: |

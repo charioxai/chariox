@@ -115,6 +115,72 @@ impl Rooms {
         }
     }
 
+    async fn use_receipt_provider(&self, provider: &str) {
+        let mut app = self.app.lock().await;
+        let old = app
+            .providers()
+            .get_run_for_agent(&self.peer_room, self.peer.id())
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &self.peer_room,
+            "dev-stub",
+            provider,
+            "default",
+            "model",
+        )
+        .with_agent_id(self.peer.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            old.id(),
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "receipt-held".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.update_provider_run_projection(run);
+    }
+
+    async fn inline_message_row(
+        &self,
+        sequence: u64,
+    ) -> (crate::durable_state::agent_lifecycle::InboxEvent, bool) {
+        self.app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_inbox_event(sequence)
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn wait_for_message_state(&self, sequence: u64, state: &str) {
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                // Router fixtures have no daemon loop to reap the provider's real result.
+                self.app.lock().await.reap_structured_prompt_jobs();
+                if self.inline_message_row(sequence).await.0.state == state {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            settled.is_ok(),
+            "message {sequence} expected {state}, actual {:?}",
+            self.inline_message_row(sequence).await.0
+        );
+    }
+
     async fn send(&self, args: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
         let mut args = args;
         args["origin_prompt_id"] = self.sender_prompt.clone().into();
@@ -343,4 +409,93 @@ where
         .expect("peer test thread should spawn")
         .join()
         .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
+#[test]
+fn owner_runtime_requests_keep_cross_room_management_and_spawn_parentage() {
+    run_peer_test("owner-runtime-cross-room-management", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let target = {
+            let mut app = rooms.app.lock().await;
+            spawn_with_level(
+                &mut app,
+                &rooms.peer_room,
+                "managed",
+                AgentPermissionLevel::Yolo,
+            )
+        };
+        let mut failures = Vec::new();
+        for request in [
+            serde_json::json!({"AliasAgent":{"session_id":rooms.peer_room,"agent_id":target.id(),"alias":"renamed"}}),
+            serde_json::json!({"UpdateAgentProfile":{"session_id":rooms.peer_room,"agent_id":target.id(),"model":"managed-model"}}),
+            serde_json::json!({"UpdateAgentSubstitutes":{"session_id":rooms.peer_room,"agent_id":target.id(),"action":{"SetTimeout":{"timeout_ms":12000}}}}),
+        ] {
+            let result = rooms
+                .router
+                .dispatch_authenticated_runtime_tool_call(
+                    &rooms.sender_token,
+                    "chariox_kernel_request",
+                    serde_json::json!({"request":request}),
+                )
+                .await;
+            if !result.as_ref().is_ok_and(|result| result.ok) {
+                failures.push(format!("{request}: {result:?}"));
+            }
+        }
+        for request in [
+            serde_json::json!({"AliasAgent":{"session_id":rooms.foreign_room,"agent_id":rooms.foreign.id(),"alias":"foreign-renamed"}}),
+            serde_json::json!({"UpdateAgentProfile":{"session_id":rooms.foreign_room,"agent_id":rooms.foreign.id(),"model":"managed-model"}}),
+            serde_json::json!({"UpdateAgentSubstitutes":{"session_id":rooms.foreign_room,"agent_id":rooms.foreign.id(),"action":{"SetTimeout":{"timeout_ms":12000}}}}),
+        ] {
+            let result = rooms
+                .router
+                .dispatch_authenticated_runtime_tool_call(
+                    &rooms.sender_token,
+                    "chariox_kernel_request",
+                    serde_json::json!({"request":request}),
+                )
+                .await;
+            assert!(
+                !result.as_ref().is_ok_and(|result| result.ok),
+                "another owner's Room was changed: {result:?}"
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "admitted cross-Room operations failed: {failures:#?}"
+        );
+        for request in [
+            serde_json::json!({"SpawnAgent":{"session_id":rooms.home,"provider":"dev-stub","alias":"single-child"}}),
+            serde_json::json!({"SpawnAgents":{"session_id":rooms.home,"agents":[{"provider":"dev-stub","alias":"batch-child"}]}}),
+        ] {
+            let result = rooms
+                .router
+                .dispatch_authenticated_runtime_tool_call(
+                    &rooms.sender_token,
+                    "chariox_kernel_request",
+                    serde_json::json!({"request":request}),
+                )
+                .await
+                .expect("owner spawn answers");
+            assert!(result.ok, "{result:?}");
+            let spawned = serde_json::from_value::<LocalDaemonResponse>(result.payload)
+                .expect("typed spawn response");
+            let children = match spawned {
+                LocalDaemonResponse::AgentSpawned { agent, .. } => vec![agent],
+                LocalDaemonResponse::AgentsSpawned { agents, .. } => agents,
+                other => panic!("expected spawned children: {other:?}"),
+            };
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].parent_agent_id(), Some(rooms.sender.id()));
+        }
+        let peer_agents = rooms.router.runtime_state.session_agents(&rooms.peer_room);
+        let managed = peer_agents
+            .iter()
+            .find(|agent| agent.id() == target.id())
+            .unwrap();
+        assert_eq!(managed.alias(), Some("renamed"));
+        assert_eq!(managed.model(), Some("managed-model"));
+        assert_eq!(managed.substitution_timeout_ms(), Some(12000));
+        assert_eq!(managed.parent_agent_id(), None);
+    });
 }

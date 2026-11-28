@@ -154,6 +154,13 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::RoomTerminal(request) => {
             LocalRequestMetadata::new("terminal.room", Normal).session(&request.session_id)
         }
+        LocalDaemonRequest::RunCommand(request) => {
+            let metadata = LocalRequestMetadata::new("command.run", Normal);
+            match request.target.session_id() {
+                Some(id) => metadata.session(id),
+                None => metadata,
+            }
+        }
         LocalDaemonRequest::KernelTerminal(_) => {
             LocalRequestMetadata::new("terminal.kernel", Normal)
         }
@@ -547,6 +554,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::GetSessionUsage(request) => {
+            LocalRequestMetadata::new("session.usage", Background).session(&request.session_id)
+        }
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
             LocalRequestMetadata::new("session.history.outline", Background)
                 .session(&request.session_id)
@@ -709,6 +719,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::WaitEvents(_) => "events.wait",
         LocalDaemonRequest::AckEvents(_) => "events.ack",
         LocalDaemonRequest::ListGatewayKernels(_) => "kernel_gateway.list",
+        LocalDaemonRequest::GetGatewayCommandStatus(_) => "kernel_gateway.command_status",
         LocalDaemonRequest::HeartbeatAttachments(_) => "kernel_gateway.heartbeat",
         LocalDaemonRequest::JoinKernelLink(_) => "kernel_gateway.join",
         LocalDaemonRequest::ForgetGatewayKernel(_) => "kernel_gateway.forget",
@@ -1078,7 +1089,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AppendNativeProviderOutputBatch(_) => {
             "terminal.output.append_native_batch"
         }
-        LocalDaemonRequest::RunShellCommand(_) => "capability.shell.run",
+        LocalDaemonRequest::RunCommand(_) => "command.run",
         LocalDaemonRequest::ReadDirectoryTree(_) => "capability.dir.tree",
         LocalDaemonRequest::ReadFile(_) => "capability.file.read",
         LocalDaemonRequest::EditFile(_) => "capability.file.edit",
@@ -1282,6 +1293,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
+        | LocalDaemonRequest::GetSessionUsage(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContents(_)

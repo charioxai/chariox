@@ -21,7 +21,7 @@ test("sudo refusal and expiry have separate typed CLI outcomes", () => {
 test("the guide mentions exactly the commands and flags the parser knows", () => {
   const guide = guideText()
   // A command is named by one to three words (`agent settings set`): the longest prefix the table knows.
-  const names = [...guide.matchAll(/chariox ([a-z-]+)(?: ([a-z]+))?(?: ([a-z]+))?/g)]
+  const names = [...guide.matchAll(/chariox ([a-z-]+)(?: ([a-z][a-z-]*))?(?: ([a-z][a-z-]*))?/g)]
     .map(([, first, second, third]) => [`${first} ${second} ${third}`, `${first} ${second}`].find(name => COMMANDS.some(spec => spec.name === name)) ?? first!)
   for (const name of names) assert.ok(COMMANDS.some(spec => spec.name === name), `guide mentions unknown command ${name}`)
   for (const spec of COMMANDS) assert.ok(names.includes(spec.name), `guide omits command ${spec.name}`)
@@ -59,7 +59,7 @@ test("the parser accepts every flag the table lists and refuses anything else", 
     }
     assert.throws(() => parseArguments(spec.name, [...positionals, "--passkey", "never"]), (error: unknown) => error instanceof CommandFailure && error.code === "usage")
     assert.throws(() => parseArguments(spec.name, [...positionals, "stray"]), CommandFailure)
-    if (positionals.length > 0) assert.throws(() => parseArguments(spec.name, positionals.slice(1)), CommandFailure, "a missing argument is a usage error")
+    if ((spec.args ?? []).some(name => !name.startsWith("["))) assert.throws(() => parseArguments(spec.name, positionals.slice(1)), CommandFailure, "a missing argument is a usage error")
   }
 })
 
@@ -108,7 +108,7 @@ function requestFields(struct: string): { name: string; required: boolean }[] | 
 test("every request example is one kernel request variant with the kernel's field names", () => {
   assert.deepEqual(REQUEST_EXAMPLES.map(entry => Object.keys(entry.body)[0]), [
     "ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState",
-    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "DestroyAgent", "RunShellCommand", "EndSession", "RequestKernelSudo", "RespondToInteraction",
+    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "DestroyAgent", "RunCommand", "EndSession", "RequestKernelSudo", "RespondToInteraction",
   ])
   const guide = guideText()
   for (const { body } of REQUEST_EXAMPLES) {

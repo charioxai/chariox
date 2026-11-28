@@ -5,7 +5,7 @@ use crate::local::*;
 use crate::runtime::kernel_access::{
     error,
     process::{self, ProcessIdentity},
-    AccessState, Grant, GrantClock, OwedEnd, PendingGrant, Refusal,
+    AccessState, Grant, GrantClock, OwedEnd, PendingGrant, Refusal, OWNER_SHELL_GRANT_PREFIX,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
@@ -243,6 +243,7 @@ impl KernelRuntimeState {
                 summary,
                 holder,
                 covered,
+                adopted,
                 end,
             } = recorded;
             if let Some((outcome, reason)) = end {
@@ -257,6 +258,14 @@ impl KernelRuntimeState {
             }
             match holder.filter(|holder| !holder.gone()) {
                 Some(holder) => {
+                    let covered: Vec<_> = covered
+                        .into_iter()
+                        .filter(|process| !process.gone())
+                        .collect();
+                    let adopted = adopted
+                        .into_iter()
+                        .filter(|process| covered.contains(process))
+                        .collect();
                     self.owned
                         .kernel_access
                         .lock()
@@ -267,10 +276,8 @@ impl KernelRuntimeState {
                             Grant {
                                 summary,
                                 holder,
-                                covered: covered
-                                    .into_iter()
-                                    .filter(|process| !process.gone())
-                                    .collect(),
+                                adopted,
+                                covered,
                                 clock: None,
                             },
                         );
@@ -507,11 +514,11 @@ impl KernelRuntimeState {
         // A managed process can use only the grant bound to its own dedicated provider.
         // This also prevents an outside grant held above the kernel from reaching its agents.
         let (kernel, _) = process::inspect(std::process::id()).map_err(|_| Refusal::Unconfirmed)?;
-        let agent_holder = if chain.contains(&kernel) {
-            let Some((holder, _)) = self.access_agent_of_chain(&chain) else {
-                return Ok(Vec::new());
-            };
-            Some(holder)
+        // A managed agent process uses only the grant bound to its own provider. Any other kernel child is
+        // covered only by a shell the owner opened in their own terminal: that grant is kernel-made.
+        let launched_by_kernel = chain.contains(&kernel);
+        let agent_holder = if launched_by_kernel {
+            self.access_agent_of_chain(&chain).map(|(holder, _)| holder)
         } else {
             None
         };
@@ -522,7 +529,11 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .grants
             .values()
-            .filter(|grant| agent_holder.is_none_or(|holder| &grant.holder == holder))
+            .filter(|grant| match (launched_by_kernel, agent_holder) {
+                (false, _) => true,
+                (true, Some(holder)) => &grant.holder == holder,
+                (true, None) => grant.summary.grant_id.starts_with(OWNER_SHELL_GRANT_PREFIX),
+            })
             .filter_map(|grant| {
                 let distance = grant.covering(&chain)?;
                 (!grant.holder.gone()).then(|| (distance, grant.clone()))
@@ -591,6 +602,36 @@ impl KernelRuntimeState {
             .filter(|grant| self.access_owned_by(owner, &grant.summary.owner_user_id))
             .map(Grant::listed)
             .collect()
+    }
+
+    /// The owner's own terminal shell: an until-exit grant held by the shell, made by the kernel itself.
+    pub(crate) fn admit_owner_shell_access(&self, shell_pid: u32) -> Result<(), DaemonError> {
+        let (holder, _) =
+            process::inspect(shell_pid).map_err(|_| error("the terminal's shell is gone"))?;
+        let id = format!("{OWNER_SHELL_GRANT_PREFIX}{:016x}", rand::random::<u64>());
+        let summary = KernelAccessGrant {
+            covered: Vec::new(),
+            grant_id: id.clone(),
+            owner_user_id: self.owned.config_projection.local_owner_user_id(),
+            holder_pid: holder.pid,
+            holder_executable: holder.executable.clone(),
+            holder_harness: None,
+            term: KernelAccessTerm::UntilHolderExits,
+            expires_at_ms: None,
+        };
+        let mut state = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        self.admit_grant_because(
+            &mut state,
+            id,
+            summary,
+            holder,
+            None,
+            Some("owner_terminal"),
+        )
     }
 
     /// Only Unix admission calls this, with an identity captured from the socket.
@@ -935,12 +976,14 @@ impl KernelRuntimeState {
         reason: Option<&str>,
     ) -> Result<(), DaemonError> {
         self.audit_access_of_holder(&summary, Some(&holder), "granted", reason)?;
+        let adopted = self.cover_running_descendants(&summary, &holder);
         state.grants.insert(
             id,
             Grant {
                 summary,
                 holder,
-                covered: Vec::new(),
+                covered: adopted.clone(),
+                adopted,
                 clock,
             },
         );
@@ -994,7 +1037,7 @@ impl KernelRuntimeState {
         .with_requester(requester);
         let rx = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("kernel_access_grant"),
                 crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
                 &grant.owner_user_id,
                 interaction,
@@ -1145,6 +1188,8 @@ struct RecordedGrant {
     summary: KernelAccessGrant,
     holder: Option<ProcessIdentity>,
     covered: Vec<ProcessIdentity>,
+    /// The covered processes the grant took from the holder's tree when it landed.
+    adopted: Vec<ProcessIdentity>,
     end: Option<(String, String)>,
 }
 
@@ -1167,6 +1212,7 @@ fn recorded_access_grants(
                             summary,
                             holder,
                             covered: Vec::new(),
+                            adopted: Vec::new(),
                             end: None,
                         },
                     );
@@ -1178,6 +1224,10 @@ fn recorded_access_grants(
                     serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
                 ) {
                     grant.covered.retain(|known| *known != process);
+                    grant.adopted.retain(|known| *known != process);
+                    if event.payload["reason"].as_str() == Some(cover::ADOPTED) {
+                        grant.adopted.push(process.clone());
+                    }
                     grant.covered.push(process);
                 }
             }
@@ -1187,6 +1237,7 @@ fn recorded_access_grants(
                     serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
                 ) {
                     grant.covered.retain(|known| *known != process);
+                    grant.adopted.retain(|known| *known != process);
                     if grant.end.is_some() && grant.covered.is_empty() {
                         recorded.remove(&id);
                     }

@@ -145,7 +145,8 @@ fn an_urgent_message_to_an_idle_agent_starts_its_turn() {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         let idle = spawn_idle(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({"urgent": true})).await;
-        assert_eq!(sent["status"], "steering");
+        assert_eq!(sent["status"], "started");
+        assert!(sent["prompt_id"].as_str().is_some());
         assert!(
             rooms
                 .wait_for_message_delivery(&rooms.peer_room, idle.id())
@@ -254,7 +255,7 @@ fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
             serde_json::json!({"idempotency_key": "notes-1", "urgent": true}),
         )
         .await;
-        assert_eq!(promoted["status"], "promoted");
+        assert_eq!(promoted["status"], "started");
         assert_eq!(promoted["sequence"], queued["sequence"]);
         assert!(
             rooms
@@ -262,6 +263,39 @@ fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
                 .await
         );
         assert_eq!(rooms.inbox(&rooms.peer_room, idle.id()).await.len(), 1);
+    });
+}
+
+#[test]
+fn an_urgent_resend_of_a_message_already_read_says_it_was_delivered() {
+    run_peer_test("queued-resend-after-read", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let idle = spawn_idle(&rooms).await;
+        let key = serde_json::json!({"idempotency_key": "notes-2"});
+        let queued = send_to(&rooms, "idle", key).await;
+        // The recipient read and acknowledged it in a turn that gave it no prompt of its own.
+        rooms
+            .router
+            .runtime_state
+            .ack_agent_inbox(
+                &rooms.peer_room,
+                idle.id(),
+                &serde_json::json!({"sequence": queued["sequence"], "handled": true}),
+                1,
+            )
+            .await
+            .expect("the recipient acknowledges it");
+        let resent = send_to(
+            &rooms,
+            "idle",
+            serde_json::json!({"idempotency_key": "notes-2", "urgent": true}),
+        )
+        .await;
+        assert_eq!(
+            resent["status"], "already_delivered",
+            "a consumed message is never reported as still queued: {resent}"
+        );
+        assert_eq!(resent["sequence"], queued["sequence"]);
     });
 }
 
@@ -563,5 +597,160 @@ fn a_room_with_long_task_history_fits_the_state_budget() {
                 .count(),
             1000
         );
+    });
+}
+
+#[test]
+fn receipt_unconfirmed_inline_message_waits_for_local_provider_acceptance() {
+    run_peer_test("receipt-inline-local-held", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms.use_receipt_provider("slow-structured").await;
+        let key = serde_json::json!({"urgent":true,"idempotency_key":"inline-held"});
+        let sent = send_to(&rooms, "peer", key.clone()).await;
+        let sequence = sent["sequence"].as_u64().unwrap();
+        let (event, read) = rooms.inline_message_row(sequence).await;
+        assert!(
+            read,
+            "the message text was included in the wake before acceptance"
+        );
+        assert_eq!(event.state, "submitting");
+        let promoted = rooms.promote(sent["message_id"].as_str().unwrap()).await;
+        assert_eq!(
+            promoted["status"], "queued",
+            "an in-flight promotion stays unconfirmed: {promoted}"
+        );
+        assert_eq!(
+            sent["status"], "queued",
+            "inline text is not provider acceptance: {sent}"
+        );
+        assert!(sent["note"]
+            .as_str()
+            .unwrap()
+            .contains("not been confirmed"));
+        let resent = send_to(&rooms, "peer", key.clone()).await;
+        assert_eq!(resent["sequence"], sequence);
+        assert_eq!(resent["status"], "queued");
+        // Inline text settles on the actual provider receipt in the same transaction.
+        rooms.wait_for_message_state(sequence, "acknowledged").await;
+        let accepted = send_to(&rooms, "peer", key).await;
+        assert_eq!(accepted["sequence"], sequence);
+        assert!(matches!(
+            accepted["status"].as_str(),
+            Some("steered" | "started")
+        ));
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(),
+            1
+        );
+    });
+}
+
+#[test]
+fn receipt_unconfirmed_inline_message_keeps_a_lost_local_ack_unconfirmed() {
+    run_peer_test("receipt-inline-local-lost-ack", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms.use_receipt_provider("lost-ack-structured").await;
+        let key = serde_json::json!({"urgent":true,"idempotency_key":"inline-lost"});
+        let sent = send_to(&rooms, "peer", key.clone()).await;
+        let sequence = sent["sequence"].as_u64().unwrap();
+        rooms.wait_for_message_state(sequence, "uncertain").await;
+        let (event, read) = rooms.inline_message_row(sequence).await;
+        assert!(read, "the inline wake was prepared");
+        assert_eq!(event.state, "uncertain");
+        let promoted = rooms.promote(sent["message_id"].as_str().unwrap()).await;
+        assert_eq!(
+            promoted["status"], "queued",
+            "an in-flight promotion stays unconfirmed: {promoted}"
+        );
+        assert_eq!(
+            sent["status"], "queued",
+            "a lost acknowledgement is unconfirmed: {sent}"
+        );
+        let resent = send_to(&rooms, "peer", key).await;
+        assert_eq!(resent["sequence"], sequence);
+        assert_eq!(resent["status"], "queued");
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(),
+            1
+        );
+    });
+}
+
+#[test]
+fn receipt_explicit_read_before_ack_is_delivered_on_local_urgent_resend() {
+    run_peer_test("receipt-explicit-local", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let idle = spawn_waiting(&rooms).await;
+        let sent = send_to(
+            &rooms,
+            "idle",
+            serde_json::json!({"idempotency_key":"explicit-read"}),
+        )
+        .await;
+        let sequence = sent["sequence"].as_u64().unwrap();
+        let rejected = rooms.router.runtime_state.read_agent_inbox(
+            &rooms.peer_room,
+            idle.id(),
+            &serde_json::json!({"sequence":sequence,"offset":1_000_000}),
+        );
+        assert!(rejected.is_err(), "invalid payload windows are not reads");
+        assert!(!rooms.inline_message_row(sequence).await.1);
+        rooms
+            .router
+            .runtime_state
+            .read_agent_inbox(
+                &rooms.peer_room,
+                idle.id(),
+                &serde_json::json!({"sequence":sequence}),
+            )
+            .expect("the recipient explicitly reads the message");
+        assert_eq!(
+            rooms.inline_message_row(sequence).await.0.state,
+            "pending",
+            "the recipient has not acknowledged it"
+        );
+        let resent = send_to(
+            &rooms,
+            "idle",
+            serde_json::json!({"idempotency_key":"explicit-read","urgent":true}),
+        )
+        .await;
+        assert_eq!(resent["status"], "already_delivered");
+        assert_eq!(resent["sequence"], sequence);
+        assert_eq!(rooms.inbox(&rooms.peer_room, idle.id()).await.len(), 1);
+    });
+}
+
+#[test]
+fn receipt_explicit_promotions_report_failed_and_blocked_deliveries() {
+    run_peer_test("receipt-terminal-promotions", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let _idle = spawn_waiting(&rooms).await;
+        for (state, expected) in [("failed", "undelivered"), ("blocked", "queued")] {
+            let sent = send_to(&rooms, "idle", serde_json::json!({"idempotency_key":state})).await;
+            let sequence = sent["sequence"].as_u64().unwrap();
+            let path = rooms
+                .app
+                .lock()
+                .await
+                .durable_state_store()
+                .path()
+                .to_path_buf();
+            // Lifecycle tests cover producing these states; this fixture exercises the
+            // authenticated sender's receipt for an already settled or blocked delivery.
+            rusqlite::Connection::open(path).unwrap().execute(
+                "UPDATE agent_inbox SET payload=json_set(payload,'$.state',?2) WHERE sequence=?1",
+                rusqlite::params![i64::try_from(sequence).unwrap(), state],
+            ).unwrap();
+            assert_eq!(rooms.inline_message_row(sequence).await.0.state, state);
+            let promoted = rooms.promote(sent["message_id"].as_str().unwrap()).await;
+            assert_eq!(promoted["status"], expected, "{state}: {promoted}");
+            assert_eq!(promoted["sequence"], sequence);
+            assert_eq!(
+                rooms.inline_message_row(sequence).await.0.state,
+                state,
+                "promotion does not erase its outcome"
+            );
+        }
     });
 }

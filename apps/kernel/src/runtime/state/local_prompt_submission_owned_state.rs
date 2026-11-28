@@ -187,6 +187,25 @@ impl KernelRuntimeOwnedState {
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
+        if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
+            if prompt.id() != prepared.prompt.id() {
+                if let Some(run_id) = provider_run_id.as_deref() {
+                    let rebound = self
+                        .provider_store
+                        .write()
+                        .bind_turn_substitute_to_admitted_prompt(
+                            run_id,
+                            &session_id,
+                            &target_agent_id,
+                            prepared.prompt.id(),
+                            prompt.id(),
+                        )?;
+                    if let Some(run) = rebound {
+                        self.provider_run_projection.update(run);
+                    }
+                }
+            }
+        }
         self.note_sudo_deferred_prompt(sudo_deferred, &outcome, &session_id, &target_agent_id);
         if let crate::session::PromptSubmissionOutcome::Queued { prompt } = &outcome {
             let current_state = provider_run_id

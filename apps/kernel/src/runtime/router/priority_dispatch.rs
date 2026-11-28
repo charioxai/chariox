@@ -205,8 +205,13 @@ impl CommandRouter {
             LocalDaemonRequest::LaunchProviderRuns(request) => boxed_handler(|| async move {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }),
-            LocalDaemonRequest::RoomTerminal(request) => {
-                boxed_handler(|| async move { self.room_terminal(&command.caller, request).await })
+            LocalDaemonRequest::RoomTerminal(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .room_terminal_for_client(&command.caller, request)
+                    .await
+            }),
+            LocalDaemonRequest::RunCommand(request) => {
+                boxed_handler(|| async move { self.run_command(&command.caller, request).await })
             }
             LocalDaemonRequest::KernelTerminal(request) => boxed_handler(|| async move {
                 self.runtime_state
@@ -746,9 +751,11 @@ impl CommandRouter {
                 boxed_handler(|| async move {
                     let caller = command_caller_user_id(&command);
                     self.runtime_state
-                        .copy_provider_account_to_kernel(&caller, request)
+                        .begin_provider_account_copy_to_kernel(&caller, request)
                         .await
-                        .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
+                        .map(
+                            crate::provider_account_copy::ProviderAccountCopyOutcome::into_response,
+                        )
                 })
             }
             request @ (LocalDaemonRequest::GetProviderUsageSnapshot(_)
@@ -893,7 +900,8 @@ impl CommandRouter {
                 )
                 .await
             }),
-            request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
+            request @ (LocalDaemonRequest::GetSessionUsage(_)
+            | LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
             | LocalDaemonRequest::PeekAgentTranscript(_)
@@ -943,8 +951,7 @@ impl CommandRouter {
                     .await
                 })
             }
-            request @ (LocalDaemonRequest::RunShellCommand(_)
-            | LocalDaemonRequest::ReadDirectoryTree(_)
+            request @ (LocalDaemonRequest::ReadDirectoryTree(_)
             | LocalDaemonRequest::ReadFile(_)
             | LocalDaemonRequest::EditFile(_)
             | LocalDaemonRequest::InspectGit(_)

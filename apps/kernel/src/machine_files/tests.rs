@@ -300,6 +300,7 @@ fn files_never_reach_the_kernels_own_state_or_the_vault() {
     let write = |path: String| {
         kernel_files::write(
             &WriteKernelFileRequest {
+                upload_id: uuid::Uuid::nil(),
                 path,
                 offset: 0,
                 data_base64: "aGk=".into(),

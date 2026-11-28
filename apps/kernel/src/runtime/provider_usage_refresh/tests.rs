@@ -216,6 +216,27 @@ fn an_idle_account_is_read_again_within_fifteen_minutes_and_not_before_twelve() 
     assert_eq!(f.refresher.due_accounts(f.at(14.02)), vec![f.key.clone()]);
 }
 
+// S6: a used-up account is re-read on the normal interval, so an early reset
+// shows within it and what waits on the account then goes on by itself.
+#[test]
+fn an_exhausted_account_is_read_again_within_the_normal_interval() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::new(vec![Ok(5.0)]);
+    f.refresher.refresh_account(&f.key, f.at(0.0));
+    crate::test_support::exhaust_provider_account(
+        &f.registry,
+        "local",
+        "codex",
+        &f.key.profile_id,
+        f.t0 + 6 * 24 * 60 * MINUTE_MS,
+    )
+    .unwrap();
+
+    assert!(f.refresher.due_accounts(f.at(2.0)).is_empty());
+    assert!(f.refresher.due_accounts(f.at(12.0)).is_empty());
+    assert_eq!(f.refresher.due_accounts(f.at(14.02)), vec![f.key.clone()]);
+}
+
 #[test]
 fn an_account_with_a_running_agent_is_read_every_five_minutes() {
     crate::test_support::isolated_env_test!();
@@ -268,6 +289,7 @@ fn kernel_running_account_projection_preserves_cadence_across_runtime_owners() {
         crate::runtime::projection::DaemonConfigProjectionStore::new(
             crate::config::DaemonConfig::for_tests(),
         ),
+        Box::new(AccountSet::new),
     );
     let now = f.at(4.7);
     assert!(refresher.due_accounts(now).is_empty());
@@ -686,6 +708,7 @@ fn an_attached_claude_run_is_probed_only_while_the_kernel_has_prompt_work() {
         crate::runtime::projection::DaemonConfigProjectionStore::new(
             crate::config::DaemonConfig::for_tests(),
         ),
+        Box::new(AccountSet::new),
     );
     let probed = |now: u64| {
         !refresher.due_accounts(now).is_empty()
@@ -717,4 +740,34 @@ fn an_attached_claude_run_is_probed_only_while_the_kernel_has_prompt_work() {
     ended.mark_ended();
     runs.update(ended);
     assert!(!probed(f.at(32.0)));
+}
+
+#[test]
+fn usage_limit_waiting_accounts_are_refreshed_without_a_running_provider() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::for_provider("claude", vec![]);
+    let waiting = Arc::new(AtomicBool::new(true));
+    let flag = waiting.clone();
+    let key = f.key.clone();
+    let refresher = ProviderUsageRefresher::for_kernel(
+        f.registry.clone(),
+        crate::runtime::projection::ProviderRunProjectionStore::default(),
+        crate::runtime::projection::SessionStateProjectionStore::default(),
+        crate::runtime::projection::DaemonConfigProjectionStore::new(
+            crate::config::DaemonConfig::for_tests(),
+        ),
+        Box::new(move || {
+            if flag.load(Ordering::SeqCst) {
+                AccountSet::from([(key.provider.clone(), key.profile_id.clone())])
+            } else {
+                AccountSet::new()
+            }
+        }),
+    );
+    assert_eq!(refresher.due_accounts(f.at(5.0)), vec![f.key.clone()]);
+    waiting.store(false, Ordering::SeqCst);
+    assert!(
+        refresher.due_accounts(f.at(5.0)).is_empty(),
+        "a cancelled wait does not pay for Claude reads"
+    );
 }

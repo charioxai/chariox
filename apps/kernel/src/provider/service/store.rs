@@ -813,6 +813,56 @@ impl ProviderProcessServiceStore {
         Ok(envelope)
     }
 
+    pub(crate) fn capture_claude_prompt_abort(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.read().close_prompt_abort_output_admission(run_id);
+        let processes = self.read().claude_owned_processes(run_id);
+        for process in processes {
+            process
+                .capture_prompt_abort()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: run_id.into(),
+                    message: error.to_string(),
+                })?;
+            process.set_prompt_abort_context(Some(prompt_id));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn close_prompt_abort_output_admission(&self, run_id: &str) {
+        self.read().close_prompt_abort_output_admission(run_id);
+    }
+
+    pub(crate) fn queue_cancelled_claude_output(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.read().queue_cancelled_claude_output(run_id, prompt_id)
+    }
+
+    pub(crate) fn settle_claude_prompt_abort(
+        &self,
+        run_id: &str,
+        force_retirement: bool,
+    ) -> Result<Option<bool>, DaemonError> {
+        let processes = self.read().claude_owned_processes(run_id);
+        let mut retired = None;
+        for process in processes {
+            let result = process
+                .settle_prompt_abort(force_retirement)
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: run_id.into(),
+                    message: error.to_string(),
+                })?;
+            retired = Some(retired.unwrap_or(false) || result);
+        }
+        Ok(retired)
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
@@ -1133,6 +1183,10 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> Vec<FinishedProviderOutputPollJob> {
         self.write().drain_finished_structured_output_poll_jobs()
+    }
+
+    pub(crate) fn output_publication_pending(&self, run_id: &str) -> bool {
+        self.read().output_publication_pending(run_id)
     }
 
     pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(

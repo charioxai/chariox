@@ -62,7 +62,7 @@ impl Fixture {
     async fn approval(&self) -> tokio::sync::oneshot::Receiver<PendingInteractionResolution> {
         self.runtime
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &self.session,
                 RuntimeInteraction::new(
                     self.id(),
@@ -267,7 +267,7 @@ async fn approval_lifetime_long_running_turn_survives_65_seconds() {
     let mut receiver = f
         .runtime
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.session,
             native_approval(&f, origin),
         )
@@ -617,7 +617,7 @@ async fn approval_lifetime_explicit_startup_scope_survives_until_provider_exit()
     let mut receiver = f
         .runtime
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.session,
             interaction,
         )

@@ -77,11 +77,22 @@ impl ReaderGate {
 
     /// True once the reader is held (or has ended) within `timeout`.
     pub(crate) fn hold(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        self.request_hold();
+        self.wait_held(timeout)
+    }
+
+    /// Register before waking a reader, so its next checkpoint sees the hold.
+    pub(crate) fn request_hold(&self) {
         let mut state = self.lock();
         if *state == Gate::Open {
             *state = Gate::HoldRequested;
         }
+    }
+
+    /// Wait for acknowledgment of an already registered hold.
+    pub(crate) fn wait_held(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.lock();
         while *state == Gate::HoldRequested {
             let now = Instant::now();
             if now >= deadline {
@@ -93,7 +104,7 @@ impl ReaderGate {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
-        true
+        matches!(*state, Gate::Held | Gate::Finished)
     }
 
     pub(crate) fn release(&self) {
@@ -251,5 +262,39 @@ mod adopted {
         fn process_id(&self) -> Option<u32> {
             Some(self.pid)
         }
+    }
+}
+
+#[cfg(test)]
+mod reader_gate_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn registered_hold_is_acknowledged_and_release_resumes_the_reader() {
+        let gate = Arc::new(ReaderGate::default());
+        gate.request_hold();
+        let reader_gate = Arc::clone(&gate);
+        let (resumed, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            reader_gate.checkpoint();
+            resumed.send(()).unwrap();
+        });
+        assert!(gate.wait_held(Duration::from_secs(2)));
+        assert!(received.try_recv().is_err());
+        gate.release();
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn unacknowledged_or_cancelled_hold_is_not_reported_as_held() {
+        let gate = ReaderGate::default();
+        assert!(!gate.wait_held(Duration::ZERO));
+        assert!(!gate.hold(Duration::ZERO));
+        gate.release();
+        assert!(!gate.wait_held(Duration::ZERO));
+        gate.finish();
+        assert!(gate.hold(Duration::ZERO));
     }
 }

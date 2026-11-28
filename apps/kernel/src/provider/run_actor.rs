@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{mpsc as tokio_mpsc, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, mpsc as tokio_mpsc};
 
 pub(in crate::provider) mod assessment;
 mod command_enqueue;
@@ -20,20 +20,20 @@ mod runtime_slots;
 mod worker;
 pub(crate) use command_execution::run_room_commands_on_fresh_claude;
 use finished_jobs::push_finished_output_poll;
+pub(crate) use finished_jobs::{
+    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
+    FinishedProviderRunSelectionSyncJob, OutputPublicationClaim, ProviderOutputPromptIdentity,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+};
 use finished_jobs::{
     drain_finished_aborts, drain_finished_output_polls, drain_finished_selection_syncs,
     drain_finished_submits, push_finished_submit,
 };
-pub(crate) use finished_jobs::{
-    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    FinishedProviderRunSelectionSyncJob, ProviderOutputPromptIdentity,
-    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
-};
 use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
-    setup_turn_origin, CodexApprovalHandover, CodexApprovalOutcome, NativeApprovalGoal,
+    CodexApprovalHandover, CodexApprovalOutcome, NativeApprovalGoal,
     ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
-    ProviderNativeInteractionResolution,
+    ProviderNativeInteractionResolution, setup_turn_origin,
 };
 pub(crate) use operation_lanes::{ProviderRunOperationLanes, ProviderRunOperationPermit};
 use runtime_slots::ProviderRunRuntimeRegistry;
@@ -43,8 +43,8 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 
 use super::{
-    opencode_runtime::OpenCodeRuntimeState, ClaudeRuntimeState, CodexRuntimeState,
-    ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+    ClaudeRuntimeState, CodexRuntimeState, ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+    opencode_runtime::OpenCodeRuntimeState,
 };
 
 #[derive(Clone)]
@@ -60,6 +60,8 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    output_publications: finished_jobs::OutputPublications,
+    closed_output_admission: Arc<Mutex<BTreeSet<String>>>,
     completion_signal: ProviderRunActorCompletionSignal,
     output_ready_signal: super::output_ready::ProviderOutputReadySignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
@@ -73,18 +75,21 @@ pub(crate) struct ProviderRunActorMailbox {
 
 impl Default for ProviderRunActorMailbox {
     fn default() -> Self {
+        let runtime_registry = ProviderRunRuntimeRegistry::default();
         Self {
             submit_epoch: rand::random(),
             operation_lanes: ProviderRunOperationLanes::default(),
             native_interaction_bridge: ProviderNativeInteractionBridgeStore::default(),
             workers: Arc::new(Mutex::new(BTreeMap::new())),
-            runtime_registry: ProviderRunRuntimeRegistry::default(),
+            finished_output_polls: runtime_registry.finished_output_polls.clone(),
+            output_publications: runtime_registry.output_publications.clone(),
+            closed_output_admission: Default::default(),
+            runtime_registry,
             in_flight: ProviderRunInFlightState::default(),
             utility_cancellations: utility_cancellation::MetadataUtilityCancellations::default(),
             finished_submits: Arc::new(Mutex::new(Vec::new())),
             finished_aborts: Arc::new(Mutex::new(Vec::new())),
             finished_selection_syncs: Arc::new(Mutex::new(Vec::new())),
-            finished_output_polls: Arc::new(Mutex::new(Vec::new())),
             completion_signal: ProviderRunActorCompletionSignal::default(),
             output_ready_signal: Default::default(),
             output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -118,6 +123,35 @@ impl ProviderRunActorMailbox {
             .store(true, Ordering::Relaxed);
     }
 
+    pub(crate) fn close_prompt_abort_output_admission(&self, run_id: &str) {
+        self.closed_output_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.to_string());
+    }
+
+    pub(crate) fn queue_cancelled_claude_output(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _handoff = self.output_publications.claim(run_id);
+        for batch in self.runtime_registry.take_cancelled_claude_output(run_id)? {
+            push_finished_output_poll(
+                &self.finished_output_polls,
+                &self.output_publications,
+                FinishedProviderOutputPollJob {
+                    prompt_identity: ProviderOutputPromptIdentity::Captured(prompt_id.to_string()),
+                    provider_run_id: run_id.to_string(),
+                    result: Ok(Some(batch)),
+                    publication: None,
+                    settlement_retry_attempt: 0,
+                },
+            );
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn use_manual_output_polls_for_tests(&self) {
         self.manual_output_polls.store(true, Ordering::Relaxed);
@@ -129,6 +163,10 @@ impl ProviderRunActorMailbox {
 
     pub(crate) fn output_ready_signal(&self) -> super::output_ready::ProviderOutputReadySignal {
         self.output_ready_signal.clone()
+    }
+
+    pub(crate) fn output_publication_pending(&self, run_id: &str) -> bool {
+        self.output_publications.pending(run_id)
     }
 
     pub(crate) fn completion_signal(&self) -> ProviderRunActorCompletionSignal {
@@ -178,6 +216,21 @@ impl ProviderRunActorMailbox {
             .output_notifier
             .bind(run_id.clone(), self.output_ready_signal.clone());
         self.runtime_registry.insert_claude_runtime(run_id, state);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn claude_owned_process(
+        &self,
+        run_id: &str,
+    ) -> Option<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.runtime_registry.claude_owned_process(run_id)
+    }
+
+    pub(crate) fn claude_owned_processes(
+        &self,
+        run_id: &str,
+    ) -> Vec<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.runtime_registry.claude_owned_processes(run_id)
     }
 
     pub(crate) fn insert_codex_runtime(&self, run_id: String, mut state: CodexRuntimeState) {

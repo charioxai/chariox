@@ -61,6 +61,7 @@ mod response;
 mod room_environment;
 mod room_list;
 mod room_terminal;
+mod run_command;
 mod runtime_identity;
 mod screenshot;
 mod session_control;
@@ -125,6 +126,7 @@ pub use response::*;
 pub use room_environment::*;
 pub use room_list::*;
 pub use room_terminal::*;
+pub use run_command::*;
 pub use runtime_identity::*;
 pub use screenshot::*;
 pub use session_control::*;
@@ -696,10 +698,16 @@ pub use workspace::*;
 /// Local 1015 (relay peer unchanged): a default visible-page `display_subscribe` may ask `resize_rebind` of a kernel that
 /// advertises `display_resize_rebind_v1`; the kernel keeps that subscription across a resize of the Browser window (same
 /// Tab re-admitted on the new window) and its frames carry `binding_sequence`, the new window epoch.
+/// Local 1017 also: a Room terminal list result carries an optional `unavailable` list naming the machines it could
+/// not ask; an empty list stays off the wire.
 /// Local 1016 (relay peer 453, Landing 15): `RestartKernel` restarts a kernel as a hot reload and `KernelRestarting` answers it once the
 /// reload is prepared; a reload that cannot be prepared is refused with its reason and the kernel keeps running. `chariox kernels restart` sends it.
 /// Local 1016 (relay peer 453): a managed install plan and the provider-account portability preflight may name
 /// `{"kind":"all"}`, every login of the owner on the source kernel; the package carries the source Vault's key sealed
 /// for a target with no Vault; a machine row carries the service's `reason`; `context_transfer` hands the kernel that
 /// acquired a machine its transfer ticket. Capabilities `managed_context_all_providers_v1`, `agent_machine_install_v1`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
+/// 1017 adds a read of the gateway receipt for a caller's original command ID: `GetGatewayCommandStatus` answers
+/// `GatewayCommandStatus` (`not_run`, `running`, `ran` with the original result, `interrupted`, `expired`).
+/// Local 1016 (additive, row 652): the owner view's `Publish` may carry `browser` (the viewer's delivered frames/s, path and input-to-paint
+/// per Room Browser pane) and `snapshot` (one JPEG answering `snapshot_wanted`, a new count on `OwnerViewStatus`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1017;

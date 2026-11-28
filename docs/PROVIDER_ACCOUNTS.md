@@ -2,6 +2,8 @@
 
 Chariox supports multiple named account profiles for Codex, Claude, and OpenCode. The kernel owns profile metadata, selection, status/usage projection, and orchestration. Provider CLIs remain the credential-format and token-refresh authority.
 
+How login copies behave across machines (re-login without revoking, dead-copy detection, policy position, rejected alternatives) is decided in [PROVIDER_LOGIN_COPIES.md](PROVIDER_LOGIN_COPIES.md).
+
 ## User workflow
 
 Open **Provider Accounts** in either Room list to list, create, link, rename, set a default, refresh, log in, log out, remove, or explicitly delete a managed profile. The launch form selects Provider, Account, Model, and Variant. New agents inherit the selected account unless another profile is chosen.
@@ -111,6 +113,8 @@ A Claude agent leased to a worker runs from the worker's own tracked copy of the
 
 ## Usage semantics
 
+An automatic usage stop keeps its account on the existing usage refresh cadence. A newer reading with fresh relevant quota or credit capacity resumes the stopped turn before its scheduled reset; stale or missing readings do not. The schedule prefers the relevant quota meter's absolute reset time, and provider text is used only with a named time zone. Repeating `agent resume` preserves the armed time while usage is exhausted and resumes now when a newer reading confirms room. An accepted new turn clears an unclaimed stop even on the same account. Room clients show an armed stop as “Waiting for usage, resumes at <time>” rather than asking the owner for help. Notes queue during the wait. Sending a queued note now to an idle waiting agent asks the owner to resume it or choose another account; the note stays queued.
+
 Usage meters identify their source, kind, unit, limits/balance where exposed, reset time, freshness, and availability. Missing numbers mean the provider did not expose them; they are not treated as zero. Codex subscription windows and credits use app-server methods. Claude uses provider-native rate-limit observations and an explicit official-CLI `/usage` refresh with tools disabled and session persistence disabled. The refresh accepts only structured results with all required model-activity fields present and zero; missing fields are not assumed to be zero. Chariox does not rewrite Claude's onboarding or trust settings for this probe. OpenCode billing remains best-effort and extensible per upstream provider.
 
 Claude asks a person once whether to trust a folder. Before any Claude launch, the kernel records that answer for the folder Chariox chose for the agent (its own worktree, else the Room's) as `projects[<folder>].hasTrustDialogAccepted` in the launch profile's `.claude.json`, on the machine where Claude runs. The write is atomic and changes nothing else Claude wrote. The launch directory must be that folder; the home directory and a filesystem root are never recorded, and any other folder Claude asks about still reaches a person as a `claude-workspace-review` permission card. A state file the kernel cannot update fails the launch with the reason.
@@ -165,3 +169,18 @@ If the same check fails from the host service, have the operator check the
 AppArmor policy for Bubblewrap's user namespaces and the service's effective
 namespace restrictions and capabilities. Keep the production provider
 confinement policy in place.
+
+### Owner agent account-copy commands
+
+Discover these through command search; no always-loaded tool is added.
+`provider accounts copy-offers` lists source profile metadata and pinned keys.
+`provider accounts copy-targets` lists the owner's enrolled target kernel IDs
+and pinned keys. An enrolled target may be offline; the copy checks it live.
+
+From the receiving kernel, run `provider accounts copy-from <provider> <profile>
+<source-kernel> <source-key-thumbprint> <operation-id> [--replace]`. It uses the
+existing recipient consent card. From the source kernel, use `provider accounts
+copy-to <provider> <profile> <target-kernel> <target-key-thumbprint> <operation-id>
+[--replace]`. Keep the operation ID and pinned key when retrying; use a new
+operation ID for a different copy. Both commands return metadata-only receipts
+and retain the protocol's existing ownership, verification and replacement rules.

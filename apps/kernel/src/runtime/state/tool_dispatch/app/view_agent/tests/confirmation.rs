@@ -437,6 +437,7 @@ fn sudo_task(rig: &Rig) {
         .active_prompt_for_agent(&session, rig.agent.id())
         .expect("the agent is mid-turn");
     let turn = crate::local::KernelSudoTurn {
+        limit_grant: None,
         entry_id: "sudo:view-agent".into(),
         session_id: rig.session.clone(),
         agent_id: rig.agent.id().into(),

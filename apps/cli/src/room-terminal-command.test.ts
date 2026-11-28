@@ -71,3 +71,38 @@ test("chariox terminal reads its flags in any order; without --session it is the
     session: "room-a", kernelUrl: "ws://127.0.0.1:1", rest: ["new", "build"],
   })
 })
+
+// Row 549: a machine the list could not ask may hold terminals; the CLI says so instead of "No terminals".
+const askedNot = [{ host_agent: "worker-agent", message: "worker kernel `k9` is too old to list its terminals, which may still be running there; update it" }]
+function partialKernel() {
+  const requests: { operation: string }[] = []
+  const send = async (request: unknown) => {
+    const operation = (request as { RoomTerminal: { operation: { operation: string } } }).RoomTerminal.operation
+    requests.push(operation)
+    if (operation.operation === "list") return { RoomTerminal: { result: { result: "listed", terminals: [], unavailable: askedNot } } } as never
+    throw new Error(`unexpected ${operation.operation}`)
+  }
+  return { send: send as never, requests }
+}
+
+test("549 terminal list names the machines it could not ask next to the terminals it found", async () => {
+  const { send } = partialKernel()
+  const io = new FakeTerminalIo()
+  const text = await runRoomTerminalCommand({ send, target: { sessionId: "room" }, input: io, output: io }, { kind: "list" })
+  assert.match(text, /worker-agent: worker kernel `k9` is too old to list its terminals/)
+  assert.doesNotMatch(text, /^No terminals in this Room yet/)
+})
+
+test("549 a selector that matches nothing says which machine was not asked", async () => {
+  const { send } = partialKernel()
+  const io = new FakeTerminalIo()
+  await assert.rejects(runRoomTerminalCommand({ send, target: { sessionId: "room" }, input: io, output: io }, { kind: "attach", selector: "term-7" }), /No terminal "term-7".*worker-agent: worker kernel `k9` is too old/s)
+})
+
+test("549 terminal with no terminal listed opens no shell by itself while a machine was not asked; terminal new still does", async () => {
+  const { send, requests } = partialKernel()
+  const io = new FakeTerminalIo()
+  const text = await runRoomTerminalCommand({ send, target: { sessionId: "room" }, input: io, output: io }, { kind: "attach" })
+  assert.match(text, /could not be listed.*`terminal new`/s)
+  assert.ok(!requests.some(request => request.operation === "open"), "no shell is opened on a guess")
+})

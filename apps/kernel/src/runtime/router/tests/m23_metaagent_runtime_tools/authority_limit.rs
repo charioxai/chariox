@@ -349,6 +349,38 @@ fn a_limit_bounds_only_the_agent_that_carries_it() {
     run_large_stack_async_test("authority-deadline", deadline);
 }
 
+#[test]
+fn an_agent_reads_its_own_limit_but_cannot_change_it() {
+    run_large_stack_async_test("authority-own-deadline", own_deadline);
+}
+
+/// Row 754 (D197): an agent reads its own time limit so it can plan and warn its parent;
+/// setting or extending its own limit stays with the agents above it.
+async fn own_deadline() {
+    let world = world("authority-own-deadline").await;
+    let set = room_command(&world, "a", "agent deadline b 2h").await;
+    assert!(set.ok, "{set:?}");
+    let own = room_command(&world, "b", "agent deadline get b").await;
+    assert!(own.ok, "an agent reads its own limit: {own:?}");
+    assert_eq!(
+        own.payload["response"]["deadline"]["state"], "armed",
+        "{own:?}"
+    );
+    // Changing its own limit stays refused: the parent owns the change.
+    let edit = room_command(&world, "b", "agent deadline b 1h").await;
+    assert!(!edit.ok, "{edit:?}");
+    assert!(
+        error_text(&edit)
+            .contains("only the owner or another authorized agent can change your deadline"),
+        "{edit:?}"
+    );
+    // The parent keeps both directions.
+    let cleared = room_command(&world, "a", "agent deadline b none").await;
+    assert!(cleared.ok, "{cleared:?}");
+    let none = room_command(&world, "b", "agent deadline get b").await;
+    assert!(none.payload["response"]["deadline"].is_null(), "{none:?}");
+}
+
 async fn deadline() {
     let world = world("authority-deadline").await;
     let now = crate::session::unix_epoch_ms();

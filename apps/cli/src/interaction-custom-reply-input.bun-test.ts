@@ -81,7 +81,7 @@ for (const kittyKeyboard of [false, true]) {
 }
 
 const passphraseInteraction: RuntimeInteraction = {
-  id: "vault-unlock",
+  id: "vault-unlock", surface: "card", card_type: "vault_unlock",
   agent_id: "agent-1",
   kind: "choice",
   level: "critical",

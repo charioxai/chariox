@@ -998,7 +998,7 @@ fn mp08_room_display_resume_and_open_recheck_live_authority_instead_of_cached_gr
 
 #[test]
 fn room_exec_stream_bytes_never_enter_transport_result_caches() {
-    use crate::local::{RoomTerminalOperation as Op, RoomTerminalRequest};
+    use crate::local::{RunCommandOperation as Op, RunCommandRequest};
     for operation in [
         Op::ExecList,
         Op::ExecWrite {
@@ -1022,20 +1022,26 @@ fn room_exec_stream_bytes_never_enter_transport_result_caches() {
             exec_id: "exec-1".into(),
         },
     ] {
-        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
-            session_id: "room-1".into(),
+        let request = LocalDaemonRequest::RunCommand(RunCommandRequest {
+            target: crate::local::CommandTarget::RoomWorkspace {
+                session_id: "room-1".into(),
+            },
             acting_agent: None,
-            host_agent: None,
             operation,
         });
         assert!(!request_is_cacheable(&request));
     }
-    let open = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
-        session_id: "room-1".into(),
+    let open = LocalDaemonRequest::RunCommand(RunCommandRequest {
+        target: crate::local::CommandTarget::RoomWorkspace {
+            session_id: "room-1".into(),
+        },
         acting_agent: None,
-        host_agent: None,
         operation: Op::ExecOpen {
             command: vec!["cat".into()],
+            directory: None,
+            timeout_ms: None,
+            deadline_unix_ms: None,
+            stdin_file: None,
         },
     });
     assert!(

@@ -10,7 +10,7 @@ import { createInteractionChoiceStoreController } from "./interaction-choice-sto
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 
 const card = (id: string, agentId: string, shownIn: string | null, title: string): RuntimeInteraction => ({
-  id, agent_id: agentId, shown_in_agent_id: shownIn, kind: "permission", level: "warning", title, message: "Run the tests?",
+  id, agent_id: agentId, surface: "card", card_type: "provider_native_permission", shown_in_agent_id: shownIn, kind: "permission", level: "warning", title, message: "Run the tests?",
   choices: [{ id: "yes", label: "Yes", reply: "yes", style: "primary" }], requested_at_ms: 1,
 })
 

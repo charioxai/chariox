@@ -13,7 +13,7 @@ pub(crate) enum WorkerPromptReceiptPhase {
     WaitingForMemory,
     Dispatching,
     Accepted,
-    Rejected,
+    Rejected(crate::transport::relay_peer::LeasedPromptRejection),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,7 +169,7 @@ fn receipt_record_has_identity(record: &WorkerPromptReceiptRecord) -> bool {
                 receipt.worker_provider_run_id.is_none() && record.backing_prompt_id.is_none()
             }
             WorkerPromptReceiptPhase::Accepted => receipt.worker_provider_run_id.is_some(),
-            WorkerPromptReceiptPhase::Dispatching | WorkerPromptReceiptPhase::Rejected => true,
+            WorkerPromptReceiptPhase::Dispatching | WorkerPromptReceiptPhase::Rejected(_) => true,
         }
 }
 
@@ -202,12 +202,12 @@ fn validate_receipt_transition(
     let allowed_phase = match previous.receipt.phase {
         WorkerPromptReceiptPhase::WaitingForMemory => matches!(
             next.receipt.phase,
-            WorkerPromptReceiptPhase::Dispatching | WorkerPromptReceiptPhase::Rejected
+            WorkerPromptReceiptPhase::Dispatching | WorkerPromptReceiptPhase::Rejected(_)
         ),
         WorkerPromptReceiptPhase::Dispatching => {
             next.receipt.phase != WorkerPromptReceiptPhase::WaitingForMemory
         }
-        WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::Rejected => false,
+        WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::Rejected(_) => false,
     };
     let run_identity_is_monotonic = match (
         previous.receipt.worker_provider_run_id.as_deref(),
@@ -294,7 +294,9 @@ mod tests {
             .persist(accepted.clone())
             .expect("acceptance should persist");
         assert!(store
-            .persist(receipt(WorkerPromptReceiptPhase::Rejected))
+            .persist(receipt(WorkerPromptReceiptPhase::Rejected(
+                crate::transport::relay_peer::LeasedPromptRejection::ExecutableMissing,
+            )))
             .is_err());
         let mut changed_lease = accepted.clone();
         changed_lease.receipt.execution_lease_id = "lease-2".to_string();

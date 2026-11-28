@@ -68,7 +68,7 @@ async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs(
     let _owned_resolution = router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             session.id(),
             owned_interaction,
         )
@@ -94,7 +94,7 @@ async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs(
     let _peer_resolution = router
         .runtime_state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             session.id(),
             peer_interaction,
         )

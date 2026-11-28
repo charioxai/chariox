@@ -15,6 +15,7 @@ impl ExecPlacement for SecondKernel {
         &'a self,
         intent: &'a LaunchIntent,
         attributed_agent: Option<String>,
+        deadline_unix_ms: Option<u64>,
     ) -> PlacementFuture<'a, String> {
         Box::pin(async move {
             if self.refuse {
@@ -23,13 +24,19 @@ impl ExecPlacement for SecondKernel {
                     "target kernel refused the launch",
                 ));
             }
-            self.service.open_as(
+            self.service.open_launch(
+                "room",
                 "room",
                 crate::session::DEFAULT_LOCAL_USER_ID,
                 &self.cwd,
                 &intent.command,
                 None,
                 attributed_agent,
+                false,
+                0,
+                intent.timeout_ms,
+                deadline_unix_ms,
+                None,
             )
         })
     }

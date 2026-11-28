@@ -4,23 +4,12 @@ use super::*;
 const TOKEN: &str = "claude-print-tool-loading-token";
 const BUDGET: &str = include_str!("../../../../agent_context_budget.json");
 
-/// What a Claude agent must have in context before its first call (delegation is one of them, so
-/// handing work to sub-agents costs no tool search); every other runtime tool is found through
-/// Claude Code's tool search.
-const CORE_TOOLS: [&str; 4] = [
-    "chariox.agents.run",
-    "chariox.events.ack",
-    "chariox.events.inbox",
-    "chariox.permission_prompt",
-];
-
-/// An agent another agent started: its inbox and the permission prompt.
-const SUB_AGENT_CORE_TOOLS: [&str; 4] = [
-    "chariox.events.ack",
-    "chariox.events.blocked",
-    "chariox.events.inbox",
-    "chariox.permission_prompt",
-];
+/// The one list of upfront tools (`agent_upfront_tools.json`): what a Claude agent must have in
+/// context before its first call, and what an agent another agent started has; every other
+/// runtime tool is found through Claude Code's tool search.
+fn core_tools(role: &str) -> Vec<String> {
+    super::super::tool_loading::upfront_names("claude", role).to_vec()
+}
 
 fn always_load(tool: &Value) -> bool {
     tool["_meta"]["anthropic/alwaysLoad"] == true
@@ -41,6 +30,31 @@ async fn claude_catalog(sub_agent: bool) -> (Value, Vec<Value>) {
 }
 
 async fn provider_catalog(provider: &str, model: &str, sub_agent: bool) -> (Value, Vec<Value>) {
+    let router = provider_router(provider, model, sub_agent, TOKEN);
+    listing(&router, TOKEN).await
+}
+
+async fn listing(router: &Arc<CommandRouter>, token: &str) -> (Value, Vec<Value>) {
+    let initialize = rpc(
+        router,
+        token,
+        "initialize",
+        serde_json::json!({"protocolVersion": "2025-03-26"}),
+    )
+    .await;
+    let tools = rpc(router, token, "tools/list", serde_json::json!({})).await["result"]["tools"]
+        .as_array()
+        .expect("tools should be an array")
+        .clone();
+    (initialize, tools)
+}
+
+fn provider_router(
+    provider: &str,
+    model: &str,
+    sub_agent: bool,
+    token: &str,
+) -> Arc<CommandRouter> {
     let root = std::env::temp_dir().join(format!(
         "chariox-tool-loading-{}-{}",
         std::process::id(),
@@ -73,26 +87,14 @@ async fn provider_catalog(provider: &str, model: &str, sub_agent: bool) -> (Valu
     .with_permission_level(crate::provider::AgentPermissionLevel::Required)
     .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
         "http://127.0.0.1:1/mcp",
-        TOKEN,
+        token,
     ))
     .with_sub_agent(sub_agent);
     insert_run_for_request(&mut app, "provider-run-tool-loading", &request);
-    let router = Arc::new(CommandRouter::with_interactive_capacity(
+    Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         8,
-    ));
-    let initialize = rpc(
-        &router,
-        TOKEN,
-        "initialize",
-        serde_json::json!({"protocolVersion": "2025-03-26"}),
-    )
-    .await;
-    let tools = rpc(&router, TOKEN, "tools/list", serde_json::json!({})).await["result"]["tools"]
-        .as_array()
-        .expect("tools should be an array")
-        .clone();
-    (initialize, tools)
+    ))
 }
 
 #[tokio::test]
@@ -104,7 +106,7 @@ async fn claude_run_loads_its_core_tools_upfront_and_finds_the_rest_on_demand() 
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     upfront.sort_unstable();
-    assert_eq!(upfront, CORE_TOOLS);
+    assert_eq!(upfront, core_tools("agent"));
 
     let names: Vec<&str> = tools
         .iter()
@@ -133,7 +135,7 @@ async fn a_sub_agent_loads_only_its_inbox_tools_and_finds_the_rest_on_demand() {
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     upfront.sort_unstable();
-    assert_eq!(upfront, SUB_AGENT_CORE_TOOLS);
+    assert_eq!(upfront, core_tools("sub_agent"));
 
     let (_, agent_tools) = claude_catalog(false).await;
     assert_eq!(
@@ -172,7 +174,17 @@ async fn claude_runtime_catalog_matches_the_committed_context_budget() {
         .iter()
         .filter(|tool| always_load(tool))
         .collect();
+    let (_, codex_tools) = provider_catalog("codex", "gpt-6.2-sol", false).await;
+    let (_, opencode_tools) = provider_catalog("opencode", OPENCODE, false).await;
+    let (_, opencode_worker_tools) = provider_catalog("opencode", OPENCODE, true).await;
+    let bytes = |tools: &[Value]| tools.iter().map(model_visible_bytes).sum::<usize>();
     let measured = serde_json::json!({
+        "codex_tools_listed": codex_tools.len(),
+        "codex_tools_list_json_bytes": bytes(&codex_tools),
+        "opencode_tools_listed": opencode_tools.len(),
+        "opencode_tools_list_json_bytes": bytes(&opencode_tools),
+        "opencode_worker_tools_listed": opencode_worker_tools.len(),
+        "opencode_worker_tools_list_json_bytes": bytes(&opencode_worker_tools),
         "claude_tools_listed": tools.len(),
         "claude_tools_list_json_bytes": tools.iter().map(model_visible_bytes).sum::<usize>(),
         "claude_core_tools": core.len(),
@@ -197,7 +209,11 @@ async fn claude_runtime_catalog_matches_the_committed_context_budget() {
         .as_object()
         .expect("budget file should be an object")
         .iter()
-        .filter(|(key, _)| key.starts_with("claude_"))
+        .filter(|(key, _)| {
+            ["claude_", "codex_", "opencode_"]
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     let budget = Value::Object(budget);
@@ -221,10 +237,7 @@ async fn every_provider_lists_each_runtime_tool_once_by_its_canonical_name() {
     let (_, claude) = provider_catalog("claude", "sonnet", false).await;
     let mut expected = names(&claude);
     expected.remove("chariox.permission_prompt");
-    for (provider, model) in [
-        ("codex", "gpt-6.2-sol"),
-        ("opencode", "opencode-go/deepseek-v4.1-flash"),
-    ] {
+    for (provider, model) in [("codex", "gpt-6.2-sol")] {
         for sub_agent in [false, true] {
             let (initialize, tools) = provider_catalog(provider, model, sub_agent).await;
             eprintln!(
@@ -233,6 +246,21 @@ async fn every_provider_lists_each_runtime_tool_once_by_its_canonical_name() {
                 tools.iter().map(model_visible_bytes).sum::<usize>(),
                 initialize["result"]["instructions"].as_str().map_or(0, str::len),
             );
+            if !sub_agent {
+                let mut sizes: Vec<(usize, &str)> = tools
+                    .iter()
+                    .map(|tool| {
+                        (
+                            model_visible_bytes(tool),
+                            tool["name"].as_str().unwrap_or(""),
+                        )
+                    })
+                    .collect();
+                sizes.sort_unstable_by(|a, b| b.cmp(a));
+                for (bytes, name) in sizes {
+                    eprintln!("TOOLBYTES {bytes} {name}");
+                }
+            }
             let listed = names(&tools);
             assert_eq!(
                 listed.len(),
@@ -256,4 +284,115 @@ async fn every_provider_lists_each_runtime_tool_once_by_its_canonical_name() {
             );
         }
     }
+}
+
+/// The raw reply of a tool call: it is an event stream when the call changed the listing.
+async fn call_text(
+    router: &Arc<CommandRouter>,
+    token: &str,
+    name: &str,
+    arguments: Value,
+) -> String {
+    let response = handle_json_rpc_value(
+        router.clone(),
+        token,
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}),
+    )
+    .await
+    .expect("tool call should answer");
+    String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes()
+            .to_vec(),
+    )
+    .expect("utf8")
+}
+
+const OPENCODE: &str = "opencode-go/deepseek-v4.1-flash";
+
+fn listed_names(tools: &[Value]) -> Vec<String> {
+    let mut names: Vec<String> = tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// OpenCode cannot defer MCP tools, so it starts with the upfront list and `chariox.tools.find`
+/// (`agent_upfront_tools.json`); asking for a tool lists it, with the standard list_changed first.
+#[tokio::test]
+async fn opencode_starts_lean_and_a_found_tool_is_listed_in_the_same_session() {
+    let token = "opencode-lean-token";
+    let router = provider_router("opencode", OPENCODE, false, token);
+    let (_, start) = listing(&router, token).await;
+    let mut core = super::super::tool_loading::upfront_names("opencode", "agent").to_vec();
+    core.sort_unstable();
+    assert_eq!(listed_names(&start), core);
+    let (_, full) = provider_catalog("codex", "gpt-6.2-sol", false).await;
+    let bytes = |tools: &[Value]| tools.iter().map(model_visible_bytes).sum::<usize>();
+    eprintln!(
+        "STARTUP opencode lean json_bytes={} (full {})",
+        bytes(&start),
+        bytes(&full)
+    );
+    assert!(
+        bytes(&start) * 10 < bytes(&full),
+        "{} of {}",
+        bytes(&start),
+        bytes(&full)
+    );
+
+    let found = call_text(
+        &router,
+        token,
+        "chariox.tools.find",
+        serde_json::json!({"names": ["chariox.vault.use_env"]}),
+    )
+    .await;
+    assert!(
+        found
+            .find("notifications/tools/list_changed")
+            .expect("list_changed")
+            < found.find("loaded").expect("result"),
+        "{found}"
+    );
+    assert!(found.contains("chariox.vault.use_env"), "{found}");
+    let (_, after) = listing(&router, token).await;
+    let mut expected = core.clone();
+    expected.push("chariox.vault.use_env".into());
+    expected.sort_unstable();
+    assert_eq!(listed_names(&after), expected);
+
+    let by_topic = call_text(
+        &router,
+        token,
+        "chariox.tools.find",
+        serde_json::json!({"query": "browser"}),
+    )
+    .await;
+    assert!(by_topic.contains("loaded"), "{by_topic}");
+
+    let other = "opencode-lean-token-two";
+    let second = provider_router("opencode", OPENCODE, false, other);
+    let (_, again) = listing(&second, other).await;
+    assert_eq!(
+        listed_names(&again),
+        core,
+        "a second session starts lean again"
+    );
+}
+
+#[tokio::test]
+async fn an_opencode_worker_starts_with_its_inbox_tools_and_find() {
+    let token = "opencode-lean-worker-token";
+    let router = provider_router("opencode", OPENCODE, true, token);
+    let (_, start) = listing(&router, token).await;
+    let mut core = super::super::tool_loading::upfront_names("opencode", "sub_agent").to_vec();
+    core.sort_unstable();
+    assert_eq!(listed_names(&start), core);
 }

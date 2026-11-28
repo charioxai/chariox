@@ -44,6 +44,8 @@ pub struct ReadKernelFileRequest {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WriteKernelFileRequest {
+    /// One fresh ID per upload attempt, or the partial_upload_id returned by stat when resuming.
+    pub upload_id: uuid::Uuid,
     pub path: String,
     pub offset: u64,
     pub data_base64: String,
@@ -93,6 +95,8 @@ pub struct KernelFileStat {
     pub sha256: Option<String>,
     /// Bytes of an unfinished upload to `path`: where `WriteKernelFile` continues.
     pub partial_size: Option<u64>,
+    /// The current partial version; carry it on every chunk of a resumed attempt.
+    pub partial_upload_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -33,3 +33,4 @@ export * from "./provider-account-copy.js"
 
 export * from "./ipc-control-plane-requests.js"
 export * from "./ipc-skills-v2-requests.js"
+export * from "./ipc-run-command-requests.js"

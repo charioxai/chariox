@@ -3,7 +3,7 @@
 //! This module owns local prompt completion once provider output settlement arrives, plus the
 //! queued prompt activation that may follow completion.
 
-use super::owned::OwnedPromptCompletion;
+use super::owned::{NextPromptDispatch, OwnedPromptCompletion};
 use super::*;
 
 impl KernelRuntimeOwnedState {
@@ -313,11 +313,20 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
             })?;
 
-        let completed = self.prompt_state_owner.complete_active_prompt_if_matches(
-            &session,
-            agent_id,
-            expected_prompt_id,
-        );
+        let completed =
+            if settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed {
+                self.prompt_state_owner.fail_active_prompt_if_matches(
+                    &session,
+                    agent_id,
+                    expected_prompt_id,
+                )
+            } else {
+                self.prompt_state_owner.complete_active_prompt_if_matches(
+                    &session,
+                    agent_id,
+                    expected_prompt_id,
+                )
+            };
         let Some(completed) = completed else {
             return Ok(None);
         };
@@ -611,12 +620,33 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
+        let dispatch = crate::app::KernelPromptDispatch {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run_id.clone(),
+            agent_id: agent_id.to_string(),
+            prompt_id: started_next.id().to_string(),
+            target_active_prompt_id: None,
+            source_attachment_id,
+            prompt: started_next.prompt().to_string(),
+            hidden_system_context: started_next.hidden_system_context().to_string(),
+            attachments: started_next.attachments().to_vec(),
+            prompt_origin: started_next.prompt_origin(),
+            external_provider: started_next.external_provider().map(str::to_string),
+            external_provider_session_id: started_next
+                .external_provider_session_id()
+                .map(str::to_string),
+            external_provider_turn_id: started_next
+                .external_provider_turn_id()
+                .map(str::to_string),
+            steering: false,
+        };
         // A substitute run serves only its own turn. A mixed notification also
         // uses the dispatcher, which binds its wake receipts before provider I/O.
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
             && provider_run.turn_substitute().is_none()
+            && !self.run_refused_for_substitute(&target_agent, &provider_run)
             && started_next.inbox_wakes().is_empty()
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
@@ -691,9 +721,16 @@ impl KernelRuntimeOwnedState {
                 false,
                 None,
             ) {
-                let _ = self.cancel_active_prompt_only(session_id, agent_id);
-                let _ = self.clear_prompt_activity(&provider_run_id);
-                return Err(error);
+                // The previous turn completed; this one settles failed with the reason.
+                let _ = self.session_snapshot(session_id)?;
+                return Ok(Some(OwnedPromptCompletion {
+                    completion: crate::session::PromptCompletion {
+                        completed,
+                        started_next: Some(started_next),
+                    },
+                    released_claim: false,
+                    dispatch: Some(NextPromptDispatch::Failed(dispatch, error)),
+                }));
             }
             self.note_prompt_started(&provider_run_id);
             let _ = self.session_snapshot(session_id)?;
@@ -713,26 +750,7 @@ impl KernelRuntimeOwnedState {
                 started_next: Some(started_next.clone()),
             },
             released_claim: false,
-            dispatch: Some(crate::app::KernelPromptDispatch {
-                session_id: session_id.to_string(),
-                provider_run_id,
-                agent_id: agent_id.to_string(),
-                prompt_id: started_next.id().to_string(),
-                target_active_prompt_id: None,
-                source_attachment_id,
-                prompt: started_next.prompt().to_string(),
-                hidden_system_context: started_next.hidden_system_context().to_string(),
-                attachments: started_next.attachments().to_vec(),
-                prompt_origin: started_next.prompt_origin(),
-                external_provider: started_next.external_provider().map(str::to_string),
-                external_provider_session_id: started_next
-                    .external_provider_session_id()
-                    .map(str::to_string),
-                external_provider_turn_id: started_next
-                    .external_provider_turn_id()
-                    .map(str::to_string),
-                steering: false,
-            }),
+            dispatch: Some(NextPromptDispatch::Submit(dispatch)),
         }))
     }
 

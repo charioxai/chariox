@@ -26,6 +26,8 @@ export async function startRustBin(binaryName) {
   ]
 
   if (await needsBuild(inputs, [binaryPath])) {
+    // stderr: stdout belongs to the command's own output, which agents parse.
+    process.stderr.write(`Building ${binaryName} first: this takes about 5 minutes once; later runs start at once.\n`)
     await run("cargo", ["build", "--manifest-path", rustManifestPath(repoRoot, binaryName), "--bin", binaryName], repoRoot)
   }
 

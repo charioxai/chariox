@@ -156,7 +156,7 @@ impl GatewayError {
                 "Kernel \"{name}\" runs protocol {kernel_protocol} and needs {needed_protocol}. Update the Chariox kernel on that machine, then try again."
             ),
             Self::RequestTimeout { name } => format!(
-                "Kernel \"{name}\" did not answer in time. For a state-changing request retry once with the same --command-id; the kernel never runs it twice."
+                "Kernel \"{name}\" did not answer in time. Look up GetGatewayCommandStatus with the original command ID on that kernel. A retry with the same --command-id uses the original reservation."
             ),
             Self::SteerUnconfirmed { command_id } => format!(
                 "The steer is not confirmed yet. It may still arrive. Retry with the same command ID (--command-id {command_id:?})."

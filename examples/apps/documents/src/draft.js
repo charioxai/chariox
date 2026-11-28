@@ -2,8 +2,7 @@
 // updates or the connection returns, and its sandbox keeps nothing across that. The App holds one
 // draft per (document, editor), with the revision the edit started from. A window has no identity that
 // outlives its replacement, so each window instance is a new editor with a random name: its saves and
-// discards reach only its own drafts, and its first `recall` is the one place another editor's draft is
-// seen: the App hands it a copy, written under this editor's name, and leaves the source where it is.
+// discards reach only its own drafts, and its first `recall` is the one place a draft changes hands.
 const DELAY_MS = 400
 
 export const newEditor = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")
@@ -41,11 +40,10 @@ export function drafts(call, editor) {
       pending = null
       return run("discard_draft", { editor, id }).catch(() => {})
     },
-    // The draft this window starts with: its own, else a copy of the latest of another window. The claim
-    // goes through the queue so it is this window's only call in flight: a later save of this editor's
-    // draft cannot be overwritten by the copy the claim writes.
+    // The draft this window starts with: its own, else the latest of a replaced window, moved to this one.
     async recall() {
-      return (await run("claim_draft", { editor })).draft
+      await queue
+      return (await call("claim_draft", { editor })).draft
     },
   }
 }

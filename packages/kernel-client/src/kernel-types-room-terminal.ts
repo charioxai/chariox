@@ -83,11 +83,7 @@ export type RoomTerminalWaitResult = {
   readonly output_offset: number
 }
 
-export type ExecOutcome = { kind: "exited"; code: number } | { kind: "signaled"; signal: number } | { kind: "memory_limit"; limit_bytes: number } | { kind: "failed"; message: string }
-export type ExecOutput = { chunks: readonly { cursor: number; stream: "stdout" | "stderr"; data_base64: string }[]; next_cursor: number; outcome: ExecOutcome | null }
 
-export type ExecState = { kind: "queued"; wait: { reason: "memory" | "disk"; need_bytes: number; free_bytes: number } } | { kind: "starting" | "running" | "finished" }
-export type ExecSummary = { exec_id: string; state: ExecState; age_ms: number; buffered_bytes: number; command_line: string; command: readonly string[]; owner: { kind: "agent" | "terminal"; id: string }; /** Kernels a held launch could run on instead, for the caller that may place it. */ placeable_on?: readonly string[] }
 
 /** Input for a program: its bytes (up to 64 KiB) or a file already on the kernel. */
 export type ProgramInput =
@@ -95,14 +91,6 @@ export type ProgramInput =
   | { readonly kind: "file"; readonly path: string }
 
 export type RoomTerminalOperation =
-  | { readonly operation: "exec_list" }
-  | { readonly operation: "exec_open"; readonly command: readonly string[] }
-  | { readonly operation: "exec_open_job"; readonly command: readonly string[]; readonly needs?: { readonly memory_gib?: number; readonly cpus?: number } }
-  | { readonly operation: "exec_write"; readonly exec_id: string; readonly offset: number; readonly data_base64: string }
-  | { readonly operation: "exec_stdin_close"; readonly exec_id: string; readonly offset: number }
-  | { readonly operation: "exec_read"; readonly exec_id: string; readonly after_cursor: number; readonly wait_ms?: number }
-  | { readonly operation: "exec_cancel" | "exec_close" | "exec_start_now"; readonly exec_id: string }
-  | { readonly operation: "exec_place"; readonly exec_id: string; readonly kernel: string; readonly directory?: string }
   | {
       readonly operation: "open"
       readonly cols: number
@@ -145,14 +133,8 @@ export type KernelTerminalRequest = {
 }
 
 export type RoomTerminalResult =
-  | { readonly result: "exec_listed"; readonly execs: readonly ExecSummary[] }
-  | { readonly result: "exec_opened"; readonly exec_id: string }
-  | { readonly result: "exec_input"; readonly next_offset: number }
-  | { readonly result: "exec_output"; readonly output: ExecOutput }
-  | { readonly result: "exec_cancelled" }
-  | { readonly result: "exec_closed" }
   | { readonly result: "opened"; readonly terminal: RoomTerminalSummary }
-  | { readonly result: "listed"; readonly terminals: readonly RoomTerminalSummary[] }
+  | { readonly result: "listed"; readonly terminals: readonly RoomTerminalSummary[]; /** Machines the list could not ask, with what to do; their terminals may exist and are not in `terminals`. */ readonly unavailable?: readonly { readonly host_agent: string; readonly message: string }[] }
   | { readonly result: "snapshot"; readonly snapshot: RoomTerminalSnapshot }
   | { readonly result: "input"; readonly input: RoomTerminalInputResult }
   | { readonly result: "resized"; readonly terminal: RoomTerminalSummary }

@@ -908,13 +908,14 @@ fn computer_credential_description_matches_target_bound_approval() {
     }
 }
 
-// MP-08/MP-10: both advertised names allow acknowledgement-only notices.
+// One Question type accepts choices plus free text, or free text alone.
 #[test]
-fn popup_notice_schema_accepts_one_fixed_choice() {
+fn popup_question_schema_accepts_free_text_only() {
     let specs = credential_runtime_tool_specs();
     for name in [REQUEST_POPUP_TOOL, REQUEST_POPUP_TOOL_ALIAS] {
         let spec = specs.iter().find(|spec| spec.name == name).unwrap();
-        assert_eq!(spec.input_schema["properties"]["choices"]["minItems"], 1);
+        assert_eq!(spec.input_schema["properties"]["choices"]["minItems"], 0);
+        assert!(spec.description.contains("free-text-only Question"));
     }
 }
 

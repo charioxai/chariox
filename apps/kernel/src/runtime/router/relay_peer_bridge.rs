@@ -73,6 +73,23 @@ impl CommandRouter {
         }
     }
 
+    /// Row 405: the peer's bound relay identity (its kernel `sender`, or its Machine) belongs
+    /// to this kernel's own Cloud owner, in the same realm; the same check as other
+    /// same-owner peer requests.
+    pub(crate) fn peer_is_owners_kernel(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+        sender: &str,
+    ) -> bool {
+        !identity.subject.trim().is_empty()
+            && (identity.subject_kind != chariox_relay::auth::RelaySubjectKind::Kernel
+                || identity.subject == sender)
+            && self
+                .runtime_state
+                .authenticated_owner_of(identity)
+                .is_some()
+    }
+
     pub(crate) fn same_owner_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
@@ -580,6 +597,17 @@ impl CommandRouter {
     ) -> Result<crate::local::RoomTerminalResult, DaemonError> {
         self.runtime_state
             .relay_room_terminal(leased_agent_id, actor, operation)
+            .await
+    }
+
+    pub(crate) async fn relay_agent_command(
+        &self,
+        leased_agent_id: &str,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RunCommandOperation,
+    ) -> Result<crate::local::RunCommandResult, DaemonError> {
+        self.runtime_state
+            .relay_agent_command(leased_agent_id, actor, operation)
             .await
     }
 

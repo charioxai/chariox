@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
-use tokio::sync::{mpsc as tokio_mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc as tokio_mpsc};
 
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
@@ -12,9 +12,9 @@ use super::command_execution::{
     execute_submit_command, execute_terminate_command, execute_utility_command,
 };
 use super::finished_jobs::{
-    push_finished_abort, push_finished_output_poll, push_finished_selection_sync,
-    push_finished_submit, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
-    FinishedProviderPromptSubmitJob, FinishedProviderRunSelectionSyncJob,
+    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
+    FinishedProviderRunSelectionSyncJob, push_finished_abort, push_finished_output_poll,
+    push_finished_selection_sync, push_finished_submit,
 };
 use super::in_flight::ProviderRunInFlightState;
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
@@ -23,7 +23,7 @@ use super::{ProviderPromptSubmitReceipt, ProviderRunActorCompletionSignal};
 
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
-fn provider_actor_runtime() -> &'static tokio::runtime::Runtime {
+pub(super) fn provider_actor_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -66,6 +66,7 @@ pub(super) enum ProviderRunActorCommand {
         provider_run_id: String,
         run: RuntimeProviderRun,
         completion: mpsc::Sender<()>,
+        publication: super::OutputPublicationClaim,
     },
     SyncSelection {
         provider_run_id: String,
@@ -75,6 +76,7 @@ pub(super) enum ProviderRunActorCommand {
         provider_run_id: String,
         run: RuntimeProviderRun,
         output_poll_delay: Duration,
+        publication: super::OutputPublicationClaim,
     },
     PublishClaudePlan {
         run: RuntimeProviderRun,
@@ -82,6 +84,7 @@ pub(super) enum ProviderRunActorCommand {
         tool_use_id: Option<String>,
         plan: String,
         response: tokio::sync::oneshot::Sender<Result<(), String>>,
+        publication: super::OutputPublicationClaim,
     },
     Stop,
 }
@@ -95,6 +98,7 @@ pub(super) struct ProviderRunWorkerDeps {
     pub(super) finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     pub(super) finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     pub(super) finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    pub(super) output_publications: super::finished_jobs::OutputPublications,
     pub(super) completion_signal: ProviderRunActorCompletionSignal,
     pub(super) output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
     pub(super) blocking_executor_permits: Arc<Semaphore>,
@@ -201,6 +205,7 @@ impl ProviderRunWorkerDeps {
                 provider_run_id,
                 run,
                 completion,
+                publication,
             } => {
                 if let Err(error) = execute_terminate_command(&self.runtime_registry, run) {
                     crate::logging::error_with_fields(
@@ -225,8 +230,10 @@ impl ProviderRunWorkerDeps {
                 if !closing_chunks.is_empty() {
                     push_finished_output_poll(
                         &self.finished_output_polls,
+                        &self.output_publications,
                         FinishedProviderOutputPollJob {
                             prompt_identity: super::ProviderOutputPromptIdentity::InFlightPoll,
+                            publication: Some(publication),
                             provider_run_id: provider_run_id.clone(),
                             result: Ok(Some(crate::provider::ProviderPromptSignalBatch {
                                 chunks: closing_chunks,
@@ -258,6 +265,7 @@ impl ProviderRunWorkerDeps {
                 provider_run_id,
                 run,
                 output_poll_delay,
+                publication,
             } => {
                 let result = execute_output_poll_command(
                     &self.native_interaction_bridge,
@@ -267,13 +275,18 @@ impl ProviderRunWorkerDeps {
                 );
                 let finished = FinishedProviderOutputPollJob {
                     prompt_identity: super::ProviderOutputPromptIdentity::InFlightPoll,
+                    publication: Some(publication),
                     provider_run_id: provider_run_id.clone(),
                     result,
                     settlement_retry_attempt: 0,
                 };
                 // The result is there to apply before the poll stops counting
                 // as in flight: a kernel stopping waits for the latter.
-                push_finished_output_poll(&self.finished_output_polls, finished);
+                push_finished_output_poll(
+                    &self.finished_output_polls,
+                    &self.output_publications,
+                    finished,
+                );
                 self.in_flight.clear_output_poll_in_flight(&provider_run_id);
                 self.completion_signal.record_completion(&provider_run_id);
             }
@@ -283,6 +296,7 @@ impl ProviderRunWorkerDeps {
                 tool_use_id,
                 plan,
                 response,
+                publication,
             } => {
                 let run_id = run.id().to_string();
                 let (batch, result) = super::command_execution::execute_claude_plan_proposal(
@@ -293,8 +307,10 @@ impl ProviderRunWorkerDeps {
                 );
                 push_finished_output_poll(
                     &self.finished_output_polls,
+                    &self.output_publications,
                     FinishedProviderOutputPollJob {
                         prompt_identity: super::ProviderOutputPromptIdentity::Captured(prompt_id),
+                        publication: Some(publication),
                         provider_run_id: run_id.clone(),
                         result: Ok(Some(batch)),
                         settlement_retry_attempt: 0,
