@@ -957,10 +957,12 @@ impl PtyManager {
                         .into(),
                 });
             }
-            if process.abort_owned_processes.is_none()
-                && process.exit_code.is_none()
-                && process.signal.is_none()
-            {
+            if let Some(signals) = process.abort_owned_processes.as_mut() {
+                signals.refresh().map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.into(),
+                    message: error.to_string(),
+                })?;
+            } else if process.exit_code.is_none() && process.signal.is_none() {
                 process.abort_owned_processes = Some(
                     crate::runtime::owned_process_signals::OwnedProcessSignals::for_pty_child(
                         process.child.as_ref(),

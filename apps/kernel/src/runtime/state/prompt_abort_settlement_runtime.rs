@@ -111,6 +111,17 @@ impl KernelRuntimeState {
                         .as_ref()
                         .map(|signal| signal.sequence())
                         .unwrap_or_default();
+                    // Lane admission may have waited while more tools started.
+                    let run_id = dispatch.provider_run_id.clone();
+                    if let Err(error) = state
+                        .with_app_side_effect_blocking(move |app| {
+                            app.pty_mut().capture_prompt_abort_processes(&run_id)
+                        })
+                        .await
+                    {
+                        state.record_prompt_abort_failure(&dispatch, &error);
+                        return true;
+                    }
                     let outcome = match state.enqueue_prompt_abort(&dispatch).await {
                         Ok(()) if !structured => PromptAbortDispatchOutcome::Done,
                         Ok(()) => {
