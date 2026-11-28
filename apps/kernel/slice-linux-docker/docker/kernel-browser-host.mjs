@@ -1547,6 +1547,9 @@ export class KernelBrowserHost {
     if (tab.document_id !== params.document_id) throw new UserDomainRefusal("stale_reference");
     const app = this.appForInput(tab, params, true);
     if (app) this.browser.appTabs.noteActivity(tab.target_id);
+    // Row 558: a QR capture is a picture (Page.captureScreenshot). A Tab behind the shown one renders only while it holds a background
+    // lease, and the lease ends BACKGROUND_IDLE_MS after the agent's last call: without this the picture timed out and every retry failed.
+    await this.holdBackground(tab).catch(() => {});
     return this.sampleLane(tab).run("input", () => this.browser.captureValue({ target_id: tab.target_id, document_id: tab.document_id,
       node_ref: params.node_ref, reveal_node_ref: params.reveal_node_ref ?? null, read: params.read ?? "node",
       expected_document_url: params.expected_document_url }, { signal }));
