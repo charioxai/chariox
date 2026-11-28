@@ -225,6 +225,7 @@ async fn skill_turn_starts_after_its_skill_was_turned_off(
             completion_recorded: true,
             settlement_requested: true,
             active_tools: Default::default(),
+            active_tool_started_at_ms: Default::default(),
         },
     );
     runtime

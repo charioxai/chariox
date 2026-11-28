@@ -337,6 +337,8 @@ impl KernelRuntimeOwnedState {
                     sequence: sequences.get(&position).copied(),
                     recipient_attachment_ids: recipients.clone().into(),
                     bytes: entry.text.into_bytes(),
+                    replaces: false,
+                    continues_replacement: false,
                 })
                 .collect(),
         );

@@ -1,4 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: bounded cancellation and physical provider settlement.
+use super::owned::OwnedPromptCancellation;
 use super::*;
 const PROMPT_ABORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 enum PromptAbortDispatchOutcome {
@@ -294,6 +295,21 @@ impl KernelRuntimeState {
             let replace_run = tokio::time::timeout(PROMPT_ABORT_TIMEOUT, attempt)
                 .await
                 .unwrap_or(true);
+            // Native interruption keeps the process for the next turn. Its compaction
+            // and workflow-aware queue settlement run after provider I/O's deadline.
+            let native = state
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .is_ok_and(|run| {
+                    !state
+                        .owned
+                        .provider_store
+                        .run_uses_structured_prompt_io(&run)
+                });
+            if !replace_run && native {
+                state.settle_stopped_native_prompt(&dispatch).await;
+            }
             let mut reported_cleanup_failure = false;
             loop {
                 match state
@@ -453,7 +469,7 @@ impl KernelRuntimeState {
             .prompt_activity
             .read()
             .get(&dispatch.provider_run_id)
-            .map(|state| state.active_tool_ids.clone())
+            .map(|state| state.active_tools.keys().cloned().collect())
             .unwrap_or_default();
         self.owned.record_cancelled_tool_transcripts(
             &dispatch.session_id,
@@ -472,43 +488,159 @@ impl KernelRuntimeState {
         self.owned
             .workflow_cancel_prompt(&dispatch.session_id, &prompt)?;
         let cancellation = match self
-            .owned
-            .finalize_local_prompt_cancellation_with_queued_advance(
+            .finalize_cancelled_prompt(
                 &dispatch.session_id,
                 &agent_id,
                 &dispatch.prompt_id,
                 Some(&dispatch.provider_run_id),
-            ) {
+            )
+            .await
+        {
             Ok(cancellation) => cancellation,
             Err(DaemonError::NoActivePrompt { .. }) => {
                 // A concurrent completion already released this exact cancelled turn.
-                Box::pin(self.finish_agent_task_settlement(settlement, &prompt)).await?;
+                Box::pin(self.finish_agent_task_settlement_outside_lanes(settlement, &prompt))
+                    .await?;
                 return Ok(());
             }
             Err(error) => return Err(error),
         };
-        if let Err(error) = Box::pin(self.finish_agent_task_settlement(settlement, &prompt)).await {
+        if let Err(error) =
+            Box::pin(self.finish_agent_task_settlement_outside_lanes(settlement, &prompt)).await
+        {
             self.record_prompt_abort_failure(dispatch, &error);
         }
         if cancellation.released_claim {
             self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         }
-        if let Some(next) = cancellation.dispatch {
-            if let Err(error) = self
-                .enqueue_prompt_dispatch_after_liveness(&next, &self.owned)
-                .await
-            {
-                let _ = self.fail_prompt_dispatch(next, error).await;
-            }
-        } else {
-            Box::pin(
-                self.advance_project_queued_prompt_after_settlement(
-                    &dispatch.session_id,
-                    &agent_id,
-                ),
+        self.start_queue_head_after_cancellation(&dispatch.session_id, &agent_id, cancellation)
+            .await;
+
+        Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    pub(super) async fn settle_stopped_native_prompt(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) {
+        let Some((agent_id, prompt)) = self.owned.cancelling_prompt_for_abort(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.prompt_id,
+        ) else {
+            return;
+        };
+        if let Err(error) = self
+            .with_app_side_effect(|app| {
+                app.settle_cancelled_claude_compaction_for_runtime(
+                    &dispatch.provider_run_id,
+                    prompt.id(),
+                )
+            })
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.claude_native",
+                "could not settle compaction for the cancelled prompt",
+                serde_json::json!({ "provider_run_id": dispatch.provider_run_id, "error": error.to_string() }),
+            );
+        }
+        let settlement = self.owned.settle_stopped_agent_task(
+            &dispatch.session_id,
+            &agent_id,
+            &prompt,
+            &dispatch.provider_run_id,
+        );
+        let _ = self
+            .owned
+            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
+        let cancellation = self
+            .finalize_cancelled_prompt(
+                &dispatch.session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                Some(&dispatch.provider_run_id),
             )
             .await;
+        // The abort holds this run's lane, and cancelling the task's owned work takes
+        // every run lane in the Room: finish it outside the lane, as a structured Stop does.
+        if let Some(settlement) = settlement {
+            self.spawn_workflow_prompt_dispatches(WorkflowPromptDispatches {
+                stopped_task_settlements: vec![(settlement, prompt)],
+                ..Default::default()
+            });
         }
-        Ok(())
+        // A prompt the person sent while the Stop settled is promoted here; without its dispatch
+        // it would stay active and never reach the provider.
+        if let Ok(cancellation) = cancellation {
+            self.start_queue_head_after_cancellation(&dispatch.session_id, &agent_id, cancellation)
+                .await;
+        }
+    }
+
+    async fn queue_head_is_workflow_turn(&self, session_id: &str, agent_id: &str) -> bool {
+        let Ok(session) = self.owned.session_store.get_session(session_id) else {
+            return false;
+        };
+        let Some(head) = self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+        else {
+            return false;
+        };
+        let (session_id, agent_id) = (session_id.to_string(), agent_id.to_string());
+        self.with_app_side_effect(move |app| {
+            crate::app::KernelAgentService::new(app).queued_prompt_is_workflow_turn(
+                &session_id,
+                &agent_id,
+                &head,
+            )
+        })
+        .await
+    }
+
+    pub(super) async fn finalize_cancelled_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        let head_is_workflow_turn = self.queue_head_is_workflow_turn(session_id, agent_id).await;
+        if head_is_workflow_turn {
+            self.owned
+                .finalize_local_prompt_cancellation_deferring_queue_head(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id,
+                )
+        } else {
+            self.owned
+                .finalize_local_prompt_cancellation_with_queued_advance(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id,
+                )
+        }
+    }
+
+    pub(super) async fn start_queue_head_after_cancellation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        cancellation: OwnedPromptCancellation,
+    ) {
+        if let Some(next) = cancellation.dispatch {
+            self.spawn_prompt_dispatch(next, self.provider_runtime_lanes.clone());
+        }
+        if cancellation.queue_head_deferred {
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, agent_id))
+                .await;
+        }
     }
 }

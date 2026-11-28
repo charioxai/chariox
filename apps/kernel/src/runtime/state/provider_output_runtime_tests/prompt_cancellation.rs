@@ -2099,9 +2099,9 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
                 .get(run.id())
                 .is_some_and(|state| {
                     if final_flush {
-                        !state.active_tool_ids.contains("tool-a")
+                        !state.active_tools.contains_key("tool-a")
                     } else {
-                        state.active_tool_ids.contains("tool-b")
+                        state.active_tools.contains_key("tool-b")
                     }
                 })
             {
