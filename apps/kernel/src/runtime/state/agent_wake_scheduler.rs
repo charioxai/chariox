@@ -46,10 +46,8 @@ pub(crate) struct AgentWakeMonitor {
     /// The wake dead-man check is degraded: reported once when it starts, again when it recovers,
     /// never per pass.
     deadman_degraded: AtomicBool,
-    /// A dead-man check is outstanding: a new one starts only when this one's probes have
-    /// ended. A probe parked in a source that does not answer keeps its own thread and this
-    /// mark; the probe's own end clears it, so one degraded source costs at most a single
-    /// parked thread, never a new check per pass.
+    /// Timer rescue and receipt checks have their own admission, independent
+    /// of source probes and deadline upkeep.
     deadman_outstanding: AtomicBool,
     /// A source-liveness probe is outstanding: a new one starts only when this one's own
     /// body has ended. The probes park their own threads and run apart from the dead-man
@@ -388,18 +386,6 @@ impl KernelRuntimeState {
 
     /// Dead-man switch run by the 30 s lifecycle sweep.
     pub(super) async fn sweep_agent_wakes(&self, now: u64) -> Result<(), DaemonError> {
-        // A deadline whose sources are still stopping retries on its own; it
-        // must not hold back supervision of every other wake.
-        if let Err(error) = self.tick_agent_deadlines(now).await {
-            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
-        }
-        // Every worker is asked at once with its own 5 s bound; this bound only keeps a stuck
-        // relay from holding the sweep. An unanswered worker's entry stays for the next one.
-        match tokio::time::timeout(Duration::from_secs(10), self.rearm_leased_agent_deadlines()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(%error, "a worker still holds a leased agent's deadline from before the pause; retrying at the next sweep"),
-            Err(_) => tracing::warn!("telling the workers the shifted deadlines took too long; retrying at the next sweep"),
-        }
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
@@ -472,8 +458,8 @@ impl KernelRuntimeState {
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
         // The checks run in their own work with their own admission. Everything in them is
-        // cancellable, so a check that runs out of its own time (a deadline stall, a store
-        // that does not answer) clears its mark here and the next pass runs a fresh one —
+        // cancellable, so a check that runs out of its own time clears its mark
+        // here and the next pass runs a fresh one —
         // one stalled step never wedges the gate (review P1, 11-28).
         if !monitor.deadman_outstanding.swap(true, Ordering::AcqRel) {
             let state = self.clone();
@@ -516,7 +502,28 @@ impl KernelRuntimeState {
                 }
             });
         }
+        // Deadline upkeep has its own existing task-work admission and time
+        // limit. Waiting for its edit lock must not hold timer rescue or receipts.
+        self.spawn_task_work("wake-deadline-upkeep".into(), move |state| async move {
+            state.sweep_wake_deadlines(now).await
+        });
         self.spawn_wake_driver_probes(now);
+    }
+
+    async fn sweep_wake_deadlines(&self, now: u64) -> Result<(), DaemonError> {
+        // A deadline whose sources are still stopping retries on its own; it
+        // must not hold back supervision of every other wake.
+        if let Err(error) = self.tick_agent_deadlines(now).await {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
+        }
+        // Every worker is asked at once with its own 5 s bound; this bound only keeps a stuck
+        // relay from holding the sweep. An unanswered worker's entry stays for the next one.
+        match tokio::time::timeout(Duration::from_secs(10), self.rearm_leased_agent_deadlines()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "a worker still holds a leased agent's deadline from before the pause; retrying at the next sweep"),
+            Err(_) => tracing::warn!("telling the workers the shifted deadlines took too long; retrying at the next sweep"),
+        }
+        Ok(())
     }
 
     /// The source liveness probes, apart from the check: a probe may park its thread and

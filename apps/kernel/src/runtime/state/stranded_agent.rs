@@ -30,10 +30,8 @@ const WAIT_PHRASES: &[&str] = &[
     "will be woken",
     "wake me when",
 ];
-/// Words that say it does not. The last six are the agent's own parked state (20A7 11-27,
-/// row 554: parked lanes' answers armed backstops that only burned a turn every interval):
-/// "parked" as a plain word describes the work ("the branch I parked yesterday") and does
-/// not veto anything; only the agent saying IT is parked does.
+/// Negated waits and statements that the agent or its lane is parked.
+/// Parked work, such as a branch, does not veto the agent's own wait.
 const NOT_WAITING: &[&str] = &[
     "not waiting",
     "no longer waiting",
@@ -50,13 +48,18 @@ const NOT_WAITING: &[&str] = &[
     "i'm parked",
     "im parked",
     "i am parked",
-    "am parked",
-    "is parked",
-    "are parked",
-    "stay parked",
-    "staying parked",
-    "remain parked",
-    "remains parked",
+    "we are parked",
+    "this agent is parked",
+    "the agent is parked",
+    "this lane is parked",
+    "the lane is parked",
+    "my lane is parked",
+    "i stay parked",
+    "i'm staying parked",
+    "i am staying parked",
+    "i remain parked",
+    "this lane remains parked",
+    "the lane remains parked",
 ];
 
 /// The sentence of the end of `answer` that says the agent waits, if one does.

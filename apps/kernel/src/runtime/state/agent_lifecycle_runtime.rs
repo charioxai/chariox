@@ -1619,15 +1619,14 @@ impl KernelRuntimeState {
         // even while newer work keeps arriving.
         let mut asked = std::collections::BTreeSet::new();
         for task in &tasks {
-            let monitor = &self.owned.agent_wakes;
-            // A task that did not settle is asked again when its backoff expires, not every
-            // pass: the pass is O(new work), however much history it restores.
-            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
-                continue;
-            }
-            // The pass's newest budget is spent: the oldest walk below takes the rest.
+            // Do not mark a task as offered until this walk can actually ask it:
+            // the oldest walk must still reach the task at the cutoff.
             if patience <= super::task_work_flight::SWEEP_OLDEST_RESERVE {
                 break;
+            }
+            let monitor = &self.owned.agent_wakes;
+            if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
+                continue;
             }
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let key = format!("sweep-task:{}", task.task_id);
@@ -1662,12 +1661,12 @@ impl KernelRuntimeState {
         // The oldest walk: the reserved budget reaches the tasks the newest walk never
         // offered a place to, oldest first, until the pass's patience is spent.
         for task in tasks.iter().rev() {
+            if patience.is_zero() {
+                break;
+            }
             let monitor = &self.owned.agent_wakes;
             if monitor.task_ask_held(&task.task_id, now) || !asked.insert(task.task_id.clone()) {
                 continue;
-            }
-            if patience.is_zero() {
-                break;
             }
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let key = format!("sweep-task:{}", task.task_id);
