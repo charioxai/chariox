@@ -102,8 +102,9 @@ pub(crate) use provider_output_claude_native::{
     claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
     claude_native_trust_dialog_update, claude_native_trust_interaction_id,
     claude_native_trust_keys, claude_permission_title, claude_workspace_trust_declined,
-    format_claude_permission_message, write_claude_hook_context_response,
-    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome, ClaudeTrustDialog, ClaudeTrustKeys,
+    fence_cancelled_claude_turn, format_claude_permission_message,
+    write_claude_hook_context_response, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    ClaudeTrustDialog, ClaudeTrustKeys,
     NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{
