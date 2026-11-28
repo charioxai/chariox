@@ -1343,9 +1343,22 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
     f.driver.lost.store(true, Ordering::Release);
 
     f.runtime
-        .sweep_agent_wakes(now)
+        .sweep_agent_lifecycle()
         .await
         .expect("a pending deadline cleanup is retried, not a sweep failure");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while f.wake_state("wake-other") != "lost" || f.wake_state("wake-resisting") != "cancelling"
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "deadline/source supervision did not settle: {}",
+            f.notices()
+        )
+    });
     assert_eq!(f.wake_state("wake-resisting"), "cancelling");
     assert_eq!(
         f.wake_state("wake-other"),
@@ -2483,7 +2496,7 @@ async fn a_degraded_wake_deadman_check_never_holds_the_pass_and_still_works() {
     while !_capture
         .records()
         .iter()
-        .any(|record| record.contains("the wake dead-man check recovered"))
+        .any(|record| record.contains("the wake source probes recovered"))
         && std::time::Instant::now() < deadline
     {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2511,30 +2524,35 @@ async fn a_held_source_probe_still_leaves_the_timer_rescue_and_receipt_alerts_ru
     let probe_wake = f.arm(&task, "probe-wake").unwrap();
     f.wait_on(&task, &probe_wake.registration_id);
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
-    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-    std::mem::forget(release_tx); // held for the whole test: the probe never answers
+    // Keeping the sender here holds the probe through the assertions; unwinding
+    // also drops it so Tokio can join the blocking worker during teardown.
+    let (_release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
     *f.driver.stall.lock().unwrap() = Some((entered_tx, release_rx));
 
+    // Timer sources must be admitted by a separate Working turn, after the
+    // probe's turn settled into Waiting.
+    let timer_task = f.begin("timer-turn");
     // An overdue receipt: a timer that fired long ago and was never delivered.
     let now = crate::session::unix_epoch_ms();
-    let mut overdue = f.wake(&task, "wake-overdue");
+    let mut overdue = f.wake(&timer_task, "wake-overdue");
     overdue.kind = "timer".into();
+    overdue.created_at_ms = now - 120_001;
     overdue.next_due_ms = Some(now - 120_000);
     f.store()
         .agent_lifecycle(Operation::CreateWake {
-            task: task.task_id.clone(),
-            prompt: task.prompt_id.clone(),
+            task: timer_task.task_id.clone(),
+            prompt: timer_task.prompt_id.clone(),
             wake: overdue,
         })
         .unwrap();
     // A later timer: it becomes due only after the first pass.
-    let mut later = f.wake(&task, "wake-later");
+    let mut later = f.wake(&timer_task, "wake-later");
     later.kind = "timer".into();
     later.next_due_ms = Some(now + 3_000);
     f.store()
         .agent_lifecycle(Operation::CreateWake {
-            task: task.task_id.clone(),
-            prompt: task.prompt_id.clone(),
+            task: timer_task.task_id.clone(),
+            prompt: timer_task.prompt_id.clone(),
             wake: later,
         })
         .unwrap();
@@ -2580,8 +2598,7 @@ async fn a_held_source_probe_still_leaves_the_timer_rescue_and_receipt_alerts_ru
 
     // The later timer becomes due: a second pass's checks fire it even though the same
     // probe is still parked.
-    tokio::time::sleep(std::time::Duration::from_millis(3_500)).await;
-    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    f.runtime.spawn_wake_deadman_check(now + 20_000);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while f.wake_state("wake-later") != "fired" && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2592,6 +2609,56 @@ async fn a_held_source_probe_still_leaves_the_timer_rescue_and_receipt_alerts_ru
         "a timer that became due while the probe is held still fires: {}",
         _capture.records().join("\n")
     );
+}
+
+/// A deadline lock held across checks cannot suppress another task's timers or receipts.
+#[tokio::test]
+async fn a_held_deadline_lock_leaves_timer_rescue_and_receipt_alerts_running() {
+    let f = fixture("deadline-lock-rescue", false).await;
+    let task = f.begin("timer-turn");
+    let now = crate::session::unix_epoch_ms();
+    for (id, created, due) in [
+        ("wake-overdue", now - 120_001, now - 120_000),
+        ("wake-later", now, now + 3_000),
+    ] {
+        let mut wake = f.wake(&task, id);
+        wake.kind = "timer".into();
+        wake.created_at_ms = created;
+        wake.next_due_ms = Some(due);
+        f.store()
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake,
+            })
+            .unwrap();
+    }
+    f.store()
+        .agent_lifecycle(Operation::FireWakes { now: now - 120_000 })
+        .unwrap();
+    let held = f.runtime.owned.agent_deadline_edit.lock().await;
+    f.runtime.spawn_wake_deadman_check(now + 20_000);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while f.wake_state("wake-later") != "fired"
+            || !f.notices().contains("is not delivered after")
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "held deadline lock suppressed timer rescue/receipts: later={}, notices={}",
+            f.wake_state("wake-later"),
+            f.notices()
+        )
+    });
+    // Keep the lock held through both assertions; the deadline task can only
+    // finish after the unrelated rescue and receipt work has succeeded.
+    assert_eq!(f.wake_state("wake-later"), "fired");
+    assert!(f.notices().contains("is not delivered after"));
+    drop(held);
+    f.runtime.task_work_settled().await;
 }
 
 fn backstops(f: &Fixture) -> Vec<AgentWake> {

@@ -257,3 +257,49 @@ async fn a_pass_over_a_restored_backlog_warns_within_its_patience_and_settled_ta
     std::fs::remove_file(&backlog.fault).unwrap();
     backlog.runtime.task_work_settled().await;
 }
+
+/// The task where the newest walk meets its reserve was never offered yet.
+/// Three slow newer tasks must not hide the only terminal reconciliation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_oldest_reserve_reaches_the_task_at_the_newest_walk_cutoff() {
+    let backlog = room_with_backlog(3);
+    let store = &backlog.runtime.owned.durable_state_store;
+    let tasks = store.agent_tasks_to_sweep().unwrap();
+    let healthy = tasks
+        .iter()
+        .find(|task| task.agent_id == backlog.healthy)
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: healthy.room_id.clone(),
+            agent: healthy.agent_id.clone(),
+            prompt: healthy.prompt_id.clone(),
+            run: "finished-provider".into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    // Make the three held tasks strictly newer than the terminal task.
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    for task in tasks.iter().filter(|task| task.agent_id != backlog.healthy) {
+        store
+            .agent_lifecycle(Operation::Progress {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                receipt: format!("new-work-{}", task.task_id),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    assert!(!store.agent_task_terminal_recorded(healthy).unwrap());
+    backlog.runtime.sweep_agent_lifecycle().await.unwrap();
+    let recorded = store.agent_task_terminal_recorded(healthy).unwrap();
+    // Always release the held workers before asserting, including on RED.
+    std::fs::remove_file(&backlog.fault).unwrap();
+    backlog.runtime.task_work_settled().await;
+    assert!(
+        recorded,
+        "the oldest reserved wait skipped the task at the cutoff"
+    );
+}

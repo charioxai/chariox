@@ -430,6 +430,17 @@ mod tests {
     }
 
     #[test]
+    fn parked_work_does_not_veto_the_agents_wait() {
+        let answer = "I'm waiting for review while the branch is parked";
+        assert_eq!(stated_wait(answer).as_deref(), Some(answer));
+        assert_eq!(
+            stated_wait("The agent is parked, still waiting on review"),
+            None
+        );
+        assert_eq!(stated_wait("We are parked, awaiting review"), None);
+    }
+
+    #[test]
     fn only_the_end_of_a_long_answer_is_read() {
         let long = format!("Waiting for the review. {}", "All done. ".repeat(300));
         assert_eq!(stated_wait(&long), None);
