@@ -82,14 +82,20 @@ impl KernelRuntimeOwnedState {
 
     /// A stop the person decides is due its card when usage is back: at the reset the provider
     /// named, or at the first retry time when it named none. A refused resume is not "back".
-    fn usage_limit_is_back(&self, stop: &UsageLimitStop, now_ms: u64) -> bool {
-        stop.refused == 0
-            && super::usage_limit_stop_transitions::next_resume_at(
-                stop.stopped_at_ms,
-                stop.resumes_at_ms,
-                0,
-            )
-            .is_some_and(|at_ms| at_ms <= now_ms)
+    fn usage_limit_is_back(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        stop: &UsageLimitStop,
+        now_ms: u64,
+    ) -> bool {
+        self.usage_limit_capacity_is_back(agent, stop, now_ms)
+            || (stop.refused == 0
+                && super::usage_limit_stop_transitions::next_resume_at(
+                    stop.stopped_at_ms,
+                    stop.resumes_at_ms,
+                    0,
+                )
+                .is_some_and(|at_ms| at_ms <= now_ms))
     }
 
     /// The accounts of the stopped agent's provider that can go on with its turn right now.
@@ -158,7 +164,8 @@ impl KernelRuntimeState {
         };
         let now_ms = crate::session::unix_epoch_ms();
         let back = |stop: &UsageLimitStop| {
-            self.owned.usage_limit_resume_is_asked() && self.owned.usage_limit_is_back(stop, now_ms)
+            self.owned.usage_limit_resume_is_asked()
+                && self.owned.usage_limit_is_back(agent, stop, now_ms)
         };
         // Nothing before the reset unless the person has a real choice (an account with room, no
         // orchestrator owning the switch). At the reset of a stop they chose to decide: one card.

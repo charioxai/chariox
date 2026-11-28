@@ -618,6 +618,7 @@ pub(super) fn session_agent_description(
         "model": agent.model(),
         "effort": agent.effort(),
         "account_profile": agent.provider_account_profile(),
+        "usage_limit_stop": agent.usage_limit_stop(),
         "execution_mode": effective.mode.as_str(),
         "permission_level": effective.permission_level.as_str(),
         "operating_mode": match agent.operating_mode() {

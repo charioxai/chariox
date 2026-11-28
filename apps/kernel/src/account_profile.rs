@@ -501,6 +501,33 @@ pub(crate) fn is_opencode_go_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.starts_with("opencode-go/"))
 }
 
+/// The same model bucket is used for admission, reset scheduling and recovery.
+fn usage_meter_applies_to_model(
+    provider: &str,
+    model: Option<&str>,
+    meter: &ProviderAccountUsageMeter,
+) -> bool {
+    if provider == "codex" && meter.meter_id.starts_with("rolling/") {
+        if let Some(model) = model
+            .map(str::trim)
+            .map(|model| model.strip_prefix("codex/").unwrap_or(model))
+            .filter(|model| !model.is_empty() && *model != "default")
+        {
+            let selected = if model == "gpt-5.3-codex-spark" {
+                "codex_bengalfox"
+            } else {
+                "codex"
+            };
+            if let Some((_, bucket)) = meter.meter_id.rsplit_once('/') {
+                if matches!(bucket, "codex" | "codex_bengalfox") {
+                    return bucket == selected;
+                }
+            }
+        }
+    }
+    true
+}
+
 fn provider_account_usage_block(
     provider: &str,
     model: Option<&str>,
@@ -527,27 +554,10 @@ fn provider_account_usage_block(
                 .resets_at_ms
                 .is_none_or(|resets_at_ms| resets_at_ms > now_ms)
     };
-    let relevant_meters = usage.meters.iter().filter(|meter| {
-        if provider == "codex" && meter.meter_id.starts_with("rolling/") {
-            if let Some(model) = model
-                .map(str::trim)
-                .map(|model| model.strip_prefix("codex/").unwrap_or(model))
-                .filter(|model| !model.is_empty() && *model != "default")
-            {
-                let selected = if model == "gpt-5.3-codex-spark" {
-                    "codex_bengalfox"
-                } else {
-                    "codex"
-                };
-                if let Some((_, bucket)) = meter.meter_id.rsplit_once('/') {
-                    if matches!(bucket, "codex" | "codex_bengalfox") {
-                        return bucket == selected;
-                    }
-                }
-            }
-        }
-        true
-    });
+    let relevant_meters = usage
+        .meters
+        .iter()
+        .filter(|meter| usage_meter_applies_to_model(provider, model, meter));
     let exhausted = relevant_meters
         .filter(is_currently_exhausted)
         .collect::<Vec<_>>();
@@ -790,6 +800,83 @@ impl ProviderAccountProfile {
                         | ProviderAccountMaterializationState::Stale
                 )
         })
+    }
+
+    /// A limit failure confirms exhaustion; the latest relevant quota windows name its reset.
+    pub(crate) fn usage_limit_reset_at_ms(&self, model: Option<&str>, now_ms: u64) -> Option<u64> {
+        let mut resets = self
+            .usage
+            .meters
+            .iter()
+            .filter(|meter| {
+                usage_meter_applies_to_model(&self.provider, model, meter)
+                    && usage_meter_is_fresh(meter, now_ms)
+                    && meter.kind == ProviderAccountUsageMeterKind::RollingLimit
+                    && meter.state == ProviderAccountUsageMeterState::Exhausted
+                    && meter.resets_at_ms.is_none_or(|at| at > now_ms)
+            })
+            .peekable();
+        resets.peek()?;
+        resets.try_fold(0, |latest, meter| Some(latest.max(meter.resets_at_ms?)))
+    }
+
+    /// Missing or stale observations do not prove that a stopped turn can go on.
+    pub(crate) fn usage_capacity_observed_after(
+        &self,
+        model: Option<&str>,
+        after_ms: u64,
+        now_ms: u64,
+    ) -> bool {
+        if self.auth_state != ProviderAccountAuthState::Authenticated
+            || !matches!(
+                self.usage.availability,
+                ProviderAccountUsageAvailability::Available
+                    | ProviderAccountUsageAvailability::Partial
+            )
+            || !self
+                .usage
+                .observed_at_ms
+                .is_some_and(|at| at > after_ms && at <= now_ms)
+        {
+            return false;
+        }
+        let meters = self
+            .usage
+            .meters
+            .iter()
+            .filter(|meter| {
+                usage_meter_applies_to_model(&self.provider, model, meter)
+                    && !meter.is_retired(now_ms)
+            })
+            .collect::<Vec<_>>();
+        let healthy = |meter: &&ProviderAccountUsageMeter| {
+            meter.observed_at_ms > after_ms
+                && meter.observed_at_ms <= now_ms
+                && usage_meter_is_fresh(meter, now_ms)
+                && matches!(
+                    meter.state,
+                    ProviderAccountUsageMeterState::Healthy
+                        | ProviderAccountUsageMeterState::Warning
+                )
+        };
+        let quotas = meters
+            .iter()
+            .copied()
+            .filter(|meter| meter.kind == ProviderAccountUsageMeterKind::RollingLimit)
+            .collect::<Vec<_>>();
+        let credits = meters
+            .iter()
+            .copied()
+            .filter(|meter| {
+                matches!(
+                    meter.kind,
+                    ProviderAccountUsageMeterKind::CreditBalance
+                        | ProviderAccountUsageMeterKind::SpendLimit
+                )
+            })
+            .collect::<Vec<_>>();
+        (!quotas.is_empty() && quotas.iter().all(healthy))
+            || (!credits.is_empty() && credits.iter().all(healthy))
     }
 
     /// Reuse prompt admission's plan/model and freshness policy. Missing
@@ -6789,6 +6876,70 @@ mod tests {
             source: "test".to_string(),
             management_url: None,
         }
+    }
+
+    #[test]
+    fn usage_limit_recovery_requires_new_complete_capacity_and_uses_the_model_bucket() {
+        let (root, registry) = fixture();
+        let mut profile = registry.create_managed("owner-a", "codex", "Work").unwrap();
+        profile.auth_state = ProviderAccountAuthState::Authenticated;
+        let now = PROVIDER_USAGE_STALE_AFTER_MS * 2;
+        let mut general = capacity_meter(
+            "Weekly",
+            ProviderAccountUsageMeterKind::RollingLimit,
+            ProviderAccountUsageMeterState::Exhausted,
+            now,
+            Some(now + 60_000),
+        );
+        general.meter_id = "rolling/10080/codex".into();
+        let mut spark = capacity_meter(
+            "Spark",
+            ProviderAccountUsageMeterKind::RollingLimit,
+            ProviderAccountUsageMeterState::Healthy,
+            now,
+            Some(now + 120_000),
+        );
+        spark.meter_id = "rolling/300/codex_bengalfox".into();
+        profile.usage = capacity_snapshot(
+            "codex",
+            ProviderAccountUsageAvailability::Available,
+            vec![general.clone(), spark],
+            now,
+        );
+        assert_eq!(
+            profile.usage_limit_reset_at_ms(Some("gpt-5.6-luna"), now),
+            Some(now + 60_000)
+        );
+        assert!(!profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
+        assert!(profile.usage_capacity_observed_after(Some("gpt-5.3-codex-spark"), now - 1, now));
+        profile.usage.meters[0].state = ProviderAccountUsageMeterState::Healthy;
+        assert!(profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
+        assert!(!profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now, now));
+        profile.usage.meters.push(general);
+        profile.usage.meters.last_mut().unwrap().observed_at_ms = now - 2;
+        assert!(
+            !profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now),
+            "an older exhausted window cannot be ignored"
+        );
+        profile.usage.availability = ProviderAccountUsageAvailability::Partial;
+        assert!(profile.usage_capacity_observed_after(Some("gpt-5.3-codex-spark"), now - 1, now));
+        let quota = profile.usage.meters[0].clone();
+        let mut credits = capacity_meter(
+            "Credits",
+            ProviderAccountUsageMeterKind::CreditBalance,
+            ProviderAccountUsageMeterState::Exhausted,
+            now,
+            None,
+        );
+        credits.meter_id = "credits/codex".into();
+        profile.usage.meters = vec![quota, credits];
+        assert!(profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
+        profile.usage.availability = ProviderAccountUsageAvailability::Unavailable;
+        assert!(!profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
+        profile.usage.availability = ProviderAccountUsageAvailability::Partial;
+        profile.usage.meters.clear();
+        assert!(!profile.usage_capacity_observed_after(Some("gpt-5.6-luna"), now - 1, now));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

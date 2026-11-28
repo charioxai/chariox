@@ -746,6 +746,16 @@ async fn the_provider_refusing_at_the_reset_is_retried_a_few_times_and_then_asks
         UsageLimitStopState::Asking,
         "after the last retry the person is asked again"
     );
+    assert_eq!(team.stop(0).unwrap().refused, 4);
+    team.decide(0, crate::local::UsageLimitStopAction::ResumeWhenBack)
+        .await
+        .expect("an explicit Resume starts a new retry cycle without a meter");
+    let rearmed = team.stop(0).unwrap();
+    assert!(matches!(rearmed.state, UsageLimitStopState::Armed { .. }));
+    assert_eq!(
+        rearmed.refused, 0,
+        "the explicit decision resets the exhausted retry budget"
+    );
 }
 
 #[tokio::test]
@@ -2162,7 +2172,7 @@ async fn a_turn_on_another_account_ends_the_stop_and_closes_its_card_with_the_re
 }
 
 #[tokio::test]
-async fn a_turn_on_the_limited_account_leaves_the_stop_and_its_card() {
+async fn a_turn_on_the_limited_account_ends_the_stop_and_its_card() {
     let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
         .await
         .with_second_account();
@@ -2172,8 +2182,8 @@ async fn a_turn_on_the_limited_account_leaves_the_stop_and_its_card() {
     team.goes_on_on(0, &limited).await;
     tick(team.rt(), 2).await;
 
-    assert!(team.stop(0).is_some());
-    assert_eq!(team.cards(0).len(), 1);
+    assert!(team.stop(0).is_none());
+    assert!(team.cards(0).is_empty());
 }
 
 #[tokio::test]
@@ -2265,3 +2275,153 @@ async fn changing_the_selected_profile_closes_the_stop_before_the_next_turn() {
 
 #[path = "usage_limit/cards.rs"]
 mod cards;
+
+#[tokio::test]
+async fn usage_limit_repeating_resume_preserves_the_armed_time() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit_saying(0, "You've hit your usage limit")
+        .await;
+    let armed = team.stop(0).unwrap();
+    team.decide(0, crate::local::UsageLimitStopAction::ResumeWhenBack)
+        .await
+        .unwrap();
+    assert_eq!(team.stop(0), Some(armed.clone()));
+    team.decide(0, crate::local::UsageLimitStopAction::Cancel)
+        .await
+        .unwrap();
+    team.decide(0, crate::local::UsageLimitStopAction::ResumeWhenBack)
+        .await
+        .unwrap();
+    assert_eq!(
+        team.stop(0).unwrap().state,
+        armed.state,
+        "cancel then resume must not add another fifteen minutes"
+    );
+}
+
+#[tokio::test]
+async fn usage_limit_armed_task_is_waiting_in_the_shared_room_and_notice() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    owe_work(&team, 0);
+    team.hit_the_limit(0).await;
+    let room = team.rt().owned.session_snapshot(&team.session_id).unwrap();
+    let task = room
+        .agent_tasks()
+        .iter()
+        .find(|task| task.prompt_id == team.lanes[0].prompt_id)
+        .unwrap();
+    assert_eq!(task.state, ExecutionState::Waiting);
+    assert!(task.owner_action.is_none());
+    assert!(task.reason.starts_with("Waiting for usage, resumes at "));
+    assert!(team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| notice.message.contains("Waiting for usage, resumes at ")));
+    assert!(!team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| notice.message.contains("Needs your help")));
+}
+
+#[tokio::test]
+async fn usage_limit_early_recovery_claims_the_armed_stop_after_a_new_meter_read() {
+    use crate::account_profile::{
+        ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
+        ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
+        ProviderAccountUsageSnapshot,
+    };
+    let team = team_claude(config(UsageLimitResume::Automatic), 1).await;
+    let registry = &team.rt().owned.provider_account_profiles;
+    let profile = registry.create_managed(OWNER, "claude", "Limited").unwrap();
+    registry
+        .set_default(OWNER, "claude", &profile.profile_id)
+        .unwrap();
+    crate::test_support::authenticate_provider_account(
+        registry,
+        OWNER,
+        "claude",
+        &profile.profile_id,
+    )
+    .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let reset = now + 7_200_000;
+    let reading = |state, observed_at_ms| ProviderAccountUsageSnapshot {
+        profile_id: profile.profile_id.clone(),
+        provider: "claude".into(),
+        availability: ProviderAccountUsageAvailability::Partial,
+        meters: vec![ProviderAccountUsageMeter {
+            meter_id: "weekly".into(),
+            label: "Weekly".into(),
+            service_id: None,
+            kind: ProviderAccountUsageMeterKind::RollingLimit,
+            scope: ProviderAccountUsageMeterScope::Account,
+            used_percent: None,
+            used: None,
+            remaining: None,
+            total: None,
+            unit: None,
+            window_duration_minutes: Some(10080),
+            resets_at_ms: Some(reset),
+            state,
+            source: "refresh".into(),
+            observed_at_ms,
+        }],
+        observed_at_ms: Some(observed_at_ms),
+        source: "refresh".into(),
+        management_url: None,
+    };
+    registry
+        .update_usage(
+            OWNER,
+            "claude",
+            &profile.profile_id,
+            reading(ProviderAccountUsageMeterState::Exhausted, now),
+        )
+        .unwrap();
+    team.hit_the_limit_saying(0, "You've hit your usage limit; try again at 3:06 PM")
+        .await;
+    let stop = team.stop(0).unwrap();
+    assert_eq!(stop.state, UsageLimitStopState::Armed { at_ms: reset });
+    let observed = crate::session::unix_epoch_ms().max(stop.stopped_at_ms) + 1;
+    let agent = team.agent(0);
+    assert!(!team
+        .rt()
+        .owned
+        .usage_limit_capacity_is_back(&agent, &stop, observed));
+    registry
+        .update_usage(
+            OWNER,
+            "claude",
+            &profile.profile_id,
+            reading(ProviderAccountUsageMeterState::Healthy, observed),
+        )
+        .unwrap();
+    assert!(team
+        .rt()
+        .owned
+        .usage_limit_capacity_is_back(&agent, &stop, observed));
+    assert!(observed < reset);
+    assert!(team
+        .rt()
+        .claim_resume(&agent, observed, ResumeReason::Recovered(&stop))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(
+        team.rt()
+            .claim_resume(&agent, observed, ResumeReason::Recovered(&stop))
+            .await
+            .unwrap()
+            .is_none(),
+        "one observation claims only one continuation"
+    );
+    team.rt().end_resume_send(&agent);
+}
