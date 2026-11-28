@@ -432,3 +432,75 @@ async fn clearing_effort_in_the_terminal_clears_the_kernel_setting() {
     terminal.status_line_shows("· default ·").await;
     assert_eq!(terminal.feed().await.settings.effort, None);
 }
+
+#[tokio::test]
+async fn effort_cleared_while_the_stream_is_disconnected_is_reported_on_reconnect() {
+    let terminal = terminal().await;
+    std::fs::write(
+        terminal.file("terminal-model.json"),
+        r#"{"model":"claude-sonnet-5-5","effort":null}"#,
+    )
+    .unwrap();
+    let stream = terminal.stream().await;
+    terminal.status_line_shows("· sonnet ·").await;
+    std::fs::write(
+        terminal.file("terminal-model.json"),
+        r#"{"model":"claude-sonnet-5-5","effort":"high"}"#,
+    )
+    .unwrap();
+    terminal.status_line_shows("· high ·").await;
+    drop(stream);
+    std::fs::write(
+        terminal.file("terminal-model.json"),
+        r#"{"model":"claude-sonnet-5-5","effort":null}"#,
+    )
+    .unwrap();
+    let _reconnected = terminal.stream().await;
+    terminal.status_line_shows("· default ·").await;
+    assert_eq!(terminal.feed().await.settings.effort, None);
+}
+
+#[tokio::test]
+async fn overlapping_gets_share_one_open_dialog_until_cancel() {
+    let terminal = terminal().await;
+    let mut first = terminal.stream().await;
+    let _resolved = terminal
+        .raise(question("overlap", &terminal.agent_id))
+        .await;
+    let dialog = next_message(&mut first, "elicitation/create", Duration::from_secs(3))
+        .await
+        .expect("the first stream opens the card");
+    let mut replacement = terminal.stream().await;
+    assert!(
+        next_message(
+            &mut replacement,
+            "elicitation/create",
+            Duration::from_millis(2500)
+        )
+        .await
+        .is_none(),
+        "one run must not offer a second copy through an overlapping GET"
+    );
+    terminal
+        .http(
+            Method::POST,
+            json!({"jsonrpc":"2.0","id":dialog["id"],"result":{"action":"cancel"}}).to_string(),
+        )
+        .await;
+    drop(first);
+    assert!(
+        next_message(
+            &mut replacement,
+            "elicitation/create",
+            Duration::from_millis(2500)
+        )
+        .await
+        .is_none(),
+        "the pending cancellation applies across the replacement stream"
+    );
+    assert_eq!(
+        terminal.feed().await.cards.len(),
+        1,
+        "cancel leaves the card open"
+    );
+}
