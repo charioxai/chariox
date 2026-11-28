@@ -2944,6 +2944,7 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
             .unwrap_or_default()
     };
     let first = stream(growth.sample(&pids, 1000));
+    assert_eq!(first[0].position_written_by_inode[&stdout_inode], 0);
     let (logger, mut usage, _) = stream_writer(1, 2, 500 * MIB);
     usage.writes = 0;
     let current = owner("agent", true, vec![usage], vec![(1, logger)]);
@@ -2970,6 +2971,11 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
         "this fixture rewrites already allocated blocks"
     );
     let second = stream(growth.sample(&pids, 2000));
+    assert_eq!(second[0].written_by_inode[&stdout_inode], 0);
+    assert_eq!(
+        second[0].position_written_by_inode[&stdout_inode],
+        1000 * MIB
+    );
     {
         let mut observation = current.lock().unwrap();
         observation.samples = vec![write_sample(1, 2000)];
@@ -2987,6 +2993,13 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
     stderr.sync_all().unwrap();
     drop(stderr);
     let third = stream(growth.sample(&pids, 3000));
+    assert_eq!(
+        third[0].position_written_by_inode[&stdout_inode],
+        1000 * MIB
+    );
+    assert!(!third[0]
+        .position_written_by_inode
+        .contains_key(&stderr_inode));
     let (filler, filler_use, scratch) = stream_writer(2, 1, 300 * MIB);
     {
         let mut observation = current.lock().unwrap();
@@ -3010,6 +3023,61 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
             .map(|(pid, _)| *pid)
             .collect::<Vec<_>>(),
         vec![2]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r6_position_read_write_movement_is_not_trusted_for_write_attribution() {
+    use std::io::{Read, Seek, Write};
+    use std::os::unix::fs::MetadataExt;
+    let dir = crate::test_support::TestTempDir::new("stream-rw-position");
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(dir.join("rw"))
+        .unwrap();
+    file.write_all(&vec![0; 2 * MIB as usize]).unwrap();
+    file.sync_all().unwrap();
+    file.rewind().unwrap();
+    let meta = file.metadata().unwrap();
+    let mut growth = disk_use::WriteGrowth::default();
+    let pids = [std::process::id()];
+    growth.sample(&pids, 1000);
+    // The file really changes, but almost all cursor movement is a read.
+    file.write_all(&[1]).unwrap();
+    file.read_exact(&mut vec![0; MIB as usize]).unwrap();
+    let rows = growth.sample(&pids, 2000);
+    let output = rows.iter().find(|output| output.id == meta.dev()).unwrap();
+    assert_eq!(output.written_by_inode[&meta.ino()], 0);
+    assert!(
+        !output.position_written_by_inode.contains_key(&meta.ino()),
+        "read movement supplied purported stream-write evidence"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r6_position_forward_seek_is_not_stream_write_evidence() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::MetadataExt;
+    let dir = crate::test_support::TestTempDir::new("stream-seek-position");
+    let mut file = std::fs::File::create(dir.join("seek")).unwrap();
+    file.write_all(&vec![0; 2 * MIB as usize]).unwrap();
+    file.sync_all().unwrap();
+    file.rewind().unwrap();
+    let meta = file.metadata().unwrap();
+    let mut growth = disk_use::WriteGrowth::default();
+    let pids = [std::process::id()];
+    growth.sample(&pids, 1000);
+    file.seek(SeekFrom::Start(MIB)).unwrap();
+    let rows = growth.sample(&pids, 2000);
+    let output = rows.iter().find(|output| output.id == meta.dev()).unwrap();
+    assert_eq!(output.written_by_inode[&meta.ino()], 0);
+    assert!(
+        !output.position_written_by_inode.contains_key(&meta.ino()),
+        "a pure seek supplied purported stream-write evidence"
     );
 }
 
