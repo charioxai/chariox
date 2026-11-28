@@ -98,6 +98,9 @@ impl AgentWakeMonitor {
             .drivers
             .register(Arc::new(super::wake_driver::TimerDriver));
         monitor
+            .drivers
+            .register(Arc::new(super::owner_wait::OwnerWaitDriver));
+        monitor
     }
 
     /// How long the scheduler has been silent: since its last tick, or since the kernel started
@@ -722,6 +725,7 @@ impl KernelRuntimeState {
                 Err(error) => Recovery::Lost(error.to_string()),
             };
             if let Recovery::Lost(reason) = recovery {
+                self.withdraw_owner_wait_card(&wake);
                 self.report_lost_wake(&wake, now, &format!("the kernel restarted: {reason}"))?;
             }
         }

@@ -498,6 +498,10 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        // First, before any waiter's card is withdrawn: what ends under them is the stop.
+        self.owned
+            .kernel_stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         // Before the browser host stops, which clears it.
         #[cfg(unix)]
         {

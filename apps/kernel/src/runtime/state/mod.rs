@@ -127,6 +127,7 @@ mod jobs;
 mod kernel_enrollment;
 mod leased_agent_file_serve;
 mod machine_acquisition;
+mod owner_wait;
 pub(crate) use machine_acquisition::Approval;
 mod machine_files_runtime;
 pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
@@ -509,6 +510,9 @@ struct KernelRuntimeOwnedState {
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
     provider_decisions_closed: tokio::sync::watch::Sender<bool>,
+    /// Set when the kernel starts to stop (a restart or a hot reload): a card that ends from then on
+    /// ended because of the stop, not because the owner or the clock decided.
+    kernel_stopping: Arc<std::sync::atomic::AtomicBool>,
     browser_region_cards: Arc<std::sync::Mutex<BTreeSet<String>>>,
     handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
@@ -1474,6 +1478,7 @@ impl KernelRuntimeState {
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 provider_decisions_closed: tokio::sync::watch::channel(false).0,
+                kernel_stopping: Arc::default(),
                 browser_region_cards: Arc::default(),
                 handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
