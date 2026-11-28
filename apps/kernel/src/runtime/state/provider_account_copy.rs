@@ -294,7 +294,7 @@ impl KernelRuntimeState {
                 }
             }
         };
-        match send_copy(false).await? {
+        let result = match send_copy(false).await? {
             RelayPeerResponse::ProviderAccountCopyInstalled { receipt }
                 if receipt == ProviderAccountCopyReceipt::installed(&binding) =>
             {
@@ -302,46 +302,32 @@ impl KernelRuntimeState {
             }
             RelayPeerResponse::ProviderAccountCopyTargetVaultLocked { expires_at_ms } => {
                 if matches!(completion, CopyCompletion::Installed) {
-                    return Err(failure("provider_account_copy_target_vault_locked"));
+                    Err(failure("provider_account_copy_target_vault_locked"))
+                } else {
+                    let wait = ProviderAccountCopyWait {
+                        operation_id: binding.operation_id.clone(),
+                        source_kernel_id: binding.source_kernel_id.clone(),
+                        target_kernel_id: binding.target_kernel_id.clone(),
+                        target_label,
+                        expires_at_ms,
+                    };
+                    let result = self.wait_for_account_copy(
+                        owner.clone(),
+                        binding.clone(),
+                        wait,
+                        move || send_copy(true),
+                    );
+                    self.notify_account_copy_progress();
+                    result
                 }
-                let wait = ProviderAccountCopyWait {
-                    operation_id: binding.operation_id.clone(),
-                    source_kernel_id: binding.source_kernel_id.clone(),
-                    target_kernel_id: binding.target_kernel_id.clone(),
-                    target_label,
-                    expires_at_ms,
-                };
-                self.wait_for_account_copy(owner, binding, wait.clone(), move || send_copy(true));
-                self.notify_account_copy_progress();
-                Ok(ProviderAccountCopyOutcome::Waiting(wait))
             }
             RelayPeerResponse::ProviderAccountCopyFailed { code } => {
-                Err(failure(match code.as_str() {
-                    "provider_account_copy_unauthorized" => "provider_account_copy_unauthorized",
-                    // The target answered, so the Vault that is closed is the receiving one.
-                    "provider_account_copy_vault_locked" => {
-                        "provider_account_copy_target_vault_locked"
-                    }
-                    "provider_account_copy_vault_unreadable" => {
-                        "provider_account_copy_target_vault_unreadable"
-                    }
-                    "provider_account_copy_credential_unreadable" => {
-                        "provider_account_copy_target_credential_unreadable"
-                    }
-                    "provider_account_copy_cli_missing" => "provider_account_copy_cli_missing",
-                    "provider_account_copy_replace_differs" => {
-                        "provider_account_copy_replace_differs"
-                    }
-                    "provider_account_copy_conflict" => "provider_account_copy_conflict",
-                    "provider_account_copy_rejected" => "provider_account_copy_rejected",
-                    "provider_account_copy_verification_failed" => {
-                        "provider_account_copy_verification_failed"
-                    }
-                    _ => "provider_account_copy_install_failed",
-                }))
+                Err(install_peer_failure(&code))
             }
             _ => Err(failure("provider_account_copy_unsupported")),
-        }
+        };
+        self.remember_account_copy_retry(&owner, &binding, &result);
+        result
     }
 
     pub(crate) async fn install_provider_account_copy(
