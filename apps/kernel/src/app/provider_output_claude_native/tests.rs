@@ -858,13 +858,14 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
         "claude-headless",
         false,
         false,
+        false,
     );
 }
 
 #[test]
 fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
     assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
-        "claude", false, false,
+        "claude", false, false, false,
     );
 }
 
@@ -873,6 +874,7 @@ fn late_claude_transcript_drain_does_not_complete_the_next_prompt() {
     assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         "claude-headless",
         true,
+        false,
         false,
     );
 }
@@ -883,6 +885,14 @@ fn managed_headless_stop_projects_transcript_from_sandbox_account_path() {
         "claude-headless",
         false,
         true,
+        false,
+    );
+}
+
+#[test]
+fn cancelling_native_stop_keeps_the_turn_and_successor_until_physical_reap() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude", false, false, true,
     );
 }
 
@@ -890,6 +900,7 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     provider: &str,
     advance_next_prompt_before_late_drain: bool,
     managed_account_binding: bool,
+    cancelling: bool,
 ) {
     use std::io::Write as _;
 
@@ -906,14 +917,8 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
-    let root = std::env::temp_dir().join(format!(
-        "chariox-claude-headless-stop-test-{}-{}-{}-{}-{}",
-        provider,
-        advance_next_prompt_before_late_drain,
-        managed_account_binding,
-        std::process::id(),
-        timestamp_millis()
-    ));
+    let root_guard = crate::test_support::TestTempDir::new("claude-native-stop-hook");
+    let root = root_guard.path().to_path_buf();
     fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("hidden-context.txt");
     let events_file = root.join("events.jsonl");
@@ -1016,7 +1021,7 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         other => panic!("unexpected prompt outcome: {other:?}"),
     };
     write_claude_native_marker(&context_file, &format!("injected:{}", prompt.id()));
-    let queued_prompt = if advance_next_prompt_before_late_drain {
+    let queued_prompt = if advance_next_prompt_before_late_drain || cancelling {
         match app
             .record_native_prompt_started_with_attachments(
                 session.id(),
@@ -1035,6 +1040,27 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         None
     };
 
+    let reap_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!cancelling));
+    if cancelling {
+        app.pty_mut()
+            .spawn(crate::pty::PtySpawnRequest {
+                process_key: run.id().into(),
+                provider_run_id: run.id().into(),
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "exec sleep 300".into()],
+                env: Default::default(),
+                env_remove: vec![],
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        app.pty_mut()
+            .defer_reap_for_test(run.id(), reap_ready.clone());
+        app.cancel_active_prompt(session.id(), attachment.id())
+            .unwrap();
+    }
+
     let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
         .expect("Stop event should be processed");
@@ -1048,7 +1074,9 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         .as_deref()
         .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
-    let next_active_prompt_id = if let Some(queued_prompt) = queued_prompt {
+    let next_active_prompt_id = if let Some(queued_prompt) =
+        queued_prompt.filter(|_| advance_next_prompt_before_late_drain)
+    {
         app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
             .expect("stopped prompt should complete");
         let next = app
@@ -1087,7 +1115,27 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     let active_prompt = app
         .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
         .expect("settled prompt state should load");
-    if let Some(next_active_prompt_id) = next_active_prompt_id {
+    if cancelling {
+        let pending = app.pty_mut().remove_process(run.id());
+        reap_ready.store(true, std::sync::atomic::Ordering::Release);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match app.pty_mut().remove_process(run.id()) {
+                Ok(_) => break,
+                Err(DaemonError::PtyCleanup { .. }) if std::time::Instant::now() < until => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(error) => panic!("test PTY cleanup failed: {error}"),
+            }
+        }
+        assert!(
+            matches!(pending, Err(DaemonError::PtyCleanup { .. })),
+            "the real native PTY must still be pending physical reap"
+        );
+        assert_eq!(active_prompt.as_ref().map(|active| (active.id(), active.status())),
+            Some((prompt.id(), crate::session::PromptStatus::Cancelling)),
+            "native Stop must leave the exact cancelled turn owned and its successor queued until physical settlement");
+    } else if let Some(next_active_prompt_id) = next_active_prompt_id {
         assert_eq!(
             active_prompt.as_ref().map(|prompt| prompt.id()),
             Some(next_active_prompt_id.as_str()),
