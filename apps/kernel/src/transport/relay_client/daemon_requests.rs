@@ -23,7 +23,7 @@ use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity, RelayE
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::local::LocalDaemonRequest;
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
 use crate::runtime_transport::command_cache::{
@@ -1042,7 +1042,7 @@ async fn dispatch_on_behalf_of(
     on_behalf_of: &crate::local::OnBehalfOf,
     gateway_public_key: &str,
 ) -> RelayDispatchOutcome {
-    use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
+    use crate::runtime::kernel_gateway::ledger::{self, is_repeatable, Failure, Settled};
     // A decision answered through the paired gateway is the external agent's, not a person's.
     // Everything else keeps the paired gateway's terminal class, so its attachments can run shells.
     if matches!(
@@ -1062,6 +1062,35 @@ async fn dispatch_on_behalf_of(
             refusal.message(),
             false,
         ));
+    }
+    if let LocalDaemonRequest::GetGatewayCommandStatus(status) = &request {
+        if status.command_id.trim().is_empty() {
+            return RelayDispatchOutcome::RelayError(relay_error(
+                "command_id_required",
+                "Specify the original command ID.",
+                false,
+            ));
+        }
+        let key = ledger::key(gateway_public_key, &status.command_id);
+        return match router
+            .kernel_gateway()
+            .ledger()
+            .status(&key, &on_behalf_of.grant_id)
+            .await
+        {
+            Ok(value) => RelayDispatchOutcome::Response(
+                serde_json::to_value(LocalDaemonResponse::GatewayCommandStatus {
+                    command_id: status.command_id.clone(),
+                    status: value,
+                })
+                .expect("command status serializes"),
+            ),
+            Err(error) => RelayDispatchOutcome::RelayError(relay_error(
+                &error.code,
+                &error.message,
+                error.retryable,
+            )),
+        };
     }
     if crate::runtime::state::is_outside_event_request(&request) {
         let id = format!(
@@ -1135,8 +1164,9 @@ async fn dispatch_on_behalf_of(
         None,
         &request,
     );
-    let fingerprint = CommandFingerprint::for_app_control(&command, &request);
-    let key = serde_json::json!([gateway_public_key, &command_id]).to_string();
+    let fingerprint = CommandFingerprint::for_app_control(&command, &request)
+        .with_gateway_grant(&on_behalf_of.grant_id);
+    let key = ledger::key(gateway_public_key, &command_id);
     let settled = router
         .kernel_gateway()
         .ledger()

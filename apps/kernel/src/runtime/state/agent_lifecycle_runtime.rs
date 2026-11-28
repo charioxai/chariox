@@ -850,15 +850,8 @@ impl KernelRuntimeState {
             }
             return Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload });
         }
-        // The message is stored; the sender never waits for the receiver's provider to take it.
-        // The receiver reads it at its next possible point and a following sender gets the
-        // delivery event then.
-        self.spawn_agent_inbox_delivery(
-            target_room.to_owned(),
-            target.id().to_owned(),
-            event.sequence,
-        );
-        let mut payload = serde_json::json!({"status":"steering","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested});
+        self.attempt_urgent_agent_message(&event).await;
+        let mut payload = self.urgent_agent_message_receipt(&event)?;
         if let Some(note) =
             self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
         {
@@ -867,9 +860,32 @@ impl KernelRuntimeState {
         }
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
+    pub(super) async fn attempt_urgent_agent_message(&self, event: &ledger::InboxEvent) {
+        // A held receiver lane already tells us delivery cannot be confirmed yet.
+        let lane_held = self
+            .owned
+            .provider_store
+            .get_run_for_agent(&event.room_id, &event.agent_id)
+            .is_some_and(|run| self.provider_runtime_lanes.try_acquire(run.id()).is_none());
+        // Keep delivery independent of both the sender and its receipt deadline.
+        let delivery = self.spawn_agent_inbox_delivery(
+            event.room_id.clone(),
+            event.agent_id.clone(),
+            event.sequence,
+        );
+        if !lane_held {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(750), delivery).await;
+        }
+    }
+
     /// The stored message belongs to the receiver now: its delivery runs on the kernel's own account,
     /// so a change to the sender (a new provider run, an archive) cannot fail a healthy receiver.
-    pub(super) fn spawn_agent_inbox_delivery(&self, room: String, agent: String, sequence: u64) {
+    pub(super) fn spawn_agent_inbox_delivery(
+        &self,
+        room: String,
+        agent: String,
+        sequence: u64,
+    ) -> tokio::task::JoinHandle<()> {
         let state = self.as_kernel();
         tokio::spawn(async move {
             if let Err(error) = Box::pin(state.deliver_agent_inbox(&room, &agent)).await {
@@ -887,7 +903,7 @@ impl KernelRuntimeState {
                     ),
                 );
             }
-        });
+        })
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
     /// Nothing waits here for its answer: a reply comes back the same way, as a message.
@@ -909,7 +925,7 @@ impl KernelRuntimeState {
         if request_id.trim().is_empty() || request_id.len() > 128 {
             return Err(ledger::error("invalid message occurrence"));
         }
-        let (target, duplicate) = self
+        let (target, duplicate, delivery) = self
             .relay_peer_agent(
                 sender,
                 kernel,
@@ -926,7 +942,10 @@ impl KernelRuntimeState {
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: if args.urgent {
-                serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":true,"reply_requested":args.reply_requested})
+                let delivery = delivery.ok_or_else(|| {
+                    ledger::error("The receiving kernel did not report a message disposition.")
+                })?;
+                serde_json::json!({"status":delivery,"duplicate":duplicate,"message_id":format!("peer:{}:{}:{}:{request_id}", target.kernel_id, target.room_id, target.agent_id),"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":true,"reply_requested":args.reply_requested})
             } else {
                 serde_json::json!({"status":if duplicate {"duplicate"} else {"queued"},"message_id":format!("peer:{}:{}:{}:{request_id}", target.kernel_id, target.room_id, target.agent_id),"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":false,"reply_requested":args.reply_requested,"note":super::agent_queued_messages::queued_note(&args.agent)})
             },

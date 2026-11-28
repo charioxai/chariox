@@ -665,7 +665,7 @@ impl KernelRuntimeState {
                 "error": error.map(crate::secret_redaction::redact_secrets),
             }),
         );
-        self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence);
+        drop(self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence));
     }
 
     fn defer_inbox_steer(&self, room: &str, agent: &str, sequence: u64) -> Result<(), DaemonError> {

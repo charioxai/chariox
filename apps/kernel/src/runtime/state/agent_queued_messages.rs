@@ -182,8 +182,25 @@ enum Promotion {
     Urgent,
     /// Read, or started a turn: nothing is left to change.
     Delivered,
+    /// Text may have been staged, but the provider has not confirmed delivery.
+    Unconfirmed,
     /// The person cancelled it before its recipient read it.
     Withdrawn,
+    /// Delivery ended without reaching the recipient.
+    Undelivered,
+}
+
+fn promotion_state(event: &InboxEvent, shown: bool, read: bool) -> Option<Promotion> {
+    Some(match event.state.as_str() {
+        "expired" => Promotion::Withdrawn,
+        "failed" => Promotion::Undelivered,
+        "accepted" | "acknowledged" | "handled" => Promotion::Delivered,
+        "pending" if read => Promotion::Delivered,
+        "pending" if shown => Promotion::Unconfirmed,
+        "pending" if event.urgent => Promotion::Urgent,
+        "pending" => return None,
+        _ => Promotion::Unconfirmed,
+    })
 }
 
 fn promotion_result(
@@ -203,6 +220,14 @@ fn promotion_result(
             "already_delivered",
             "the message was already delivered; nothing changed",
         ),
+        Promotion::Unconfirmed => (
+            "queued",
+            "The message is saved. Delivery has not been confirmed.",
+        ),
+        Promotion::Undelivered => (
+            "undelivered",
+            "the message was not delivered; nothing was sent",
+        ),
         Promotion::Withdrawn => (
             "withdrawn",
             "the person cancelled the message before it was delivered; nothing was sent",
@@ -221,17 +246,13 @@ impl KernelRuntimeState {
         self.owned
             .ensure_agent_before_deadline(&event.room_id, &event.agent_id)?;
         let store = &self.owned.durable_state_store;
-        let Some((event, read)) = store.agent_inbox_event(event.sequence)? else {
-            return Ok(Promotion::Delivered);
+        let Some((event, shown)) = store.agent_inbox_event(event.sequence)? else {
+            return Ok(Promotion::Unconfirmed);
         };
-        if event.state == "expired" {
-            return Ok(Promotion::Withdrawn);
-        }
-        if event.state != "pending" || read {
-            return Ok(Promotion::Delivered);
-        }
-        if event.urgent {
-            return Ok(Promotion::Urgent);
+        if let Some(promotion) =
+            promotion_state(&event, shown, store.agent_inbox_was_read(event.sequence)?)
+        {
+            return Ok(promotion);
         }
         let released = store.agent_lifecycle(Operation::ReleaseQueuedMessage {
             room: event.room_id.clone(),
@@ -242,16 +263,86 @@ impl KernelRuntimeState {
             if crate::error::is_agent_deadline_refusal(&error) {
                 return Err(error);
             }
-            // The recipient read it, or the person cancelled it, between the look and the change.
-            return Ok(Promotion::Delivered);
+            // Re-read a racing read, cancellation or delivery outcome before claiming success.
+            if let Some((current, shown)) = store.agent_inbox_event(event.sequence)? {
+                if let Some(promotion) =
+                    promotion_state(&current, shown, store.agent_inbox_was_read(event.sequence)?)
+                {
+                    return Ok(promotion);
+                }
+            }
+            return Err(error);
         }
         Box::pin(self.deliver_agent_inbox(&event.room_id, &event.agent_id)).await?;
         self.publish_task_change(&event.room_id);
         Ok(Promotion::Promoted)
     }
 
-    /// A message sent again with the key it first had is the same message: the answer is the first send's,
-    /// unless the repeat is urgent and the message is still queued, which promotes it.
+    pub(super) fn urgent_agent_message_delivery(
+        &self,
+        submitted: &InboxEvent,
+    ) -> Result<
+        (
+            crate::transport::relay_peer_agents::AgentMessageDelivery,
+            Option<String>,
+        ),
+        DaemonError,
+    > {
+        use crate::transport::relay_peer_agents::AgentMessageDelivery::{
+            AlreadyDelivered, Queued, Started, Steered, Undelivered,
+        };
+        let current = self
+            .owned
+            .durable_state_store
+            .agent_inbox_event(submitted.sequence)?;
+        // Shown also includes inline text staged before provider acceptance.
+        let read = self
+            .owned
+            .durable_state_store
+            .agent_inbox_was_read(submitted.sequence)?;
+        let event = current.as_ref().map_or(submitted, |(event, _)| event);
+        Ok(match event.state.as_str() {
+            "accepted" | "acknowledged" | "handled" => {
+                if let Some(target) = &event.target_prompt_id {
+                    (Steered, Some(target.clone()))
+                } else if let Some(prompt) = &event.prompt_id {
+                    (Started, Some(prompt.clone()))
+                } else {
+                    (AlreadyDelivered, None)
+                }
+            }
+            "pending" if read => (AlreadyDelivered, None),
+            "failed" | "expired" => (Undelivered, None),
+            _ => (Queued, None),
+        })
+    }
+
+    pub(super) fn urgent_agent_message_receipt(
+        &self,
+        event: &InboxEvent,
+    ) -> Result<serde_json::Value, DaemonError> {
+        use crate::transport::relay_peer_agents::AgentMessageDelivery;
+        let (delivery, prompt_id) = self.urgent_agent_message_delivery(event)?;
+        let mut receipt = serde_json::json!({
+            "status": delivery,
+            "message_id": event.sequence.to_string(),
+            "sequence": event.sequence,
+            "urgent": true,
+            "reply_requested": event.reply_requested,
+        });
+        if let Some(prompt_id) = prompt_id {
+            receipt["prompt_id"] = prompt_id.into();
+        } else if delivery == AgentMessageDelivery::Queued {
+            receipt["note"] = "The message is saved. Delivery has not been confirmed.".into();
+        } else if delivery == AgentMessageDelivery::AlreadyDelivered {
+            receipt["note"] =
+                "The recipient already read this message; nothing is left to deliver.".into();
+        }
+        Ok(receipt)
+    }
+
+    /// A message sent again with the key it first had uses the same inbox row.
+    /// An urgent repeat can promote the original queued message.
     pub(super) async fn answer_resent_agent_message(
         &self,
         first: &InboxEvent,
@@ -260,10 +351,13 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if urgent && !first.urgent {
             let promotion = self.promote_queued_message(first).await?;
-            return Ok(promotion_result(first.sequence, &promotion));
+            // Cancelled by the person before its recipient read it: nothing was sent.
+            if matches!(promotion, Promotion::Withdrawn) {
+                return Ok(promotion_result(first.sequence, &promotion));
+            }
         }
-        let payload = if first.urgent {
-            serde_json::json!({"status":"steering","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":true,"reply_requested":first.reply_requested})
+        let payload = if first.urgent || urgent {
+            self.urgent_agent_message_receipt(first)?
         } else {
             serde_json::json!({"status":"queued","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":false,"reply_requested":first.reply_requested,"note":queued_note(target_name)})
         };
@@ -308,7 +402,7 @@ impl KernelRuntimeState {
         else {
             return Err(ledger::error("no queued message of yours has this id"));
         };
-        let (target, _) = self
+        let (target, _, _) = self
             .relay_peer_agent(
                 sender,
                 kernel,

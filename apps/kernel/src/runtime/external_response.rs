@@ -230,6 +230,7 @@ response_policies! {
         GatewayKernelsListed,
         AccountKernelsListed,
         AccountKernelUnlinked,
+        GatewayCommandStatus,
         AttachmentsHeartbeated,
         GatewayKernelJoined,
         GatewayKernelForgotten,

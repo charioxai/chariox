@@ -331,6 +331,25 @@ mod tests {
     }
 
     #[test]
+    fn queued_steer_admission_refusal_is_distinct_from_worker_uncertainty() {
+        let refused = DaemonError::LocalTransport {
+            operation: "steer queued prompt",
+            message: "queued prompts cannot steer a human-authorized sudo turn".into(),
+        }
+        .steer_not_submitted(true);
+        let projected = map_relay_error(&refused);
+        assert_eq!(projected.code, "prompt_steer_rejected");
+        assert!(!projected.retryable);
+
+        let uncertain = map_relay_error(&DaemonError::LocalTransport {
+            operation: "steer remote queued prompt",
+            message: "worker acknowledgement lost; exact queued item held".into(),
+        });
+        assert_eq!(uncertain.code, "transport_error");
+        assert!(uncertain.retryable);
+    }
+
+    #[test]
     fn settled_prompt_error_keeps_its_typed_code_across_the_relay() {
         let mapped = map_relay_error(&DaemonError::NoActivePrompt {
             session_id: "settled-room".to_string(),

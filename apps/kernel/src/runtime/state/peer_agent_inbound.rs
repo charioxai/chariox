@@ -198,6 +198,7 @@ impl KernelRuntimeState {
                 protocol_version: VERSION,
                 duplicate,
                 target: self.peer_agent_stamp(target),
+                delivery: None,
             });
         };
         // As for a peer in another room: the kernel cancels through the target's own
@@ -222,6 +223,7 @@ impl KernelRuntimeState {
             protocol_version: VERSION,
             duplicate,
             target: self.peer_agent_stamp(target),
+            delivery: None,
         })
     }
 
@@ -379,6 +381,7 @@ impl KernelRuntimeState {
                 protocol_version: VERSION,
                 duplicate: true,
                 target: self.peer_agent_stamp(target),
+                delivery: Some(self.urgent_agent_message_delivery(first)?.0),
             });
         }
         if message.trim().is_empty() {
@@ -417,28 +420,18 @@ impl KernelRuntimeState {
                 ),
             );
         }
-        // Only an urgent message acts on its recipient's turn; any other waits for the next one.
-        if !urgent {
+        let delivery = if urgent {
+            self.attempt_urgent_agent_message(&event).await;
+            self.urgent_agent_message_delivery(&event)?.0
+        } else {
             self.publish_task_change(room);
-        } else if let Err(error) = Box::pin(self.deliver_agent_inbox(room, target.id())).await {
-            self.owned.record_notice_for_agent(
-                room,
-                None,
-                Some(target.id()),
-                self.owned
-                    .attachment_store
-                    .list_session_attachment_ids(room),
-                format!(
-                    "Event {} is durable and pending: {}",
-                    event.sequence,
-                    crate::secret_redaction::redact_secrets(&error.to_string())
-                ),
-            );
-        }
+            crate::transport::relay_peer_agents::AgentMessageDelivery::Queued
+        };
         Ok(RelayPeerResponse::PeerAgentAccepted {
             protocol_version: VERSION,
             duplicate,
             target: self.peer_agent_stamp(target),
+            delivery: Some(delivery),
         })
     }
 }

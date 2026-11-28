@@ -1,6 +1,6 @@
 {
-  "protocol_version": 1016,
-  "relay_peer_protocol_version": 453,
+  "protocol_version": 1017,
+  "relay_peer_protocol_version": 454,
   "web_bot_auth": {
     "projects": [
       "project-wba"

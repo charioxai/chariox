@@ -622,6 +622,12 @@ pub(crate) enum Operation {
         agent: String,
         sequences: Vec<u64>,
     },
+    /// The explicit inbox tool successfully returned these rows to their recipient.
+    MarkRead {
+        room: String,
+        agent: String,
+        sequences: Vec<u64>,
+    },
     Defer {
         room: String,
         agent: String,

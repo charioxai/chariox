@@ -133,7 +133,7 @@ impl KernelRuntimeState {
         let more = shown.len() < open.len() || unread_full;
         let next_after = shown.last().copied().unwrap_or(after);
         if !shown.is_empty() {
-            store.agent_lifecycle(Operation::MarkShown {
+            store.agent_lifecycle(Operation::MarkRead {
                 room: room.into(),
                 agent: actor.into(),
                 sequences: shown,
@@ -165,15 +165,15 @@ impl KernelRuntimeState {
             .into_iter()
             .find(|event| event.sequence == sequence)
             .ok_or_else(|| ledger::error("event unavailable in this inbox"))?;
+        let reader = self.owned.agent_store.get_agent(actor)?;
+        let (relation, view) = self.inbox_event_view(room, &reader, &event, offset)?;
         if ledger::is_open(&event) {
-            store.agent_lifecycle(Operation::MarkShown {
+            store.agent_lifecycle(Operation::MarkRead {
                 room: room.into(),
                 agent: actor.into(),
                 sequences: vec![sequence],
             })?;
         }
-        let reader = self.owned.agent_store.get_agent(actor)?;
-        let (relation, view) = self.inbox_event_view(room, &reader, &event, offset)?;
         Ok(serde_json::json!({
             "untrusted": !relation.is_instruction(),
             "notice": READING_NOTICE,

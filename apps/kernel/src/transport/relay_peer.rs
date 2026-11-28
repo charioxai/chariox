@@ -262,7 +262,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 453 (local 1016, Landing 15, row 577): a leased native-launch or prompt request carries no provider launch
 /// credential; a worker launches a leased Claude agent from its own tracked copy of the account. A request that
 /// still carries the field is refused as an unknown field.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 453;
+/// Peer 454 carries the recipient's urgent Room message delivery disposition.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 454;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -1651,6 +1652,7 @@ pub enum RelayPeerResponse {
         protocol_version: u32,
         duplicate: bool,
         target: PeerAgentStamp,
+        delivery: Option<crate::transport::relay_peer_agents::AgentMessageDelivery>,
     },
     PeerAgentSubscribed {
         protocol_version: u32,
