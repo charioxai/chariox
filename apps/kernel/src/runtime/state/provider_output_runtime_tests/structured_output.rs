@@ -2262,3 +2262,65 @@ async fn model_usage_write_failure_does_not_discard_a_claude_reply() {
         "the reply must settle the prompt"
     );
 }
+
+/// A Room of idle agents must not be read twice a second each: a run that holds no prompt is
+/// read again at the idle rate after an empty poll (its provider announces any output).
+#[tokio::test]
+async fn an_idle_run_is_polled_at_the_idle_rate_after_an_empty_poll() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-idle-poll");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-structured-idle-poll",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex-structured-idle-poll".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let output_store = app.structured_output_record_store();
+    output_store.mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(run.id().to_string(), Ok(None));
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let before = crate::session::unix_epoch_ms();
+    runtime
+        .pump_owned_structured_provider_output(session.id(), run.id(), Vec::new())
+        .await
+        .expect("an empty poll should be settled");
+
+    let due = output_store
+        .poll_due_at_ms(run.id())
+        .expect("the live run stays scheduled");
+    assert!(
+        due >= before + crate::app::provider_output::STRUCTURED_OUTPUT_IDLE_POLL_BACKOFF_MS,
+        "an idle run was scheduled {} ms after its empty poll",
+        due.saturating_sub(before)
+    );
+}

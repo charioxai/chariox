@@ -187,6 +187,17 @@ impl ProviderAccountProfileRegistry {
         Ok(true)
     }
 
+    /// Whether any copy notice still waits to be shown on `machine`. Every provider
+    /// output pass asks before it walks the Room's agents.
+    pub(crate) fn credential_copy_notice_waiting(&self, machine: &str) -> bool {
+        self.read_document().is_ok_and(|document| {
+            document
+                .credential_copy_notices
+                .iter()
+                .any(|notice| !notice.notified_machines.iter().any(|id| id == machine))
+        })
+    }
+
     pub(crate) fn take_credential_copy_notice(
         &self,
         owner_user_id: &str,
@@ -196,7 +207,6 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<Option<String>, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
         let mut document = self.write_document()?;
-        let original = document.clone();
         let Some(notice) = document.credential_copy_notices.iter_mut().find(|notice| {
             notice.owner_user_id == owner_user_id
                 && notice.provider == profile.provider
@@ -214,7 +224,13 @@ impl ProviderAccountProfileRegistry {
         let message = format!("{provider} credentials on {machine} were copied from {}. The provider may invalidate one copy when another refreshes; you may need to log in on this machine later.", notice.source_machine);
         notice.notified_machines.push(machine.into());
         if let Err(error) = self.persist_locked(&document) {
-            *document = original;
+            if let Some(notice) = document.credential_copy_notices.iter_mut().find(|notice| {
+                notice.owner_user_id == owner_user_id
+                    && notice.provider == profile.provider
+                    && notice.profile_id == profile.profile_id
+            }) {
+                notice.notified_machines.retain(|id| id != machine);
+            }
             return Err(error);
         }
         Ok(Some(message))

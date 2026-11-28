@@ -21,7 +21,8 @@ mod tests;
 use background::pump_session_active_prompt_outputs;
 pub(crate) use structured_store::{
     structured_output_batch_should_poll_immediately, StructuredOutputRecordStore,
-    STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
+    STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, STRUCTURED_OUTPUT_IDLE_POLL_BACKOFF_MS,
+    STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
 };
 
 pub(crate) struct ProviderOutputPumpRequest<'a> {

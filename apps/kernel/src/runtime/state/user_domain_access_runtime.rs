@@ -103,7 +103,10 @@ impl KernelRuntimeState {
         {
             return Err(host_error("MP-08: leased or remote agents use their Room Browser/Computer route; user-domain control is unavailable".into()));
         }
-        let session = self.owned.session_snapshot(run.session_id())?;
+        // Membership and status are stored on the Room; a full snapshot would also read its
+        // tasks, wakes and queued messages and republish it, for every listed run.
+        self.owned.durable_state_store.require_writer_healthy()?;
+        let session = self.owned.session_store.get_session(run.session_id())?;
         if agent.session_id() != run.session_id()
             || !self.is_room_member(&session, agent.owner_user_id())
             || session.status() == crate::session::SessionStatus::Ended

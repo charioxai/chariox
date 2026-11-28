@@ -48,6 +48,9 @@ pub(super) struct Pool {
     hold_gate: Mutex<()>,
     #[cfg(target_os = "linux")]
     budget: Mutex<Weak<cgroup::Budget>>,
+    /// Unit counters, read once per interval for all watchers.
+    #[cfg(target_os = "linux")]
+    counters: cgroup::CounterCache,
     members: Mutex<Vec<Weak<Mutex<Observation>>>>,
     stopped_at: Mutex<BTreeMap<String, Instant>>,
     pub(super) ledger: Mutex<admission::Ledger>,
@@ -157,6 +160,8 @@ impl Pool {
             protection_checked: Mutex::new(None),
             #[cfg(target_os = "linux")]
             budget: Mutex::new(Weak::new()),
+            #[cfg(target_os = "linux")]
+            counters: cgroup::CounterCache::default(),
             members: Mutex::default(),
             stopped_at: Mutex::default(),
             ledger: Mutex::new(admission::Ledger::new(peaks)),
@@ -844,7 +849,7 @@ impl Pool {
                         .cgroup
                         .as_deref()
                         .and_then(std::path::Path::parent)
-                        .and_then(cgroup::unreclaimable)
+                        .and_then(|unit| self.counters.unreclaimable(unit))
                     {
                         cgroup_observed
                             .entry(member.unit.clone())

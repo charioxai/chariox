@@ -3,6 +3,24 @@
 use super::*;
 
 impl KernelRuntimeState {
+    /// How long after a poll that found nothing the run is read again: the busy rate while it
+    /// holds a prompt or background work, the idle rate otherwise.
+    fn quiet_poll_backoff_ms(&self, provider_run_id: &str) -> u64 {
+        let busy = crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS;
+        let owned = &self.owned;
+        let Ok(run) = owned.provider_store.get_run(provider_run_id) else {
+            return busy;
+        };
+        if owned.background_holds.holds_run(provider_run_id)
+            || owned
+                .provider_run_has_active_prompt(run.session_id(), &run)
+                .unwrap_or(true)
+        {
+            return busy;
+        }
+        crate::app::provider_output::STRUCTURED_OUTPUT_IDLE_POLL_BACKOFF_MS
+    }
+
     pub(super) async fn pump_owned_structured_provider_output(
         &self,
         session_id: &str,
@@ -80,9 +98,10 @@ impl KernelRuntimeState {
                     owned
                         .structured_output_records
                         .mark_poll_succeeded(&finished_run_id);
+                    let backoff_ms = self.quiet_poll_backoff_ms(&finished_run_id);
                     owned
                         .structured_output_records
-                        .schedule_after_empty_poll(finished_run_id, now_ms);
+                        .schedule_next_poll(finished_run_id, now_ms.saturating_add(backoff_ms));
                     continue;
                 }
                 Err(error) => {
@@ -346,9 +365,7 @@ impl KernelRuntimeState {
                 ) {
                     now_ms
                 } else {
-                    now_ms.saturating_add(
-                        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
-                    )
+                    now_ms.saturating_add(self.quiet_poll_backoff_ms(&finished_run_id))
                 };
             let run_session_id = run.session_id().to_string();
             let recipients = if is_requested_run {
@@ -415,6 +432,17 @@ impl KernelRuntimeState {
             owned
                 .structured_output_records
                 .schedule_next_poll(finished_run_id, next_due_at_ms);
+        }
+        // A run that took a prompt since its last empty poll leaves the idle rate now.
+        if self.quiet_poll_backoff_ms(provider_run_id)
+            == crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS
+        {
+            owned.structured_output_records.cap_next_poll(
+                provider_run_id,
+                crate::session::unix_epoch_ms().saturating_add(
+                    crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
+                ),
+            );
         }
         if owned
             .structured_output_records

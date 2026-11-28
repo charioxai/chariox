@@ -22,6 +22,13 @@ impl Drop for RecoveryClaim {
 impl KernelRuntimeState {
     pub(super) async fn publish_credential_copy_notices(&self, session_id: &str) {
         let config = self.owned.config_projection.snapshot();
+        if !self
+            .owned
+            .provider_account_profiles
+            .credential_copy_notice_waiting(&config.host_machine_id)
+        {
+            return;
+        }
         for agent in self
             .owned
             .agent_store

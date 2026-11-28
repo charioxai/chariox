@@ -69,6 +69,10 @@ impl SessionStateStore {
         self.read().session_owner_user_id(session_id)
     }
 
+    pub(crate) fn owner_of_session(&self, session_id: &str) -> Result<String, DaemonError> {
+        self.read().owner_of_session(session_id)
+    }
+
     pub(crate) fn try_get_session_for_projection(
         &self,
         session_id: &str,

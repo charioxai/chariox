@@ -53,10 +53,10 @@ fn lifecycle_projection_obeys_private_and_transparent_collaboration() {
             GridPosition::new(0, 0, 1, 1),
         );
         agent.set_owner_user_id(owner);
-        session.agents.push(agent);
+        Arc::make_mut(&mut session.agents).push(agent);
     }
     for agent in ["own", "peer", "deleted-peer"] {
-        session.agent_tasks.push(
+        Arc::make_mut(&mut session.agent_tasks).push(
             serde_json::from_value(json!({
                 "task_id": agent, "room_id": "room", "agent_id": agent, "prompt_id": agent,
                 "revision": 1, "state": "waiting", "reason": "private source review",
@@ -64,7 +64,7 @@ fn lifecycle_projection_obeys_private_and_transparent_collaboration() {
             }))
             .unwrap(),
         );
-        session.agent_wakes.push(
+        Arc::make_mut(&mut session.agent_wakes).push(
             serde_json::from_value(json!({
                 "id": agent, "task_id": agent, "room_id": "room", "agent_id": agent,
                 "registration_id": agent, "kind": "process", "label": "private source",
@@ -377,4 +377,51 @@ fn user_projection_hides_sub_agents_from_the_list_and_the_counts() {
     assert_eq!(counts.owned_agent_count, 1);
     // The kernel's own state still holds them: they stay addressable by id.
     assert_eq!(session.agents().len(), 4);
+}
+
+/// A Room with many agents is copied on every read of it (each provider output pass,
+/// each sweep): the copy shares what it does not change, and a change to either side
+/// stays on that side.
+#[test]
+fn copying_a_room_shares_its_agents_and_tasks_until_one_side_changes() {
+    use crate::agent::GridPosition;
+    let mut room = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "tree",
+        "machine",
+        "kernel",
+    );
+    let agents = (0..3)
+        .map(|index| {
+            let id = format!("agent-{index}");
+            AgentInstance::new(
+                &id,
+                &id,
+                "room",
+                None,
+                "codex",
+                None,
+                None,
+                None,
+                GridPosition::new(0, 0, 1, 1),
+            )
+        })
+        .collect();
+    room.set_agents(agents);
+    let copy = room.clone();
+    assert!(Arc::ptr_eq(&room.agents, &copy.agents));
+    assert!(Arc::ptr_eq(&room.agent_tasks, &copy.agent_tasks));
+    assert!(Arc::ptr_eq(&room.agent_wakes, &copy.agent_wakes));
+    assert!(Arc::ptr_eq(
+        &room.queued_agent_messages,
+        &copy.queued_agent_messages
+    ));
+    let mut changed = copy.clone();
+    changed.set_agents(Vec::new());
+    assert_eq!(room.agents().len(), 3);
+    assert_eq!(copy.agents().len(), 3);
+    assert!(changed.agents().is_empty());
 }
