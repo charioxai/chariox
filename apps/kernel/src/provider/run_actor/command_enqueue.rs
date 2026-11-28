@@ -31,6 +31,19 @@ impl ProviderRunActorMailbox {
         let admission = crate::hot_reload::admit_provider_work().map_err(|reason| {
             provider_actor_enqueue_error("publish Claude plan", &run_id, reason.to_string())
         })?;
+        let output_admission = self
+            .closed_output_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if output_admission.contains(&run_id) {
+            return Err(provider_actor_enqueue_error(
+                "publish Claude plan",
+                &run_id,
+                "prompt cancellation owns output settlement".into(),
+            ));
+        }
+        let publication = self.output_publications.claim(&run_id);
+        drop(output_admission);
         self.in_flight
             .mark_plan_publication_in_flight(run_id.clone());
         drop(admission);
@@ -41,6 +54,7 @@ impl ProviderRunActorMailbox {
                 tool_use_id,
                 plan,
                 response,
+                publication,
             })
             .map_err(|error| {
                 self.in_flight.clear_plan_publication_in_flight(&run_id);
@@ -69,6 +83,19 @@ impl ProviderRunActorMailbox {
                 reason.to_string(),
             )
         })?;
+        if !envelope.steering {
+            let mut closed = self
+                .closed_output_admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let new_prompt = self
+                .runtime_registry
+                .claude_owned_process(&provider_run_id)
+                .is_none_or(|process| process.clear_previous_prompt_abort_context(&prompt_id));
+            if new_prompt {
+                closed.remove(&provider_run_id);
+            }
+        }
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         drop(admission);
         let sender = self.worker_for_run(&provider_run_id);
@@ -211,11 +238,13 @@ impl ProviderRunActorMailbox {
                 .remove(&provider_run_id)
                 .unwrap_or_else(|| self.worker_deps().spawn(provider_run_id.clone()))
         };
+        let publication = self.output_publications.claim(&provider_run_id);
         let (completion_tx, completion_rx) = mpsc::channel();
         match sender.try_send(ProviderRunActorCommand::Terminate {
             provider_run_id: provider_run_id.clone(),
             run,
             completion: completion_tx,
+            publication,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
@@ -290,6 +319,14 @@ impl ProviderRunActorMailbox {
         provider_run_id: String,
         run: RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
+        let output_admission = self
+            .closed_output_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if output_admission.contains(&provider_run_id) {
+            return Ok(false);
+        }
+
         // While a planned reload holds admission closed no poll starts: the next one
         // runs in the successor.
         let Ok(admission) = crate::hot_reload::admit_provider_work() else {
@@ -307,11 +344,14 @@ impl ProviderRunActorMailbox {
             self.operation_lanes.record_command_enqueued();
             return Ok(true);
         }
+        let publication = self.output_publications.claim(&provider_run_id);
+        drop(output_admission);
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::PollOutput {
             provider_run_id: provider_run_id.clone(),
             run,
             output_poll_delay: self.output_poll_delay_for_run(&provider_run_id),
+            publication,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
@@ -596,13 +636,11 @@ mod tests {
 
         mailbox.spawn_terminate("run-terminate".to_string(), run);
 
-        assert!(
-            !mailbox
-                .workers
-                .lock()
-                .expect("worker map should not be poisoned")
-                .contains_key("run-terminate")
-        );
+        assert!(!mailbox
+            .workers
+            .lock()
+            .expect("worker map should not be poisoned")
+            .contains_key("run-terminate"));
     }
 
     #[test]
@@ -734,11 +772,9 @@ mod tests {
             let _ = released.recv();
         });
         held.recv().expect("the list is held");
-        assert!(
-            mailbox
-                .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
-                .expect("poll should enqueue")
-        );
+        assert!(mailbox
+            .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
+            .expect("poll should enqueue"));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(
             mailbox.any_output_poll_in_flight(),

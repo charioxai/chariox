@@ -166,6 +166,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             resources: Some(resources),
             stdin,
             output,
+            pending_cancelled_output: Vec::new(),
             output_notifier,
             active_model: run.model().to_string(),
             active_variant: run.variant().map(str::to_string),
@@ -325,6 +326,9 @@ pub(crate) fn abort_claude_turn(
         "request": { "subtype": "interrupt" }
     });
     let _ = write_json_line(&mut state.stdin, &message);
+    stop_child(&mut state.child);
+    let output = drain_stopped_claude_events(run.id(), state)?;
+    state.pending_cancelled_output.push(output);
     clear_active_claude_turn(state);
     state.cancelled_turn_pending_settlement = true;
     restart_claude_runtime(run, state, "claude_restart_after_abort")
@@ -334,6 +338,9 @@ pub(crate) fn drain_claude_events(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
 ) -> Result<ProviderPromptSignalBatch, DaemonError> {
+    if !state.pending_cancelled_output.is_empty() {
+        return Ok(state.pending_cancelled_output.remove(0));
+    }
     let mut batch = ProviderPromptSignalBatch::default();
     batch.chunks.append(&mut state.unsent_chunks);
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
@@ -974,6 +981,7 @@ mod tests {
                 resources: None,
                 stdin,
                 output,
+                pending_cancelled_output: Vec::new(),
                 output_notifier: Default::default(),
                 active_model: "sonnet".to_string(),
                 active_variant: Some("low".to_string()),
@@ -3145,3 +3153,53 @@ mod background_continuation;
 #[cfg(all(test, unix))]
 #[path = "claude_runtime/tests/cold_restart.rs"]
 mod cold_restart;
+
+pub(crate) fn drain_stopped_claude_events(
+    provider_run_id: &str,
+    state: &mut ClaudeRuntimeState,
+) -> Result<ProviderPromptSignalBatch, DaemonError> {
+    let mut batch = ProviderPromptSignalBatch::default();
+    batch.chunks.append(&mut state.unsent_chunks);
+    state.output.release();
+    while let Ok(message) = state.output.receiver.recv() {
+        match message {
+            ClaudeRuntimeMessage::Stdout(value) => {
+                handle_claude_tool_uses(provider_run_id, state, &value, &mut batch)?;
+                // The child has exited; feedback cannot be written to it.
+
+                apply_claude_message(provider_run_id, state, value, &mut batch);
+            }
+            ClaudeRuntimeMessage::StdoutParseError(error) => {
+                batch
+                    .notices
+                    .push(format!("Claude stdout parse warning: {error}"));
+            }
+            ClaudeRuntimeMessage::Stderr(line) => {
+                batch.notices.push(format!("Claude stderr: {line}"));
+            }
+        }
+    }
+    apply_claude_usage_capture(state, &mut batch);
+    Ok(batch)
+}
+pub(crate) fn take_cancelled_claude_output(
+    state: &mut ClaudeRuntimeState,
+) -> Vec<ProviderPromptSignalBatch> {
+    let mut output = std::mem::take(&mut state.pending_cancelled_output);
+    if !state.unsent_chunks.is_empty() {
+        output.push(ProviderPromptSignalBatch {
+            chunks: std::mem::take(&mut state.unsent_chunks),
+            ..Default::default()
+        });
+    }
+    output
+}
+
+pub(crate) fn drain_retired_claude_output(
+    provider_run_id: &str,
+    state: &mut ClaudeRuntimeState,
+) -> Result<Vec<ProviderPromptSignalBatch>, DaemonError> {
+    let mut output = take_cancelled_claude_output(state);
+    output.push(drain_stopped_claude_events(provider_run_id, state)?);
+    Ok(output)
+}

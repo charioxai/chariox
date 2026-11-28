@@ -5,7 +5,52 @@ enum PromptAbortDispatchOutcome {
     Done,
     Retry,
 }
+#[cfg(test)]
+pub(super) struct PromptAbortFlushProbe {
+    pub(super) reached: tokio::sync::Notify,
+    pub(super) resume: Arc<tokio::sync::Notify>,
+    pub(super) enabled: std::sync::atomic::AtomicBool,
+}
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(super) fn observe_prompt_abort_flush_for_test(&mut self) -> Arc<PromptAbortFlushProbe> {
+        let probe = Arc::new(PromptAbortFlushProbe {
+            reached: tokio::sync::Notify::new(),
+            resume: Arc::new(tokio::sync::Notify::new()),
+            enabled: std::sync::atomic::AtomicBool::new(true),
+        });
+        self.prompt_abort_flush_probe = Some(probe.clone());
+        probe
+    }
+    async fn capture_owned_prompt_abort(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) -> Result<(), DaemonError> {
+        let state = self.clone();
+        let dispatch = dispatch.clone();
+        self.with_app_side_effect_blocking(move |app| {
+            let owned = &state.owned;
+            let session = owned.session_store.get_session(&dispatch.session_id)?;
+            let run = owned.provider_store.get_run(&dispatch.provider_run_id)?;
+            let agent =
+                run.agent_instance_id()
+                    .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                        session_id: dispatch.session_id.clone(),
+                    })?;
+            owned
+                .prompt_state_owner
+                .with_cancelling_prompt_if_matches(&session, agent, &dispatch.prompt_id, || {
+                    app.pty_mut()
+                        .capture_prompt_abort_processes(&dispatch.provider_run_id)?;
+                    owned
+                        .provider_store
+                        .capture_claude_prompt_abort(&dispatch.provider_run_id, &dispatch.prompt_id)
+                })
+                .map(|_| ())
+        })
+        .await
+    }
+
     async fn drain_received_prompt_abort_output(
         &self,
         dispatch: &crate::app::KernelPromptAbortDispatch,
@@ -173,15 +218,7 @@ impl KernelRuntimeState {
                 {
                     return;
                 }
-                let run_id = dispatch.provider_run_id.clone();
-                let provider_store = state.owned.provider_store.clone();
-                match state
-                    .with_app_side_effect_blocking(move |app| {
-                        app.pty_mut().capture_prompt_abort_processes(&run_id)?;
-                        provider_store.capture_claude_prompt_abort(&run_id)
-                    })
-                    .await
-                {
+                match state.capture_owned_prompt_abort(&dispatch).await {
                     Ok(()) => break,
                     Err(error) => {
                         if !reported_capture_failure {
@@ -214,15 +251,7 @@ impl KernelRuntimeState {
                         .map(|signal| signal.sequence())
                         .unwrap_or_default();
                     // Lane admission may have waited while more tools started.
-                    let run_id = dispatch.provider_run_id.clone();
-                    let provider_store = state.owned.provider_store.clone();
-                    if let Err(error) = state
-                        .with_app_side_effect_blocking(move |app| {
-                            app.pty_mut().capture_prompt_abort_processes(&run_id)?;
-                            provider_store.capture_claude_prompt_abort(&run_id)
-                        })
-                        .await
-                    {
+                    if let Err(error) = state.capture_owned_prompt_abort(&dispatch).await {
                         state.record_prompt_abort_failure(&dispatch, &error);
                         return true;
                     }
@@ -321,6 +350,9 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        self.owned
+            .provider_store
+            .close_prompt_abort_output_admission(&dispatch.provider_run_id);
         Box::pin(self.drain_received_prompt_abort_output(dispatch)).await?;
         // The protocol ACK can precede tool exit. Retire the owned process group
         // before releasing the turn; its persisted provider identity resumes on the next prompt.
@@ -376,18 +408,12 @@ impl KernelRuntimeState {
         if finished != Some(true) {
             return Ok(());
         }
-        // The physical cleanup may have let an actor publish its final batch.
-        // Drain that ready queue even though the run has now been marked Ended.
+        // Reader teardown and actor leases must hand off their old prompt's
+        // final batches before the publication fence can be considered empty.
+        self.owned
+            .provider_store
+            .queue_cancelled_claude_output(&dispatch.provider_run_id, &dispatch.prompt_id)?;
         Box::pin(self.drain_received_prompt_abort_output(dispatch)).await?;
-        self.flush_provider_history(&dispatch.provider_run_id)
-            .await?;
-        let Some((agent_id, prompt)) = self.owned.cancelling_prompt_for_abort(
-            &dispatch.session_id,
-            &dispatch.provider_run_id,
-            &dispatch.prompt_id,
-        ) else {
-            return Ok(());
-        };
         if self
             .owned
             .provider_store
@@ -398,6 +424,28 @@ impl KernelRuntimeState {
                 message: "received provider output is still awaiting history publication".into(),
             });
         }
+        // Admission was closed before interrupt, and admitted polls retain their
+        // publication claims from enqueue through handoff. No old batch can enter
+        // history after this final flush has selected its tail.
+        self.flush_provider_history(&dispatch.provider_run_id)
+            .await?;
+        #[cfg(test)]
+        if let Some(probe) = &self.prompt_abort_flush_probe {
+            if probe
+                .enabled
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                probe.reached.notify_one();
+                probe.resume.notified().await;
+            }
+        }
+        let Some((agent_id, prompt)) = self.owned.cancelling_prompt_for_abort(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.prompt_id,
+        ) else {
+            return Ok(());
+        };
         // Output already received during cleanup has now reached history. Use
         // its final activity, not the IDs from before the cleanup await.
         let tool_ids = self

@@ -71,7 +71,7 @@ pub(super) struct OutputPublications(
 );
 
 impl OutputPublications {
-    fn claim(&self, run_id: &str) -> OutputPublicationClaim {
+    pub(super) fn claim(&self, run_id: &str) -> OutputPublicationClaim {
         let claim = OutputPublicationClaim(Arc::new(()));
         let mut runs = self
             .0

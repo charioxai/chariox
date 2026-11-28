@@ -813,7 +813,12 @@ impl ProviderProcessServiceStore {
         Ok(envelope)
     }
 
-    pub(crate) fn capture_claude_prompt_abort(&self, run_id: &str) -> Result<(), DaemonError> {
+    pub(crate) fn capture_claude_prompt_abort(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.read().close_prompt_abort_output_admission(run_id);
         let processes = self.read().claude_owned_processes(run_id);
         for process in processes {
             process
@@ -822,8 +827,21 @@ impl ProviderProcessServiceStore {
                     provider_run_id: run_id.into(),
                     message: error.to_string(),
                 })?;
+            process.set_prompt_abort_context(Some(prompt_id));
         }
         Ok(())
+    }
+
+    pub(crate) fn close_prompt_abort_output_admission(&self, run_id: &str) {
+        self.read().close_prompt_abort_output_admission(run_id);
+    }
+
+    pub(crate) fn queue_cancelled_claude_output(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.read().queue_cancelled_claude_output(run_id, prompt_id)
     }
 
     pub(crate) fn settle_claude_prompt_abort(

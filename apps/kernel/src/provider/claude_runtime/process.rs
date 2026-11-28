@@ -62,6 +62,7 @@ impl ClaudeOwnedChild {
 struct ClaudeProcessOwnership {
     current: Arc<Mutex<ClaudeOwnedChild>>,
     abort_child: Option<Arc<Mutex<ClaudeOwnedChild>>>,
+    prompt_abort_context: Option<String>,
     retiring: bool,
     #[cfg(test)]
     cleanup_pending: Arc<std::sync::atomic::AtomicBool>,
@@ -76,6 +77,7 @@ impl ClaudeRuntimeProcess {
         Ok(Self(Arc::new(Mutex::new(ClaudeProcessOwnership {
             current: Arc::new(Mutex::new(ClaudeOwnedChild::new(child)?)),
             abort_child: None,
+            prompt_abort_context: None,
             retiring: false,
             #[cfg(test)]
             cleanup_pending: Arc::default(),
@@ -146,6 +148,34 @@ impl ClaudeRuntimeProcess {
             .signals
             .refresh()?;
         Ok(())
+    }
+
+    pub(crate) fn set_prompt_abort_context(&self, prompt_id: Option<&str>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prompt_abort_context = prompt_id.map(str::to_string);
+    }
+
+    /// A capture for this already-admitted prompt must survive its late write.
+    pub(crate) fn clear_previous_prompt_abort_context(&self, prompt_id: &str) -> bool {
+        let mut ownership = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ownership.prompt_abort_context.as_deref() == Some(prompt_id) {
+            return false;
+        }
+        ownership.prompt_abort_context = None;
+        true
+    }
+
+    pub(crate) fn prompt_abort_context(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prompt_abort_context
+            .clone()
     }
 
     /// A successful restart already settled its old child. A forced retirement

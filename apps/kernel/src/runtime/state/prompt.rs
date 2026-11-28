@@ -313,11 +313,20 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
             })?;
 
-        let completed = self.prompt_state_owner.complete_active_prompt_if_matches(
-            &session,
-            agent_id,
-            expected_prompt_id,
-        );
+        let completed =
+            if settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed {
+                self.prompt_state_owner.fail_active_prompt_if_matches(
+                    &session,
+                    agent_id,
+                    expected_prompt_id,
+                )
+            } else {
+                self.prompt_state_owner.complete_active_prompt_if_matches(
+                    &session,
+                    agent_id,
+                    expected_prompt_id,
+                )
+            };
         let Some(completed) = completed else {
             return Ok(None);
         };

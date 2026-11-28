@@ -1912,15 +1912,31 @@ async fn a_claimed_output_batch_keeps_cancellation_owned_until_history_publicati
     assert_tool_updates_received_during_cleanup(CancellationOutputBoundary::Claimed).await;
 }
 
+#[tokio::test]
+async fn a_terminal_error_during_stop_keeps_the_turn_and_successor_until_reap() {
+    assert_tool_updates_received_during_cleanup(CancellationOutputBoundary::TerminalFailure).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_final_history_flush_cannot_be_overtaken_by_the_last_publication() {
+    assert_tool_updates_received_during_cleanup(CancellationOutputBoundary::FinalFlushInterleaving)
+        .await;
+}
+
 enum CancellationOutputBoundary {
     Applied,
     Mailbox,
     Claimed,
+    TerminalFailure,
+    FinalFlushInterleaving,
 }
 
 async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBoundary) {
     let queued = matches!(mode, CancellationOutputBoundary::Mailbox);
-    let claimed = matches!(mode, CancellationOutputBoundary::Claimed);
+    let terminal_failure = matches!(mode, CancellationOutputBoundary::TerminalFailure);
+    let final_flush = matches!(mode, CancellationOutputBoundary::FinalFlushInterleaving);
+    let claimed =
+        matches!(mode, CancellationOutputBoundary::Claimed) || terminal_failure || final_flush;
     let worktree = crate::test_support::TestWorktree::new("cancel-tool-completion");
     let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1943,6 +1959,18 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
     app.providers_mut().insert_run_for_test(run.clone());
     if queued || claimed {
         spawn_inert_pty_for_run(&mut app, run.id());
+    }
+    let reap_allowed = Arc::new(std::sync::atomic::AtomicBool::new(!terminal_failure));
+    struct ReleaseReap(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for ReleaseReap {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let _release_reap = ReleaseReap(reap_allowed.clone());
+    if terminal_failure {
+        app.pty_mut()
+            .defer_reap_for_test(run.id(), reap_allowed.clone());
     }
     app.prompt_owner_submit_prepared_prompt(
         session.id(),
@@ -1973,8 +2001,23 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
         )
         .unwrap();
     }
+    if terminal_failure {
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "terminal-error-successor",
+                attachment.id(),
+                agent.id(),
+                "run after cancellation settles",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    }
     let app = Arc::new(Mutex::new(app));
     let mut runtime = owned_runtime_state(&app).await;
+    let flush_probe = final_flush.then(|| runtime.observe_prompt_abort_flush_for_test());
     let _cleanup = InertPtyCleanup {
         app: app.clone(),
         provider_run_id: run.id().into(),
@@ -1992,8 +2035,12 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
         .unwrap()
         .dispatch
         .unwrap();
+    let cancelled_prompt_id = dispatch.prompt_id.clone();
     if claimed {
-        let batch = crate::provider::ProviderPromptSignalBatch {
+        let mut batch = crate::provider::ProviderPromptSignalBatch {
+            terminal_failure: terminal_failure
+                .then(|| "provider runtime stopped during cancellation".into()),
+            explicit_provider_error: terminal_failure,
             chunks: vec![
                 crate::provider::ProviderPromptChunk {
                     kind: crate::terminal::TerminalOutputKind::ProviderTool,
@@ -2008,6 +2055,11 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
             ],
             ..Default::default()
         };
+        if final_flush {
+            // With no unfinished tools, a synchronous synthetic tool write
+            // cannot accidentally hide the final-flush ordering gap.
+            batch.chunks.truncate(1);
+        }
         // Hold real global history capacity: the normal pump dequeues and
         // updates activity, then waits before it can publish any history.
         let mut capacity = Vec::new();
@@ -2045,7 +2097,13 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
                 .prompt_activity
                 .read()
                 .get(run.id())
-                .is_some_and(|state| state.active_tool_ids.contains("tool-b"))
+                .is_some_and(|state| {
+                    if final_flush {
+                        !state.active_tool_ids.contains("tool-a")
+                    } else {
+                        state.active_tool_ids.contains("tool-b")
+                    }
+                })
             {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
@@ -2054,7 +2112,11 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
         .expect("the normal output pump must claim the batch and reach history capacity");
         let finishing = {
             let state = runtime.clone();
+            let dispatch = dispatch.clone();
             tokio::spawn(async move {
+                if final_flush {
+                    return state.finish_owned_prompt_abort(&dispatch, false).await;
+                }
                 loop {
                     match state.finish_owned_prompt_abort(&dispatch, false).await {
                         Err(DaemonError::PtyCleanup { .. }) => {
@@ -2065,6 +2127,115 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
                 }
             })
         };
+        if final_flush {
+            let probe = flush_probe.unwrap();
+            struct ReleaseProbe(Arc<tokio::sync::Notify>);
+            impl Drop for ReleaseProbe {
+                fn drop(&mut self) {
+                    self.0.notify_one();
+                }
+            }
+            let _release_probe = ReleaseProbe(probe.resume.clone());
+            let mut first = finishing;
+            let paused_after_flush =
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    tokio::select! {
+                        _ = probe.reached.notified() => true,
+                        done = &mut first => {
+                            assert!(matches!(done.unwrap(), Err(DaemonError::PtyCleanup { .. })),
+                                "an unpublished batch keeps the cancellation pending");
+                            false
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+            probe
+                .enabled
+                .store(false, std::sync::atomic::Ordering::Release);
+            let database =
+                rusqlite::Connection::open(runtime.owned.operational_history_store.path()).unwrap();
+            database
+                .busy_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            database.execute_batch("BEGIN IMMEDIATE").unwrap();
+            drop(capacity);
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while runtime
+                    .owned
+                    .provider_store
+                    .output_publication_pending(run.id())
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the normal pump must hand off history before its write can commit");
+            let mut finishing = if paused_after_flush {
+                probe.resume.notify_one();
+                first
+            } else {
+                let state = runtime.clone();
+                tokio::spawn(async move {
+                    loop {
+                        match state.finish_owned_prompt_abort(&dispatch, false).await {
+                            Err(DaemonError::PtyCleanup { .. }) => {
+                                tokio::time::sleep(std::time::Duration::from_millis(5)).await
+                            }
+                            other => return other,
+                        }
+                    }
+                })
+            };
+            let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut finishing)
+                .await
+                .ok();
+            let before_commit = runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent.id())
+                .map(|prompt| prompt.status());
+            database.execute_batch("ROLLBACK").unwrap();
+            let finished = match early {
+                Some(done) => done.unwrap(),
+                None => tokio::time::timeout(std::time::Duration::from_secs(3), finishing)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            };
+            finished.unwrap();
+            match tokio::time::timeout(std::time::Duration::from_secs(3), pump)
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                Ok(_) | Err(DaemonError::PtyCleanup { .. }) => {}
+                Err(error) => panic!("the normal publisher failed: {error}"),
+            }
+            assert_eq!(before_commit, Some(crate::session::PromptStatus::Cancelling),
+                "the final publication overtook the flush and released the turn before its history write");
+            runtime.flush_provider_history(run.id()).await.unwrap();
+            let history = runtime
+                .owned
+                .operational_history_store
+                .query_events(crate::history::HistoryEventQuery {
+                    session_id: Some(session.id().into()),
+                    kind: Some("provider_tool".into()),
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(
+                history.iter().any(|event| {
+                    let row: serde_json::Value =
+                        serde_json::from_str(event.content.as_deref().unwrap()).unwrap();
+                    event.prompt_id.as_deref() == Some(cancelled_prompt_id.as_str())
+                        && row["id"] == "tool-a"
+                        && row["status"] == "completed"
+                }),
+                "the exact cancelled turn must retain its actual completed tool output"
+            );
+            return;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let before_publication = runtime
             .owned
@@ -2077,6 +2248,37 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
             .await
             .unwrap()
             .unwrap();
+        if terminal_failure {
+            let snapshot = runtime.owned.session_snapshot(session.id()).unwrap();
+            let status = snapshot
+                .active_prompt_for_agent(agent.id())
+                .map(|p| p.status());
+            let queued_count = snapshot
+                .queued_prompts_for_agent(agent.id())
+                .map_or(0, |q| q.len());
+            let retained = app.lock().await.pty().has_process(run.id());
+            reap_allowed.store(true, std::sync::atomic::Ordering::Release);
+            let finished = tokio::time::timeout(std::time::Duration::from_secs(3), finishing)
+                .await
+                .unwrap()
+                .unwrap();
+            pumped.unwrap();
+            finished.unwrap();
+            assert_eq!(
+                status,
+                Some(crate::session::PromptStatus::Cancelling),
+                "terminal failure released the exact cancellation before physical reap"
+            );
+            assert_eq!(
+                queued_count, 1,
+                "the successor must remain queued while reap is pending"
+            );
+            assert!(
+                retained,
+                "terminal failure discarded the pending process ownership"
+            );
+            return;
+        }
         let finished = tokio::time::timeout(std::time::Duration::from_secs(3), finishing)
             .await
             .unwrap()

@@ -263,6 +263,8 @@ pub(crate) struct KernelRuntimeState {
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
+    prompt_abort_flush_probe: Option<Arc<prompt_abort_settlement_runtime::PromptAbortFlushProbe>>,
+    #[cfg(test)]
     disk_volume_probe: Option<DiskVolumeProbe>,
     #[cfg(test)]
     queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
@@ -1271,6 +1273,8 @@ impl KernelRuntimeState {
             job_router: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
+            #[cfg(test)]
+            prompt_abort_flush_probe: None,
             #[cfg(test)]
             disk_volume_probe: None,
             #[cfg(test)]

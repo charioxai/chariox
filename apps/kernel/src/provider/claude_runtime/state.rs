@@ -46,6 +46,7 @@ pub struct ClaudeRuntimeState {
     pub(super) run_process_start: Option<crate::provider::ProcessStart>,
     pub(super) stdin: ChildStdin,
     pub(super) output: ClaudeOutput,
+    pub(super) pending_cancelled_output: Vec<crate::provider::ProviderPromptSignalBatch>,
     pub(in crate::provider) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
     pub(super) active_model: String,
     pub(super) active_variant: Option<String>,

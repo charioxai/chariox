@@ -61,6 +61,7 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     output_publications: finished_jobs::OutputPublications,
+    closed_output_admission: Arc<Mutex<BTreeSet<String>>>,
     completion_signal: ProviderRunActorCompletionSignal,
     output_ready_signal: super::output_ready::ProviderOutputReadySignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
@@ -74,19 +75,21 @@ pub(crate) struct ProviderRunActorMailbox {
 
 impl Default for ProviderRunActorMailbox {
     fn default() -> Self {
+        let runtime_registry = ProviderRunRuntimeRegistry::default();
         Self {
             submit_epoch: rand::random(),
             operation_lanes: ProviderRunOperationLanes::default(),
             native_interaction_bridge: ProviderNativeInteractionBridgeStore::default(),
             workers: Arc::new(Mutex::new(BTreeMap::new())),
-            runtime_registry: ProviderRunRuntimeRegistry::default(),
+            finished_output_polls: runtime_registry.finished_output_polls.clone(),
+            output_publications: runtime_registry.output_publications.clone(),
+            closed_output_admission: Default::default(),
+            runtime_registry,
             in_flight: ProviderRunInFlightState::default(),
             utility_cancellations: utility_cancellation::MetadataUtilityCancellations::default(),
             finished_submits: Arc::new(Mutex::new(Vec::new())),
             finished_aborts: Arc::new(Mutex::new(Vec::new())),
             finished_selection_syncs: Arc::new(Mutex::new(Vec::new())),
-            finished_output_polls: Arc::new(Mutex::new(Vec::new())),
-            output_publications: Default::default(),
             completion_signal: ProviderRunActorCompletionSignal::default(),
             output_ready_signal: Default::default(),
             output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -118,6 +121,35 @@ impl ProviderRunActorMailbox {
     pub(crate) fn wait_for_terminate_like_production_in_tests(&self) {
         self.production_terminate_wait
             .store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn close_prompt_abort_output_admission(&self, run_id: &str) {
+        self.closed_output_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.to_string());
+    }
+
+    pub(crate) fn queue_cancelled_claude_output(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _handoff = self.output_publications.claim(run_id);
+        for batch in self.runtime_registry.take_cancelled_claude_output(run_id)? {
+            push_finished_output_poll(
+                &self.finished_output_polls,
+                &self.output_publications,
+                FinishedProviderOutputPollJob {
+                    prompt_identity: ProviderOutputPromptIdentity::Captured(prompt_id.to_string()),
+                    provider_run_id: run_id.to_string(),
+                    result: Ok(Some(batch)),
+                    publication: None,
+                    settlement_retry_attempt: 0,
+                },
+            );
+        }
+        Ok(())
     }
 
     #[cfg(test)]

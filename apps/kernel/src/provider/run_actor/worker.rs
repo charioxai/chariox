@@ -66,6 +66,7 @@ pub(super) enum ProviderRunActorCommand {
         provider_run_id: String,
         run: RuntimeProviderRun,
         completion: mpsc::Sender<()>,
+        publication: super::OutputPublicationClaim,
     },
     SyncSelection {
         provider_run_id: String,
@@ -75,6 +76,7 @@ pub(super) enum ProviderRunActorCommand {
         provider_run_id: String,
         run: RuntimeProviderRun,
         output_poll_delay: Duration,
+        publication: super::OutputPublicationClaim,
     },
     PublishClaudePlan {
         run: RuntimeProviderRun,
@@ -82,6 +84,7 @@ pub(super) enum ProviderRunActorCommand {
         tool_use_id: Option<String>,
         plan: String,
         response: tokio::sync::oneshot::Sender<Result<(), String>>,
+        publication: super::OutputPublicationClaim,
     },
     Stop,
 }
@@ -202,6 +205,7 @@ impl ProviderRunWorkerDeps {
                 provider_run_id,
                 run,
                 completion,
+                publication,
             } => {
                 if let Err(error) = execute_terminate_command(&self.runtime_registry, run) {
                     crate::logging::error_with_fields(
@@ -229,7 +233,7 @@ impl ProviderRunWorkerDeps {
                         &self.output_publications,
                         FinishedProviderOutputPollJob {
                             prompt_identity: super::ProviderOutputPromptIdentity::InFlightPoll,
-                            publication: None,
+                            publication: Some(publication),
                             provider_run_id: provider_run_id.clone(),
                             result: Ok(Some(crate::provider::ProviderPromptSignalBatch {
                                 chunks: closing_chunks,
@@ -261,6 +265,7 @@ impl ProviderRunWorkerDeps {
                 provider_run_id,
                 run,
                 output_poll_delay,
+                publication,
             } => {
                 let result = execute_output_poll_command(
                     &self.native_interaction_bridge,
@@ -270,7 +275,7 @@ impl ProviderRunWorkerDeps {
                 );
                 let finished = FinishedProviderOutputPollJob {
                     prompt_identity: super::ProviderOutputPromptIdentity::InFlightPoll,
-                    publication: None,
+                    publication: Some(publication),
                     provider_run_id: provider_run_id.clone(),
                     result,
                     settlement_retry_attempt: 0,
@@ -291,6 +296,7 @@ impl ProviderRunWorkerDeps {
                 tool_use_id,
                 plan,
                 response,
+                publication,
             } => {
                 let run_id = run.id().to_string();
                 let (batch, result) = super::command_execution::execute_claude_plan_proposal(
@@ -304,7 +310,7 @@ impl ProviderRunWorkerDeps {
                     &self.output_publications,
                     FinishedProviderOutputPollJob {
                         prompt_identity: super::ProviderOutputPromptIdentity::Captured(prompt_id),
-                        publication: None,
+                        publication: Some(publication),
                         provider_run_id: run_id.clone(),
                         result: Ok(Some(batch)),
                         settlement_retry_attempt: 0,

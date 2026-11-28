@@ -430,6 +430,20 @@ impl ProviderProcessService {
         self.run_actor_mailbox.output_publication_pending(run_id)
     }
 
+    pub(crate) fn close_prompt_abort_output_admission(&self, run_id: &str) {
+        self.run_actor_mailbox
+            .close_prompt_abort_output_admission(run_id);
+    }
+
+    pub(crate) fn queue_cancelled_claude_output(
+        &self,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.run_actor_mailbox
+            .queue_cancelled_claude_output(run_id, prompt_id)
+    }
+
     pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
         &mut self,
         run_id: &str,
