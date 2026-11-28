@@ -421,6 +421,12 @@ public final class CharioxAppModel {
   public func respondToInteraction(
     _ interaction: RuntimeInteraction, choice: RuntimeInteractionChoice
   ) async {
+    await respondToInteraction(interaction, choiceID: choice.id)
+  }
+
+  public func respondToInteraction(
+    _ interaction: RuntimeInteraction, choiceID: String, customReply: String? = nil
+  ) async {
     guard let session = selectedSession else {
       connectionState = .failed
       statusMessage = "Select a session before responding to an interaction."
@@ -431,7 +437,8 @@ public final class CharioxAppModel {
         .respondToInteraction(
           sessionID: session.id,
           interactionID: interaction.id,
-          choiceID: choice.id
+          choiceID: choiceID,
+          customReply: customReply
         ),
         to: try endpointURL()
       )

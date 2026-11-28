@@ -178,6 +178,7 @@ impl KernelRuntimeState {
                         provider_run.agent_instance_id().unwrap_or(""),
                         provider_run.id(),
                     ));
+                let interaction = interaction.with_card_type("credential_secret_capture");
                 let interaction_id = interaction.id().to_string();
                 let session_id = provider_run.session_id().to_string();
                 let timeout_sec = interaction.timeout_sec();

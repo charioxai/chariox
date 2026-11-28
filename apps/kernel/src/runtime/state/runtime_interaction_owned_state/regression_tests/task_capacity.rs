@@ -353,11 +353,10 @@ async fn a_generic_blocked_task_keeps_its_hidden_agent_and_retained_queued_work(
         .set_agent_hidden(&agent, true)
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::BlockForQuestion {
+        .agent_lifecycle(Operation::Block {
             task: prompt.clone(),
             prompt,
             reason: "Owner decision required".into(),
-            reply: None,
         })
         .unwrap()
     else {
@@ -391,5 +390,35 @@ async fn a_generic_blocked_task_keeps_its_hidden_agent_and_retained_queued_work(
             .map(|held| held.len()),
         Some(1),
         "the queued work is retained"
+    );
+}
+
+#[tokio::test]
+async fn taxonomy_a_genuine_task_question_keeps_its_card_reply_and_existing_authority_level() {
+    let f = Fixture::with_room_tools();
+    let task = blocked_tasks(&f).await.remove(0);
+    let session = f.state.owned.session_store.get_session(&f.session).unwrap();
+    let question = session
+        .active_interactions()
+        .iter()
+        .find(|item| item.related_agent_id() == Some(task.agent_id.as_str()))
+        .unwrap();
+    assert_eq!(question.card_type(), "Question");
+    assert!(!question.is_pane_status());
+    assert_ne!(
+        question.level(),
+        crate::session::RuntimeInteractionLevel::Critical,
+        "presentation must not change eligible parent authority to person-only"
+    );
+    assert_eq!(question.custom_choice().unwrap().id(), "reply");
+    assert_eq!(
+        f.state
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Blocked
     );
 }

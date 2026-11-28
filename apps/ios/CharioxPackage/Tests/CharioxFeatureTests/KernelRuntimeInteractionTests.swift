@@ -39,3 +39,23 @@ private func interactionData(_ subject: [String: Any]) throws -> Data {
         }
     }
 }
+
+@Test func questionDecodesBothAnswerShapesAndRecoveryKeepsItsSubject() throws {
+    let shapes: [[[String: Any]]] = [[], [["id": "a", "label": "A", "reply": "A"]]]
+    for choices in shapes {
+        let question = try JSONDecoder().decode(RuntimeInteraction.self, from: interactionData([
+            "agent_id": "agent", "kind": "choice", "card_type": "Question", "choices": choices,
+            "custom_choice": ["id": "reply", "label": "Something else", "placeholder": "Your route", "min_length": 1],
+        ]))
+        #expect(question.customChoice?.id == "reply")
+        #expect(question.customChoice?.minLength == 1)
+        #expect(question.choices.count == choices.count)
+    }
+    let status = try JSONDecoder().decode(RuntimeInteraction.self, from: interactionData([
+        "kernel_operation_id": "deadline", "surface": "pane_status", "related_agent_id": "child", "card_type": NSNull(),
+        "choices": [["id": "extend", "label": "Extend", "reply": "extend"]],
+    ]))
+    #expect(status.surface == "pane_status")
+    #expect(status.relatedAgentID == "child")
+    #expect(status.choices.first?.id == "extend")
+}

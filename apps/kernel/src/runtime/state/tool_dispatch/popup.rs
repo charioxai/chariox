@@ -437,6 +437,11 @@ impl KernelRuntimeState {
         } else {
             None
         };
+        let interaction = if interaction.view().is_some() {
+            interaction.with_card_type("popup_browser_region")
+        } else {
+            interaction.with_card_type("Question")
+        };
         if let Some((config, target_daemon_id, context)) = remote_target {
             // Home owns the popup deadline and its resolution. Leave time
             // for that outcome to return; an indefinite card has no relay cap.

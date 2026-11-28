@@ -726,15 +726,7 @@ private struct InteractionPromptPanel: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(CharioxPalette.muted)
                                 .textSelection(.enabled)
-                            HStack(spacing: 8) {
-                                ForEach(interaction.choices) { choice in
-                                    Button(choice.label) {
-                                        Task { await model.respondToInteraction(interaction, choice: choice) }
-                                    }
-                                    .buttonStyle(CharioxCommandButtonStyle(primary: choice.style == "primary"))
-                                    .disabled(model.connectionState.isWorking)
-                                }
-                            }
+                            InteractionAnswerControls(model: model, interaction: interaction)
                         }
                         .padding(12)
                         .background(CharioxPalette.field)
@@ -742,6 +734,47 @@ private struct InteractionPromptPanel: View {
                 }
                 .background(CharioxPalette.border)
                 .clipShape(.rect(cornerRadius: 8))
+            }
+        }
+        // Recovery belongs to the subject's pane and keeps its kernel choices.
+        ForEach((model.selectedSession?.activeInteractions ?? []).filter { $0.surface == "pane_status" && ($0.relatedAgentID ?? $0.agentID) == model.selectedSession?.focusedAgentID }) { status in
+            VStack(alignment: .leading, spacing: 8) {
+                Text(status.displayTitle)
+                    .foregroundStyle(status.level == "critical" ? CharioxPalette.red : CharioxPalette.orange)
+                Text(status.message).textSelection(.enabled)
+                InteractionAnswerControls(model: model, interaction: status)
+            }
+            .accessibilityIdentifier("operation-status-\(status.id)")
+        }
+    }
+}
+
+private struct InteractionAnswerControls: View {
+    @Bindable var model: CharioxAppModel
+    let interaction: RuntimeInteraction
+    @State private var reply = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(interaction.choices) { choice in
+                Button(choice.label) {
+                    Task { await model.respondToInteraction(interaction, choice: choice) }
+                }
+                .buttonStyle(CharioxCommandButtonStyle(primary: choice.style == "primary"))
+                .disabled(model.connectionState.isWorking)
+            }
+        }
+        if let custom = interaction.customChoice {
+            VStack(alignment: .leading, spacing: 6) {
+                if custom.inputKind == "secret" {
+                    SecureField(custom.label, text: $reply)
+                } else {
+                    TextField(custom.placeholder ?? custom.label, text: $reply)
+                }
+                Button("Send") {
+                    Task { await model.respondToInteraction(interaction, choiceID: custom.id, customReply: reply) }
+                }
+                .disabled(model.connectionState.isWorking || reply.unicodeScalars.count < (custom.minLength ?? 0) || reply.unicodeScalars.count > (custom.maxLength ?? Int.max))
             }
         }
     }

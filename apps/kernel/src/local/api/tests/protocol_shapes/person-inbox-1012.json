@@ -195,39 +195,6 @@
                 }
               }
             }
-          },
-          {
-            "card_id": "run:run-7",
-            "session_id": "room-1",
-            "snoozed_until_ms": null,
-            "body": {
-              "workflow": {
-                "workflow_id": "wf-1",
-                "workflow_name": "nightly_deploy",
-                "run_id": "run-7",
-                "run_number": 7,
-                "outcome": {
-                  "kind": "failed",
-                  "reason": "workflow_run_output_validation_failed",
-                  "detail": "ticket is missing"
-                },
-                "at_ms": 11
-              }
-            }
-          },
-          {
-            "card_id": "flag:sub-1",
-            "session_id": "room-1",
-            "snoozed_until_ms": null,
-            "body": {
-              "flag": {
-                "subscription_id": "sub-1",
-                "subscriber_name": "Reviewer",
-                "source_name": null,
-                "health": "source_gone",
-                "at_ms": null
-              }
-            }
           }
         ],
         "mutes": [
@@ -268,7 +235,7 @@
               "exit_node_id": "",
               "exit_ordinal": 0,
               "name": "Review requested",
-              "display_name": "GitHub · Review requested",
+              "display_name": "GitHub \u00b7 Review requested",
               "available": true,
               "options": [
                 {

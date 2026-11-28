@@ -14,6 +14,8 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
     public let timeoutSeconds: Int?
     public let defaultOnTimeout: String?
     public let requestedAtMs: Int64
+    public let relatedAgentID: String?
+    public let customChoice: RuntimeInteractionCustomChoice?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -29,6 +31,8 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
         case timeoutSeconds = "timeout_sec"
         case defaultOnTimeout = "default_on_timeout"
         case requestedAtMs = "requested_at_ms"
+        case relatedAgentID = "related_agent_id"
+        case customChoice = "custom_choice"
     }
 }
 
@@ -66,6 +70,8 @@ extension RuntimeInteraction {
         timeoutSeconds = try values.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
         defaultOnTimeout = try values.decodeIfPresent(String.self, forKey: .defaultOnTimeout)
         requestedAtMs = try values.decode(Int64.self, forKey: .requestedAtMs)
+        relatedAgentID = try values.decodeIfPresent(String.self, forKey: .relatedAgentID)
+        customChoice = try values.decodeIfPresent(RuntimeInteractionCustomChoice.self, forKey: .customChoice)
     }
 }
 
@@ -74,4 +80,20 @@ public struct RuntimeInteractionChoice: Identifiable, Equatable, Sendable, Decod
     public let label: String
     public let reply: String
     public let style: String?
+}
+
+public struct RuntimeInteractionCustomChoice: Identifiable, Equatable, Sendable, Decodable {
+    public let id: String
+    public let label: String
+    public let placeholder: String?
+    public let minLength: Int?
+    public let maxLength: Int?
+    public let inputKind: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, placeholder
+        case minLength = "min_length"
+        case maxLength = "max_length"
+        case inputKind = "input_kind"
+    }
 }

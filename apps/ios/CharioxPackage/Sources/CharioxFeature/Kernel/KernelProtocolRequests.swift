@@ -18,7 +18,7 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case skillsV2(SkillsV2Request)
     case submitPrompt(sessionID: String, attachmentID: String, targetAgentID: String?, prompt: String)
     case cancelActivePrompt(sessionID: String, attachmentID: String)
-    case respondToInteraction(sessionID: String, interactionID: String, choiceID: String)
+    case respondToInteraction(sessionID: String, interactionID: String, choiceID: String, customReply: String? = nil)
     case getWorkspaceLiveSyncStatus(sessionID: String)
     case attachWorkspaceLink(sessionID: String, linkRef: String, repoRoot: String?)
     case setWorkspaceLiveSyncMode(sessionID: String, mode: String)
@@ -135,12 +135,13 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                 CancelActivePromptPayload(sessionID: sessionID, attachmentID: attachmentID),
                 forKey: DynamicCodingKey("CancelActivePrompt")
             )
-        case let .respondToInteraction(sessionID, interactionID, choiceID):
+        case let .respondToInteraction(sessionID, interactionID, choiceID, customReply):
             try container.encode(
                 RespondToInteractionPayload(
                     sessionID: sessionID,
                     interactionID: interactionID,
-                    choiceID: choiceID
+                    choiceID: choiceID,
+                    customReply: customReply
                 ),
                 forKey: DynamicCodingKey("RespondToInteraction")
             )
@@ -393,11 +394,13 @@ private struct RespondToInteractionPayload: Encodable {
     let sessionID: String
     let interactionID: String
     let choiceID: String
+    let customReply: String?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case interactionID = "interaction_id"
         case choiceID = "choice_id"
+        case customReply = "custom_reply"
     }
 }
 

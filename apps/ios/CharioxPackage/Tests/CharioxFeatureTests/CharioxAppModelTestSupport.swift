@@ -141,7 +141,9 @@ extension RuntimeInteraction {
             ],
             timeoutSeconds: nil,
             defaultOnTimeout: nil,
-            requestedAtMs: 1
+            requestedAtMs: 1,
+            relatedAgentID: nil,
+            customChoice: nil
         )
     }
 }

@@ -10,6 +10,11 @@ fn person_inbox_1012_snapshot_and_hash() {
         format!("{:x}", Sha256::digest(bytes)),
         "a6324a3090df641bc367adaa225f0b71a7ceae5de4129c269f741c5efa24c0a6"
     );
+}
+
+#[test]
+fn person_inbox_round_trips_registered_cards_and_rejects_retired_card_bodies() {
+    let bytes = include_bytes!("person-inbox-1012.json");
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
     for wire in fixture["requests"].as_array().unwrap() {
@@ -19,6 +24,15 @@ fn person_inbox_1012_snapshot_and_hash() {
     for wire in fixture["responses"].as_array().unwrap() {
         let parsed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), *wire);
+    }
+    // Workflow results and subscription health still belong to their owning views,
+    // but their retired Inbox bodies must never re-enter the wire card list.
+    for body in [
+        json!({"workflow":{"workflow_id":"wf-1","workflow_name":"nightly_deploy","run_id":"run-7","run_number":7,"outcome":{"kind":"failed","reason":"workflow_run_output_validation_failed","detail":"ticket is missing"},"at_ms":11}}),
+        json!({"flag":{"subscription_id":"sub-1","subscriber_name":"Reviewer","source_name":null,"health":"source_gone","at_ms":null}}),
+    ] {
+        let retired = json!({"PersonInbox":{"cards":[{"card_id":"retired","session_id":"room-1","snoozed_until_ms":null,"body":body}],"mutes":[]}});
+        assert!(serde_json::from_value::<LocalDaemonResponse>(retired).is_err());
     }
     // A card's state is the kernel's: a request names cards and a change, nothing else.
     for forged in [
