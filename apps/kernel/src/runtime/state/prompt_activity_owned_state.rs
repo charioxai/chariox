@@ -231,7 +231,7 @@ impl KernelRuntimeOwnedState {
         {
             // A provider run can outlive several prompts. An old abort receipt
             // must never settle a resumed prompt, including a newer cancellation.
-            let Some((agent_id, prompt)) = self.cancelling_prompt_for_abort(
+            let Some((_agent_id, prompt)) = self.cancelling_prompt_for_abort(
                 &finished.session_id,
                 &finished.provider_run_id,
                 &finished.prompt_id,
@@ -248,44 +248,18 @@ impl KernelRuntimeOwnedState {
                     recipients,
                     format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
                 );
-                let _ = self.settle_failed_local_prompt_without_advance(
-                    &finished.session_id,
-                    &agent_id,
-                    prompt.id(),
-                    &finished.provider_run_id,
-                    &format!("Provider prompt cancellation failed: {error}"),
-                    None,
-                );
+                // Keep the cancelling owner until the bounded abort supervisor
+                // has terminated the process; an RPC error is not physical settlement.
             } else {
-                // Some providers do not emit a terminal event after a successful
-                // abort; its acknowledgement settles only the interrupted prompt.
-                if let Some(settlement) = self.settle_stopped_agent_task(
-                    &finished.session_id,
-                    &agent_id,
-                    &prompt,
-                    &finished.provider_run_id,
-                ) {
-                    follow_ups
-                        .stopped_task_settlements
-                        .push((settlement, prompt.clone()));
-                }
-                let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
-                // The queue head may be a workflow node that needs a prepared run. This owned
-                // state cannot prepare one, so the head stays queued for the shared promotion.
-                if let Ok(cancellation) = self
-                    .finalize_local_prompt_cancellation_deferring_queue_head(
-                        &finished.session_id,
-                        &agent_id,
-                        &finished.prompt_id,
-                        Some(&finished.provider_run_id),
-                    )
-                {
-                    if cancellation.queue_head_deferred {
-                        follow_ups
-                            .project_queue_promotions
-                            .push((finished.session_id.clone(), agent_id.clone()));
-                    }
-                }
+                follow_ups
+                    .completed_prompt_aborts
+                    .push(crate::app::KernelPromptAbortDispatch {
+                        session_id: finished.session_id,
+                        provider_run_id: finished.provider_run_id,
+                        prompt_id: finished.prompt_id,
+                        source_attachment_id: prompt.source_attachment_id().into(),
+                        pty_input: b"\x03",
+                    });
             }
         }
         follow_ups

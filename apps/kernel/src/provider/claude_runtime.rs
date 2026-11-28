@@ -30,6 +30,7 @@ mod model_usage;
 mod plan_exit;
 mod process;
 pub(crate) use plan_exit::publish_claude_plan;
+pub(crate) use process::ClaudeRuntimeProcess;
 mod runtime_tool_wait;
 mod session_restart;
 mod state;
@@ -47,7 +48,7 @@ use events::apply_claude_message;
 pub(crate) use events::claude_rate_limit_snapshot;
 pub(crate) use handover::ClaudeHandover;
 use input::claude_user_content;
-use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
+use process::{spawn_claude_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use runtime_tool_wait::{
     begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
 };
@@ -129,6 +130,10 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
         }
     };
 
+    let child = ClaudeRuntimeProcess::new(child).map_err(|error| DaemonError::LocalTransport {
+        operation: "claude_capture_process_ownership",
+        message: error.to_string(),
+    })?;
     let mut binding = ClaudeRuntimeBinding {
         state: ClaudeRuntimeState {
             program,
@@ -460,7 +465,7 @@ fn end_turn_without_runtime_tools(
     let Some(status) = state.runtime_tools_unavailable.take() else {
         return false;
     };
-    stop_child(&mut state.child);
+    state.child.stop();
     clear_active_claude_turn(state);
     let reason = format!(
         "Claude Code could not connect to this kernel's Chariox tools (status: {status}), so the turn was stopped before it ran without them. A new Claude process connects again; if this repeats, the kernel is overloaded."
@@ -521,7 +526,7 @@ fn apply_claude_turn_stall_policy(
             retry_stalled_claude_turn(run, state, batch)
         }
         ClaudeTurnStallAction::Restart | ClaudeTurnStallAction::Fail => {
-            stop_child(&mut state.child);
+            state.child.stop();
             clear_active_claude_turn(state);
             batch.terminal_failure = Some(
                 "Claude Code stopped emitting runtime events; the active turn was ended after its bounded recovery attempt"
@@ -531,7 +536,7 @@ fn apply_claude_turn_stall_policy(
             Ok(())
         }
         ClaudeTurnStallAction::FailStart => {
-            stop_child(&mut state.child);
+            state.child.stop();
             clear_active_claude_turn(state);
             let reason = format!(
                 "Claude Code did not finish starting within {} s: it had not connected this kernel's Chariox tools or reported its start. The turn was stopped; send the request again to start a new Claude process. If this repeats, the kernel is overloaded.",
@@ -745,7 +750,7 @@ fn restart_claude_runtime(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     release_detached_jobs(run, state, identity);
-    stop_child(&mut state.child);
+    state.child.stop();
     state.runtime_tools_unavailable = None;
     state.turn_watchdog.record_process_spawn();
     // A new process may start a new conversation: it needs the run base again.
@@ -767,30 +772,32 @@ fn restart_claude_runtime(
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
     let child_started_at_ms = crate::session::unix_epoch_ms();
-    let (child, stdin, output, resources) = spawn_claude_child(
-        run.id(),
-        run.agent_instance_id().unwrap_or(run.id()),
-        &state.program,
-        &args,
-        &env,
-        &state.provider_credential_env,
-        &env_remove,
-        working_directory.as_ref(),
-        operation,
-        &output_notifier,
-    )?;
+    let (stdin, output, resources) = state.child.replace_with(|| {
+        let (child, stdin, output, resources) = spawn_claude_child(
+            run.id(),
+            run.agent_instance_id().unwrap_or(run.id()),
+            &state.program,
+            &args,
+            &env,
+            &state.provider_credential_env,
+            &env_remove,
+            working_directory.as_ref(),
+            operation,
+            &output_notifier,
+        )?;
+        Ok((child, (stdin, output, resources)))
+    })?;
     *state
         .process_identity
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        crate::runtime::kernel_access::process::inspect(child.id())
+        crate::runtime::kernel_access::process::inspect(state.child.id())
             .ok()
             .map(|(identity, _)| identity);
     state.child_started_at_ms = Some(child_started_at_ms);
     if let Some(start) = &state.run_process_start {
         start.record(child_started_at_ms);
     }
-    state.child = child;
     state.resources = Some(resources);
     state.stdin = stdin;
     state.output = output;
@@ -937,7 +944,7 @@ mod tests {
             .spawn()
             .expect("fixture child should spawn");
         let stdin = child.stdin.take().expect("fixture stdin should exist");
-        let child = super::process::ClaudeChild::Started(child);
+        let child = ClaudeRuntimeProcess::new(super::process::ClaudeChild::Started(child)).unwrap();
         let output = super::process::ClaudeOutput::detached();
         (
             ClaudeRuntimeState {
@@ -1466,7 +1473,7 @@ cat >/dev/null
         let Some(delivered) =
             std::time::Instant::now().checked_sub(stall + std::time::Duration::from_secs(1))
         else {
-            super::stop_child(&mut binding.state.child);
+            binding.state.child.stop();
             return;
         };
         binding.state.turn_watchdog.begin(delivered);
@@ -1486,7 +1493,7 @@ cat >/dev/null
             std::time::Instant::now() + super::CLAUDE_START_BUDGET - stall,
             stall,
         );
-        super::stop_child(&mut binding.state.child);
+        binding.state.child.stop();
 
         policy.expect("stall policy should run");
         assert!(
@@ -1543,7 +1550,7 @@ cat >/dev/null
             serde_json::from_value(written).expect("an L12 handover is read");
         crate::hot_reload::adopt_claude_for_tests(run.id(), handover);
         let mut binding = initialize_claude_runtime(&run).unwrap();
-        super::stop_child(&mut binding.state.child);
+        binding.state.child.stop();
     }
 
     #[test]

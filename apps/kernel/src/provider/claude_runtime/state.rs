@@ -5,7 +5,7 @@ use std::process::ChildStdin;
 use serde_json::Value;
 
 use super::handover::AdoptedTurn;
-use super::process::{stop_child, ClaudeChild, ClaudeOutput};
+use super::process::{ClaudeOutput, ClaudeRuntimeProcess};
 use super::watchdog::ClaudeTurnWatchdog;
 use super::{AgentExecutionMode, AgentPermissionLevel};
 use crate::provider::claude::ClaudeMcpConfigFile;
@@ -36,7 +36,7 @@ pub struct ClaudeRuntimeState {
     pub(super) usage_file: Option<PathBuf>,
     pub(super) last_usage_file_contents: Option<String>,
     pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
-    pub(super) child: ClaudeChild,
+    pub(super) child: ClaudeRuntimeProcess,
     pub(super) resources: Option<crate::runtime::process_resources::ProcessDomain>,
     // Shared with the actor registry while the runtime state is leased for I/O.
     pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
@@ -147,6 +147,10 @@ impl ClaudeRuntimeState {
         self.run_process_start = Some(start);
     }
 
+    pub(crate) fn owned_process(&self) -> ClaudeRuntimeProcess {
+        self.child.clone()
+    }
+
     pub(crate) fn process_identity_slot(
         &self,
     ) -> crate::runtime::kernel_access::process::ProcessIdentitySlot {
@@ -165,6 +169,6 @@ impl ClaudeRuntimeState {
 
 impl Drop for ClaudeRuntimeState {
     fn drop(&mut self) {
-        stop_child(&mut self.child);
+        self.child.retire();
     }
 }
