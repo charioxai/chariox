@@ -73,6 +73,6 @@ fn payment_card_1002_shapes_are_pinned() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "9e186c42c37290483707528a888cafc80b1fa5863313774cfbba6cce8a724614"
+        "dcc047f29baf3bcef95f8299275f6ce72c56d98a766e8cda12cd846d6dedda14"
     );
 }

@@ -96,7 +96,7 @@ async fn the_inbox_lists_the_owners_cards_from_every_room_newest_first_and_drops
             router
                 .runtime_state
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     session,
                     owner,
                     decision(id),
@@ -182,7 +182,7 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
     let _pending = router
         .runtime_state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session_id,
             DEFAULT_LOCAL_USER_ID,
             decision("raised"),
@@ -240,11 +240,9 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
     );
 }
 
-/// NC-22: a run of a workflow the person answers for that is held on a decision is a card of the
-/// Inbox; it is not marked read, and it leaves when the person opens the run. A failed run is
-/// status on its workflow row (its outcome), never a card.
+/// Held and failed runs stay in Workflows; reading the Inbox never settles a run.
 #[tokio::test]
-async fn a_held_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_run_is_opened() {
+async fn held_and_failed_workflow_runs_stay_in_workflows_without_an_inbox_card() {
     use crate::session::{
         WorkflowFailureEvent, WorkflowFailureKind, WorkflowNodeRun, WorkflowNodeRunStatus,
         WorkflowNodeWaitingReason, WorkflowRun, WorkflowRunStatus,
@@ -300,44 +298,26 @@ async fn a_held_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_run
         }
         session.create_workflow_run(run);
     }
+    let expected_runs = session.workflow_runs().to_vec();
     app.sessions_mut().restore_session(session);
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let shared_app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(shared_app.clone(), 1);
 
     let cards = inbox(&router).await;
-    assert_eq!(
-        card_ids(&cards),
-        [(session_id.as_str(), "run:run-3")],
-        "the held run is a card; the failed run is not"
-    );
-    let crate::local::PersonInboxCardBody::Workflow(run) = &cards[0].body else {
-        panic!("expected a workflow card, got {:?}", cards[0].body);
-    };
-    assert_eq!(
-        (run.workflow_name.as_str(), run.run_id.as_str()),
-        ("release-pipeline", "run-3")
-    );
     assert!(
-        matches!(
-            run.outcome,
-            crate::session::WorkflowRunOutcome::Waiting { .. }
-        ),
-        "{:?}",
-        run.outcome
+        cards.is_empty(),
+        "neither held nor failed runs create an Inbox card"
     );
-
-    let read = LocalDaemonRequest::SetInboxCardState(crate::local::SetInboxCardStateRequest {
-        card_ids: vec!["run:run-3".into()],
-        change: crate::local::InboxCardChange::Read { read: true },
-    });
-    let command = KernelCommand::from_local_request("read", None, None, &read);
-    let refusal = router
-        .dispatch(command, read)
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(
-        refusal.contains("leaves when you open the run"),
-        "{refusal}"
+    assert_eq!(
+        shared_app
+            .lock()
+            .await
+            .sessions()
+            .get_session(&session_id)
+            .unwrap()
+            .workflow_runs(),
+        expected_runs,
+        "reading Inbox preserves every run's state, attention and recovery details"
     );
 
     let open = LocalDaemonRequest::ClearWorkflowRunAttention(
@@ -350,6 +330,6 @@ async fn a_held_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_run
     router.dispatch(command, open).await.unwrap();
     assert!(
         inbox(&router).await.is_empty(),
-        "the opened run leaves the Inbox"
+        "opening Workflows still creates no Inbox card"
     );
 }

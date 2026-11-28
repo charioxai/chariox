@@ -89,6 +89,7 @@ impl KernelRuntimeState {
             }
         }
         self.record_person_inbox_change();
+        self.sync_agent_subscription_errors()?;
         self.list_notification_subscriptions(caller)
     }
 
@@ -104,6 +105,7 @@ impl KernelRuntimeState {
         self.end_notification_subscription(&row.subscription, caller)
             .await?;
         self.record_person_inbox_change();
+        self.sync_agent_subscription_errors()?;
         self.list_notification_subscriptions(caller)
     }
 

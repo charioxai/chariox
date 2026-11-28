@@ -9,6 +9,7 @@ use crate::{
 use tokio::sync::oneshot;
 
 mod task_capacity;
+mod taxonomy;
 
 struct Fixture {
     state: KernelRuntimeState,
@@ -113,6 +114,13 @@ impl Fixture {
         &self,
         name: &str,
     ) -> Result<oneshot::Receiver<super::super::PendingInteractionResolution>, DaemonError> {
+        self.register_type(name, "provider_native_permission")
+    }
+    fn register_type(
+        &self,
+        name: &str,
+        card_type: &'static str,
+    ) -> Result<oneshot::Receiver<super::super::PendingInteractionResolution>, DaemonError> {
         let id = self.id(name);
         let (send, receive) = oneshot::channel();
         let interaction = RuntimeInteraction::for_kernel_operation(
@@ -126,8 +134,8 @@ impl Fixture {
             ],
         );
         self.state.owned.register_runtime_interaction(
-            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                crate::runtime::state::InteractionSurface::named(card_type),
                 interaction,
             ),
             &self.session,
@@ -589,7 +597,7 @@ async fn decisioncap_owner_list_and_admission_agree_after_room_deletion() {
         receivers.push(
             f.state
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     &lost_room,
                     DEFAULT_LOCAL_USER_ID,
                     RuntimeInteraction::for_kernel_operation(
@@ -1457,7 +1465,7 @@ async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
     let id = format!("native-goal-approval-{session}");
     let mut receiver = state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session,
             permission(&id),
         )
@@ -1521,7 +1529,7 @@ async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
     let second_id = format!("native-goal-second-{session}");
     let _second = state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session,
             permission(&second_id),
         )
@@ -1568,7 +1576,7 @@ async fn a_hidden_agent_that_raises_a_decision_comes_back() {
     let id = format!("hidden-agent-decision-{session}");
     let _receiver = state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session,
             native_goal_permission(&agent, &id),
         )
@@ -1601,7 +1609,7 @@ async fn a12_native_approval_timeout_restores_the_goal() {
     let id = format!("native-goal-timeout-{session}");
     let mut receiver = state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session,
             native_goal_permission(&agent, &id),
         )
@@ -1627,7 +1635,7 @@ async fn a12_native_approval_timeout_restores_the_goal() {
     let second = format!("native-goal-timeout-second-{session}");
     let _receiver = state
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &session,
             native_goal_permission(&agent, &second),
         )
@@ -1870,7 +1878,7 @@ async fn answered_task_question_does_not_reopen_before_its_waiter_runs() {
     let _receiver = f
         .state
         .create_kernel_operation_interaction(
-            crate::runtime::state::CardKind::Task,
+            crate::runtime::state::InteractionSurface::named("Question"),
             &f.session,
             DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(
@@ -1968,8 +1976,8 @@ async fn an_agents_question_may_use_the_app_offer_choice_ids() {
         f.state
             .owned
             .register_runtime_interaction(
-                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                    crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                    crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                     interaction,
                 ),
                 &f.session,

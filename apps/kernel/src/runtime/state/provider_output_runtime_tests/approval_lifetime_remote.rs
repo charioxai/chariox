@@ -104,7 +104,7 @@ async fn register(
     };
     f.runtime
         .create_runtime_interaction_with_forwarding(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.session,
             native_approval(f, Some(origin)),
             Some(&context(f, prompt)),
@@ -511,7 +511,7 @@ async fn register_idle_review(
     }));
     f.runtime
         .create_runtime_interaction_with_forwarding(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.session,
             interaction,
             Some(&context(f, false)),
@@ -588,7 +588,7 @@ async fn mp08_mp10_mp11_active_worker_choice_retains_dispatch_pre_ack_allowance(
     let mut receiver = f
         .runtime
         .create_runtime_interaction_with_forwarding(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.session,
             interaction,
             Some(&context(&f, true)),
@@ -712,4 +712,186 @@ async fn approval_lifetime_remote_retried_forward_joins_the_same_decision() {
         .unwrap();
     assert_eq!(late.choice_id.as_deref(), Some("allow"));
     assert_eq!(pending(), 0);
+}
+
+#[tokio::test]
+async fn taxonomy_forwarded_popup_keeps_both_question_shapes_and_browser_type_at_home() {
+    use crate::session::{
+        RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
+        RuntimeInteractionCustomChoice, RuntimeInteractionView,
+    };
+    for (fixed, browser) in [(false, false), (true, false), (true, true)] {
+        let f = home(Some("worker-run"), true).await;
+        let id = format!("interaction-taxonomy-{}", f.session);
+        let choices = if fixed {
+            vec![RuntimeInteractionChoice::new("done", "Done", "done", None)]
+        } else {
+            vec![]
+        };
+        let mut popup = RuntimeInteraction::new(
+            &id,
+            "leased-agent",
+            RuntimeInteractionKind::Choice,
+            RuntimeInteractionLevel::Info,
+            Some("Question".into()),
+            "Which route?",
+            choices,
+            Some(RuntimeInteractionCustomChoice::new(
+                "reply",
+                "Something else",
+                None,
+                Some(1),
+                None,
+            )),
+            Some(30),
+            None,
+        )
+        .with_native_origin(Some(NativeInteractionOrigin::Prompt {
+            provider_run_id: f.run.clone(),
+            prompt_id: "worker-prompt".into(),
+        }));
+        if browser {
+            popup = popup.with_view(RuntimeInteractionView {
+                browser_region: RuntimeInteractionBrowserRegion {
+                    tab_id: "tab".into(),
+                    reference: "region".into(),
+                    generation: 1,
+                    document_id: "document".into(),
+                    origin: "https://example.invalid".into(),
+                    rect: RuntimeInteractionBrowserRect {
+                        x: 0,
+                        y: 0,
+                        width: 20,
+                        height: 20,
+                    },
+                    viewport_width: 800,
+                    viewport_height: 600,
+                    verification: None,
+                    verification_result: None,
+                    done_text: None,
+                },
+            });
+        }
+        let expected_type = if browser {
+            "popup_browser_region"
+        } else {
+            "Question"
+        };
+        let sent = crate::transport::relay_peer::RelayPeerRequest::ForwardNativeTurnInteraction {
+            context: context(&f, true),
+            interaction: popup.with_card_type(expected_type),
+        };
+        let received: crate::transport::relay_peer::RelayPeerRequest =
+            serde_json::from_slice(&serde_json::to_vec(&sent).unwrap()).unwrap();
+        let crate::transport::relay_peer::RelayPeerRequest::ForwardNativeTurnInteraction {
+            context,
+            interaction: popup,
+        } = received
+        else {
+            panic!("expected received popup frame")
+        };
+        assert_eq!(
+            popup.card_type(),
+            expected_type,
+            "the received peer frame retains the exact individual type before home classification"
+        );
+        let runtime = f.runtime.clone();
+        let handle = tokio::spawn(async move {
+            crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+                &runtime, context, popup,
+            )
+            .await
+        });
+        let shown = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(shown) = f
+                    .runtime
+                    .owned
+                    .session_snapshot(&f.session)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .find(|item| item.id() == id)
+                    .cloned()
+                {
+                    break shown;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("peer entry admits the forwarded popup at home");
+        assert_eq!(
+            shown.card_type(),
+            if browser {
+                "popup_browser_region"
+            } else {
+                "Question"
+            }
+        );
+        assert_eq!(shown.agent_id(), Some(f.agent.as_str()));
+        assert_eq!(shown.choices().len(), usize::from(fixed));
+        assert_eq!(shown.custom_choice().unwrap().id(), "reply");
+        f.runtime
+            .resolve_runtime_interaction(&f.session, &id, "reply", Some("Route Ω"))
+            .await
+            .unwrap();
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(result.status, "answered");
+        assert_eq!(result.reply.as_deref(), Some("Route Ω"));
+        assert!(f
+            .runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn taxonomy_forwarded_popup_refuses_a_missing_wire_type_before_classification() {
+    let f = home(Some("worker-run"), true).await;
+    let popup = RuntimeInteraction::new(
+        "interaction-untyped-question",
+        "leased-agent",
+        RuntimeInteractionKind::Choice,
+        RuntimeInteractionLevel::Info,
+        Some("Question".into()),
+        "Which route?",
+        vec![],
+        Some(crate::session::RuntimeInteractionCustomChoice::new(
+            "reply",
+            "Something else",
+            None,
+            Some(1),
+            None,
+        )),
+        Some(30),
+        None,
+    )
+    .with_native_origin(Some(NativeInteractionOrigin::Prompt {
+        provider_run_id: f.run.clone(),
+        prompt_id: "worker-prompt".into(),
+    }));
+    assert!(popup.card_type().is_empty());
+    let refusal = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+            &f.runtime,
+            context(&f, true),
+            popup,
+        ),
+    )
+    .await
+    .expect("a missing individual wire type must refuse before waiting for an answer")
+    .unwrap_err();
+    assert!(refusal.to_string().contains("not registered"));
+    assert!(f
+        .runtime
+        .owned
+        .session_snapshot(&f.session)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
 }

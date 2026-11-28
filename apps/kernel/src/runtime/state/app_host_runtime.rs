@@ -37,7 +37,14 @@ impl KernelRuntimeState {
                 .with_timeout_sec((offer.expires_ms.saturating_sub(now_ms) / 1000).clamp(1, 300));
             let receiver = match self
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::App,
+                    match &offer.action {
+                        AppHostAction::ClipboardWrite { .. } => {
+                            crate::runtime::state::InteractionSurface::named("app_clipboard_write")
+                        }
+                        AppHostAction::OpenLink { .. } => {
+                            crate::runtime::state::InteractionSurface::named("app_open_link")
+                        }
+                    },
                     &session,
                     &offer.owner,
                     interaction,

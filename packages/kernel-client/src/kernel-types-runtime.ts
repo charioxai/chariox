@@ -195,10 +195,14 @@ export type NativeInteractionOrigin =
   | { scope: "native_turn"; provider_run_id: string; native_turn_id: string }
   | { scope: "provider_startup"; provider_run_id: string }
 
-export type RuntimeInteraction = RuntimeInteractionSubject & {
+export type RuntimeInteractionPresentation =
+  | { surface: "card"; card_type: string }
+  | { surface: "pane_status" | "hidden"; card_type?: never }
+
+export type RuntimeInteraction = RuntimeInteractionSubject & RuntimeInteractionPresentation & {
   asking_task_id?: string | null
   related_agent_id?: string | null
-  /** A sub-agent's decision is listed with the room agent, whose panel shows it, whoever holds it. */
+  /** Cards appear with the room agent; pane status appears with the owning agent. */
   shown_in_agent_id?: string | null
   /** Protocol 1006: the asking agent's alias (else its ref), so a client names who asks in its first paint. */
   asker_name?: string | null
@@ -761,7 +765,7 @@ export type VaultSecretStatus = "pending" | "stored" | "cancelled" | "timed_out"
 export type VaultSecretRequestedResponse = { VaultSecretRequested: { interaction_id: string; link: string; expires_at: number; credential_id: string } }
 export type VaultSecretStatusResponse = { VaultSecretStatusReported: { interaction_id: string; credential_id: string; status: VaultSecretStatus } }
 
-export type AgentTreeState = 'starting' | 'running' | 'waiting' | 'idle' | 'ended' | 'error' | 'unreachable'
+export type AgentTreeState = 'starting' | 'running' | 'waiting' | 'idle' | 'ended' | 'error' | 'time_limit_ended' | 'unreachable'
 
 export interface AgentTreeNode {
   agent_id: string

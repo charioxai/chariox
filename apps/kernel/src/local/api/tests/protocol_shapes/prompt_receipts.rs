@@ -5,7 +5,7 @@ fn prompt_control_receipts_match_the_protocol_fixture() {
     let bytes = include_bytes!("prompt-control-receipts.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "00caba28a53fe72540a79cc4de77609577cbc269e0a3f0419d114042a859fcb2"
+        "fb27efc9a5b2034e4d6fecadbff049ba606861a8e3fb676e0697b48158999f9a"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

@@ -15,6 +15,7 @@ pub(crate) fn session_projection_events(
             && public_run(before) == public_run(snapshot)
             && before.agent_activity == snapshot.agent_activity
             && before.room_workflows == snapshot.room_workflows
+            && before.agent_tree_revs == snapshot.agent_tree_revs
     });
     if same_public
         && previous.is_some_and(|before| {
@@ -186,6 +187,25 @@ mod tests {
                 KernelEvent::SessionJobsChanged { jobs, .. },
             ] if jobs.is_empty()
         ));
+    }
+
+    #[test]
+    fn a_tree_only_revision_reaches_existing_subscribers() {
+        let mut before = snapshot();
+        before.agent_tree_revs.insert("root".into(), 1);
+        let mut after = before.clone();
+        after.agent_tree_revs.insert("root".into(), 2);
+        for scope in [None, Some("session_metadata")] {
+            let events = session_projection_events_for_scope(&after, Some(&before), false, scope);
+            assert!(matches!(
+                events.as_slice(),
+                [KernelEvent::AgentTreeChanged { session_id, root, rev: 2 }]
+                    if session_id == "session" && root == "root"
+            ));
+            assert!(
+                session_projection_events_for_scope(&after, Some(&after), false, scope).is_empty()
+            );
+        }
     }
 
     #[test]

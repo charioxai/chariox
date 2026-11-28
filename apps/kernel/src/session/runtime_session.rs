@@ -104,6 +104,13 @@ pub(crate) enum MachineApprovalReceiptState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSubscriptionError {
+    pub agent_id: String,
+    pub subscription_id: String,
+    pub health: crate::local::NotificationSubscriptionHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
     project_id: ProjectId,
@@ -152,6 +159,8 @@ pub struct RuntimeSession {
     prompt_runtime: PromptRuntimeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     active_interactions: Vec<RuntimeInteraction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notification_errors: Vec<AgentSubscriptionError>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     machine_approval_receipts: Vec<MachineApprovalReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -359,6 +368,7 @@ impl RuntimeSession {
             connected_cli_count: 0,
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
+            notification_errors: Vec::new(),
             machine_approval_receipts: Vec::new(),
             metaagent_tasks: Vec::new(),
             agent_tasks: Vec::new(),
@@ -1211,8 +1221,22 @@ impl RuntimeSession {
         }
     }
 
-    /// Insert a card admitted by the kernel registry.
-    pub(crate) fn add_active_interaction(&mut self, card: crate::runtime::state::LiveRoomCard) {
+    pub(crate) fn notification_errors(&self) -> &[AgentSubscriptionError] {
+        &self.notification_errors
+    }
+    pub(crate) fn set_notification_errors(&mut self, errors: Vec<AgentSubscriptionError>) -> bool {
+        if self.notification_errors == errors {
+            return false;
+        }
+        self.notification_errors = errors;
+        true
+    }
+
+    /// Insert a live operation presentation admitted by the kernel registry.
+    pub(crate) fn add_active_interaction(
+        &mut self,
+        card: crate::runtime::state::LiveRoomInteraction,
+    ) {
         self.insert_interaction(card.into_presentation());
     }
 

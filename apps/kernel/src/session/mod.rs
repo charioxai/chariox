@@ -16,7 +16,10 @@ mod queued_metaagent_task;
 mod room_environment;
 mod room_setup;
 mod room_setup_store;
+mod runtime_card_types;
 mod runtime_interactions;
+pub use runtime_card_types::runtime_card_class;
+pub(crate) use runtime_card_types::runtime_card_type;
 pub use runtime_interactions::NativeInteractionOrigin;
 pub(crate) use runtime_interactions::{
     bounded_display_text, is_blocked_task_decision, BLOCKED_TASK_DECISION_PREFIX,
@@ -97,28 +100,29 @@ pub use service::{PromptIdAllocator, SessionService};
 pub use store::SessionStore;
 pub use types::WorkflowHandoffValidationPolicy;
 pub use types::{
-    unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, HandoffChangeLine,
-    HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, MetaagentTask, MetaagentTaskStatus,
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptOrigin, PromptQueueItem,
-    PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask, ResponsibleForWorkflow,
-    ResponsibleNotice, ResponsibleNoticeKind, RuntimeHandoff, RuntimeInteraction,
-    RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
-    RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
-    RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
-    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
-    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSecretRequest,
-    RuntimeInteractionSubject, RuntimeInteractionView, RuntimeProviderLogin, RuntimeSession,
-    RuntimeWorktreeAssignment, SchedulerState, SessionAgentDefaults,
-    SessionCollaborationAgentCounts, SessionConfigState, SessionExecutionMode, SessionInvite,
-    SessionMember, SessionStatus, SkillIntent, WorkflowArtifactRef, WorkflowCanvasLayout,
-    WorkflowCanvasLayoutPatch, WorkflowCanvasPoint, WorkflowCodeSourceBinding,
-    WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEdgeEndpointSide,
-    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy,
-    WorkflowFailurePolicyMode, WorkflowHandoffPayload, WorkflowIntermediateOutput, WorkflowMessage,
-    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowNodeThinkingTrace,
-    WorkflowNodeWaitingReason, WorkflowOrigin, WorkflowOriginReason, WorkflowOriginSurface,
-    WorkflowOutputPayload, WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
+    unix_epoch_ms, AgentPromptState, AgentSubscriptionError, CollaborationLevel,
+    CreateSessionRequest, HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason,
+    HandoffTarget, MetaagentTask, MetaagentTaskStatus, PromptAttachment, PromptCancellation,
+    PromptCompletion, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    QueuedMetaagentTask, ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind,
+    RuntimeHandoff, RuntimeInteraction, RuntimeInteractionBrowserRect,
+    RuntimeInteractionBrowserRegion, RuntimeInteractionBrowserVerification,
+    RuntimeInteractionBrowserVerificationOutcome, RuntimeInteractionBrowserVerificationResult,
+    RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice,
+    RuntimeInteractionInputKind, RuntimeInteractionKind, RuntimeInteractionLevel,
+    RuntimeInteractionSecretRequest, RuntimeInteractionSubject, RuntimeInteractionView,
+    RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment, SchedulerState,
+    SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
+    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, SkillIntent,
+    WorkflowArtifactRef, WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+    WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
+    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
+    WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
+    WorkflowIntermediateOutput, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowNodeWaitingReason, WorkflowOrigin,
+    WorkflowOriginReason, WorkflowOriginSurface, WorkflowOutputPayload,
+    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
     WorkflowQueuedPromptStatus, WorkflowResponsible, WorkflowRun, WorkflowRunOutcome,
     WorkflowRunOutputSubmission, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,

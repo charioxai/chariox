@@ -27,6 +27,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY docs/runtime-card-types.json docs/card-decisions.json docs/
 COPY fixtures fixtures
 COPY patches/ureq patches/ureq
 COPY adapters/rust adapters/rust

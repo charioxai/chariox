@@ -338,7 +338,7 @@ impl KernelRuntimeState {
         }
         let rx = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("sudo_task_approval"),
                 &entry.session_id,
                 &entry.owner_user_id,
                 interaction,

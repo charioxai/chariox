@@ -143,7 +143,7 @@ impl KernelRuntimeState {
                 .with_provider_login(projection);
                 receiver = Some(
                     self.create_runtime_interaction(
-                        crate::runtime::state::CardKind::ProviderLogin,
+                        crate::runtime::state::InteractionSurface::named("provider_login_workflow"),
                         session_id,
                         interaction,
                     )

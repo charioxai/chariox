@@ -3467,7 +3467,7 @@ mod tests {
         .with_native_origin(Some(origin));
         let _pending = runtime
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &session_id,
                 popup,
             )

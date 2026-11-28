@@ -374,7 +374,7 @@ impl KernelRuntimeState {
             .with_timeout_sec(lifetime.min(MAX_WAIT).as_secs().max(1));
         let receiver = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                crate::runtime::state::InteractionSurface::named("kernel_enrollment"),
                 room,
                 session.owner_user_id(),
                 interaction,

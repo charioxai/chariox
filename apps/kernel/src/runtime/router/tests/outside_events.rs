@@ -379,7 +379,7 @@ fn outside_router_critical_approvals_are_only_section_eight_pointers() {
         let _responder = router
             .runtime_state()
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 session.id(),
                 session.owner_user_id(),
                 interaction,

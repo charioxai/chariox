@@ -377,7 +377,11 @@ impl KernelRuntimeState {
         };
         let receiver = self
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::OwnerControl,
+                if handoff.kind == HandoffKind::Click {
+                    crate::runtime::state::InteractionSurface::named("owner_handoff_click")
+                } else {
+                    crate::runtime::state::InteractionSurface::named("owner_handoff_input")
+                },
                 session_id,
                 owner,
                 interaction,

@@ -209,7 +209,7 @@ async fn a12_many_pending_decisions_never_block_a_new_one() {
     receivers.push(
         f.state
             .create_kernel_operation_interaction(
-                crate::runtime::state::CardKind::NativePermissionInput,
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 &f.session,
                 DEFAULT_LOCAL_USER_ID,
                 RuntimeInteraction::for_kernel_operation(
@@ -241,8 +241,8 @@ async fn owner_task_decision_is_removed_when_its_task_is_missing() {
     f.state
         .owned
         .register_runtime_interaction(
-            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
-                crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::runtime_interaction_owned_state::InteractionRequest(
+                crate::runtime::state::InteractionSurface::named("provider_native_permission"),
                 RuntimeInteraction::for_kernel_operation(
                     id,
                     id,
@@ -307,9 +307,9 @@ async fn owner_task_decision_restores_its_reply_channel_after_reload() {
     .expect("the owner can answer the restored decision without a second Resume");
 }
 
-// MP-08/MP-09/MP-10/MP-11: a kernel-owned card for a hidden agent brings it back even while queued work is retained.
+// A generic blocked task retains its work and recovery channel without generating UI.
 #[tokio::test]
-async fn a_blocked_task_card_returns_a_hidden_agent_with_retained_queued_work() {
+async fn a_generic_blocked_task_keeps_its_hidden_agent_and_retained_queued_work() {
     use crate::session::{PromptQueueItem, PromptStatus};
     let f = Fixture::with_room_tools();
     let agent = native_goal_agent(&f);
@@ -353,35 +353,72 @@ async fn a_blocked_task_card_returns_a_hidden_agent_with_retained_queued_work() 
         .set_agent_hidden(&agent, true)
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::BlockForQuestion {
+        .agent_lifecycle(Operation::Block {
             task: prompt.clone(),
             prompt,
             reason: "Owner decision required".into(),
-            reply: None,
         })
         .unwrap()
     else {
         panic!()
     };
     f.state
-        .ensure_task_owner_interaction(blocked)
+        .ensure_task_owner_interaction(blocked.clone())
         .await
         .unwrap();
     assert!(
-        !f.state
+        f.state
             .owned
             .agent_store
             .get_agent(&agent)
             .unwrap()
             .hidden(),
-        "the Resume/Cancel card concerns this agent, so it must be visible again"
+        "a generic blocked task never reveals the hidden agent"
     );
     let session = f.state.owned.session_store.get_session(&f.session).unwrap();
+    assert!(session
+        .active_interactions()
+        .iter()
+        .all(|interaction| interaction.card_type().is_empty() && !interaction.is_pane_status()));
+    assert_eq!(
+        store.agent_task(&blocked.task_id).unwrap().unwrap().state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Blocked
+    );
     assert_eq!(
         session
             .queued_prompts_for_agent(&agent)
             .map(|held| held.len()),
         Some(1),
         "the queued work is retained"
+    );
+}
+
+#[tokio::test]
+async fn taxonomy_a_genuine_task_question_keeps_its_card_reply_and_existing_authority_level() {
+    let f = Fixture::with_room_tools();
+    let task = blocked_tasks(&f).await.remove(0);
+    let session = f.state.owned.session_store.get_session(&f.session).unwrap();
+    let question = session
+        .active_interactions()
+        .iter()
+        .find(|item| item.related_agent_id() == Some(task.agent_id.as_str()))
+        .unwrap();
+    assert_eq!(question.card_type(), "Question");
+    assert!(!question.is_pane_status());
+    assert_ne!(
+        question.level(),
+        crate::session::RuntimeInteractionLevel::Critical,
+        "presentation must not change eligible parent authority to person-only"
+    );
+    assert_eq!(question.custom_choice().unwrap().id(), "reply");
+    assert_eq!(
+        f.state
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Blocked
     );
 }

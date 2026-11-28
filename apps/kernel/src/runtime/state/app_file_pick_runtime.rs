@@ -80,7 +80,7 @@ impl KernelRuntimeState {
             let interaction = pick_interaction(&pick).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::App,
+                    crate::runtime::state::InteractionSurface::named("app_file_pick"),
                     &session,
                     &pick.owner,
                     interaction,
@@ -191,7 +191,7 @@ impl KernelRuntimeState {
                 export_interaction(&export).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::App,
+                    crate::runtime::state::InteractionSurface::named("app_file_export"),
                     &session,
                     &export.owner,
                     interaction,

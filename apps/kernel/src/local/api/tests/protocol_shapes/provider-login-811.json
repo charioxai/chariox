@@ -39,7 +39,9 @@
             },
             "terminal_output_base64": "",
             "problem": "The code could not be read. Copy the whole code and try again."
-          }
+          },
+          "surface": "card",
+          "card_type": "provider_login_workflow"
         }
       }
     }

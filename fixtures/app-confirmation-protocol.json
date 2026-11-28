@@ -1,6 +1,6 @@
 {
-  "local": 1016,
-  "peer": 453,
+  "local": 1017,
+  "peer": 454,
   "interaction": {
     "id": "app-confirm-1",
     "agent_id": "agent",
@@ -9,8 +9,18 @@
     "title": "Confirm pay",
     "message": "Campaign by Chariox asks you to confirm pay.\nInput:\n{\n  \"amount\": 1200\n}",
     "choices": [
-      { "id": "confirm", "label": "Confirm", "reply": "confirm", "style": "primary" },
-      { "id": "cancel", "label": "Cancel", "reply": "cancel", "style": "danger" }
+      {
+        "id": "confirm",
+        "label": "Confirm",
+        "reply": "confirm",
+        "style": "primary"
+      },
+      {
+        "id": "cancel",
+        "label": "Cancel",
+        "reply": "cancel",
+        "style": "danger"
+      }
     ],
     "timeout_sec": 300,
     "default_on_timeout": "cancel",
@@ -23,12 +33,16 @@
       "publisher_name": "Chariox",
       "action_name": "pay",
       "input": "{\n  \"amount\": 1200\n}"
-    }
+    },
+    "surface": "card",
+    "card_type": "app_view_confirmation"
   },
   "action": {
     "name": "pay",
     "description": "Pay for the campaign",
-    "inputSchema": { "type": "object" },
+    "inputSchema": {
+      "type": "object"
+    },
     "effect": "person_confirmed",
     "confirmationView": "review_payment"
   }

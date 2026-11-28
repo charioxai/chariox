@@ -88,7 +88,10 @@ pub(crate) fn user_only(
         Some(UserOnly::SignIn)
     } else if pending.user_domain_interaction.is_some() {
         Some(UserOnly::UserDomain)
-    } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
+    } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical
+        && !super::provider_stall::is_provider_stall_decision(interaction)
+    {
+        // A stall's error severity does not change its existing parent recovery authority.
         Some(UserOnly::Critical)
     } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id())
         || super::provider_stall::is_provider_stall_decision(interaction)

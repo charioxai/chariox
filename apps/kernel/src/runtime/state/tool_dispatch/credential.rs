@@ -178,6 +178,7 @@ impl KernelRuntimeState {
                         provider_run.agent_instance_id().unwrap_or(""),
                         provider_run.id(),
                     ));
+                let interaction = interaction.with_card_type("credential_secret_capture");
                 let interaction_id = interaction.id().to_string();
                 let session_id = provider_run.session_id().to_string();
                 let timeout_sec = interaction.timeout_sec();
@@ -224,7 +225,9 @@ impl KernelRuntimeState {
                 } else {
                     let resolution_rx = self
                         .create_runtime_interaction(
-                            crate::runtime::state::CardKind::VaultCredentialPayment,
+                            crate::runtime::state::InteractionSurface::named(
+                                "credential_secret_capture",
+                            ),
                             &session_id,
                             interaction,
                         )
@@ -942,7 +945,7 @@ impl KernelRuntimeState {
         let timeout_sec = interaction.timeout_sec();
         let resolution_rx = self
             .create_runtime_interaction(
-                crate::runtime::state::CardKind::VaultCredentialPayment,
+                crate::runtime::state::InteractionSurface::named("credential_secret"),
                 &context.home_session_id,
                 interaction,
             )

@@ -211,7 +211,7 @@ async fn many_pending_decisions_do_not_block_an_acquisition() {
         pending.push(
             t.runtime
                 .create_kernel_operation_interaction(
-                    crate::runtime::state::CardKind::OwnerControl,
+                    crate::runtime::state::InteractionSurface::named("card_action"),
                     &t.room,
                     &owner,
                     RuntimeInteraction::for_kernel_operation(

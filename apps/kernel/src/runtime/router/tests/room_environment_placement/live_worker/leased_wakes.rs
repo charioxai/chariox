@@ -2645,3 +2645,5 @@ async fn placed_agent_jobs() {
     fixture.stop().await;
     assert!(started.is_ok(), "{started:?}");
 }
+
+mod taxonomy_popup;

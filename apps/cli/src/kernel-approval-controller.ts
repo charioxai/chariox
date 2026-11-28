@@ -1,3 +1,4 @@
+import { runtimeCardClass } from "@chariox/kernel-client/runtime-card-types"
 import { isApprovalShortcut } from "./approval-shortcuts.js"
 import type { HandoffOutcome, HandoffResponseAction } from "@chariox/kernel-client/owner-handoff"
 import type { RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession } from "./cli-types.js"
@@ -52,7 +53,8 @@ export function kernelApprovals(session: RuntimeSession, delegateSudoToPasskeyPo
 
 function kernelApprovalInteractions(interactions: readonly RuntimeInteraction[], delegateSudoToPasskeyPopup = false): RuntimeInteraction[] {
   return interactions.filter((item) =>
-    typeof item.kernel_operation_id === "string" && item.kernel_operation_id.trim().length > 0
+    item.surface === "card" && runtimeCardClass(item.card_type) !== undefined
+    && typeof item.kernel_operation_id === "string" && item.kernel_operation_id.trim().length > 0
     && !Object.hasOwn(item, "agent_id") && item.kind === "permission"
     && item.custom_choice == null && item.default_on_timeout == null
     && !(delegateSudoToPasskeyPopup && item.kernel_operation_id.startsWith("sudo:")

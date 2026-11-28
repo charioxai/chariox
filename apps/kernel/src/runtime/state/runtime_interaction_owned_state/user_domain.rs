@@ -7,7 +7,7 @@ impl KernelRuntimeOwnedState {
     /// Called under the shared interaction mutation/admission guards.
     pub(super) fn register_user_domain_interaction(
         &self,
-        kind: super::CardKind,
+        kind: super::InteractionSurface,
         interaction: RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         owner: Option<&str>,
@@ -223,7 +223,9 @@ mod tests {
             receivers.push(
                 state
                     .create_kernel_operation_interaction(
-                        crate::runtime::state::CardKind::NativePermissionInput,
+                        crate::runtime::state::InteractionSurface::named(
+                            "provider_native_permission",
+                        ),
                         "",
                         "alice",
                         interaction(&format!("detached-{number}")),
