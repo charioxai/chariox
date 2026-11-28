@@ -548,3 +548,63 @@ async fn an_adopted_own_turn_whose_process_exits_leaves_no_turn_behind() {
         .adopted_provider_turn(&session, &team.child, &team.child_run)
         .is_some());
 }
+
+#[tokio::test]
+async fn a_leased_notification_without_a_home_origin_does_not_issue_worker_identity() {
+    let team = idle_child("leased-own-turn-origin", false).await;
+    apply(&team, own_turn_start()).await;
+    let adopted = active_prompt(&team).expect("the provider notification was adopted");
+    team.runtime
+        .owned
+        .provider_run_projection
+        .mark_leased_provider_run(&team.child_run);
+    let hook = crate::test_support::TestWorktree::new("leased-notification-context-response");
+    let run = crate::provider::RuntimeProviderRun::new(
+        &team.child_run,
+        &crate::provider::LaunchProviderRequest::new(
+            &team.room, "claude", "claude", "default", "haiku",
+        )
+        .with_agent_id(&team.child),
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude:stream-json".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: [(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                hook.path().join("dispatched.txt").display().to_string(),
+            )]
+            .into(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    team.runtime
+        .reply_to_claude_notification_context(
+            &team.room,
+            &run,
+            &crate::provider::ClaudeNotificationContext {
+                request_id: "leased-notification".into(),
+                deadline_ms: crate::session::unix_epoch_ms() + 5000,
+                ended_tool_use_id: None,
+            },
+        )
+        .unwrap();
+    let context = std::fs::read_to_string(
+        hook.path()
+            .join("hook-context-responses/leased-notification.txt"),
+    )
+    .unwrap();
+    assert!(
+        context.contains("home kernel"),
+        "missing corrective action: {context}"
+    );
+    assert!(!context.contains("<chariox-agent-message-origin>"));
+    assert!(!context.contains("<chariox-task-context>"));
+    assert!(
+        !context.contains(adopted.id()),
+        "a backing turn must never be issued as home runtime identity"
+    );
+}
