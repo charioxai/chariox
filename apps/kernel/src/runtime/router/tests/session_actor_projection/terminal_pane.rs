@@ -310,6 +310,23 @@ async fn a_dismissed_dialog_leaves_the_card_open_and_does_not_reopen() {
         "not now: the card stays open"
     );
     terminal.status_line_shows("1 card waiting").await;
+    drop(stream);
+    let mut reconnected = terminal.stream().await;
+    assert!(
+        next_message(
+            &mut reconnected,
+            "elicitation/create",
+            Duration::from_millis(2500)
+        )
+        .await
+        .is_none(),
+        "the same run keeps its dismissal after the notification stream reconnects"
+    );
+    assert_eq!(
+        terminal.feed().await.cards.len(),
+        1,
+        "reconnecting never answers the card"
+    );
 }
 
 #[tokio::test]
@@ -389,4 +406,29 @@ async fn a_model_and_mode_switched_in_the_terminal_show_in_every_client() {
     terminal
         .status_line_shows("claude-haiku-5-5 · low · plan")
         .await;
+}
+
+#[tokio::test]
+async fn clearing_effort_in_the_terminal_clears_the_kernel_setting() {
+    let terminal = terminal().await;
+    std::fs::write(
+        terminal.file("terminal-model.json"),
+        r#"{"model":"claude-sonnet-5-5","effort":null}"#,
+    )
+    .unwrap();
+    let _stream = terminal.stream().await;
+    terminal.status_line_shows("· sonnet ·").await;
+    std::fs::write(
+        terminal.file("terminal-model.json"),
+        r#"{"model":"claude-sonnet-5-5","effort":"high"}"#,
+    )
+    .unwrap();
+    terminal.status_line_shows("· high ·").await;
+    std::fs::write(
+        terminal.file("terminal-model.json"),
+        r#"{"model":"claude-sonnet-5-5","effort":null}"#,
+    )
+    .unwrap();
+    terminal.status_line_shows("· default ·").await;
+    assert_eq!(terminal.feed().await.settings.effort, None);
 }
