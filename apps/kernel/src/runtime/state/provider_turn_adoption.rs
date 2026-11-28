@@ -73,11 +73,23 @@ impl KernelRuntimeState {
             .filter(|prompt| prompt.status() == crate::session::PromptStatus::Running);
         let context = match notification {
             Some(prompt) => {
-                let origin = crate::prompt_assembly::agent_message_origin_context(prompt.id());
-                let task = owned
-                    .agent_task_context_hint(session_id, agent_id, prompt.id())?
-                    .unwrap_or_default();
-                super::local_prompt_dispatch_runtime::join_hidden_context(&origin, &task)
+                let leased = owned.provider_run_projection.is_leased_provider_run(run.id())
+                    || prompt.leased_skill_context().is_some();
+                match prompt.runtime_origin_prompt_id(leased) {
+                    Ok(id) => {
+                        let origin = crate::prompt_assembly::agent_message_origin_context(id);
+                        // The home supplied the task context. A worker's adopted task
+                        // cannot replace that authority with its own ledger identity.
+                        let task = if leased {
+                            String::new()
+                        } else {
+                            owned.agent_task_context_hint(session_id, agent_id, prompt.id())?
+                                .unwrap_or_default()
+                        };
+                        super::local_prompt_dispatch_runtime::join_hidden_context(&origin, &task)
+                    }
+                    Err(error) => format!("Chariox cannot supply runtime identity for this notification: {error}. Wait for a turn dispatched by your home kernel before using Chariox runtime tools."),
+                }
             }
             None => "There is no active Chariox turn for this notification. Wait for a running Chariox turn before using its ID.".into(),
         };
