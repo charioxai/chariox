@@ -2357,6 +2357,106 @@ fn write_sample(pid: u32, at: u64) -> super::super::sampling::ProcessSample {
     }
 }
 
+#[test]
+fn r3_a_stream_closing_after_a_final_burst_does_not_make_its_logger_the_filler() {
+    let (logger, usage, mut log) = stream_writer(1, 2, 400 * MIB);
+    log.written = 0;
+    log.rate = 0;
+    log.files.clear();
+    let current = owner("agent", true, vec![usage], vec![(1, logger)]);
+    {
+        let mut observation = current.lock().unwrap();
+        observation.samples = vec![write_sample(1, 10000)];
+        observation.disk_writes.insert(1, vec![log]);
+    }
+    let volume = stream_volumes();
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(ledger.take_fillers(&current).is_empty());
+    std::thread::sleep(Duration::from_millis(250));
+    let (filler, filler_use, scratch) = stream_writer(2, 1, 300 * MIB);
+    {
+        let mut observation = current.lock().unwrap();
+        // All these new bytes may belong to the healthy stream's final
+        // interval: the sampler cannot inspect its now-closed descriptor.
+        observation.commands[0].writes += 800 * MIB;
+        observation.samples = vec![write_sample(1, 12000), write_sample(2, 12000)];
+        observation.disk_writes.remove(&1);
+        observation.commands.push(filler_use);
+        observation.admission.insert(2, filler);
+        observation.disk_writes.insert(2, vec![scratch]);
+    }
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        ledger
+            .take_fillers(&current)
+            .iter()
+            .map(|(pid, _)| *pid)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+}
+
+#[test]
+fn r3_stable_stdout_and_rotating_stderr_do_not_erase_a_generators_valid_residual() {
+    let (generator, usage, mut log) = stream_writer(1, 2, 300 * MIB);
+    log.written = 0;
+    log.rate = 0;
+    log.files.clear();
+    let current = owner("agent", true, vec![usage], vec![(1, generator)]);
+    current.lock().unwrap().disk_writes.insert(1, vec![log]);
+    let volume = stream_volumes();
+    let mut ledger = Ledger::new(None);
+    let mut stopped = false;
+    for n in 0..=10 {
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, 10000 + n * 250)];
+            observation.commands[0].writes = 3 * GIB + n * 75 * MIB;
+            let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
+            // stdout inode11 stays open; the tiny stderr file rotates every
+            // half second, between samples. The scratch files remain unseen.
+            let stderr = 12 + n / 2;
+            output.open = [11, stderr].into();
+            output.written = (n % 2) * 4096;
+            output.rate = if n % 2 == 1 { 16384 } else { 0 };
+            output.files = if n % 2 == 1 {
+                [stderr].into()
+            } else {
+                Default::default()
+            };
+        }
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        let fillers = ledger.take_fillers(&current);
+        if !fillers.is_empty() {
+            assert_eq!(
+                fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+                vec![1]
+            );
+            assert!(fillers[0].1.rate >= 128 * MIB);
+            stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        stopped,
+        "stderr rotation erased the sustained scratch filler's valid write deltas"
+    );
+}
+
 /// A volume that starts with `free` and loses `per_second` from its first reading.
 fn losing(free: u64, per_second: u64) -> Box<Volume> {
     let started = Instant::now();
