@@ -31,39 +31,47 @@ const REQUEST_ID_PREFIX: &str = "chariox-card-";
 /// arrives as a separate POST; whoever takes the entry closes the dialog.
 static DIALOGS: LazyLock<Mutex<HashMap<String, Dialog>>> = LazyLock::new(Default::default);
 
-// A transport reconnect belongs to the same provider run. Retain its dismissals until the run ends,
-// and discard ended runs whenever another terminal connects or answers.
+// A reconnect belongs to the same provider run: it keeps the open dialog, dismissals and
+// observed settings. Discard ended runs whenever another terminal connects or answers.
 static RUN_PANES: LazyLock<Mutex<HashMap<String, RunPane>>> = LazyLock::new(Default::default);
 
 struct RunPane {
     router: Weak<CommandRouter>,
     token: String,
-    closed_here: Arc<Mutex<BTreeSet<String>>>,
+    state: Arc<Mutex<RunPaneState>>,
 }
 
-fn run_dismissals(
-    router: &Arc<CommandRouter>,
-    token: &str,
-    run_id: &str,
-) -> Arc<Mutex<BTreeSet<String>>> {
+#[derive(Default)]
+struct RunPaneState {
+    /// The provider run survives reconnecting its notification stream.
+    closed_here: BTreeSet<String>,
+    open: Option<(String, String)>,
+    model_seen: Option<TerminalModel>,
+}
+
+fn run_state(router: &Arc<CommandRouter>, token: &str, run_id: &str) -> Arc<Mutex<RunPaneState>> {
     let mut panes = RUN_PANES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     panes.retain(|id, pane| {
-        pane.router.upgrade().is_some_and(|router| {
+        let running = pane.router.upgrade().is_some_and(|router| {
             router
                 .runtime_mcp_catalog_run(&pane.token)
                 .is_some_and(|run| run.id() == id)
-        })
+        });
+        if !running {
+            dialogs().retain(|_, dialog| &dialog.run_id != id);
+        }
+        running
     });
     panes
         .entry(run_id.to_string())
         .or_insert_with(|| RunPane {
             router: Arc::downgrade(router),
             token: token.to_string(),
-            closed_here: Arc::default(),
+            state: Arc::default(),
         })
-        .closed_here
+        .state
         .clone()
 }
 
@@ -131,7 +139,7 @@ pub(super) fn stream(
     let token = parse_bearer_token(headers)?;
     let (run, files) = terminal_run(&router, &token)?;
     let agent_id = run.agent_instance_id()?.to_string();
-    let closed_here = run_dismissals(&router, &token, run.id());
+    let state = run_state(&router, &token, run.id());
     let pane = Pane {
         sessions_seen: router.session_projection_change_sequence(),
         inbox_seen: router.person_inbox_change_sequence(),
@@ -143,10 +151,8 @@ pub(super) fn stream(
         agent_id,
         files,
         shutdown,
-        open: None,
-        closed_here,
+        state,
         status: None,
-        model_seen: None,
         feed: None,
         feed_due: Instant::now(),
     };
@@ -187,12 +193,9 @@ struct Pane {
     agent_id: String,
     files: PaneFiles,
     shutdown: tokio::sync::watch::Receiver<()>,
-    /// The dialog open in the terminal: request id and card id.
-    open: Option<(String, String)>,
-    /// Cards whose dialog the person closed here: answered, or dismissed for "not now".
-    closed_here: Arc<Mutex<BTreeSet<String>>>,
+    /// Dialog ownership, dismissals and observed settings belong to the run, across GET streams.
+    state: Arc<Mutex<RunPaneState>>,
     status: Option<String>,
-    model_seen: Option<TerminalModel>,
     feed: Option<PaneFeed>,
     feed_due: Instant,
     sessions_seen: u64,
@@ -208,7 +211,11 @@ impl Pane {
     }
 
     fn close(&mut self) {
-        if let Some((request_id, _)) = self.open.take() {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((request_id, _)) = state.open.take() {
             dialogs().remove(&request_id);
         }
     }
@@ -219,15 +226,17 @@ impl Pane {
 
     async fn tick(&mut self, router: &CommandRouter) -> Vec<u8> {
         self.report_settings(router).await;
-        if let Some((request_id, card_id)) = &self.open {
-            if !dialogs().contains_key(request_id) {
-                // The person answered or dismissed the dialog; the feed shows which.
-                self.closed_here
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(card_id.clone());
-                self.open = None;
-                self.feed_due = Instant::now();
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((request_id, card_id)) = state.open.clone() {
+                if !dialogs().contains_key(&request_id) {
+                    state.closed_here.insert(card_id);
+                    state.open = None;
+                    self.feed_due = Instant::now();
+                }
             }
         }
         if Instant::now() >= self.feed_due {
@@ -240,27 +249,29 @@ impl Pane {
             return Vec::new();
         };
         let mut frames = Vec::new();
-        if let Some((request_id, card_id)) = &self.open {
-            if !feed.cards.iter().any(|card| &card.id == card_id) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((request_id, card_id)) = state.open.clone() {
+            if !feed.cards.iter().any(|card| card.id == card_id) {
                 // Answered elsewhere: close the terminal's dialog.
-                dialogs().remove(request_id);
+                dialogs().remove(&request_id);
                 frames.extend(sse_message(&serde_json::json!({
                     "jsonrpc": JSON_RPC_VERSION,
                     "method": "notifications/cancelled",
                     "params": { "requestId": request_id, "reason": "Answered in Chariox." }
                 })));
-                self.open = None;
+                state.open = None;
             }
         }
-        let mut closed_here = self
+        state
             .closed_here
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        closed_here.retain(|card_id| feed.cards.iter().any(|card| &card.id == card_id));
-        if self.open.is_none() {
+            .retain(|card_id| feed.cards.iter().any(|card| &card.id == card_id));
+        if state.open.is_none() {
             // Claude's own permission dialog is the terminal face of its card.
             let next = feed.cards.iter().find(|card| {
-                !closed_here.contains(&card.id)
+                !state.closed_here.contains(&card.id)
                     && !is_claude_native_permission(&card.id, &self.run_id)
             });
             if let Some((request, dialog)) = next.and_then(|card| dialog_for(card, feed)) {
@@ -272,7 +283,7 @@ impl Pane {
                     card_id: dialog.0,
                     answers: dialog.1,
                 };
-                self.open = Some((request_id.clone(), dialog.card_id.clone()));
+                state.open = Some((request_id.clone(), dialog.card_id.clone()));
                 dialogs().insert(request_id.clone(), dialog);
                 frames.extend(sse_message(&serde_json::json!({
                     "jsonrpc": JSON_RPC_VERSION,
@@ -282,7 +293,7 @@ impl Pane {
                 })));
             } else if let Some(card) = next {
                 // Nothing to open here (no link to the pane): the status line names it.
-                closed_here.insert(card.id.clone());
+                state.closed_here.insert(card.id.clone());
             }
         }
         frames
@@ -331,7 +342,13 @@ impl Pane {
         // Claude names the model it runs by its full id, the kernel may record an alias: the
         // first reading is the launch choice, a later different one is the person's switch.
         if let Some(model) = model {
-            if let Some(seen) = self.model_seen.replace(model.clone()) {
+            if let Some(seen) = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .model_seen
+                .replace(model.clone())
+            {
                 if seen.model != model.model {
                     report.model = Some(model.model.clone());
                 }
@@ -619,9 +636,10 @@ pub(super) async fn answer(router: Arc<CommandRouter>, token: &str, payload: &Va
     let Some(dialog) = dialog else {
         return;
     };
-    run_dismissals(&router, token, run.id())
+    run_state(&router, token, run.id())
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .closed_here
         .insert(dialog.card_id.clone());
     let Some(answer) = payload
         .get("result")
