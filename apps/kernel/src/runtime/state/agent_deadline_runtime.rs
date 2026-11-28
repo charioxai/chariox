@@ -74,6 +74,17 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
+        // An extension of an ended limit, by the card or independently, resolves the open card.
+        if let Some(previous) = previous.filter(|previous| {
+            (previous.state == AgentDeadlineState::Reached
+                || previous.deadline_ms <= crate::session::unix_epoch_ms())
+                && deadline.as_ref().is_none_or(|current| {
+                    current.state == AgentDeadlineState::Armed
+                        && current.deadline_ms > crate::session::unix_epoch_ms()
+                })
+        }) {
+            self.owned.close_deadline_status(&previous)?;
+        }
         self.publish_changed_agent_trees();
         Ok(LocalDaemonResponse::AgentDeadline { deadline })
     }
@@ -194,6 +205,10 @@ impl KernelRuntimeState {
                     now,
                     stopped: false,
                 })?;
+            if retires_messages {
+                self.show_deadline_status(&deadline.session_id, &deadline.agent_id)
+                    .await;
+            }
             due.push((deadline, work));
         }
         let outcomes =
@@ -224,6 +239,7 @@ impl KernelRuntimeState {
                         // The Room hears of it once: when the first cleanup finishes.
                         if stopped.is_ok() && deadline.stopped_at_ms.is_none() {
                             self.announce_deadline_stop(deadline, work);
+                            self.show_deadline_status(room, agent).await;
                         }
                         stopped
                     }

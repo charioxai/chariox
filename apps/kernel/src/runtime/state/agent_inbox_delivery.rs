@@ -467,6 +467,7 @@ impl KernelRuntimeState {
                 // A message queued before the limit ended is refused here, before any start.
                 if crate::error::is_agent_deadline_refusal(&error) {
                     self.tell_parent_limit_ended(room, agent).await;
+                    self.show_deadline_status(room, agent).await;
                 }
                 return Err(error);
             }
@@ -619,6 +620,7 @@ impl KernelRuntimeState {
                     // extend it; the refused delivery itself stays retired.
                     if crate::error::is_agent_deadline_refusal(&e) {
                         self.tell_parent_limit_ended(room, agent).await;
+                        self.show_deadline_status(room, agent).await;
                     }
                     self.publish_task_change(room);
                     return Err(e);

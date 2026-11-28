@@ -724,6 +724,7 @@ impl KernelRuntimeState {
         {
             if crate::error::is_agent_deadline_refusal(&error) {
                 self.tell_parent_limit_ended(target_room, target.id()).await;
+                self.show_deadline_status(target_room, target.id()).await;
             }
             return Err(error);
         }

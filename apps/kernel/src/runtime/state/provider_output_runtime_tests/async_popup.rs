@@ -621,6 +621,17 @@ async fn answer_choice_through_router(
     user: &str,
     client: &str,
 ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+    answer_reply_through_router(f, id, choice, None, user, client).await
+}
+
+async fn answer_reply_through_router(
+    f: &Fixture,
+    id: &str,
+    choice: &str,
+    reply: Option<&str>,
+    user: &str,
+    client: &str,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
     use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(f.app.clone(), 8);
     let mut caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
@@ -633,7 +644,7 @@ async fn answer_choice_through_router(
             session_id: f.room.clone(),
             interaction_id: id.into(),
             choice_id: choice.into(),
-            custom_reply: None,
+            custom_reply: reply.map(str::to_owned),
             passkey: None,
             passkey_remember_minutes: None,
         },
@@ -901,7 +912,7 @@ async fn async_popup_keeps_multiple_questions_and_prioritizes_a_blocking_card() 
     let receiver = f
         .runtime
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.room,
             blocking,
         )
@@ -1660,7 +1671,7 @@ async fn answering_a_card_on_a_managed_kernel_does_not_wait_for_itself() {
     let receiver = f
         .runtime
         .create_runtime_interaction(
-            crate::runtime::state::CardKind::NativePermissionInput,
+            crate::runtime::state::InteractionSurface::named("provider_native_permission"),
             &f.room,
             card,
         )
@@ -1958,4 +1969,53 @@ async fn seed_card(f: &Fixture, region: crate::session::RuntimeInteractionBrowse
     }));
     sessions.restore_session(session);
     id
+}
+
+#[tokio::test]
+async fn taxonomy_question_both_answer_shapes_use_one_type_and_deliver_exact_free_text() {
+    for (label, extra, fixed_count) in [
+        ("taxonomy-question-choices", serde_json::json!({}), 2),
+        (
+            "taxonomy-question-text-only",
+            serde_json::json!({"choices":[]}),
+            0,
+        ),
+    ] {
+        let f = fixture(label, true).await;
+        f.begin(&f.prompt_id);
+        let result = ask(&f, extra).await;
+        let id = result["interaction_id"].as_str().unwrap();
+        let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+        let card = session
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == id)
+            .unwrap();
+        assert_eq!(card.card_type(), "Question");
+        assert_eq!(
+            crate::session::runtime_card_class(card.card_type()),
+            Some("person action or answer")
+        );
+        assert_eq!(card.choices().len(), fixed_count);
+        let reply = card.custom_choice().expect("both shapes offer free text");
+        answer_reply_through_router(
+            &f,
+            id,
+            reply.id(),
+            Some("Something else exactly"),
+            "local",
+            "owner-client",
+        )
+        .await
+        .unwrap();
+        assert_eq!(answers(&f, id)[0]["reply"], "Something else exactly");
+        assert!(f
+            .runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+    }
 }
