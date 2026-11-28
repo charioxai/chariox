@@ -1694,6 +1694,24 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
         false,
     )
     .unwrap();
+    if claimed {
+        let prompt_id = app
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(agent.id())
+            .unwrap()
+            .id()
+            .to_string();
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            None,
+        )
+        .unwrap();
+    }
     let app = Arc::new(Mutex::new(app));
     let mut runtime = owned_runtime_state(&app).await;
     let _cleanup = InertPtyCleanup {
