@@ -740,6 +740,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "chariox-kernel-release-tests"
+version = "0.1.0"
+dependencies = [
+ "chariox-kernel",
+]
+
+[[package]]
 name = "chariox-relay"
 version = "0.1.0"
 dependencies = [

@@ -69,6 +69,7 @@ COPY packages/app-sdk-rust packages/app-sdk-rust
 COPY packages/app-sdk-tools packages/app-sdk-tools
 COPY deploy/runtime-release/extract-release.py deploy/runtime-release/extract-release.py
 COPY packages/event-protocol packages/event-protocol
+COPY packages/kernel-release-tests packages/kernel-release-tests
 RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
 

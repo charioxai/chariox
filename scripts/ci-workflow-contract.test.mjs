@@ -18,14 +18,22 @@ test("MP-01/MP-03 Rust CI installs Bubblewrap before isolation tests", () => {
 })
 
 
-test("MP-08/MP-10 optimized kernel regression isolates the App test fixture override", () => {
+test("MP-08/MP-10 optimized kernel regression isolates App fixtures in a library dependency", async () => {
   const start = workflow.indexOf("      - name: Release session project assignment regression")
   assert.ok(start >= 0)
   const end = workflow.indexOf("      - name:", start + 1)
   const step = workflow.slice(start, end < 0 ? undefined : end)
-  assert.ok(step.includes("profile.release.package.chariox-kernel.codegen-units=256"))
-  assert.ok(step.includes("profile.release.package.chariox-app-runtime.debug-assertions=true"))
-  assert.ok(step.includes("test --release -p chariox-kernel --lib"))
-  assert.ok(!step.includes("chariox-kernel.debug-assertions"))
-  assert.ok(!step.includes("opt-level="))
+  assert.ok(step.includes("python3 scripts/ci/release-session-project.py"))
+  const [runner, harness] = await Promise.all([
+    readFile(new URL("ci/release-session-project.py", import.meta.url), "utf8"),
+    readFile(new URL("../packages/kernel-release-tests/Cargo.toml", import.meta.url), "utf8"),
+  ])
+  assert.ok(runner.includes("profile.release.package.chariox-kernel.codegen-units=256"))
+  assert.ok(runner.includes('"--release"'))
+  assert.ok(runner.includes('"chariox-kernel-release-tests", "--lib", "--no-run"'))
+  assert.match(harness, /\[dependencies\][\s\S]*chariox-kernel = \{ path = "\.\.\/\.\.\/apps\/kernel" \}/)
+  assert.ok(!harness.includes("test-fixtures"), "the harness consumes only the production library dependency")
+  assert.ok(!runner.includes("chariox-app-runtime.debug-assertions"), "no dev-only App override is needed")
+  assert.ok(!runner.includes("chariox-kernel.debug-assertions"))
+  assert.ok(!runner.includes("opt-level="))
 })

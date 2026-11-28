@@ -10,6 +10,7 @@ members = [
     "packages/app-sdk-rust",
     "packages/app-sdk-tools",
     "packages/event-protocol",
+    "packages/kernel-release-tests",
     "packages/app-runtime",
     "packages/app-wasm-worker",
     "adapters/rust",
