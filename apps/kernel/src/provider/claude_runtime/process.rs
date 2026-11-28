@@ -1,5 +1,3 @@
-/root/.chariox/dev/union16-batch-runtime/1101-resolution-9cd-4a7/resolved/apps/kernel/src/provider/claude_runtime/process.rs:
-
 use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::BTreeMap;
 use std::io::Write;

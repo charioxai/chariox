@@ -1,5 +1,3 @@
-/root/.chariox/dev/union16-batch-runtime/1101-resolution-9cd-4a7/resolved/apps/kernel/src/provider/mod.rs:
-
 mod skill_ack;
 pub use skill_ack::SkillToolDeliveryAcknowledgement;
 pub(crate) use skill_ack::completed_native_skill_tool;
