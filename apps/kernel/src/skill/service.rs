@@ -337,7 +337,18 @@ impl SkillCatalogService {
                     name,
                     catalog_revision,
                 } => {
-                    admit_chariox_selection(&rows, revision, skill_id, name, *catalog_revision)?;
+                    if *catalog_revision == revision {
+                        admit_chariox_selection(&rows, revision, skill_id, name, revision)?;
+                    } else {
+                        // A queued prompt starts on a later catalog than the one it was picked from.
+                        let picked = self.storage.snapshot_at_revision(*catalog_revision)?;
+                        admit_queued_chariox_selection(
+                            &projections(&picked, project_id, native),
+                            &rows,
+                            skill_id,
+                            name,
+                        )?;
+                    }
                     selected.insert(skill_id.clone());
                 }
                 SkillSelection::Native { .. } => {
@@ -455,10 +466,18 @@ impl SkillCatalogService {
                 }
                 delivery = SkillDelivery::Chariox;
             }
-            let root = self.verified_package_root(&row.skill)?;
-            let current = package_skill_directory(&root)?;
+            let unusable = || {
+                failure(format!(
+                    "skill `{}` package is missing or damaged on this machine; reinstall it in Skills, then resend the prompt",
+                    row.skill.name
+                ))
+            };
+            let root = self
+                .verified_package_root(&row.skill)
+                .map_err(|_| unusable())?;
+            let current = package_skill_directory(&root).map_err(|_| unusable())?;
             if current.version_hash != row.skill.digest {
-                return Err(failure("selected immutable skill package failed verification; reinstall before submitting"));
+                return Err(unusable());
             }
             // Deliver the bytes that were hashed, not a separate pathname read
             // that could observe another file between verification and delivery.

@@ -3012,6 +3012,10 @@ mod tests {
 mod skill_delivery_tests;
 
 #[cfg(test)]
+#[path = "remote_prompt_owned_state/queued_skill_failure_tests.rs"]
+mod queued_skill_failure_tests;
+
+#[cfg(test)]
 #[path = "remote_prompt_owned_state/typed_claude_tests.rs"]
 mod typed_claude_tests;
 
