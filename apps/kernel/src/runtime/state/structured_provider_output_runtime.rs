@@ -63,6 +63,7 @@ impl KernelRuntimeState {
             .provider_store
             .drain_finished_structured_output_poll_jobs_for_run(provider_run_id)
         {
+            let mut publication = finished.publication;
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let finished_run_id = finished.provider_run_id.clone();
             let prompt_identity = finished.prompt_identity;
@@ -398,6 +399,7 @@ impl KernelRuntimeState {
                                 prompt_identity,
                                 provider_run_id: finished_run_id.clone(),
                                 result: Ok(Some(retry_poll_result)),
+                                publication,
                                 settlement_retry_attempt,
                             },
                         );
@@ -415,11 +417,13 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             };
             let applied = self
-                .apply_prepared_owned_structured_output_batch(
+                .publish_prepared_owned_structured_output_batch(
                     &run_session_id,
                     &finished_run_id,
                     recipients,
                     poll_result,
+                    &mut publication,
+                    true,
                 )
                 .await?;
             if is_requested_run {
@@ -698,12 +702,33 @@ impl KernelRuntimeState {
         Ok(poll_result)
     }
 
+    #[cfg(test)]
     pub(super) async fn apply_prepared_owned_structured_output_batch(
         &self,
         session_id: &str,
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
+        poll_result: crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        self.publish_prepared_owned_structured_output_batch(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+            poll_result,
+            &mut None,
+            true,
+        )
+        .await
+    }
+
+    pub(super) async fn publish_prepared_owned_structured_output_batch(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
         mut poll_result: crate::provider::ProviderPromptSignalBatch,
+        publication: &mut Option<crate::provider::OutputPublicationClaim>,
+        settle_prompt: bool,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
         // The first output of a process the next dispatch started on new settings says that a
@@ -960,6 +985,9 @@ impl KernelRuntimeState {
         // attached earlier is a recipient now, whatever the pump saw before it
         // waited for the run lane.
         self.enqueue_provider_history(prepared, history_lease);
+        // No await separates the durable handoff from releasing publication
+        // ownership. Completion callbacks may reenter cancellation afterwards.
+        drop(publication.take());
         let recipient_attachment_ids = owned
             .attachment_store
             .list_session_attachment_ids(session_id);
@@ -990,6 +1018,13 @@ impl KernelRuntimeState {
             if !requires_authoritative_turn_completion {
                 owned.mark_prompt_completion_recorded(provider_run_id);
             }
+        }
+        if !settle_prompt
+            || owned
+                .provider_store
+                .output_publication_pending(provider_run_id)
+        {
+            return Ok(records);
         }
         if let Some(message) = terminal_failure {
             if !prompt_completed

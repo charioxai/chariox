@@ -475,6 +475,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .provider_store
             .drain_finished_structured_output_poll_jobs()
         {
+            let publication = finished.publication;
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let provider_run_id = finished.provider_run_id.clone();
             let prompt_identity = finished.prompt_identity;
@@ -746,6 +747,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                                 prompt_identity,
                                 provider_run_id: provider_run_id.clone(),
                                 result: Ok(Some(retry_poll_result)),
+                                publication,
                                 settlement_retry_attempt,
                             },
                         );
@@ -762,6 +764,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 }
                 Err(error) => return Err(error),
             };
+            // This consumer publishes synchronously while the app lock is held.
+            drop(publication);
             let records = self.apply_prepared_structured_output_batch(
                 &session_id,
                 &provider_run_id,

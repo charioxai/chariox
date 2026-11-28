@@ -1,3 +1,5 @@
+/root/.chariox/dev/union16-batch-runtime/1101-resolution-9cd-4a7/resolved/apps/kernel/src/provider/run_actor.rs:
+
 mod utility_cancellation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -5,7 +7,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{mpsc as tokio_mpsc, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, mpsc as tokio_mpsc};
 
 pub(in crate::provider) mod assessment;
 mod command_enqueue;
@@ -20,20 +22,20 @@ mod runtime_slots;
 mod worker;
 pub(crate) use command_execution::run_room_commands_on_fresh_claude;
 use finished_jobs::push_finished_output_poll;
+pub(crate) use finished_jobs::{
+    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
+    FinishedProviderRunSelectionSyncJob, OutputPublicationClaim, ProviderOutputPromptIdentity,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+};
 use finished_jobs::{
     drain_finished_aborts, drain_finished_output_polls, drain_finished_selection_syncs,
     drain_finished_submits, push_finished_submit,
 };
-pub(crate) use finished_jobs::{
-    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    FinishedProviderRunSelectionSyncJob, ProviderOutputPromptIdentity,
-    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
-};
 use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
-    setup_turn_origin, CodexApprovalHandover, CodexApprovalOutcome, NativeApprovalGoal,
+    CodexApprovalHandover, CodexApprovalOutcome, NativeApprovalGoal,
     ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
-    ProviderNativeInteractionResolution,
+    ProviderNativeInteractionResolution, setup_turn_origin,
 };
 pub(crate) use operation_lanes::{ProviderRunOperationLanes, ProviderRunOperationPermit};
 use runtime_slots::ProviderRunRuntimeRegistry;
@@ -43,8 +45,8 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 
 use super::{
-    opencode_runtime::OpenCodeRuntimeState, ClaudeRuntimeState, CodexRuntimeState,
-    ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+    ClaudeRuntimeState, CodexRuntimeState, ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+    opencode_runtime::OpenCodeRuntimeState,
 };
 
 #[derive(Clone)]
@@ -60,6 +62,7 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    output_publications: finished_jobs::OutputPublications,
     completion_signal: ProviderRunActorCompletionSignal,
     output_ready_signal: super::output_ready::ProviderOutputReadySignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
@@ -85,6 +88,7 @@ impl Default for ProviderRunActorMailbox {
             finished_aborts: Arc::new(Mutex::new(Vec::new())),
             finished_selection_syncs: Arc::new(Mutex::new(Vec::new())),
             finished_output_polls: Arc::new(Mutex::new(Vec::new())),
+            output_publications: Default::default(),
             completion_signal: ProviderRunActorCompletionSignal::default(),
             output_ready_signal: Default::default(),
             output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -129,6 +133,10 @@ impl ProviderRunActorMailbox {
 
     pub(crate) fn output_ready_signal(&self) -> super::output_ready::ProviderOutputReadySignal {
         self.output_ready_signal.clone()
+    }
+
+    pub(crate) fn output_publication_pending(&self, run_id: &str) -> bool {
+        self.output_publications.pending(run_id)
     }
 
     pub(crate) fn completion_signal(&self) -> ProviderRunActorCompletionSignal {
@@ -180,11 +188,19 @@ impl ProviderRunActorMailbox {
         self.runtime_registry.insert_claude_runtime(run_id, state);
     }
 
+    #[cfg(test)]
     pub(crate) fn claude_owned_process(
         &self,
         run_id: &str,
     ) -> Option<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
         self.runtime_registry.claude_owned_process(run_id)
+    }
+
+    pub(crate) fn claude_owned_processes(
+        &self,
+        run_id: &str,
+    ) -> Vec<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.runtime_registry.claude_owned_processes(run_id)
     }
 
     pub(crate) fn insert_codex_runtime(&self, run_id: String, mut state: CodexRuntimeState) {

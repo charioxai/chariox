@@ -28,12 +28,21 @@ pub struct ProviderProcessService {
 }
 
 impl ProviderProcessService {
+    #[cfg(test)]
     pub(crate) fn claude_owned_process(
         &self,
         run_id: &str,
     ) -> Option<super::claude_runtime::ClaudeRuntimeProcess> {
         self.run_actor_mailbox.claude_owned_process(run_id)
     }
+
+    pub(crate) fn claude_owned_processes(
+        &self,
+        run_id: &str,
+    ) -> Vec<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.run_actor_mailbox.claude_owned_processes(run_id)
+    }
+
     pub fn new() -> Self {
         Self::with_registry(ProviderRegistry::new())
     }

@@ -1532,6 +1532,13 @@ impl PtyManager {
         Ok(process.child.process_id())
     }
 
+    pub(crate) fn process_is_shared(&self, provider_run_id: &str) -> bool {
+        self.process_aliases
+            .get(provider_run_id)
+            .and_then(|key| self.processes.get(key))
+            .is_some_and(|process| process.reference_count > 1)
+    }
+
     /// Retain detached descendants before an interrupt can orphan them.
     pub(crate) fn capture_prompt_abort_processes(
         &mut self,
@@ -1544,11 +1551,8 @@ impl PtyManager {
             .and_then(|key| self.processes.get_mut(key))
         {
             if process.reference_count > 1 {
-                return Err(DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.into(),
-                    message: "cannot terminate a provider process still shared by another run"
-                        .into(),
-                });
+                // This run owns an alias; another run retains the endpoint.
+                return Ok(());
             }
             if let Some(signals) = process.abort_owned_processes.as_mut() {
                 signals.refresh().map_err(|error| DaemonError::PtyCleanup {
@@ -1575,6 +1579,9 @@ impl PtyManager {
         &mut self,
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
+        if self.process_is_shared(provider_run_id) {
+            return Ok(());
+        }
         self.capture_prompt_abort_processes(provider_run_id)?;
         #[cfg(unix)]
         if let Some(signals) = self

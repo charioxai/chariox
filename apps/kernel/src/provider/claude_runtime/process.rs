@@ -1,3 +1,5 @@
+/root/.chariox/dev/union16-batch-runtime/1101-resolution-9cd-4a7/resolved/apps/kernel/src/provider/claude_runtime/process.rs:
+
 use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -63,6 +65,8 @@ struct ClaudeProcessOwnership {
     current: Arc<Mutex<ClaudeOwnedChild>>,
     abort_child: Option<Arc<Mutex<ClaudeOwnedChild>>>,
     retiring: bool,
+    #[cfg(test)]
+    cleanup_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Physical ownership remains reachable while an actor leases its I/O state.
@@ -75,6 +79,8 @@ impl ClaudeRuntimeProcess {
             current: Arc::new(Mutex::new(ClaudeOwnedChild::new(child)?)),
             abort_child: None,
             retiring: false,
+            #[cfg(test)]
+            cleanup_pending: Arc::default(),
         }))))
     }
 
@@ -84,6 +90,26 @@ impl ClaudeRuntimeProcess {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .current
             .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn defer_cleanup_for_test(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        let flag = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cleanup_pending
+            .clone();
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        flag
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retiring_for_test(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retiring
     }
 
     pub(super) fn id(&self) -> u32 {
@@ -137,6 +163,16 @@ impl ClaudeRuntimeProcess {
             .unwrap_or_else(|| ownership.current.clone());
         ownership.abort_child = Some(child.clone());
         ownership.retiring |= force_retirement || Arc::ptr_eq(&child, &ownership.current);
+        #[cfg(test)]
+        if ownership
+            .cleanup_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "owned child cleanup held by test",
+            ));
+        }
         let mut stopped = child
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -212,6 +248,13 @@ impl ClaudeRuntimeProcess {
 
     pub(super) fn stop(&self) {
         self.stop_until_exited(false);
+    }
+
+    pub(crate) fn begin_retirement(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retiring = true;
     }
 
     pub(crate) fn retire(&self) {

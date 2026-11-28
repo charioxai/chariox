@@ -1084,6 +1084,129 @@ async fn native_cancellation_reaps_a_tool_in_its_own_process_group() {
     assert_unresponsive_abort_settles(true, false, AbortProviderExit::None).await;
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cancelling_one_shared_pty_alias_preserves_the_other_running_owner() {
+    let worktree = crate::test_support::TestWorktree::new("shared-pty-stop");
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, first) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let second = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "shared-stop-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut runs = Vec::new();
+    for (id, agent) in [
+        ("shared-stop-first", first.id()),
+        ("shared-stop-second", second.id()),
+    ] {
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "stub",
+        )
+        .with_agent_id(agent);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "shared dev-stub".into(),
+                pty_target: Some("shared-stop-pty".into()),
+                pty_program: Some("/bin/sh".into()),
+                pty_args: vec!["-c".into(), "exec sleep 300".into()],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.pty_mut().spawn_for_run(&run).unwrap();
+        app.providers_mut().insert_run_for_test(run.clone());
+        runs.push(run);
+    }
+    let shared_pid = app.pty().process_id(runs[0].id()).unwrap().unwrap();
+    assert_eq!(
+        app.pty().process_id(runs[1].id()).unwrap(),
+        Some(shared_pid)
+    );
+    app.prompt_owner_submit_prepared_prompt(
+        session.id(),
+        crate::session::PromptQueueItem::new(
+            "shared-stop-prompt",
+            attachment.id(),
+            first.id(),
+            "stop only this alias",
+            crate::session::PromptStatus::Queued,
+        ),
+        false,
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let _first_cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: runs[0].id().into(),
+    };
+    let _second_cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: runs[1].id().into(),
+    };
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(runs[0].id());
+    let dispatch = runtime
+        .owned
+        .cancel_local_prompt(session.id(), first.id(), attachment.id())
+        .unwrap()
+        .unwrap()
+        .dispatch
+        .unwrap();
+    runtime.spawn_prompt_abort(dispatch, runtime.provider_runtime_lanes.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(first.id())
+            .is_some()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Stop must settle its alias while another alias still owns the shared endpoint");
+    let app = app.lock().await;
+    assert!(!app.pty().has_process(runs[0].id()));
+    assert_eq!(
+        app.pty().process_id(runs[1].id()).unwrap(),
+        Some(shared_pid)
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(runs[1].id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+    let stat = std::fs::read(format!("/proc/{shared_pid}/stat")).unwrap();
+    let end = stat.windows(2).rposition(|pair| pair == b") ").unwrap();
+    assert!(
+        !matches!(stat.get(end + 2), Some(b'Z' | b'X')),
+        "Stop must not interrupt or terminate the other alias's live process"
+    );
+}
+
 #[tokio::test]
 async fn pending_provider_reap_keeps_cancellation_owned_until_retry_succeeds() {
     assert_unresponsive_abort_settles(false, true, AbortProviderExit::None).await;
@@ -1147,23 +1270,33 @@ enum AbortProviderExit {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn claude_stream_json_cancellation_settles_its_detached_tool_before_the_turn() {
-    assert_claude_stream_json_cancellation_settles(false, false).await;
+    assert_claude_stream_json_cancellation_settles(false, false, false).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn claude_stream_json_cancellation_settles_while_the_actor_holds_its_state() {
-    assert_claude_stream_json_cancellation_settles(true, false).await;
+    assert_claude_stream_json_cancellation_settles(true, false, false).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn claude_stream_json_cancellation_settles_a_busy_already_ended_run() {
-    assert_claude_stream_json_cancellation_settles(true, true).await;
+    assert_claude_stream_json_cancellation_settles(true, true, false).await;
 }
 
 #[cfg(target_os = "linux")]
-async fn assert_claude_stream_json_cancellation_settles(busy_actor: bool, already_ended: bool) {
+#[tokio::test]
+async fn pending_claude_retirement_keeps_other_provider_runs_readable() {
+    assert_claude_stream_json_cancellation_settles(false, true, true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn assert_claude_stream_json_cancellation_settles(
+    busy_actor: bool,
+    already_ended: bool,
+    pending_cleanup: bool,
+) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     let worktree = crate::test_support::TestWorktree::new("stream-json-stop");
     let marker = worktree.path().join("tool-alive");
@@ -1310,7 +1443,86 @@ for line in sys.stdin: pass
             now: crate::session::unix_epoch_ms(),
         })
         .unwrap();
-    if already_ended {
+    let mut other_run_readable_while_cleanup_pending = true;
+    if pending_cleanup {
+        let process = runtime
+            .owned
+            .provider_store
+            .read()
+            .claude_owned_process(run.id())
+            .unwrap();
+        let pending = process.defer_cleanup_for_test();
+        struct ReleasePending(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for ReleasePending {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let release = ReleasePending(pending);
+        let mut other = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            "other-room-provider",
+            "other-room".into(),
+            Some("other-agent".into()),
+            "codex".into(),
+        );
+        other.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(other);
+        let ending = {
+            let store = runtime.owned.provider_store.clone();
+            let room = session.id().to_string();
+            let id = run.id().to_string();
+            tokio::task::spawn_blocking(move || store.mark_run_ended_provider_only(&room, &id))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !process.retiring_for_test() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("end-run must reach physical retirement while cleanup remains pending");
+        let reading = {
+            let store = runtime.owned.provider_store.clone();
+            tokio::task::spawn_blocking(move || store.get_run("other-room-provider"))
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        other_run_readable_while_cleanup_pending = reading.is_finished();
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap(),
+                agent.id(),
+            )
+            .unwrap();
+        assert_eq!(active.status(), crate::session::PromptStatus::Cancelling);
+        drop(release);
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(3), ending)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        runtime
+            .owned
+            .provider_run_projection
+            .update(ended.into_run());
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), reading)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .id(),
+            "other-room-provider"
+        );
+    } else if already_ended {
         let ended = runtime
             .owned
             .provider_store
@@ -1359,6 +1571,7 @@ for line in sys.stdin: pass
         .find(|task| task.prompt_id == "stream-json-stop-prompt")
         .expect("the exact cancelled stream-json task must remain recorded");
     assert_eq!(task.state, ExecutionState::Cancelled);
+    assert!(other_run_readable_while_cleanup_pending, "a pending physical Claude cleanup must not hold the shared provider lock against another room");
 }
 
 async fn assert_unresponsive_abort_settles(
@@ -1686,15 +1899,28 @@ async fn assert_unresponsive_abort_settles(
 
 #[tokio::test]
 async fn tool_updates_received_during_cancellation_cleanup_keep_their_final_status() {
-    assert_tool_updates_received_during_cleanup(false).await;
+    assert_tool_updates_received_during_cleanup(CancellationOutputBoundary::Applied).await;
 }
 
 #[tokio::test]
 async fn received_actor_poll_is_applied_before_cancellation_records_tool_statuses() {
-    assert_tool_updates_received_during_cleanup(true).await;
+    assert_tool_updates_received_during_cleanup(CancellationOutputBoundary::Mailbox).await;
 }
 
-async fn assert_tool_updates_received_during_cleanup(queued: bool) {
+#[tokio::test]
+async fn a_claimed_output_batch_keeps_cancellation_owned_until_history_publication() {
+    assert_tool_updates_received_during_cleanup(CancellationOutputBoundary::Claimed).await;
+}
+
+enum CancellationOutputBoundary {
+    Applied,
+    Mailbox,
+    Claimed,
+}
+
+async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBoundary) {
+    let queued = matches!(mode, CancellationOutputBoundary::Mailbox);
+    let claimed = matches!(mode, CancellationOutputBoundary::Claimed);
     let worktree = crate::test_support::TestWorktree::new("cancel-tool-completion");
     let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1715,7 +1941,7 @@ async fn assert_tool_updates_received_during_cleanup(queued: bool) {
     );
     run.mark_running();
     app.providers_mut().insert_run_for_test(run.clone());
-    if queued {
+    if queued || claimed {
         spawn_inert_pty_for_run(&mut app, run.id());
     }
     app.prompt_owner_submit_prepared_prompt(
@@ -1730,6 +1956,23 @@ async fn assert_tool_updates_received_during_cleanup(queued: bool) {
         false,
     )
     .unwrap();
+    if claimed {
+        let prompt_id = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap()
+            .id()
+            .to_string();
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            None,
+        )
+        .unwrap();
+    }
     let app = Arc::new(Mutex::new(app));
     let mut runtime = owned_runtime_state(&app).await;
     let _cleanup = InertPtyCleanup {
@@ -1749,6 +1992,108 @@ async fn assert_tool_updates_received_during_cleanup(queued: bool) {
         .unwrap()
         .dispatch
         .unwrap();
+    if claimed {
+        let batch = crate::provider::ProviderPromptSignalBatch {
+            chunks: vec![
+                crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: Some("tool-a".into()),
+                    bytes: br#"{"id":"tool-a","tool":"bash","status":"completed"}"#.to_vec(),
+                },
+                crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: Some("tool-b".into()),
+                    bytes: br#"{"id":"tool-b","tool":"bash","status":"running"}"#.to_vec(),
+                },
+            ],
+            ..Default::default()
+        };
+        // Hold real global history capacity: the normal pump dequeues and
+        // updates activity, then waits before it can publish any history.
+        let mut capacity = Vec::new();
+        for n in 0..64 {
+            capacity.push(
+                runtime
+                    .reserve_provider_history(&format!("capacity-holder-{n}"), true)
+                    .await
+                    .unwrap(),
+            );
+        }
+        runtime
+            .owned
+            .structured_output_records
+            .mark_poll_enqueued(run.id(), Some(dispatch.prompt_id.clone()));
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .push_finished_structured_output_poll_for_test(run.id().into(), Ok(Some(batch)));
+        let pump = {
+            let state = runtime.clone();
+            let session_id = session.id().to_string();
+            let run_id = run.id().to_string();
+            let attachment_id = attachment.id().to_string();
+            tokio::spawn(async move {
+                state
+                    .pump_owned_provider_output(&session_id, &run_id, vec![attachment_id], true)
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !runtime
+                .owned
+                .prompt_activity
+                .read()
+                .get(run.id())
+                .is_some_and(|state| state.active_tool_ids.contains("tool-b"))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the normal output pump must claim the batch and reach history capacity");
+        let finishing = {
+            let state = runtime.clone();
+            tokio::spawn(async move {
+                loop {
+                    match state.finish_owned_prompt_abort(&dispatch, false).await {
+                        Err(DaemonError::PtyCleanup { .. }) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                        }
+                        result => return result,
+                    }
+                }
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let before_publication = runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(agent.id())
+            .map(|prompt| prompt.status());
+        drop(capacity);
+        let pumped = tokio::time::timeout(std::time::Duration::from_secs(3), pump)
+            .await
+            .unwrap()
+            .unwrap();
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(3), finishing)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before_publication, Some(crate::session::PromptStatus::Cancelling),
+            "Stop released the exact cancelled turn while the normal pump still held unpublished output");
+        pumped.unwrap();
+        finished.unwrap();
+        assert!(runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(agent.id())
+            .is_none());
+        assert_cancelled_tool_history(&runtime, session.id());
+        return;
+    }
     // The finisher has read its activity, but physical cleanup awaits this lock.
     let entered = Arc::new(tokio::sync::Notify::new());
     runtime.observe_app_lock_wait_for_test(entered.clone());
@@ -1832,6 +2177,10 @@ async fn assert_tool_updates_received_during_cleanup(queued: bool) {
             "cancellation must not consume another run's received output"
         );
     }
+    assert_cancelled_tool_history(&runtime, session.id());
+}
+
+fn assert_cancelled_tool_history(runtime: &KernelRuntimeState, session_id: &str) {
     let updates: Vec<serde_json::Value> = runtime
         .owned
         .terminal_stream
@@ -1856,7 +2205,7 @@ async fn assert_tool_updates_received_during_cleanup(queued: bool) {
         .owned
         .operational_history_store
         .query_events(crate::history::HistoryEventQuery {
-            session_id: Some(session.id().into()),
+            session_id: Some(session_id.into()),
             kind: Some("provider_tool".into()),
             ..Default::default()
         })

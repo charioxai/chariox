@@ -1,3 +1,5 @@
+/root/.chariox/dev/union16-batch-runtime/1101-resolution-9cd-4a7/resolved/apps/kernel/src/provider/run_actor/command_enqueue.rs:
+
 use super::*;
 
 const PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -445,8 +447,9 @@ impl ProviderRunActorMailbox {
         let provider_run_id = finished.provider_run_id.clone();
         let finished_output_polls = std::sync::Arc::clone(&self.finished_output_polls);
         let completion_signal = self.completion_signal.clone();
+        let publications = self.output_publications.clone();
         schedule_provider_settlement_retry(delay, move || {
-            push_finished_output_poll(&finished_output_polls, finished);
+            push_finished_output_poll(&finished_output_polls, &publications, finished);
             completion_signal.record_completion(&provider_run_id);
         });
     }
@@ -460,7 +463,11 @@ impl ProviderRunActorMailbox {
         if self.manual_output_polls.load(Ordering::Relaxed) {
             self.clear_structured_output_poll_in_flight(&provider_run_id);
         }
-        push_finished_output_poll(&self.finished_output_polls, finished);
+        push_finished_output_poll(
+            &self.finished_output_polls,
+            &self.output_publications,
+            finished,
+        );
         self.completion_signal.record_completion(&provider_run_id);
     }
 
@@ -487,6 +494,7 @@ impl ProviderRunActorMailbox {
             finished_aborts: Arc::clone(&self.finished_aborts),
             finished_selection_syncs: Arc::clone(&self.finished_selection_syncs),
             finished_output_polls: Arc::clone(&self.finished_output_polls),
+            output_publications: self.output_publications.clone(),
             completion_signal: self.completion_signal.clone(),
             output_poll_delays: Arc::clone(&self.output_poll_delays),
             blocking_executor_permits: Arc::clone(&self.blocking_executor_permits),
@@ -590,11 +598,13 @@ mod tests {
 
         mailbox.spawn_terminate("run-terminate".to_string(), run);
 
-        assert!(!mailbox
-            .workers
-            .lock()
-            .expect("worker map should not be poisoned")
-            .contains_key("run-terminate"));
+        assert!(
+            !mailbox
+                .workers
+                .lock()
+                .expect("worker map should not be poisoned")
+                .contains_key("run-terminate")
+        );
     }
 
     #[test]
@@ -693,6 +703,7 @@ mod tests {
 
         mailbox.push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
             prompt_identity: crate::provider::ProviderOutputPromptIdentity::InFlightPoll,
+            publication: None,
             provider_run_id: "run-1".to_string(),
             result: Ok(None),
             settlement_retry_attempt: 0,
@@ -725,9 +736,11 @@ mod tests {
             let _ = released.recv();
         });
         held.recv().expect("the list is held");
-        assert!(mailbox
-            .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
-            .expect("poll should enqueue"));
+        assert!(
+            mailbox
+                .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
+                .expect("poll should enqueue")
+        );
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(
             mailbox.any_output_poll_in_flight(),
