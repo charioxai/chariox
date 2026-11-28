@@ -129,11 +129,27 @@ impl KernelRuntimeOwnedState {
             &request.provider,
             &request.account_profile,
         )?;
-        let profile = self.provider_account_profiles.get(
-            &account_owner,
-            &request.provider,
-            &request.account_profile,
-        )?;
+        let missing = || DaemonError::LocalTransport {
+            operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
+            message: "worker account missing; copy the selected account to this worker and retry"
+                .into(),
+        };
+        let profile = self
+            .provider_account_profiles
+            .find(&account_owner, &request.provider, &request.account_profile)?
+            .ok_or_else(missing)?;
+        // An unsigned home replica names the account but cannot launch it. Return the same
+        // pre-admission response as an absent copy so the home can restore its tracked copy.
+        if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+            && profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
+            && self.provider_account_profiles.is_materialized_replica(
+                &account_owner,
+                &request.provider,
+                &profile.profile_id,
+            )?
+        {
+            return Err(missing());
+        }
         let selection = request.account_profile.clone();
         request.account_profile = profile.profile_id;
         crate::account_profile::bind_provider_account_authority(

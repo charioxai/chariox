@@ -120,26 +120,8 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(&dispatch.agent_id)?;
         if crate::provider::canonical_provider_family(agent.provider()) == Some("claude") {
-            // Row 577: the worker lost its copy. Forget the tracked copy and make it again.
-            let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-            if let Some(binding) = agent.remote_execution() {
-                self.owned
-                    .provider_account_profiles
-                    .update_materialization_status(
-                        &owner,
-                        "claude",
-                        agent.provider_account_profile(),
-                        ProviderAccountMaterializationStatus {
-                            target_kind: ProviderAccountMaterializationTargetKind::Copy,
-                            target_ref: binding.worker_kernel_id.clone(),
-                            state: ProviderAccountMaterializationState::Error,
-                            observed_at_ms: crate::session::unix_epoch_ms(),
-                            last_error: Some(WORKER_LOST_COPY.into()),
-                        },
-                    )?;
-            }
             return self
-                .ensure_agent_account_on_worker(&dispatch.agent_id)
+                .reinstall_remote_native_account(&dispatch.agent_id)
                 .await;
         }
         let binding =
@@ -181,6 +163,36 @@ impl KernelRuntimeState {
             });
         }
         Ok(())
+    }
+
+    /// Restore a lost tracked Claude copy for either a native launch or a prompt retry.
+    pub(super) async fn reinstall_remote_native_account(
+        &self,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if crate::provider::canonical_provider_family(agent.provider()) != Some("claude") {
+            return Ok(());
+        }
+        // Row 577: the worker lost its copy. Forget the tracked copy and make it again.
+        let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        if let Some(binding) = agent.remote_execution() {
+            self.owned
+                .provider_account_profiles
+                .update_materialization_status(
+                    &owner,
+                    "claude",
+                    agent.provider_account_profile(),
+                    ProviderAccountMaterializationStatus {
+                        target_kind: ProviderAccountMaterializationTargetKind::Copy,
+                        target_ref: binding.worker_kernel_id.clone(),
+                        state: ProviderAccountMaterializationState::Error,
+                        observed_at_ms: crate::session::unix_epoch_ms(),
+                        last_error: Some(WORKER_LOST_COPY.into()),
+                    },
+                )?;
+        }
+        self.ensure_agent_account_on_worker(agent_id).await
     }
 
     /// Row 577: a leased Claude agent runs from the worker's OWN copy of the account. The first
