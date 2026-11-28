@@ -20,6 +20,7 @@ pub(crate) trait ExecPlacement: Send + Sync {
         &'a self,
         intent: &'a LaunchIntent,
         attributed_agent: Option<String>,
+        deadline_unix_ms: Option<u64>,
     ) -> PlacementFuture<'a, String>;
     fn write<'a>(
         &'a self,

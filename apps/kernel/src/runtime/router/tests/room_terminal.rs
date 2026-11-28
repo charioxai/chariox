@@ -536,6 +536,7 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
             command: vec!["/bin/cat".to_string()],
             directory: None,
             timeout_ms: None,
+            deadline_unix_ms: None,
             stdin_file: None,
         };
         assert!(
@@ -820,6 +821,7 @@ fn kernel_commands_stream_target_stdin_files_without_inline_limits() {
                 command: vec!["/bin/cat".into()],
                 directory: Some(worktree.path().display().to_string()),
                 timeout_ms: Some(5_000),
+                deadline_unix_ms: None,
                 stdin_file: Some("input.bin".into()),
             },
         )
@@ -927,6 +929,7 @@ fn kernel_stdin_files_keep_owner_target_and_regular_file_checks() {
             command: vec!["/bin/cat".into()],
             directory: Some(worktree.path().display().to_string()),
             timeout_ms: Some(5_000),
+            deadline_unix_ms: None,
             stdin_file: Some(path.into()),
         };
         // Authorization precedes any path probe, including a path that does not exist.

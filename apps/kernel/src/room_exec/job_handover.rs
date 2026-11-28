@@ -140,6 +140,8 @@ impl RoomExecService {
             force: watch::channel(false).0,
             place: watch::channel(None).0,
             created_at: started_at,
+            deadline_at: None,
+            deadline_unix_ms: None,
             reader_deadline,
             reader_lease,
             input: Mutex::new(Input {

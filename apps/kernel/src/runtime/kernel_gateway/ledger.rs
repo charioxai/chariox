@@ -949,6 +949,7 @@ mod tests {
             command: vec!["sleep".into(), "400".into()],
             directory: None,
             timeout_ms: Some(400_000),
+            deadline_unix_ms: None,
             stdin_file: None,
         });
         assert_eq!(deadline_for(&opening), super::super::REQUEST_DEADLINE);

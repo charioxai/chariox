@@ -30,6 +30,7 @@ fn local_request_api_runs_command_without_attachment() {
             command: vec!["/bin/sh".into(), "-c".into(), "cat; printf result".into()],
             directory: None,
             timeout_ms: Some(1000),
+            deadline_unix_ms: None,
             stdin_file: None,
         })
         .unwrap()

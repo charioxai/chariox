@@ -50,6 +50,10 @@ pub enum RunCommandOperation {
         directory: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        /// A placed command keeps its original expiry across target setup and forwarding.
+        /// This may shorten, but never extend, the original timeout.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_unix_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stdin_file: Option<String>,
     },
@@ -125,6 +129,21 @@ mod stdin_file_contract_tests {
             }});
             if let Some(file) = file {
                 wire["RunCommand"]["operation"]["stdin_file"] = file.into();
+            }
+            let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn a_placed_command_round_trips_its_expiry_and_original_timeout() {
+        for expiry in [None, Some(1_900_000_000_000u64)] {
+            let mut wire = serde_json::json!({"RunCommand": {
+                "target": {"kind":"room_workspace", "session_id":"room"},
+                "operation": {"operation":"exec_open", "command":["cat"], "timeout_ms":12000}
+            }});
+            if let Some(expiry) = expiry {
+                wire["RunCommand"]["operation"]["deadline_unix_ms"] = expiry.into();
             }
             let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(serde_json::to_value(request).unwrap(), wire);

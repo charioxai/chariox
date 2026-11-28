@@ -28,6 +28,10 @@ enum Fault {
     LoseReply,
     /// The request never reaches the target.
     DropRequest,
+    /// Time spent setting up the target Room or forwarding before dispatch.
+    Delay(Duration),
+    /// The target dispatches once, but its answer is lost after the deadline.
+    DelayReply(Duration),
 }
 
 struct SecondKernel {
@@ -199,6 +203,15 @@ impl GrantedSend for SecondKernel {
                 Some(Fault::DropRequest) => Err(lost()),
                 Some(Fault::LoseReply) => {
                     self.dispatch(command_id, request).await?;
+                    Err(lost())
+                }
+                Some(Fault::Delay(delay)) => {
+                    tokio::time::sleep(delay).await;
+                    self.dispatch(command_id, request).await
+                }
+                Some(Fault::DelayReply(delay)) => {
+                    self.dispatch(command_id, request).await?;
+                    tokio::time::sleep(delay).await;
                     Err(lost())
                 }
                 None => self.dispatch(command_id, request).await,
@@ -419,6 +432,7 @@ async fn only_the_verified_origin_name_can_label_a_process() {
                     command: vec!["/bin/true".into()],
                     directory: None,
                     timeout_ms: None,
+                    deadline_unix_ms: None,
                     stdin_file: None,
                 },
             )
@@ -771,4 +785,213 @@ fn a_room_without_a_directory_needs_a_default_on_the_target() {
     let refused = room_location(None, None).unwrap_err();
     assert_eq!(code_of(&refused), "exec_target_no_directory");
     assert!(refused.to_string().contains("--directory"), "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn placed_deadline_charges_queue_room_setup_and_forwarding() {
+    let second = SecondKernel::new(&[
+        Fault::Delay(Duration::from_millis(300)),
+        Fault::Delay(Duration::from_millis(300)),
+    ]);
+    let directory = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let started = tokio::time::Instant::now();
+    let id = crate::room_exec::queue_tests::timed_held(&home, directory.path(), "sleep 30", 1_200);
+    queued(&home, &id).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let target = target_directory(&second);
+    crate::room_exec::run_on_kernel(
+        &home,
+        placement(&id, Some(&target)),
+        &Requester::Person,
+        second.clone(),
+    )
+    .await
+    .unwrap();
+    let (_, _, outcome) = collect(&home, &id).await;
+    assert!(
+        matches!(
+            outcome,
+            ExecOutcome::TimedOut {
+                timeout_ms: 1_200,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1_800),
+        "queue, Room setup and forwarding consumed the original budget: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(second.open_command_ids(), vec![format!("place:{id}:open")]);
+    assert!(!home.has_running_work());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn placement_expiring_in_forwarding_never_starts_the_target_command() {
+    let second = SecondKernel::new(&[
+        Fault::Delay(Duration::ZERO),
+        Fault::Delay(Duration::from_millis(800)),
+    ]);
+    let directory = TempDir::new();
+    let marker = directory.path().join("started");
+    let home = limited(0, u64::MAX / 2);
+    let id = crate::room_exec::queue_tests::timed_held(
+        &home,
+        directory.path(),
+        &format!("touch '{}'", marker.display()),
+        500,
+    );
+    queued(&home, &id).await;
+    let target = target_directory(&second);
+    crate::room_exec::run_on_kernel(
+        &home,
+        placement(&id, Some(&target)),
+        &Requester::Person,
+        second.clone(),
+    )
+    .await
+    .unwrap();
+    let (_, _, outcome) = collect(&home, &id).await;
+    assert_eq!(
+        outcome,
+        ExecOutcome::TimedOut {
+            timeout_ms: 500,
+            exit: crate::room_exec::CommandExit::NotStarted
+        }
+    );
+    assert!(
+        !marker.exists(),
+        "a dispatch arriving after expiry has no process side effect"
+    );
+    assert_eq!(second.open_command_ids(), vec![format!("place:{id}:open")]);
+    assert!(!home.has_running_work());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expired_placement_keeps_one_execution_when_the_original_open_receipt_is_recovered() {
+    let second = SecondKernel::new(&[Fault::DelayReply(Duration::from_millis(800))]);
+    let directory = TempDir::new();
+    let marker = directory.path().join("starts");
+    let home = limited(0, u64::MAX / 2);
+    let id = crate::room_exec::queue_tests::timed_held(
+        &home,
+        directory.path(),
+        &format!("printf x >> '{}'; sleep 30", marker.display()),
+        500,
+    );
+    queued(&home, &id).await;
+    home.place("room", &id, ORIGIN_NAME, second.placement())
+        .unwrap();
+    let (_, _, outcome) = collect(&home, &id).await;
+    assert!(
+        matches!(
+            outcome,
+            ExecOutcome::TimedOut {
+                timeout_ms: 500,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(std::fs::read(marker).unwrap(), b"x");
+    assert_eq!(
+        second.open_command_ids(),
+        vec![format!("place:{id}:open"), format!("place:{id}:open")]
+    );
+    assert_eq!(
+        second.execs().await.len(),
+        1,
+        "the same ledger receipt never admits a second process"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_absolute_placement_deadline_requires_the_original_timeout() {
+    let second = SecondKernel::new(&[]);
+    let operation = serde_json::from_value(serde_json::json!({
+        "operation": "exec_open", "command": ["/bin/true"],
+        "deadline_unix_ms": crate::session::unix_epoch_ms() + 60_000,
+    }))
+    .unwrap();
+    let refused = second
+        .command(None, operation)
+        .await
+        .expect_err("absolute expiry needs the original timeout for truthful outcomes");
+    assert_eq!(refused.code(), "exec_invalid_timeout");
+    assert!(second.execs().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_later_absolute_deadline_cannot_extend_the_original_timeout() {
+    let second = SecondKernel::new(&[]);
+    let operation = serde_json::from_value(serde_json::json!({
+        "operation": "exec_open", "command": ["/bin/sh", "-c", "sleep 30"],
+        "timeout_ms": 100, "deadline_unix_ms": crate::session::unix_epoch_ms() + 60_000,
+    }))
+    .unwrap();
+    let RunCommandResult::ExecOpened { exec_id } = second.command(None, operation).await.unwrap()
+    else {
+        panic!("expected open receipt")
+    };
+    let outcome = loop {
+        let RunCommandResult::ExecOutput { output } = second
+            .command(
+                None,
+                RunCommandOperation::ExecRead {
+                    exec_id: exec_id.clone(),
+                    after_cursor: 0,
+                    wait_ms: 1_000,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected output")
+        };
+        if let Some(outcome) = output.outcome {
+            break outcome;
+        }
+    };
+    assert!(
+        matches!(
+            outcome,
+            ExecOutcome::TimedOut {
+                timeout_ms: 100,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn placement_expiring_during_room_setup_never_sends_open() {
+    let second = SecondKernel::new(&[Fault::Delay(Duration::from_millis(800))]);
+    let directory = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let id =
+        crate::room_exec::queue_tests::timed_held(&home, directory.path(), "touch started", 500);
+    queued(&home, &id).await;
+    let target = target_directory(&second);
+    crate::room_exec::run_on_kernel(
+        &home,
+        placement(&id, Some(&target)),
+        &Requester::Person,
+        second.clone(),
+    )
+    .await
+    .expect_err("a command expiring during setup is no longer placeable");
+    let (_, _, outcome) = collect(&home, &id).await;
+    assert_eq!(
+        outcome,
+        ExecOutcome::TimedOut {
+            timeout_ms: 500,
+            exit: crate::room_exec::CommandExit::NotStarted
+        }
+    );
+    assert!(second.open_command_ids().is_empty());
+    assert!(!directory.path().join("started").exists());
+    assert!(!home.has_running_work());
 }

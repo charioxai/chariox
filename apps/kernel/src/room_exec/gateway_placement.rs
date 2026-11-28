@@ -219,6 +219,7 @@ impl ExecPlacement for GatewayExecPlacement {
         &'a self,
         intent: &'a LaunchIntent,
         attributed_agent: Option<String>,
+        deadline_unix_ms: Option<u64>,
     ) -> PlacementFuture<'a, String> {
         Box::pin(async move {
             let command_id = format!("place:{}:open", intent.exec_id);
@@ -226,6 +227,7 @@ impl ExecPlacement for GatewayExecPlacement {
                 command: intent.command.clone(),
                 directory: None,
                 timeout_ms: intent.timeout_ms,
+                deadline_unix_ms,
                 stdin_file: None,
             };
             match self.call(command_id, attributed_agent, operation).await? {

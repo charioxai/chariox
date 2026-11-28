@@ -520,6 +520,7 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
                 command: vec!["/bin/bash".into(), "-c".into(), script.into()],
                 directory: None,
                 timeout_ms: None,
+                deadline_unix_ms: None,
                 stdin_file: None,
             })
             .await

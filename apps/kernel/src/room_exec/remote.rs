@@ -19,10 +19,18 @@ pub(super) async fn run(
     placed: Arc<Placed>,
 ) {
     let target = &placed.target;
+    if let Some(outcome) = record.expired_before_start() {
+        service.finish(&record, outcome);
+        return;
+    }
     // Never abandoned half-way: dropping the open could lose the only handle to
     // a command that already started there.
     let remote_id = match target
-        .open(&record.intent, placed.attributed_agent.clone())
+        .open(
+            &record.intent,
+            placed.attributed_agent.clone(),
+            record.deadline_unix_ms,
+        )
         .await
     {
         Ok(id) => id,

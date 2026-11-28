@@ -43,6 +43,30 @@ pub(crate) async fn queued(service: &RoomExecService, id: &str) {
     .unwrap();
 }
 
+pub(crate) fn timed_held(
+    service: &RoomExecService,
+    cwd: &Path,
+    script: &str,
+    timeout_ms: u64,
+) -> String {
+    service
+        .open_launch(
+            "room",
+            "room",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            cwd,
+            &["/bin/sh".into(), "-c".into(), script.into()],
+            None,
+            None,
+            false,
+            0,
+            Some(timeout_ms),
+            None,
+            None,
+        )
+        .unwrap()
+}
+
 #[tokio::test]
 async fn queue_has_no_side_effect_and_cancel_never_spawns() {
     let directory = TempDir::new();
@@ -81,6 +105,7 @@ async fn command_deadline_expires_while_waiting_for_admission() {
             false,
             0,
             Some(100),
+            None,
             None,
         )
         .unwrap();
@@ -260,6 +285,7 @@ async fn a_named_stdin_file_replaced_by_fifo_during_admission_does_not_hold_the_
             false,
             0,
             Some(10_000),
+            None,
             Some("input.bin"),
         )
         .unwrap();

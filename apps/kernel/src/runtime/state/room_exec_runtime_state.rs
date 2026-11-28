@@ -167,6 +167,7 @@ impl KernelRuntimeState {
                 command,
                 directory,
                 timeout_ms,
+                deadline_unix_ms,
                 stdin_file,
             } => {
                 if root.is_some() && stdin_file.is_some() {
@@ -194,6 +195,7 @@ impl KernelRuntimeState {
                     self.clone(),
                     actor,
                     timeout_ms,
+                    deadline_unix_ms,
                     stdin_file.as_deref(),
                 )?;
                 return opened(id);

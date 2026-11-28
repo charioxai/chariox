@@ -150,6 +150,8 @@ pub(super) struct Record {
     force: watch::Sender<bool>,
     place: watch::Sender<Option<Arc<placement::Placed>>>,
     created_at: tokio::time::Instant,
+    deadline_at: Option<tokio::time::Instant>,
+    deadline_unix_ms: Option<u64>,
     reader_deadline: watch::Sender<tokio::time::Instant>,
     reader_lease: Duration,
     input: Mutex<Input>,
@@ -162,9 +164,7 @@ pub(super) struct Record {
 
 impl Record {
     fn deadline(&self) -> Option<tokio::time::Instant> {
-        self.intent
-            .timeout_ms
-            .map(|timeout_ms| self.created_at + Duration::from_millis(timeout_ms))
+        self.deadline_at
     }
 
     fn expired_before_start(&self) -> Option<ExecOutcome> {
@@ -257,6 +257,7 @@ impl RoomExecService {
             0,
             None,
             None,
+            None,
         )
     }
 
@@ -271,6 +272,7 @@ impl RoomExecService {
         authority: crate::runtime::state::KernelRuntimeState,
         acting_agent: Option<String>,
         timeout_ms: Option<u64>,
+        deadline_unix_ms: Option<u64>,
         stdin_file: Option<&str>,
     ) -> Result<String, DaemonError> {
         self.open_launch(
@@ -284,6 +286,7 @@ impl RoomExecService {
             false,
             0,
             timeout_ms,
+            deadline_unix_ms,
             stdin_file,
         )
     }
@@ -311,6 +314,7 @@ impl RoomExecService {
             u64::from(needs.memory_gib.unwrap_or(0)) * 1024 * 1024 * 1024,
             None,
             None,
+            None,
         )
     }
 
@@ -327,8 +331,24 @@ impl RoomExecService {
         job: bool,
         minimum_memory: u64,
         timeout_ms: Option<u64>,
+        deadline_unix_ms: Option<u64>,
         stdin_file: Option<&str>,
     ) -> Result<String, DaemonError> {
+        let created_at = tokio::time::Instant::now();
+        let created_unix_ms = crate::session::unix_epoch_ms();
+        if deadline_unix_ms.is_some() && timeout_ms.is_none() {
+            return Err(error(
+                "exec_invalid_timeout",
+                "an absolute command deadline requires its original timeout",
+            ));
+        }
+        let deadline_unix_ms = timeout_ms.map(|limit| {
+            let local_expiry = created_unix_ms.saturating_add(limit);
+            deadline_unix_ms.map_or(local_expiry, |expiry| expiry.min(local_expiry))
+        });
+        let deadline_at = deadline_unix_ms.map(|expiry| {
+            created_at + Duration::from_millis(expiry.saturating_sub(created_unix_ms))
+        });
         if command.is_empty()
             || command.len() > 64
             || command[0].is_empty()
@@ -366,7 +386,6 @@ impl RoomExecService {
         let mut records = self.inner.records.lock().expect("exec records poisoned");
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(None);
-        let created_at = tokio::time::Instant::now();
         let reader_lease = if job {
             lease::JOB_READER_LEASE
         } else {
@@ -410,6 +429,8 @@ impl RoomExecService {
             force,
             place,
             created_at,
+            deadline_at,
+            deadline_unix_ms,
             reader_deadline,
             reader_lease,
             input: Mutex::new(Input {
