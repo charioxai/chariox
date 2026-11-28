@@ -552,9 +552,10 @@ test('666 a reCAPTCHA-style widget: a page element holding the anchor frame grow
     if (method === 'DOM.getBoxModel') { const f = Object.values(frames).find(v => v.owner === params.backendNodeId); if (f) return { model: { content: f.box, border: f.box } }; }
     return original(method, params, session);
   };
-  state.box = { left: 30, top: 90, right: 354, bottom: 188 };
+  state.box = { left: 0, top: 0, right: 1280, bottom: 790 };
   await snapshot();
   let last = (await region({ card_id: 'r' })).region;
+  assert.ok(last.rect.width < 400 && last.rect.height < 200, `a page-wide element holding the widget is framed on the widget: ${JSON.stringify(last.rect)}`);
   const after = r => ({ generation: 1, document_id: 'doc', card_id: 'r', after: { rect: r.rect, viewport_width: r.viewport_width, viewport_height: r.viewport_height } });
   for (let round = 0; round < 3; round++) {
     open = true;
@@ -615,4 +616,83 @@ test('666 review: a widget whose frames render in the page\'s own process (no if
     last = (await region(after(grown))).region;
     assert.ok(last.rect.x + last.rect.width < 400, `round ${round}: closed again, only the anchor: ${JSON.stringify(last.rect)}`);
   }
+}));
+
+test('666 final rerun: cross-process widget frames missing from the page\'s own frame tree (real Chrome) still grow the card', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:child:child-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  const widget = 'https://widget.example', frames = {
+    child: { frame: { id: 'child', parentId: 'frame', loaderId: 'child-doc', securityOrigin: widget, url: widget + '/checkbox' }, owner: 99, box: [20, 80, 320, 80, 320, 154, 20, 154] },
+    challenge: { frame: { id: 'challenge', parentId: 'frame', loaderId: 'c-doc', securityOrigin: widget, url: widget + '/challenge' }, owner: 98, box: [330, 60, 730, 60, 730, 660, 330, 660] },
+    ad: { frame: { id: 'ad', parentId: 'frame', loaderId: 'a-doc', securityOrigin: 'https://ads.example', url: 'https://ads.example/' }, owner: 97, box: [0, 700, 1280, 700, 1280, 790, 0, 790] },
+  };
+  const hidden = new Set(['challenge']);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://page.example', url: 'https://page.example/' }, childFrames: [] } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: Object.keys(frames).map(id => ({ type: 'iframe', targetId: id, parentFrameId: 'frame' })) };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && params.backendNodeId >= 97 && params.backendNodeId <= 99) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) {
+      const id = Object.keys(frames).find(k => 'owner-' + frames[k].owner === params.objectId);
+      return { result: { value: !hidden.has(id) } };
+    }
+    if (method === 'DOM.getBoxModel') {
+      const f = Object.values(frames).find(v => v.owner === params.backendNodeId);
+      return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
+    }
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
+    return original(method, params, session);
+  };
+  await snapshot();
+  const closed = await region({ ref, card_id: 'w' });
+  const r = closed.region.rect;
+  assert.ok(r.x <= 20 && r.x + r.width >= 320 && r.height < 200, `only the checkbox frame while the challenge is hidden: ${JSON.stringify(r)}`);
+  hidden.delete('challenge');
+  const open = (await region({ ref, card_id: 'w', generation: 1, document_id: 'doc', after: { rect: r, viewport_width: 1280, viewport_height: 800 } })).region.rect;
+  assert.ok(open.x <= 20 && open.x + open.width >= 730 && open.y <= 60 && open.y + open.height >= 660, `the challenge with its bottom bar is in: ${JSON.stringify(open)}`);
+  assert.ok(open.y + open.height < 700, 'the page\'s ad frame of another origin is not');
+}));
+
+test('655 a hidden anchor inside a widget (the closed challenge\'s Verify) shows the widget\'s visible checkbox, not the whole page, and says the anchor is hidden', () => withHost(async ({ host, snapshot, region, state }) => {
+  const ref = 'frame:challenge:c-doc:backend:43';
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: [], accessibility_nodes: [{ node_ref: ref }] });
+  const connection = await host.browser.ensureConnection(), original = connection.send.bind(connection);
+  const widget = 'https://widget.example', frames = {
+    child: { frame: { id: 'child', parentId: 'frame', loaderId: 'child-doc', securityOrigin: widget, url: widget + '/checkbox' }, owner: 99, box: [20, 80, 320, 80, 320, 154, 20, 154] },
+    challenge: { frame: { id: 'challenge', parentId: 'frame', loaderId: 'c-doc', securityOrigin: widget, url: widget + '/challenge' }, owner: 98, box: [330, 60, 730, 60, 730, 660, 330, 660] },
+    ad: { frame: { id: 'ad', parentId: 'frame', loaderId: 'a-doc', securityOrigin: 'https://ads.example', url: 'https://ads.example/' }, owner: 97, box: [0, 700, 1280, 700, 1280, 790, 0, 790] },
+  };
+  const hidden = new Set(['challenge']);
+  connection.send = async (method, params, session) => {
+    if (method === 'Page.getFrameTree') {
+      const own = Object.values(frames).find(f => session === f.frame.id + '-session');
+      return { frameTree: own ? { frame: own.frame } : { frame: { id: 'frame', loaderId: state.document_id, securityOrigin: 'https://page.example', url: 'https://page.example/' }, childFrames: Object.values(frames).map(f => ({ frame: f.frame })) } };
+    }
+    if (method === 'Target.getTargets') return { targetInfos: Object.keys(frames).map(id => ({ type: 'iframe', targetId: id, parentFrameId: 'frame' })) };
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId + '-session' };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: frames[params.frameId].owner };
+    if (method === 'DOM.resolveNode' && params.backendNodeId >= 97 && params.backendNodeId <= 99) return { object: { objectId: 'owner-' + params.backendNodeId } };
+    if (method === 'Runtime.callFunctionOn' && String(params.objectId).startsWith('owner-')) {
+      const id = Object.keys(frames).find(k => 'owner-' + frames[k].owner === params.objectId);
+      return { result: { value: !hidden.has(id) } };
+    }
+    if (method === 'DOM.getBoxModel') {
+      const f = Object.values(frames).find(v => v.owner === params.backendNodeId);
+      return f ? { model: { content: f.box, border: f.box } } : { model: { border: [5, 10, 55, 10, 55, 30, 5, 30] } };
+    }
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 8 };
+    if (method === 'Runtime.evaluate') return { result: { value: String(session).endsWith('-session') ? [300, 74] : [1280, 800] } };
+    return original(method, params, session);
+  };
+  await snapshot();
+  const parked = await region({ ref, card_id: 'h' });
+  assert.equal(parked.state, 'present');
+  assert.equal(parked.anchor_hidden, true, 'the host says the named element itself is hidden');
+  assert.ok(parked.region.rect.x <= 20 && parked.region.rect.x + parked.region.rect.width >= 320 && parked.region.rect.width < 400, `the visible checkbox frame, not the whole page: ${JSON.stringify(parked.region.rect)}`);
 }));
