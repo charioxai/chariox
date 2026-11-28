@@ -107,9 +107,11 @@ impl WriteGrowth {
                     rate: 0,
                     files: Default::default(),
                     open: Default::default(),
+                    written_by_inode: Default::default(),
                     receiving: false,
                 });
                 volume.open.insert(key.1);
+                volume.written_by_inode.insert(key.1, written);
                 let stream = fd
                     .file_name()
                     .to_str()
@@ -152,6 +154,7 @@ impl WriteGrowth {
                     rate: 0,
                     files: Default::default(),
                     open: Default::default(),
+                    written_by_inode: Default::default(),
                     receiving: false,
                 });
                 volume.path = dir.clone();
