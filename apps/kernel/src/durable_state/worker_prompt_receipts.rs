@@ -12,7 +12,7 @@ const EVENT_KIND: &str = "remote_lease.prompt_admission_receipt";
 pub(crate) enum WorkerPromptReceiptPhase {
     Dispatching,
     Accepted,
-    Rejected,
+    Rejected(crate::transport::relay_peer::LeasedPromptRejection),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,7 +202,7 @@ fn validate_receipt_transition(
     let allowed_phase = next.receipt.phase == WorkerPromptReceiptPhase::Dispatching
         || matches!(
             next.receipt.phase,
-            WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::Rejected
+            WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::Rejected(_)
         );
     let run_identity_is_monotonic = match (
         previous.receipt.worker_provider_run_id.as_deref(),
@@ -276,7 +276,9 @@ mod tests {
             .persist(accepted.clone())
             .expect("acceptance should persist");
         assert!(store
-            .persist(receipt(WorkerPromptReceiptPhase::Rejected))
+            .persist(receipt(WorkerPromptReceiptPhase::Rejected(
+                crate::transport::relay_peer::LeasedPromptRejection::ExecutableMissing,
+            )))
             .is_err());
         let mut changed_lease = accepted.clone();
         changed_lease.receipt.execution_lease_id = "lease-2".to_string();

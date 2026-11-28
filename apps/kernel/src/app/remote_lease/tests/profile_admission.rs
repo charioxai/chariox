@@ -412,7 +412,9 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
         Some(crate::transport::relay_peer::LeasedPromptReceipt {
             home_prompt_id: home_prompt_id.to_string(),
             worker_provider_run_id: String::new(),
-            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::AdmissionRejected(
+                crate::transport::relay_peer::LeasedPromptRejection::Other
+            ),
             target_home_prompt_id: None,
             execution_lease_id: Some(lease.lease_id.clone()),
         }),

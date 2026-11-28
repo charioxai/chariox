@@ -94,6 +94,10 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("the worker rejected the prompt before admission ({reason:?})")]
+    RemotePromptRejected {
+        reason: crate::transport::relay_peer::LeasedPromptRejection,
+    },
     /// MP-08 / MP-11: preserve mapped executor semantics for external grants and sudo.
     /// `message` is the kernel's own text with secret-shaped values cut out.
     #[error("{message}")]
