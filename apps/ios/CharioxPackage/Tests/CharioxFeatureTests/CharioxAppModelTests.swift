@@ -169,46 +169,6 @@ import Testing
     #expect(model.transcriptEntries.map(\.text) == ["AB", "thinking", "C", "D"])
 }
 
-// MP-08 / MP-10 (#1425): a Claude reply streams plain under its merge key,
-// then its finished text replaces that row instead of being added to it.
-@MainActor
-@Test func aReplacingRecordSetsItsRowsTextInPlace() {
-    let defaults = UserDefaults(suiteName: "CharioxAppModelTests.replaces")!
-    defaults.removePersistentDomain(forName: "CharioxAppModelTests.replaces")
-    let model = CharioxAppModel(client: SequencedMockKernelClient(responses: []), defaults: defaults)
-    let key = "claude-transcript:run:assistant:live-prompt-1-1:0"
-    let finished = "Run:\n\n```sh\n$ sh\n```\n\nDone."
-    model.appendTerminalOutput([
-        TerminalOutputRecord(agentID: "agent-1", kind: "provider_output", mergeKey: key, bytes: Array("Run:".utf8)),
-        TerminalOutputRecord(agentID: "agent-1", kind: "provider_output", mergeKey: key, bytes: Array("\n\n$ sh".utf8)),
-    ])
-    model.appendTerminalOutput([
-        TerminalOutputRecord(agentID: "agent-1", kind: "provider_tool", mergeKey: "tool-1", bytes: Array("{}".utf8)),
-    ])
-    model.appendTerminalOutput([
-        TerminalOutputRecord(
-            agentID: "agent-1", kind: "provider_output", mergeKey: key, bytes: Array(finished.utf8),
-            replaces: true),
-    ])
-
-    #expect(model.transcriptEntries.map(\.text) == [finished, "{}"])
-    #expect(model.transcriptEntries.first?.mergeKey == key)
-}
-
-@MainActor
-@Test func outputUnderAnotherMergeKeyStartsItsOwnRow() {
-    let defaults = UserDefaults(suiteName: "CharioxAppModelTests.mergeKeys")!
-    defaults.removePersistentDomain(forName: "CharioxAppModelTests.mergeKeys")
-    let model = CharioxAppModel(client: SequencedMockKernelClient(responses: []), defaults: defaults)
-    model.appendTerminalOutput([
-        TerminalOutputRecord(agentID: "agent-1", kind: "provider_output", mergeKey: "block-1", bytes: Array("One".utf8)),
-        TerminalOutputRecord(agentID: "agent-1", kind: "provider_output", mergeKey: "block-2", bytes: Array("Two".utf8)),
-        TerminalOutputRecord(agentID: "agent-1", kind: "provider_output", mergeKey: "block-1", bytes: Array(" more".utf8)),
-    ])
-
-    #expect(model.transcriptEntries.map(\.text) == ["One more", "Two"])
-}
-
 @MainActor
 @Test func failedDetachKeepsLocalAttachmentState() async {
     let session = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 200)

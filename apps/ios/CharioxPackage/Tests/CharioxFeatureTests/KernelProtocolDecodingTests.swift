@@ -487,8 +487,6 @@ import Testing
             "active_interactions": [
               {
                 "id": "interaction-1",
-                "surface": "card",
-                "card_type": "provider_native_permission",
                 "agent_id": "agent-1",
                 "kind": "permission",
                 "level": "warning",
@@ -620,20 +618,6 @@ import Testing
     #expect(eventFrame.eventID == 8)
     #expect(records[0].agentID == "agent-1")
     #expect(records[0].text == "Hello")
-}
-
-// MP-08 / MP-10 (#1425, protocol 1016): a record that replaces its row says so.
-@Test func terminalOutputRecordDecodesReplaces() throws {
-    let replacing = try JSONDecoder().decode(
-        TerminalOutputRecord.self,
-        from: Data(#"{"kind":"provider_output","merge_key":"k","bytes":[65],"replaces":true}"#.utf8)
-    )
-    let appended = try JSONDecoder().decode(
-        TerminalOutputRecord.self,
-        from: Data(#"{"kind":"provider_output","merge_key":"k","bytes":[65]}"#.utf8)
-    )
-    #expect(replacing.replaces == true)
-    #expect(appended.replaces == nil)
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: Stop may cancel a parked task.

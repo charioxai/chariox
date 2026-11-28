@@ -605,16 +605,3 @@ import Testing
     let data = Data(#"{"NothingToStop":{"session_id":"room","agent_id":"agent"}}"#.utf8)
     #expect(try JSONDecoder().decode(LocalDaemonResponse.self, from: data) == .nothingToStop)
 }
-
-@Test func questionCustomAnswerUsesTheNormalKernelRequest() throws {
-    let data = try KernelProtocolCodec.encodeRequestFrame(KernelRequestFrame(
-        requestID: "question-reply",
-        request: .respondToInteraction(sessionID: "session-1", interactionID: "question", choiceID: "reply", customReply: "Route Ω")
-    ))
-    let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    let request = try #require(frame["request"] as? [String: Any])
-    let answer = try #require(request["RespondToInteraction"] as? [String: Any])
-    #expect(answer["interaction_id"] as? String == "question")
-    #expect(answer["choice_id"] as? String == "reply")
-    #expect(answer["custom_reply"] as? String == "Route Ω")
-}

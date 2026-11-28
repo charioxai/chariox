@@ -4,8 +4,6 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
     public let id: String
     public let agentID: String?
     public let kernelOperationID: String?
-    public let surface: String
-    public let cardType: String?
     public let kind: String
     public let level: String
     public let title: String?
@@ -14,16 +12,11 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
     public let timeoutSeconds: Int?
     public let defaultOnTimeout: String?
     public let requestedAtMs: Int64
-    public let relatedAgentID: String?
-    public let customChoice: RuntimeInteractionCustomChoice?
-    public let shownInAgentID: String?
 
     enum CodingKeys: String, CodingKey {
         case id
         case agentID = "agent_id"
         case kernelOperationID = "kernel_operation_id"
-        case surface
-        case cardType = "card_type"
         case kind
         case level
         case title
@@ -32,9 +25,6 @@ public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
         case timeoutSeconds = "timeout_sec"
         case defaultOnTimeout = "default_on_timeout"
         case requestedAtMs = "requested_at_ms"
-        case relatedAgentID = "related_agent_id"
-        case customChoice = "custom_choice"
-        case shownInAgentID = "shown_in_agent_id"
     }
 }
 
@@ -57,13 +47,6 @@ extension RuntimeInteraction {
                 debugDescription: "Invalid interaction subject"))
         }
         id = try values.decode(String.self, forKey: .id)
-        surface = try values.decode(String.self, forKey: .surface)
-        cardType = try values.decodeIfPresent(String.self, forKey: .cardType)
-        guard ["card", "pane_status", "hidden"].contains(surface),
-              surface != "card" || !(cardType ?? "").isEmpty else {
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
-                debugDescription: "Invalid interaction presentation"))
-        }
         kind = try values.decode(String.self, forKey: .kind)
         level = try values.decode(String.self, forKey: .level)
         title = try values.decodeIfPresent(String.self, forKey: .title)
@@ -72,9 +55,6 @@ extension RuntimeInteraction {
         timeoutSeconds = try values.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
         defaultOnTimeout = try values.decodeIfPresent(String.self, forKey: .defaultOnTimeout)
         requestedAtMs = try values.decode(Int64.self, forKey: .requestedAtMs)
-        relatedAgentID = try values.decodeIfPresent(String.self, forKey: .relatedAgentID)
-        customChoice = try values.decodeIfPresent(RuntimeInteractionCustomChoice.self, forKey: .customChoice)
-        shownInAgentID = try values.decodeIfPresent(String.self, forKey: .shownInAgentID)
     }
 }
 
@@ -83,28 +63,4 @@ public struct RuntimeInteractionChoice: Identifiable, Equatable, Sendable, Decod
     public let label: String
     public let reply: String
     public let style: String?
-}
-
-public struct RuntimeInteractionCustomChoice: Identifiable, Equatable, Sendable, Decodable {
-    public let id: String
-    public let label: String
-    public let placeholder: String?
-    public let minLength: Int?
-    public let maxLength: Int?
-    public let inputKind: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, label, placeholder
-        case minLength = "min_length"
-        case maxLength = "max_length"
-        case inputKind = "input_kind"
-    }
-}
-
-extension RuntimeInteraction {
-    func appears(inAgentPane agent: String, defaultAgentID: String?) -> Bool {
-        let subject = relatedAgentID ?? agentID
-        let pane = surface == "pane_status" ? subject : (shownInAgentID ?? subject ?? defaultAgentID)
-        return pane == agent
-    }
 }
