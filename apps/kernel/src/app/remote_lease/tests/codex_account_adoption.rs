@@ -26,8 +26,21 @@ async fn assert_codex_copy_admission(receiving: ReceivingAccount) {
     crate::test_support::isolated_env_test!();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
-    // Inspect relay admission and the planned Codex run before any native process starts.
+    // Hold native handshaking until assertions inspect the admitted Codex run.
     config.provider_runtime_init_delay_ms = 60_000;
+    let executable_dir = crate::test_support::TestTempDir::new("codex-account-admission");
+    let executable = executable_dir.path().join("codex");
+    // The existing delivery probe consumes process I/O; the real adapter still plans
+    // its executable, endpoint, account environment and native checkpoint.
+    std::fs::write(&executable, "#!/bin/sh\nexit 97\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::env::set_var("CHARIOX_CODEX_BIN", &executable);
+    let process_delivery =
+        crate::provider::ProviderCredentialDeliveryProbe::install("provider-run-1", &[]);
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
     let registry = app.provider_account_profile_registry();
@@ -125,7 +138,6 @@ async fn assert_codex_copy_admission(receiving: ReceivingAccount) {
         model: Some("model".into()),
         effort: None,
     };
-    app.providers_mut().use_codex_launch_plan_fixture();
     let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
     let result = router
@@ -166,6 +178,19 @@ async fn assert_codex_copy_admission(receiving: ReceivingAccount) {
     let run = app.providers().get_run(&run_id).unwrap();
     assert_eq!(run.provider(), "codex");
     assert_eq!(run.adapter_key(), "codex");
+    assert_eq!(
+        run.endpoint_mode(),
+        crate::provider::AgentEndpointMode::Managed
+    );
+    assert_eq!(
+        run.pty_program(),
+        Some(executable.to_string_lossy().as_ref())
+    );
+    assert!(run.structured_endpoint().is_some());
+    assert!(
+        process_delivery.observed_exactly("pty_spawn"),
+        "real Codex launch must reach the process delivery boundary"
+    );
     assert_eq!(
         run.account_profile(),
         copied.profile_id,

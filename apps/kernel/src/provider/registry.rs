@@ -60,8 +60,6 @@ pub trait AgentEndpointAdapter: Send + Sync {
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderRegistry {
     pub(super) dev_stub_enabled: bool,
-    #[cfg(test)]
-    pub(super) codex_launch_plan_fixture: bool,
 }
 
 impl Default for ProviderRegistry {
@@ -74,8 +72,6 @@ impl ProviderRegistry {
     pub fn new() -> Self {
         Self {
             dev_stub_enabled: cfg!(test) || super::dev_stub_enabled(),
-            #[cfg(test)]
-            codex_launch_plan_fixture: false,
         }
     }
 
