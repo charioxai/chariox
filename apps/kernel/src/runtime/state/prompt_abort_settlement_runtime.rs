@@ -23,6 +23,11 @@ impl KernelRuntimeState {
             let prompt = owned
                 .structured_output_records
                 .take_in_flight_prompt_id(&dispatch.provider_run_id);
+            #[cfg(test)]
+            eprintln!(
+                "abort ready poll: run={} polled={prompt:?} expected={}",
+                dispatch.provider_run_id, dispatch.prompt_id
+            );
             if prompt.as_deref() != Some(dispatch.prompt_id.as_str()) {
                 continue;
             }

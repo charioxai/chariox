@@ -908,7 +908,9 @@ async fn assert_claude_stream_json_cancellation_settles(busy_actor: bool, alread
     let tool_pid_file = worktree.path().join("tool-pid");
     let root_pid_file = worktree.path().join("root-pid");
     std::fs::write(&marker, "alive").unwrap();
-    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let mut config = crate::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -1090,7 +1092,11 @@ for line in sys.stdin: pass
         .durable_state_store
         .agent_tasks(Some(session.id()), Some(agent.id()))
         .unwrap();
-    assert_eq!(tasks[0].state, ExecutionState::Cancelled);
+    let task = tasks
+        .iter()
+        .find(|task| task.prompt_id == "stream-json-stop-prompt")
+        .expect("the exact cancelled stream-json task must remain recorded");
+    assert_eq!(task.state, ExecutionState::Cancelled);
 }
 
 async fn assert_unresponsive_abort_settles(
