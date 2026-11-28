@@ -86,7 +86,7 @@ pub(super) fn render_tool_transcript_update(
         tool: tool_name.to_string(),
         status: status.to_string(),
         started_at_ms: time.and_then(|time| time.start),
-        finished_at_ms: time.and_then(|time| time.end),
+        finished_at_ms: part.time.as_ref().and_then(|time| time.end),
         title,
         description,
         text: rendered_text,
@@ -125,6 +125,9 @@ pub(super) fn render_stopped_tool_update(
         id: part_id.to_string(),
         tool: tool.to_string(),
         status: "error".to_string(),
+        // This synthetic row receives no provider timestamps. Leave them absent.
+        started_at_ms: None,
+        finished_at_ms: None,
         title: None,
         description: None,
         text: None,
@@ -226,6 +229,37 @@ fn is_connection_retry_status(kind: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tool_update_keeps_its_provider_start_and_part_completion_times() {
+        let part = serde_json::from_value(serde_json::json!({
+            "id": "timed-tool", "type": "tool", "tool": "bash",
+            "state": {"status": "completed", "time": {"start": 1234}},
+            "time": {"end": 5678}
+        }))
+        .unwrap();
+        let rendered = super::render_tool_transcript_update(
+            &part,
+            &crate::extension::RemoteExtensionManifest::default(),
+        );
+        let update: super::ToolTranscriptUpdate = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(update.started_at_ms, Some(1234));
+        assert_eq!(update.finished_at_ms, Some(5678));
+        assert_eq!(update.status, "completed");
+    }
+
+    #[test]
+    fn a_synthetic_stopped_row_does_not_invent_provider_timestamps() {
+        let input = serde_json::json!({"command": "sleep 30"});
+        let rendered = super::render_stopped_tool_update("stopped-tool", "bash", input.clone());
+        let update: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(update["id"], "stopped-tool");
+        assert_eq!(update["status"], "error");
+        assert_eq!(update["input"], input);
+        assert_eq!(update["error"], super::super::stuck_tool::STOPPED_COMMAND);
+        assert!(update.get("started_at_ms").is_none());
+        assert!(update.get("finished_at_ms").is_none());
+    }
+
     #[test]
     fn retry_without_a_reason_does_not_invent_a_connection_failure() {
         assert_eq!(

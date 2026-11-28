@@ -101,12 +101,13 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
         "list": LocalDaemonRequest::ListKernelDirectory(ListKernelDirectoryRequest { path: "~/".into(), offset: 0 }),
         "read": LocalDaemonRequest::ReadKernelFile(ReadKernelFileRequest { path: "/srv/b.bundle".into(), offset: 0, length: 4 }),
         "write": LocalDaemonRequest::WriteKernelFile(WriteKernelFileRequest {
+            upload_id: uuid::Uuid::from_u128(1),
             path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), total_size: 3,
             sha256: Some("ab".repeat(32)), overwrite: false,
         }),
         "stat_answer": LocalDaemonResponse::KernelFileStat { stat: KernelFileStat {
             path: "/srv/b.bundle".into(), exists: true, kind: Some(KernelFileKind::File), size: Some(3),
-            modified_ms: Some(5), revision: Some("2049:17:3:5.0:5.0".into()), mode: Some(0o644), sha256: None, partial_size: None,
+            modified_ms: Some(5), revision: Some("2049:17:3:5.0:5.0".into()), mode: Some(0o644), sha256: None, partial_size: None, partial_upload_id: None,
         } },
         "listed": LocalDaemonResponse::KernelDirectoryListed { path: "/".into(), entries: vec![KernelDirectoryEntry {
             name: "a".into(), kind: KernelFileKind::Directory, target_kind: None, size: 0, modified_ms: None,
