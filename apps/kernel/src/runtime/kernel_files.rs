@@ -203,7 +203,9 @@ pub(crate) fn stat(
     guard: &StateGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let path = resolve(&request.path, guard)?;
-    let partial = std::fs::metadata(partial_of(&path)).ok();
+    let partial = std::fs::symlink_metadata(partial_of(&path))
+        .ok()
+        .filter(trusted_staging);
     let partial_size = partial.as_ref().map(std::fs::Metadata::len);
     let partial_upload_id = partial.as_ref().map(upload_attempts::resumable_id);
     let stat = match std::fs::symlink_metadata(&path) {
