@@ -5,7 +5,7 @@ use std::panic::Location;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const STALL_THRESHOLD: Duration = Duration::from_secs(2);
+pub(crate) const STALL_THRESHOLD: Duration = Duration::from_secs(2);
 
 struct Operation {
     component: &'static str,
@@ -121,7 +121,11 @@ fn overdue(registry: &mut Registry, now: Instant) -> Vec<serde_json::Value> {
         notices.push(notice);
     }
     if !notices.is_empty() {
-        let held = registry.operations.values().filter(|operation| operation.operation == "lock_hold").map(|operation| serde_json::json!({"name": operation.component, "call_site": operation.location.to_string(), "thread": operation.thread, "duration_ms": now.saturating_duration_since(operation.started).as_millis()})).collect::<Vec<_>>();
+        let mut held = registry.operations.values().filter(|operation| operation.operation == "lock_hold").map(|operation| serde_json::json!({"name": operation.component, "call_site": operation.location.to_string(), "thread": operation.thread, "duration_ms": now.saturating_duration_since(operation.started).as_millis()})).collect::<Vec<_>>();
+        // Row 678: the app lock is a tokio mutex the lock_hold watches do not see; name its holder.
+        if let Some(app) = crate::runtime::app_lock::current_holder() {
+            held.push(serde_json::json!({"name": "app", "operation": app.operation, "thread": app.thread, "duration_ms": app.held.as_millis()}));
+        }
         for notice in &mut notices {
             notice["held_locks"] = serde_json::json!(&held);
         }

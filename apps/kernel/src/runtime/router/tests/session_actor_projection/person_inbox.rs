@@ -353,3 +353,53 @@ async fn a_held_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_run
         "the opened run leaves the Inbox"
     );
 }
+
+/// Row 678: the kernel tells the person it acts for that it restarted itself. Its notice belongs to
+/// no Room; a guest with a Room on this kernel never sees it.
+#[tokio::test]
+async fn the_kernels_own_notice_reaches_its_owner_and_no_guest() {
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (mine, guests) = (room(DEFAULT_LOCAL_USER_ID), room("someone-else"));
+    for session in [mine, guests] {
+        app.sessions_mut().restore_session(session);
+    }
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    router
+        .runtime_state
+        .durable_state_store()
+        .record_person_notice(crate::durable_state::StoredNotice {
+            card_id: "notice_kernel_restart".into(),
+            owner_user_id: DEFAULT_LOCAL_USER_ID.into(),
+            session_id: crate::durable_state::WORKFLOW_RELINK_ORIGIN.into(),
+            agent_id: crate::durable_state::WORKFLOW_RELINK_ORIGIN.into(),
+            title: "This kernel restarted itself".into(),
+            body: Some("One of its operations did not finish.".into()),
+            link: None,
+            priority: crate::local::PersonInboxPriority::High,
+            created_at_ms: crate::session::unix_epoch_ms(),
+            read: false,
+            folded: 0,
+        })
+        .unwrap();
+
+    let cards = inbox(&router).await;
+    assert_eq!(
+        card_ids(&cards),
+        [("kernel", "notice_kernel_restart")],
+        "the owner sees the kernel's notice"
+    );
+
+    let request = LocalDaemonRequest::GetPersonInbox(GetPersonInboxRequest);
+    let mut command = KernelCommand::from_local_request("guest-inbox", None, None, &request);
+    command.caller.user_id = Some("someone-else".into());
+    let guest_cards = match router.dispatch(command, request).await.unwrap() {
+        LocalDaemonResponse::PersonInbox { cards, .. } => cards,
+        other => panic!("expected the Inbox, got {other:?}"),
+    };
+    assert!(
+        guest_cards
+            .iter()
+            .all(|card| card.card_id != "notice_kernel_restart"),
+        "a guest never sees the kernel's notice"
+    );
+}

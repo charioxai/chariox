@@ -264,6 +264,9 @@ fn spawn_kernel_with_handoff(
     std::os::unix::process::CommandExt::arg0(&mut command, &config.kernel_binary);
     command
         .current_dir(&config.process_home)
+        // This supervisor starts the kernel again after any exit: the kernel's wedge watchdog
+        // (row 678) may exit for a restart only when something will start it again.
+        .env("CHARIOX_KERNEL_SUPERVISOR", "the managed kernel supervisor")
         .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
         .env(super::MANAGED_REPOSITORY_ROOT_ENV, managed_repository_root)

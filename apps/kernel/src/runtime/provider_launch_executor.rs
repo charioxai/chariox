@@ -529,6 +529,7 @@ impl ProviderLaunchPendingTracker {
         let Ok(app) = app.try_lock() else {
             return;
         };
+        let _held = crate::runtime::app_lock::mark_holder("provider launch start check");
         let is_still_starting = app
             .sessions()
             .get_session(session_id)
