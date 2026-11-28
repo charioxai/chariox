@@ -276,3 +276,49 @@ async fn an_unknown_allocation_is_refused_in_plain_words() {
         assert!(!error.contains("cloud relay request"), "{error}");
     }
 }
+
+#[tokio::test]
+async fn owner_explicit_release_delivery_replay_is_stable_and_new_invocation_retries_refusal() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    *service.release_failures.lock().unwrap() = 1;
+    let (state, _token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let rented = acquisition(
+        &state,
+        rent("release-retry-rental", Some("small"), Some("north")),
+        None,
+    )
+    .await
+    .unwrap();
+    let reference = allocation_ref(&rented);
+    let request = MachineAcquisitionRequest::Release {
+        allocation_ref: reference.clone(),
+    };
+    let first = acquisition(&state, request.clone(), None).await.unwrap();
+    assert!(matches!(first, MachineAcquisitionResult::Machine(
+        crate::local::ControlPlaneResponse::Machine { ref state, .. }) if state == "failed"));
+    let delivery: ControlPlaneRequest =
+        serde_json::from_value(service.releases.lock().unwrap()[0].clone()).unwrap();
+    let command = rental_command(&request, None);
+    let replay = crate::runtime::control_plane::execute(
+        &state.owned.config_projection.snapshot(),
+        &state,
+        &command,
+        state.job_router.as_ref().unwrap().kernel_gateway(),
+        &delivery,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(replay, LocalDaemonResponse::ControlPlane {
+        result: crate::local::ControlPlaneResponse::Machine { ref state, .. }} if state == "failed"));
+    let second = acquisition(&state, request, None).await.unwrap();
+    assert!(matches!(second, MachineAcquisitionResult::Machine(
+        crate::local::ControlPlaneResponse::Machine { ref state, .. }) if state == "deleted"));
+    let sent = service.releases.lock().unwrap();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[0]["request_id"], sent[1]["request_id"]);
+    assert_ne!(sent[1]["request_id"], sent[2]["request_id"]);
+    assert!(sent
+        .iter()
+        .all(|request| request["allocation_ref"] == reference));
+    assert_eq!(service.acquires.lock().unwrap().len(), 1);
+}

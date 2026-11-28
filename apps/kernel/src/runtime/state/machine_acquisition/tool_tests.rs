@@ -26,6 +26,8 @@ pub(super) enum Answer {
 pub(super) struct Service {
     pub(super) api_url: String,
     pub(super) acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    pub(super) releases: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    pub(super) release_failures: Arc<std::sync::Mutex<usize>>,
     /// The options the service lists; a test changes them to change the stock.
     pub(super) offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
     /// Answers for the next acquires, before the service's own judgement.
@@ -59,6 +61,10 @@ pub(super) async fn service(
     let api_url = format!("http://{}", listener.local_addr().unwrap());
     let acquires = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = acquires.clone();
+    let releases = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_releases = releases.clone();
+    let release_failures = Arc::new(std::sync::Mutex::new(0_usize));
+    let next_release_failure = release_failures.clone();
     let offers = Arc::new(std::sync::Mutex::new(offers));
     let listed = offers.clone();
     let answers = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
@@ -70,6 +76,8 @@ pub(super) async fn service(
     let mut accepted = BTreeMap::<String, (serde_json::Value, serde_json::Value, String)>::new();
     let mut closed = std::collections::BTreeSet::<String>::new();
     let mut released = std::collections::BTreeSet::<String>::new();
+    let mut failed_release_keys = std::collections::BTreeSet::<String>::new();
+    let mut refused_allocations = std::collections::BTreeSet::<String>::new();
     tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -249,11 +257,33 @@ pub(super) async fn service(
                     let allocation_ref = request["allocation_ref"].as_str().unwrap();
                     assert!(accepted.values().any(|(_, _, id)| id == allocation_ref));
                     if request["action"] == "release" {
-                        assert_eq!(request["expected_revision"], 1);
-                        released.insert(allocation_ref.to_owned());
+                        seen_releases.lock().unwrap().push(request.clone());
+                        let request_id = request["request_id"].as_str().unwrap();
+                        // Like Cloud, a delivery replay reads the canonical receipt without
+                        // dispatching a retry, even if its expected revision is now old.
+                        if !failed_release_keys.contains(request_id) {
+                            let revision = if refused_allocations.contains(allocation_ref)
+                                || released.contains(allocation_ref)
+                            {
+                                2
+                            } else {
+                                1
+                            };
+                            assert_eq!(request["expected_revision"], revision);
+                            let mut failures = next_release_failure.lock().unwrap();
+                            if *failures > 0 {
+                                *failures -= 1;
+                                failed_release_keys.insert(request_id.to_owned());
+                                refused_allocations.insert(allocation_ref.to_owned());
+                            } else {
+                                released.insert(allocation_ref.to_owned());
+                            }
+                        }
                     }
                     let (state, revision, actions, target) = if released.contains(allocation_ref) {
                         ("deleted", 2, vec![], None)
+                    } else if refused_allocations.contains(allocation_ref) {
+                        ("failed", 2, vec!["release"], None)
                     } else {
                         (
                             "ready",
@@ -277,6 +307,8 @@ pub(super) async fn service(
     Service {
         api_url,
         acquires,
+        releases,
+        release_failures,
         offers,
         answers,
         capability_failures,
@@ -1436,4 +1468,38 @@ async fn the_owner_card_names_the_agent_that_gave_no_purpose() {
         title,
         format!("{name} asks for a machine and gave no purpose.")
     );
+}
+
+#[tokio::test]
+async fn an_agent_explicit_release_retries_a_refused_delete_on_the_same_allocation() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    *service.release_failures.lock().unwrap() = 1;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquired = state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"release-retry-rental"}),
+        )
+        .await
+        .unwrap();
+    let reference = acquired.payload["allocation"]["allocation_ref"].clone();
+    let args = serde_json::json!({"allocation_ref":reference});
+    let first = state
+        .machine_tool(&token, "chariox.machines.release", args.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.payload["state"], "failed");
+    let second = state
+        .machine_tool(&token, "chariox.machines.release", args)
+        .await
+        .unwrap();
+    assert_eq!(second.payload["state"], "deleted");
+    let sent = service.releases.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_ne!(sent[0]["request_id"], sent[1]["request_id"]);
+    assert!(sent
+        .iter()
+        .all(|request| request["allocation_ref"] == reference));
+    assert_eq!(service.acquires.lock().unwrap().len(), 1);
 }
