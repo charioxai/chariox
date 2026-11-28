@@ -266,6 +266,31 @@ async fn job_summary_own_list_and_status_explain_memory_pressure_and_next_step()
             > status["waiting"]["free_bytes"].as_u64().unwrap()
     );
     assert!(status["next_action"].as_str().unwrap().contains("Wait"));
+    // Row779: this hold is a reservation, not evidence of physical pressure.
+    let accounting = &status["waiting"]["memory_accounting"];
+    assert!(
+        accounting.is_object(),
+        "missing accountable admission sample: {status}"
+    );
+    let room = accounting["room_bytes"].as_u64().unwrap();
+    let growth = accounting["predicted_growth_bytes"].as_u64().unwrap();
+    let launches = accounting["launch_remaining_bytes"].as_u64().unwrap();
+    assert_eq!(
+        room.saturating_sub(growth).saturating_sub(launches),
+        status["waiting"]["free_bytes"].as_u64().unwrap()
+    );
+    assert_eq!(launches, u64::MAX);
+    assert_eq!(accounting["hold_cause"], "reserved_capacity");
+    assert!(accounting["sampled_at_ms"].as_u64().unwrap() > 0);
+    assert!(accounting["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|domain| domain["launch_remaining_bytes"] == u64::MAX));
+    assert!(!status["next_action"]
+        .as_str()
+        .unwrap()
+        .contains("pressure to clear"));
     let list = list.unwrap();
     assert_eq!(list["waiting"][0]["job_id"], id, "{list}");
     assert_eq!(list["waiting"][0]["pressure"]["reason"], "memory");
