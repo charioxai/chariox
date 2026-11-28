@@ -455,6 +455,8 @@ pub(crate) async fn forward_relay_native_interaction(
             reply: None,
         });
     }
+    // Refuse an invalid wire type before creating even a forwarded-decision receipt.
+    crate::runtime::state::InteractionSurface::native(&interaction)?;
     let origin = match interaction.native_origin() {
         Some(NativeInteractionOrigin::ProviderStartup { .. }) => {
             NativeInteractionOrigin::ProviderStartup {

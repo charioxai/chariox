@@ -7,6 +7,7 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case attachToSession(sessionID: String, clientID: String)
     case detachFromSession(attachmentID: String)
     case getSessionState(sessionID: String)
+    case getAgentTree(sessionID: String, agentID: String)
     case updateSessionConfig(sessionID: String, attachmentID: String, values: [String: String], requiresIdle: Bool)
     case getProviderCatalog
     case getProviderAuthStatus(provider: String)
@@ -75,6 +76,8 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                 DetachFromSessionPayload(attachmentID: attachmentID),
                 forKey: DynamicCodingKey("DetachFromSession")
             )
+        case let .getAgentTree(sessionID, agentID):
+            try container.encode(GetAgentTreePayload(sessionID: sessionID, agentID: agentID), forKey: DynamicCodingKey("GetAgentTree"))
         case let .getSessionState(sessionID):
             try container.encode(
                 GetSessionStatePayload(sessionID: sessionID),
@@ -568,4 +571,10 @@ private extension KeyedEncodingContainer {
             try encodeNil(forKey: key)
         }
     }
+}
+
+private struct GetAgentTreePayload: Encodable {
+    let sessionID: String
+    let agentID: String
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id", agentID = "agent_id" }
 }

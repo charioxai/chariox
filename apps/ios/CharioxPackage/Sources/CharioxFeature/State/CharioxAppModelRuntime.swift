@@ -150,6 +150,14 @@ extension CharioxAppModel {
         agentID: agentID,
         text: "assistant message completed: \(messageID)"
       )
+    case .runtimeInteractionsChanged(let sessionID, let interactions):
+      if let session = sessions.first(where: { $0.id == sessionID }) {
+        upsert(session.replacingActiveInteractions(interactions))
+      }
+    case .agentTreeChanged(let sessionID, let root, let revision):
+      if sessionID == subscribedSessionID, (agentTrees[root]?.rev ?? 0) < revision {
+        Task { [weak self] in await self?.refreshAgentTree(sessionID: sessionID, rootAgentID: root) }
+      }
     case .sessionSnapshot(let session):
       upsert(session)
       selectedSessionID = session.id

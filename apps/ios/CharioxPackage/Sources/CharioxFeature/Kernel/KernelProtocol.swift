@@ -119,6 +119,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case sessionCreated(RuntimeSession)
     case sessionDeleted(RuntimeSession)
     case sessionState(RuntimeSession)
+    case agentTree(RuntimeAgentTree)
     case sessionConfigUpdated(session: RuntimeSession, config: SessionConfigState)
     case sessionAttached(RuntimeAttachment)
     case sessionDetached(RuntimeAttachment)
@@ -163,6 +164,11 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "SessionDeleted" }) {
             let payload = try container.decode(SessionPayload.self, forKey: key)
             self = .sessionDeleted(payload.session)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "AgentTree" }) {
+            let payload = try container.decode(AgentTreePayload.self, forKey: key)
+            self = .agentTree(payload.tree)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "SessionState" }) {
@@ -329,6 +335,8 @@ public enum KernelEvent: Equatable, Sendable, Decodable {
     case runtimeNotices([RuntimeNoticeRecord])
     case assistantMessageCompleted(sessionID: String, providerRunID: String, agentID: String?, messageID: String, completedAtMs: Int64)
     case sessionSnapshot(RuntimeSession)
+    case runtimeInteractionsChanged(sessionID: String, interactions: [RuntimeInteraction])
+    case agentTreeChanged(sessionID: String, root: String, revision: UInt64)
     case sessionUnavailable(sessionID: String, message: String)
     case heartbeat(sessionID: String)
     case transportResumed(sessionID: String, resumedFromEventID: Int64?)
@@ -358,6 +366,15 @@ public enum KernelEvent: Equatable, Sendable, Decodable {
                 messageID: messageID,
                 completedAtMs: completedAtMs
             )
+        case "runtime_interactions_changed":
+            self = .runtimeInteractionsChanged(
+                sessionID: try container.decode(String.self, forKey: DynamicCodingKey("session_id")),
+                interactions: try container.decode([RuntimeInteraction].self, forKey: DynamicCodingKey("active_interactions")))
+        case "agent_tree_changed":
+            self = .agentTreeChanged(
+                sessionID: try container.decode(String.self, forKey: DynamicCodingKey("session_id")),
+                root: try container.decode(String.self, forKey: DynamicCodingKey("root")),
+                revision: try container.decode(UInt64.self, forKey: DynamicCodingKey("rev")))
         case "session_snapshot":
             let session = try container.decode(RuntimeSession.self, forKey: DynamicCodingKey("session"))
             self = .sessionSnapshot(session)
@@ -539,3 +556,5 @@ struct DynamicCodingKey: CodingKey {
 }
 
 private struct SkillsV2Payload: Decodable { let result: SkillsV2Response }
+
+private struct AgentTreePayload: Decodable { let tree: RuntimeAgentTree }

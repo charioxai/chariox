@@ -13,6 +13,9 @@ public final class CharioxAppModel {
   public var selectedVariantID: String
   public var responseLayout: MultiAgentResponseLayout
   public internal(set) var sessions: [RuntimeSession]
+  public internal(set) var agentTrees: [String: RuntimeAgentTree] = [:]
+  public internal(set) var agentTreeErrors: [String: String] = [:]
+  @ObservationIgnored var agentTreeAttachments: [String: String] = [:]
   public internal(set) var selectedSessionID: String?
   public internal(set) var activeAttachment: RuntimeAttachment?
   public internal(set) var subscribedSessionID: String?

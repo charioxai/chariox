@@ -292,28 +292,33 @@ private struct FreeformSurface: View {
     }
 
     var body: some View {
-        Group {
-            if visibleAgents.isEmpty {
-                VStack(spacing: 12) {
-                    Text("@")
-                        .font(.system(size: 64, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(CharioxPalette.orange)
-                    Text("No agents reported yet")
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(CharioxPalette.muted)
-                    Button {
-                        Task { await model.spawnAgent() }
-                    } label: {
-                        Label("Spawn agent", systemImage: "plus")
+        VStack(spacing: 0) {
+            if let session = model.selectedSession {
+                AgentTreePanel(model: model, session: session).id(session.id)
+            }
+            Group {
+                if visibleAgents.isEmpty {
+                    VStack(spacing: 12) {
+                        Text("@")
+                            .font(.system(size: 64, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(CharioxPalette.orange)
+                        Text("No agents reported yet")
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(CharioxPalette.muted)
+                        Button {
+                            Task { await model.spawnAgent() }
+                        } label: {
+                            Label("Spawn agent", systemImage: "plus")
+                        }
+                        .buttonStyle(CharioxCommandButtonStyle(primary: true))
+                        .disabled(model.connectionState.isWorking)
                     }
-                    .buttonStyle(CharioxCommandButtonStyle(primary: true))
-                    .disabled(model.connectionState.isWorking)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if model.responseLayout == .split, isWide {
+                    AgentGrid(model: model, agents: visibleAgents)
+                } else {
+                    AgentPager(model: model, agents: visibleAgents)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.responseLayout == .split, isWide {
-                AgentGrid(model: model, agents: visibleAgents)
-            } else {
-                AgentPager(model: model, agents: visibleAgents)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -703,7 +708,7 @@ private struct RuntimeInventory: View {
     }
 }
 
-private struct InteractionPromptPanel: View {
+struct InteractionPromptPanel: View {
     @Bindable var model: CharioxAppModel
     var agentID: String? = nil
 
@@ -743,7 +748,7 @@ private struct InteractionPromptPanel: View {
             }
         }
         // Recovery belongs to the subject's pane and keeps its kernel choices.
-        ForEach(shown.filter { $0.surface == "pane_status" }) { status in
+        ForEach(shown.filter { agentID != nil && $0.surface == "pane_status" }) { status in
             VStack(alignment: .leading, spacing: 8) {
                 Text(status.displayTitle)
                     .foregroundStyle(status.level == "critical" ? CharioxPalette.red : CharioxPalette.orange)
