@@ -3568,3 +3568,15 @@ test("MIRROR-P2-FONTS-SUBSET: a subset font is sent again, under its key, when t
     assert.notEqual(before.subset, before.source, "MIRROR-P2-FONTS-SUBSET: the first subset cannot show the new text as the source does");
     assert.equal(after.subset, after.source, "MIRROR-P2-FONTS-SUBSET: the new subset lays the new text out as the source face does");
   }, { "/lib.woff2": { type: "font/woff2", binary: liberation } }));
+
+// Rows 497/489: offsetWidth rounds away the fractional border box. A native
+// crop can then fit the page while exceeding the smaller mirrored surface.
+test('Row 497: opaque tiles retain fractional untransformed border-box sizes', () => mirrored(
+  '<style>body{margin:0}#v,#c{box-sizing:border-box;width:344.25px;height:612.25px}#c{transform:scale(.5)}#p{width:100.25px;height:50.25px;padding:1.125px;border:1px solid}</style><video id="v"></video><canvas id="c"></canvas><canvas id="p"></canvas>',
+  async ({ next }) => {
+    const snapshot = await next(); let id = 0;
+    const records = snapshot.nodes.map(row => { id += row[0]; return { id: `n${id}`, attrs: row[3], ...(row[4] ?? {}) }; });
+    for (const name of ['v', 'c']) assert.deepEqual(records.find(r => r.attrs?.id === name)?.size, [344.25, 612.25], name + ': CSS precision survives, independent of transform');
+    assert.deepEqual(records.find(r => r.attrs?.id === 'p')?.size, [104.5, 54.5], 'content-box padding and border are included without rounding');
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: '1' }
+));
