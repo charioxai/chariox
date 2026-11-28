@@ -70,3 +70,19 @@ test('moving protocol and catalog checks to the native guard is detected', () =>
   assert.notEqual(wrong, workflow);
   assert.throws(() => protocolJobs(wrong));
 });
+
+test('excluding the macOS native job is detected', () => {
+  const wrong = workflow.replace('        check: [components, native-cli]', '        check: [components, native-cli]\n        exclude:\n          - os: macos-15\n            check: native-cli');
+  assert.notEqual(wrong, workflow);
+  assert.throws(() => nativeJobs(wrong));
+});
+
+for (const [label, command, validate] of [
+  ['native dispatch', 'cargo test --locked -p chariox-kernel --bin chariox-cli app_developer::tests::', nativeJobs],
+  ['protocol snapshots', 'cargo test --locked -p chariox-kernel --lib protocol_shapes', protocolJobs],
+  ['terminal catalog', 'cargo test --locked -p chariox-kernel --lib terminal_command_catalog::tests::', protocolJobs],
+]) test(`commenting out ${label} is detected`, () => {
+  const wrong = workflow.replace(command, `# ${command}`);
+  assert.notEqual(wrong, workflow);
+  assert.throws(() => validate(wrong));
+});
