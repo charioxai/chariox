@@ -266,14 +266,9 @@ jobs:
 
       - name: Release session project assignment regression
         if: matrix.suite == 'workspace' && matrix.part == 'release'
-        # MP-08/MP-10: partition the large kernel test crate for the CI compiler;
-        # keep kernel release optimization and disabled debug assertions unchanged.
-        # The dev-only App fixture dependency requires debug assertions; production
-        # App builds retain their default release guard against this feature.
-        run: >-
-          cargo --config 'profile.release.package.chariox-kernel.codegen-units=256'
-          --config 'profile.release.package.chariox-app-runtime.debug-assertions=true'
-          test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
+        # Compile the production library and this regression, rather than optimize
+        # the entire kernel unit-test harness to execute one public service call.
+        run: bash scripts/ci/release-session-project.sh
 
       - name: Clippy
         if: matrix.suite == 'workspace' && matrix.part == 'checks'
