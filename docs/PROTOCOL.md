@@ -5696,21 +5696,28 @@ authority for its own sessions, agents, terminals and files.
   target keeps running.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
-  size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
+  size, modified_ms, revision, mode, sha256, partial_size, partial_upload_id} }`; `ListKernelDirectory { path, offset }` ->
   `KernelDirectoryListed { path, entries: [{name, kind, target_kind?, size, modified_ms, revision, mode}], truncated }` (2000
   entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005;
   a link has `kind: "symlink"`, which transfers skip, and local 1011 adds `target_kind`, what it points to, so a window opens it as that; a link to nothing has none); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
-  `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
-  total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
+  `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, upload_id, offset, data_base64,
+  total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 30 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
   only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
+  Local 1017 / peer 454 require `upload_id`, a UUID shared by every chunk of one attempt. A fresh
+  offset-zero attempt uses a fresh UUID. To resume, read stat and send its current non-null
+  `partial_upload_id` with `offset: partial_size`; stat returns null when no partial can be resumed.
+  A stale ID fails with `file_upload_changed`: read stat again before retrying. Admission, append and
+  publication on one staging inode are serialized, so an already admitted chunk cannot append into a
+  resumed attempt's completed file. A fresh nonzero-first chunk waits for its own offset-zero opener,
+  including when the opener must replace a stale untrusted staging name.
   The first chunk replaces whatever is at the staging name; later chunks continue only a private regular file of the
   kernel's user, never a link or another user's file (`file_staging_untrusted`: remove it and upload again).
   A file is at most 2 GiB (`file_too_large`). Reads and write chunks name their offset, so a retry is safe and they
   skip the at-most-once ledger. Typed errors: `file_path_invalid`, `file_not_found`, `file_permission_denied`,
   `file_not_a_file`, `file_too_large`, `file_chunk_too_large`, `file_offset_mismatch`, `file_hash_mismatch`,
-  `file_staging_untrusted`, `file_exists`, `file_io_failed`; each message already says what to do next.
+  `file_staging_untrusted`, `file_upload_changed`, `file_exists`, `file_io_failed`; each message already says what to do next.
 - Self-hosted kernels (no Cloud profile): the kernels are the kernels this kernel paired with. Human-only requests,
   refused for grant holders and forwarded requests: `JoinKernelLink { link, relay_token? }` -> `GatewayKernelJoined
   { kernel }` (the gateway key asks the kernel that made a terminal pairing link, over the operator relay, to admit

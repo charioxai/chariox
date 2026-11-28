@@ -403,6 +403,9 @@ fn open_staging(
             .open(partial)
             .map_err(|e| upload_failure(path, &e))
             .and_then(|file| {
+                // The descriptor holds its exclusive lock through admission, append and
+                // publication; a resumed ID cannot overtake an admitted chunk on this inode.
+                fs2::FileExt::lock_exclusive(&file).map_err(|e| io_failure(path, &e))?;
                 if let Some(id) = upload_id {
                     let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
                     if !upload_attempts::begin(partial, id, &metadata) {
@@ -426,6 +429,11 @@ fn open_staging(
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(untrusted()),
         Err(e) => return Err(io_failure(path, &e)),
     };
+    let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
+    if !trusted_staging(&metadata) {
+        return Err(untrusted());
+    }
+    fs2::FileExt::lock_exclusive(&file).map_err(|e| io_failure(path, &e))?;
     let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
     if !trusted_staging(&metadata) {
         return Err(untrusted());
@@ -459,8 +467,13 @@ fn wait_for_turn(
     let deadline = Instant::now() + TURN_WAIT;
     while offset > 0 && Instant::now() < deadline {
         match std::fs::symlink_metadata(partial) {
-            // Refuse an untrusted staging file at open, without waiting for its bytes.
-            Ok(metadata) if !trusted_staging(&metadata) => break,
+            // An established attempt refuses a replaced staging file at open. A new
+            // attempt still waits for its opener to replace any stale untrusted name.
+            Ok(metadata)
+                if !trusted_staging(&metadata) && upload_id.is_none_or(upload_attempts::known) =>
+            {
+                break
+            }
             Ok(metadata)
                 if metadata.len() >= offset
                     && upload_id

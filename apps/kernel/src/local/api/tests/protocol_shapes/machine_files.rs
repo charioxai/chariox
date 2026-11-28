@@ -164,7 +164,7 @@ fn mp11_machine_files_local_1005_and_peer_444_are_pinned() {
         [
             serde_json::json!({"kind": "machine_path_stat", "stat": {"path": "/srv/a.log",
                 "exists": true, "kind": "file", "size": 3, "modified_ms": 5,
-                "revision": "2049:17:3:5.0:5.0", "mode": 420, "sha256": null, "partial_size": null}}),
+                "revision": "2049:17:3:5.0:5.0", "mode": 420, "sha256": null, "partial_size": null, "partial_upload_id": null}}),
             serde_json::json!({"kind": "machine_directory", "entries": [], "truncated": true}),
             serde_json::json!({"kind": "machine_path_deleted"}),
             serde_json::json!({"kind": "file_transfer", "job": {"job_id": "transfer-1",
