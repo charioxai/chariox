@@ -46,6 +46,7 @@ impl LineReader {
         fd: OwnedFd,
         unread: Vec<u8>,
         held: bool,
+        wake: WakePair,
         mut on_line: impl FnMut(String) + Send + 'static,
     ) -> Self {
         let reader = Self {
@@ -53,7 +54,7 @@ impl LineReader {
             fd: fd.as_raw_fd(),
             unread: Arc::new(Mutex::new(unread)),
             ended: Arc::default(),
-            wake: Arc::new(wake_pair()),
+            wake: Arc::new(wake),
         };
         if held {
             reader.gate.hold(Duration::ZERO);
@@ -140,11 +141,41 @@ fn next_line(unread: &Mutex<Vec<u8>>) -> Option<String> {
 }
 
 /// Both ends are nonblocking and close on exec on every supported Unix.
-fn wake_pair() -> (UnixStream, UnixStream) {
-    let (read, write) = UnixStream::pair().expect("reader wake socket pair");
-    read.set_nonblocking(true).expect("reader wake read end");
-    write.set_nonblocking(true).expect("reader wake write end");
-    (read, write)
+pub(super) type WakePair = (UnixStream, UnixStream);
+
+pub(super) fn wake_pair() -> std::io::Result<WakePair> {
+    #[cfg(test)]
+    if WAKE_PAIRS_BEFORE_FAILURE.with(|count| {
+        let remaining = count.get();
+        count.set(remaining.saturating_sub(1));
+        remaining == 1
+    }) {
+        return Err(std::io::Error::from_raw_os_error(libc::EMFILE));
+    }
+    let (read, write) = UnixStream::pair()?;
+    read.set_nonblocking(true)?;
+    write.set_nonblocking(true)?;
+    Ok((read, write))
+}
+
+#[cfg(test)]
+thread_local! {
+    static WAKE_PAIRS_BEFORE_FAILURE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn with_second_wake_failure<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WAKE_PAIRS_BEFORE_FAILURE.with(|count| count.set(0));
+        }
+    }
+    WAKE_PAIRS_BEFORE_FAILURE.with(|count| {
+        assert_eq!(count.replace(2), 0);
+    });
+    let _reset = Reset;
+    run()
 }
 
 /// Waits for the pipe or a hold request, at most one poll interval;
@@ -402,7 +433,7 @@ pub(super) struct Adopted {
 pub(super) unsafe fn adopt(
     handover: ClaudeHandover,
     output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
-) -> (ClaudeChild, ChildStdin, ClaudeOutput, Adopted) {
+) -> std::io::Result<(ClaudeChild, ChildStdin, ClaudeOutput, Adopted)> {
     let (stdin, stdout, stderr) = unsafe {
         (
             OwnedFd::from_raw_fd(handover.stdin),
@@ -410,28 +441,31 @@ pub(super) unsafe fn adopt(
             OwnedFd::from_raw_fd(handover.stderr),
         )
     };
-    (
-        ClaudeChild::Adopted {
-            pid: handover.pid,
-            status: None,
-        },
+    let mut child = ClaudeChild::Adopted {
+        pid: handover.pid,
+        status: None,
+    };
+    // Held until the recovered prompt is bound to the turn again. On setup
+    // failure the inherited child is stopped and reaped before pipes close.
+    let output = child.start_output(
+        stdout,
+        handover.stdout_unread,
+        stderr,
+        handover.stderr_unread,
+        true,
+        output_notifier,
+    )?;
+    Ok((
+        child,
         ChildStdin::from(stdin),
-        // Held until the recovered prompt is bound to the turn again.
-        ClaudeOutput::start(
-            stdout,
-            handover.stdout_unread,
-            stderr,
-            handover.stderr_unread,
-            true,
-            output_notifier,
-        ),
+        output,
         Adopted {
             turn: handover.turn,
             context_file: handover.context_file,
             settings_file: handover.settings_file,
             usage_file: handover.usage_file,
         },
-    )
+    ))
 }
 
 impl Adopted {
@@ -522,7 +556,7 @@ mod line_reader_tests {
     #[test]
     fn an_idle_reader_stops_for_a_hold_at_once() {
         let (read_end, _write_end) = pipe();
-        let reader = LineReader::start(read_end, Vec::new(), false, |_| {});
+        let reader = LineReader::start(read_end, Vec::new(), false, wake_pair().unwrap(), |_| {});
         std::thread::sleep(Duration::from_millis(200));
         let mut took = Vec::new();
         for _ in 0..15 {
@@ -546,9 +580,15 @@ mod line_reader_tests {
     fn a_hold_is_registered_before_the_reader_consumes_its_wake() {
         let (read_end, write_end) = pipe();
         let (lines, received) = std::sync::mpsc::channel();
-        let reader = LineReader::start(read_end, Vec::new(), false, move |line| {
-            lines.send(line).unwrap();
-        });
+        let reader = LineReader::start(
+            read_end,
+            Vec::new(),
+            false,
+            wake_pair().unwrap(),
+            move |line| {
+                lines.send(line).unwrap();
+            },
+        );
         assert!(reader
             .hold_with_wake(|| {
                 reader.wake_reader()?;
@@ -573,7 +613,7 @@ mod line_reader_tests {
 
     #[test]
     fn wake_sockets_are_nonblocking_and_close_on_exec() {
-        let (read, write) = wake_pair();
+        let (read, write) = wake_pair().unwrap();
         for fd in [&read, &write] {
             let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
             assert!(flags >= 0 && flags & libc::O_NONBLOCK != 0);
@@ -586,9 +626,15 @@ mod line_reader_tests {
     fn a_line_written_while_idle_is_still_delivered_after_a_hold() {
         let (read_end, write_end) = pipe();
         let (lines, received) = std::sync::mpsc::channel();
-        let reader = LineReader::start(read_end, Vec::new(), false, move |line| {
-            let _ = lines.send(line);
-        });
+        let reader = LineReader::start(
+            read_end,
+            Vec::new(),
+            false,
+            wake_pair().unwrap(),
+            move |line| {
+                let _ = lines.send(line);
+            },
+        );
         std::thread::sleep(Duration::from_millis(100));
         assert!(reader.hold().is_some());
         reader.release();
@@ -598,5 +644,186 @@ mod line_reader_tests {
             received.recv_timeout(Duration::from_secs(2)).as_deref(),
             Ok("hello")
         );
+    }
+}
+
+#[cfg(test)]
+mod wake_allocation_tests {
+    use super::super::process::{spawn_claude_child, stop_child};
+    use super::*;
+    use std::io::Read;
+    use std::os::fd::IntoRawFd;
+    use std::process::Stdio;
+
+    // A real owned child, but not a live Claude provider. The guard also
+    // cleans up when testing the broken path fails or panics.
+    struct Fixture {
+        child: ClaudeChild,
+        stdin: Option<OwnedFd>,
+        stdout: Option<OwnedFd>,
+        stderr: Option<OwnedFd>,
+        _state: crate::test_temp_dir::TestTempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let state = crate::test_temp_dir::TestTempDir::new("claude-wake-failure");
+            let mut command = crate::process_spawn::command("/bin/sh");
+            command
+                .args(["-c", "exec cat >/dev/null"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = crate::process_spawn::spawn_command(command).unwrap();
+            std::fs::write(state.join("owned.pid"), child.id().to_string()).unwrap();
+            Self {
+                stdin: Some(child.stdin.take().unwrap().into()),
+                stdout: Some(child.stdout.take().unwrap().into()),
+                stderr: Some(child.stderr.take().unwrap().into()),
+                child: ClaudeChild::Started(child),
+                _state: state,
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            stop_child(&mut self.child);
+        }
+    }
+
+    fn assert_reaped(pid: u32) {
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn second_wake_failure_starts_neither_reader() {
+        let (stdout, mut stdout_peer) = UnixStream::pair().unwrap();
+        let (stderr, mut stderr_peer) = UnixStream::pair().unwrap();
+        let result = std::panic::catch_unwind(|| {
+            with_second_wake_failure(|| {
+                ClaudeOutput::start(
+                    stdout.into(),
+                    Vec::new(),
+                    stderr.into(),
+                    Vec::new(),
+                    false,
+                    &Default::default(),
+                )
+            })
+        });
+        assert!(
+            result.is_ok(),
+            "second wake allocation failure must not panic"
+        );
+        drop(result);
+        // EOF proves no thread retained either input after the second
+        // reservation failed. Nonblocking reads cannot hide a leaked reader.
+        for peer in [&mut stdout_peer, &mut stderr_peer] {
+            peer.set_nonblocking(true).unwrap();
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn second_wake_failure_reaps_started_child() {
+        let mut fixture = Fixture::new();
+        let pid = fixture.child.id();
+        let result = with_second_wake_failure(|| {
+            fixture.child.start_output(
+                fixture.stdout.take().unwrap(),
+                Vec::new(),
+                fixture.stderr.take().unwrap(),
+                Vec::new(),
+                false,
+                &Default::default(),
+            )
+        });
+        assert_eq!(result.err().unwrap().raw_os_error(), Some(libc::EMFILE));
+        assert!(fixture.child.try_wait().unwrap().is_some());
+        assert_reaped(pid);
+    }
+
+    #[test]
+    fn second_wake_failure_returns_a_startup_error() {
+        let result = with_second_wake_failure(|| {
+            spawn_claude_child(
+                "claude-second-wake-failure",
+                "claude-second-wake-failure",
+                "/bin/sh",
+                &["-c".into(), "exec cat >/dev/null".into()],
+                &BTreeMap::new(),
+                &Default::default(),
+                &[],
+                None,
+                "initialize_claude_runtime",
+                &Default::default(),
+            )
+        });
+        let error = result
+            .err()
+            .expect("startup must fail without panicking")
+            .to_string();
+        assert!(
+            error.contains("failed to set up Claude Code output"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&std::io::Error::from_raw_os_error(libc::EMFILE).to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn second_wake_failure_reaps_adopted_child_and_closes_inherited_pipes() {
+        let mut fixture = Fixture::new();
+        let pid = fixture.child.id();
+        let turn = serde_json::from_value(serde_json::json!({
+            "session_id": null, "active_turn_id": "turn", "active_prompt_message": null,
+            "own_turn": false, "background_notification_pending": false,
+            "active_stream_message_id": null, "next_turn_number": 1, "result_number": 1,
+            "emitted_text_by_block": {}, "completed_text_blocks": [],
+            "tool_transcript": serde_json::to_value(ClaudeToolTranscript::default()).unwrap(),
+            "last_usage_file_contents": null, "last_context_tokens": null,
+            "last_context_window": null, "observed_context_model": null,
+            "main_stream_has_context": true,
+            "start": {"process_started": false, "waiting_since_unix_ms": null}
+        }))
+        .unwrap();
+        let handover = ClaudeHandover {
+            pid,
+            cgroup: None,
+            stdin: fixture.stdin.take().unwrap().into_raw_fd(),
+            stdout: fixture.stdout.take().unwrap().into_raw_fd(),
+            stderr: fixture.stderr.take().unwrap().into_raw_fd(),
+            stdout_unread: Vec::new(),
+            stderr_unread: Vec::new(),
+            context_file: None,
+            settings_file: None,
+            usage_file: None,
+            turn,
+            credentials: Default::default(),
+        };
+        let fds = handover.fds();
+        // SAFETY: these are only the pipes owned by this fixture's child;
+        // their ownership was transferred into the handover above.
+        let result = with_second_wake_failure(|| unsafe { adopt(handover, &Default::default()) });
+        assert_eq!(result.err().unwrap().raw_os_error(), Some(libc::EMFILE));
+        assert_reaped(pid);
+        for fd in fds {
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF)
+            );
+        }
     }
 }

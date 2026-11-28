@@ -109,8 +109,13 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
                 &handover,
             )?;
             // SAFETY: the handover names the pipes this program inherited for this run.
-            let (child, stdin, output, adopted) =
-                unsafe { handover::adopt(handover, &output_notifier) };
+            let (child, stdin, output, adopted) = unsafe {
+                handover::adopt(handover, &output_notifier)
+            }
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "adopt_claude_runtime",
+                message: format!("failed to set up inherited Claude Code output: {error}"),
+            })?;
             (child, stdin, output, resources, Some(adopted))
         }
         None => {

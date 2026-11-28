@@ -10,7 +10,7 @@ use std::thread;
 
 use serde_json::Value;
 
-use super::handover::LineReader;
+use super::handover::{wake_pair, LineReader};
 use crate::error::DaemonError;
 
 struct ClaudeOwnedChild {
@@ -420,16 +420,24 @@ pub(super) fn spawn_claude_child(
             operation,
             message: "Claude Code did not expose stderr".to_string(),
         })?;
-    let output = ClaudeOutput::start(
-        stdout.into(),
-        Vec::new(),
-        stderr.into(),
-        Vec::new(),
-        false,
-        output_notifier,
-    );
+    let mut child = ClaudeChild::Started(child);
+    let output = child
+        .start_output(
+            stdout.into(),
+            Vec::new(),
+            stderr.into(),
+            Vec::new(),
+            false,
+            output_notifier,
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to set up Claude Code output for `{provider_run_id}`: {error}"
+            ),
+        })?;
 
-    Ok((ClaudeChild::Started(child), stdin, output, resources))
+    Ok((child, stdin, output, resources))
 }
 
 /// The Claude Code process: started by this kernel program, or started by the
@@ -460,6 +468,26 @@ impl ClaudeChild {
                 Ok(*status)
             }
         }
+    }
+
+    pub(super) fn start_output(
+        &mut self,
+        stdout: OwnedFd,
+        stdout_unread: Vec<u8>,
+        stderr: OwnedFd,
+        stderr_unread: Vec<u8>,
+        held: bool,
+        output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
+    ) -> std::io::Result<ClaudeOutput> {
+        ClaudeOutput::start(
+            stdout,
+            stdout_unread,
+            stderr,
+            stderr_unread,
+            held,
+            output_notifier,
+        )
+        .inspect_err(|_| stop_child(self))
     }
 
     fn kill_and_wait(&mut self) {
@@ -512,6 +540,7 @@ impl ClaudeOutput {
             false,
             &Default::default(),
         )
+        .expect("detached Claude output")
     }
 
     pub(super) fn start(
@@ -521,12 +550,16 @@ impl ClaudeOutput {
         stderr_unread: Vec<u8>,
         held: bool,
         output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
+        // Reserve both pairs before either thread can read bytes or outlive
+        // a failed setup. Partial reservations close automatically on error.
+        let stdout_wake = wake_pair()?;
+        let stderr_wake = wake_pair()?;
         let (tx, receiver) = mpsc::channel();
         let stdout = {
             let tx = tx.clone();
             let output_notifier = output_notifier.clone();
-            LineReader::start(stdout, stdout_unread, held, move |line| {
+            LineReader::start(stdout, stdout_unread, held, stdout_wake, move |line| {
                 let message = match serde_json::from_str::<Value>(&line) {
                     Ok(value) => ClaudeRuntimeMessage::Stdout(value),
                     Err(error) => {
@@ -537,14 +570,14 @@ impl ClaudeOutput {
             })
         };
         let output_notifier = output_notifier.clone();
-        let stderr = LineReader::start(stderr, stderr_unread, held, move |line| {
+        let stderr = LineReader::start(stderr, stderr_unread, held, stderr_wake, move |line| {
             let _ = output_notifier.send(&tx, ClaudeRuntimeMessage::Stderr(line));
         });
-        Self {
+        Ok(Self {
             receiver,
             stdout,
             stderr,
-        }
+        })
     }
 
     pub(super) fn release(&self) {
