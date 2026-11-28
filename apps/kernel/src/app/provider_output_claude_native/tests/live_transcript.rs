@@ -1136,3 +1136,40 @@ fn a_later_block_of_a_prompt_that_opens_like_an_adopted_one_keeps_its_own_row() 
     assert_eq!(turn.live_rows(), [first, second], "two blocks, two rows");
     assert_eq!(turn.stored_replies(), [first, second]);
 }
+
+#[test]
+fn a_distinct_code_literal_space_streams_when_only_the_heading_was_saved() {
+    for lose_reader in [false, true] {
+        let mut turn = running_turn("streamed-code-literal-space");
+        turn.hook_event("UserPromptSubmit");
+        turn.pass();
+        let first_drawn = screen(&["● Result", "", "  echo \"ab\"", "✻ Working (3s)"]);
+        turn.terminal_shows(&first_drawn);
+        turn.terminal_shows(&first_drawn);
+        if lose_reader {
+            super::live_reply::forget(turn.run.id());
+        }
+        let first = "Result\n\n```sh\necho \"ab\"\n```\n\nDone.";
+        turn.append_transcript(assistant_text("first", first));
+        turn.pass();
+        assert_eq!(turn.live_rows(), [first]);
+        let second_drawn = screen(&[
+            "● Result",
+            "",
+            "  echo \"a b\"",
+            "",
+            "  Done.",
+            "",
+            "✻ Working (4s)",
+        ]);
+        turn.terminal_shows(&second_drawn);
+        turn.terminal_shows(&second_drawn);
+        let rows = turn.live_rows();
+        assert_eq!(
+            rows.len(),
+            2,
+            "a literal space makes another code block: {rows:?}"
+        );
+        assert!(rows[1].contains("echo \"a b\""), "{rows:?}");
+    }
+}
