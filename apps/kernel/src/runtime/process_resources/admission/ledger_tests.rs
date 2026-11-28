@@ -4911,3 +4911,179 @@ fn r8_late_allocation_after_an_unknown_interval_preserves_confirmed_filler_bytes
 fn r8_sparse_extension_then_append_does_not_erase_the_scratch_filler() {
     r7_copy_with_status_output(R7StatusOutput::SparseAppend);
 }
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum R9Output {
+    SubBlockAppend,
+    ActiveAliases,
+    Reassigned,
+    PriorFiller,
+}
+
+#[cfg(target_os = "linux")]
+fn r9_progress_keeps_the_filler_visible(mode: R9Output) {
+    use crate::runtime::process_resources::pressure_tests::{
+        domain as process_domain, pool as process_pool, Workload, DIE_WITH_PARENT,
+    };
+    use std::os::unix::fs::MetadataExt;
+    let (number, alias, redirect, last) = match mode {
+        R9Output::SubBlockAppend => (0, "", ">>", 8),
+        R9Output::ActiveAliases => (1, "os.dup2(1,2)", ">", 8),
+        R9Output::Reassigned => (2, "saved=fcntl.fcntl(1,fcntl.F_DUPFD_CLOEXEC,3)", ">", 8),
+        R9Output::PriorFiller => (3, "os.dup2(1,2)", ">", 2),
+    };
+    let script = format!(
+        r#"{DIE_WITH_PARENT}import os,fcntl,time
+{alias}
+os.write(1,b"x"*100); os.fsync(1)
+with open(os.path.join(sys.argv[1],"ready.tmp"),"w") as f: f.write("ready")
+os.rename(os.path.join(sys.argv[1],"ready.tmp"),os.path.join(sys.argv[1],"ready"))
+end=time.monotonic()+15
+for step in range(1,{last}+1):
+ while not os.path.exists(os.path.join(sys.argv[1],"go-"+str(step))):
+  assert time.monotonic()<end; time.sleep(0.005)
+ if {number} in (0,1): os.write(1,b"x"*100); os.fsync(1)
+ if {number}==2 and step==2:
+  null=os.open("/dev/null",os.O_WRONLY); os.dup2(null,1); os.close(null)
+ if {number}==3 and step==2: os.write(1,b"x"*(512*1024)); os.fsync(1)
+ ack=os.path.join(sys.argv[1],"ack-"+str(step))
+ with open(ack+".tmp","w") as f: f.write("ready")
+ os.rename(ack+".tmp",ack)
+while not os.path.exists(os.path.join(sys.argv[1],"done")):
+ assert time.monotonic()<end; time.sleep(0.005)
+"#
+    );
+    let pool = process_pool(4096);
+    let workload = Workload::run(
+        process_domain(&pool, "progress-stream-evidence", false),
+        &[(
+            "job",
+            format!("python3 -c '{script}' \"$0\" {redirect} \"$0/status\""),
+        )],
+    );
+    let wait_for = |name: &str| {
+        let path = workload.dir.join(name);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !path.exists() {
+            assert!(std::time::Instant::now() < deadline, "missing {name}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait_for("ready");
+    let initial_blocks = std::fs::metadata(workload.dir.join("status"))
+        .unwrap()
+        .blocks();
+    assert!(initial_blocks > 0);
+    let (entry, mut command, _) = stream_writer(1, 2, 600 * MIB);
+    command.writes = 0;
+    let current = owner("agent", true, vec![command], vec![(1, entry)]);
+    let free = Arc::new(AtomicU64::new(10 * GIB));
+    let volume = r6_volumes(&free);
+    let mut growth = disk_use::WriteGrowth::default();
+    let mut ledger = Ledger::new(None);
+    let mut receiving = false;
+    for step in 0..=last {
+        if step > 0 {
+            std::fs::write(workload.dir.join(format!("go-{step}")), "").unwrap();
+            wait_for(&format!("ack-{step}"));
+        }
+        let at = match mode {
+            R9Output::PriorFiller => 1000 + step * 1000,
+            R9Output::ActiveAliases => 1000 + (step / 2) * 500,
+            _ => 1000 + step * 250,
+        };
+        let written = if mode == R9Output::PriorFiller {
+            match step {
+                0 => 0,
+                1 => 550 * MIB,
+                _ => 550 * MIB + 512 * 1024,
+            }
+        } else {
+            step * 75 * MIB
+                + if matches!(mode, R9Output::SubBlockAppend | R9Output::ActiveAliases) {
+                    step * 100
+                } else {
+                    0
+                }
+        };
+        let mut outputs = growth.sample(&[workload.pid("job") as u32], at);
+        assert!(!outputs.is_empty(), "redirected stream was not sampled");
+        receiving |= outputs.iter().any(|output| output.receiving);
+        for output in &mut outputs {
+            // Keep real descriptor attribution; only volume identity is synthetic.
+            output.id = 2;
+            output.path = "/log/status".into();
+        }
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            observation.disk_writes.insert(1, outputs);
+        }
+        if step == last {
+            free.store(GIB, Ordering::SeqCst);
+        }
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        let chosen = ledger
+            .take_fillers(&current)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect::<Vec<_>>();
+        if step == last {
+            assert_eq!(chosen, vec![1], "progress output hid the scratch filler");
+            assert!(!receiving, "a saved stream alias became a receiver");
+            if mode == R9Output::PriorFiller {
+                assert_eq!(
+                    current.lock().unwrap().admission[&1]
+                        .stream_writes
+                        .as_ref()
+                        .unwrap()
+                        .rate_at(at),
+                    275 * MIB,
+                    "a conservative stream bound debited earlier confirmed filler bytes"
+                );
+            } else {
+                assert_eq!(
+                    std::fs::metadata(workload.dir.join("status"))
+                        .unwrap()
+                        .blocks(),
+                    initial_blocks,
+                    "the small progress fixture allocated another block"
+                );
+            }
+        } else {
+            assert!(chosen.is_empty(), "a roomy volume stopped the copy");
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+    std::fs::write(workload.dir.join("done"), "").unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r9_sub_block_progress_appends_keep_the_scratch_filler_visible() {
+    r9_progress_keeps_the_filler_visible(R9Output::SubBlockAppend);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r9_active_duplicated_streams_keep_the_scratch_filler_visible() {
+    r9_progress_keeps_the_filler_visible(R9Output::ActiveAliases);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r9_saved_stream_role_survives_stdout_reassignment() {
+    r9_progress_keeps_the_filler_visible(R9Output::Reassigned);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r9_conservative_stream_bounds_preserve_earlier_filler_history() {
+    r9_progress_keeps_the_filler_visible(R9Output::PriorFiller);
+}
