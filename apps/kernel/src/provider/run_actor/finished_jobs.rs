@@ -30,9 +30,50 @@ pub(crate) struct FinishedProviderRunSelectionSyncJob {
     pub(crate) result: Result<OpenCodeRunSelection, DaemonError>,
 }
 
+// A received batch stays owned across dequeue and durable retries, until its
+// history publication has been handed off. Weak records do not retain jobs.
+pub(crate) struct OutputPublicationClaim(Arc<()>);
+
+#[derive(Clone, Default)]
+pub(super) struct OutputPublications(
+    Arc<Mutex<std::collections::BTreeMap<String, Vec<std::sync::Weak<()>>>>>,
+);
+
+impl OutputPublications {
+    fn claim(&self, run_id: &str) -> OutputPublicationClaim {
+        let claim = OutputPublicationClaim(Arc::new(()));
+        let mut runs = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let claims = runs.entry(run_id.to_string()).or_default();
+        claims.retain(|claim| claim.strong_count() != 0);
+        claims.push(Arc::downgrade(&claim.0));
+        claim
+    }
+
+    pub(super) fn pending(&self, run_id: &str) -> bool {
+        let mut runs = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(claims) = runs.get_mut(run_id) else {
+            return false;
+        };
+        claims.retain(|claim| claim.strong_count() != 0);
+        if claims.is_empty() {
+            runs.remove(run_id);
+            false
+        } else {
+            true
+        }
+    }
+}
+
 pub(crate) struct FinishedProviderOutputPollJob {
     pub(crate) provider_run_id: String,
     pub(crate) result: Result<Option<ProviderPromptSignalBatch>, DaemonError>,
+    pub(crate) publication: Option<OutputPublicationClaim>,
     pub(crate) settlement_retry_attempt: u32,
 }
 
@@ -92,8 +133,12 @@ pub(super) fn push_finished_selection_sync(
 
 pub(super) fn push_finished_output_poll(
     finished_output_polls: &Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
-    finished: FinishedProviderOutputPollJob,
+    publications: &OutputPublications,
+    mut finished: FinishedProviderOutputPollJob,
 ) {
+    if finished.publication.is_none() && matches!(&finished.result, Ok(Some(_))) {
+        finished.publication = Some(publications.claim(&finished.provider_run_id));
+    }
     crate::logging::debug_with_fields(
         "daemon.provider_run_actor",
         "finished output poll pushed",

@@ -20,6 +20,7 @@ impl KernelRuntimeState {
             .provider_store
             .drain_finished_structured_output_poll_jobs_for_run(&dispatch.provider_run_id)
         {
+            let mut publication = finished.publication;
             let prompt = owned
                 .structured_output_records
                 .take_in_flight_prompt_id(&dispatch.provider_run_id);
@@ -45,7 +46,7 @@ impl KernelRuntimeState {
                 return Ok(());
             }
             // Use the normal batch path, including resume persistence and
-            // durable tool history. It can itself observe cancellation completion.
+            // durable tool history. This finisher owns cancellation completion.
             let retry = batch.clone();
             let applied = async {
                 let batch = self.prepare_owned_structured_output_batch(
@@ -54,13 +55,15 @@ impl KernelRuntimeState {
                     batch,
                 )?;
                 Box::pin(
-                    self.apply_prepared_owned_structured_output_batch(
+                    self.publish_prepared_owned_structured_output_batch(
                         &dispatch.session_id,
                         &dispatch.provider_run_id,
                         owned
                             .attachment_store
                             .list_session_attachment_ids(&dispatch.session_id),
                         batch,
+                        &mut publication,
+                        false,
                     ),
                 )
                 .await
@@ -78,6 +81,7 @@ impl KernelRuntimeState {
                             crate::provider::FinishedProviderOutputPollJob {
                                 provider_run_id: dispatch.provider_run_id.clone(),
                                 result: Ok(Some(retry)),
+                                publication,
                                 settlement_retry_attempt: finished.settlement_retry_attempt,
                             },
                         );
@@ -326,13 +330,15 @@ impl KernelRuntimeState {
                         }
                         let process_key = app.pty().process_key(&dispatch.provider_run_id).ok()
                             .or_else(|| owned.provider_process_tracking.read().run_processes.get(&dispatch.provider_run_id).cloned());
+                        let shared_alias = app.pty().process_is_shared(&dispatch.provider_run_id);
                         let claude_retired = owned.provider_store.settle_claude_prompt_abort(
                             &dispatch.provider_run_id, replace_run,
                         )?;
                         app.pty_mut().terminate_owned_processes(&dispatch.provider_run_id)?;
                         let (_, removed_key) = crate::app::ProviderLaunchProcessRuntime::new(app)
                             .remove_run(&dispatch.provider_run_id)?;
-                        if process_key.as_ref().is_some_and(|key| app.pty().has_process_key(key)) {
+                        if app.pty().has_process(&dispatch.provider_run_id)
+                            || (!shared_alias && process_key.as_ref().is_some_and(|key| app.pty().has_process_key(key))) {
                             return Err(DaemonError::PtyCleanup {
                                 provider_run_id: dispatch.provider_run_id.clone(),
                                 message: "the provider process is still shared; cancellation has not physically settled".into(),
@@ -370,6 +376,16 @@ impl KernelRuntimeState {
         ) else {
             return Ok(());
         };
+        if self
+            .owned
+            .provider_store
+            .output_publication_pending(&dispatch.provider_run_id)
+        {
+            return Err(DaemonError::PtyCleanup {
+                provider_run_id: dispatch.provider_run_id.clone(),
+                message: "received provider output is still awaiting history publication".into(),
+            });
+        }
         // Output already received during cleanup has now reached history. Use
         // its final activity, not the IDs from before the cleanup await.
         let tool_ids = self

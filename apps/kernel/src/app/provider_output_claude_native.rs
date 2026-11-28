@@ -970,6 +970,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
         {
+            // The Stop hook acknowledges provider I/O. The cancellation owner
+            // still has to confirm physical child and tool settlement.
+            if prompt.status() == crate::session::PromptStatus::Cancelling {
+                return Ok(());
+            }
             self.app
                 .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
             if let Ok(run) = self.app.providers.get_run(provider_run_id) {

@@ -23,7 +23,7 @@ use super::ProviderRunActorCompletionSignal;
 
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
-fn provider_actor_runtime() -> &'static tokio::runtime::Runtime {
+pub(super) fn provider_actor_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -86,6 +86,7 @@ pub(super) struct ProviderRunWorkerDeps {
     pub(super) finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     pub(super) finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     pub(super) finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    pub(super) output_publications: super::finished_jobs::OutputPublications,
     pub(super) completion_signal: ProviderRunActorCompletionSignal,
     pub(super) output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
     pub(super) blocking_executor_permits: Arc<Semaphore>,
@@ -236,11 +237,16 @@ impl ProviderRunWorkerDeps {
                 );
                 self.in_flight.clear_output_poll_in_flight(&provider_run_id);
                 let finished = FinishedProviderOutputPollJob {
+                    publication: None,
                     provider_run_id: provider_run_id.clone(),
                     result,
                     settlement_retry_attempt: 0,
                 };
-                push_finished_output_poll(&self.finished_output_polls, finished);
+                push_finished_output_poll(
+                    &self.finished_output_polls,
+                    &self.output_publications,
+                    finished,
+                );
                 self.completion_signal.record_completion(&provider_run_id);
             }
             ProviderRunActorCommand::Stop => return true,

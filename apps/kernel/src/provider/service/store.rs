@@ -492,8 +492,8 @@ impl ProviderProcessServiceStore {
     }
 
     pub(crate) fn capture_claude_prompt_abort(&self, run_id: &str) -> Result<(), DaemonError> {
-        let process = self.read().claude_owned_process(run_id);
-        if let Some(process) = process {
+        let processes = self.read().claude_owned_processes(run_id);
+        for process in processes {
             process
                 .capture_prompt_abort()
                 .map_err(|error| DaemonError::PtyCleanup {
@@ -509,17 +509,18 @@ impl ProviderProcessServiceStore {
         run_id: &str,
         force_retirement: bool,
     ) -> Result<Option<bool>, DaemonError> {
-        let process = self.read().claude_owned_process(run_id);
-        process
-            .map(|process| {
-                process
-                    .settle_prompt_abort(force_retirement)
-                    .map_err(|error| DaemonError::PtyCleanup {
-                        provider_run_id: run_id.into(),
-                        message: error.to_string(),
-                    })
-            })
-            .transpose()
+        let processes = self.read().claude_owned_processes(run_id);
+        let mut retired = None;
+        for process in processes {
+            let result = process
+                .settle_prompt_abort(force_retirement)
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: run_id.into(),
+                    message: error.to_string(),
+                })?;
+            retired = Some(retired.unwrap_or(false) || result);
+        }
+        Ok(retired)
     }
 
     #[allow(
@@ -699,6 +700,10 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> Vec<FinishedProviderOutputPollJob> {
         self.write().drain_finished_structured_output_poll_jobs()
+    }
+
+    pub(crate) fn output_publication_pending(&self, run_id: &str) -> bool {
+        self.read().output_publication_pending(run_id)
     }
 
     pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(

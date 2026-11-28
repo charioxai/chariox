@@ -9,6 +9,12 @@ pub(super) type ClaudeRuntimeSlot = Arc<Mutex<Option<ClaudeRuntimeState>>>;
 pub(super) type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 pub(super) type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 
+struct RetiringClaudeRuntime {
+    process: crate::provider::claude_runtime::ClaudeRuntimeProcess,
+    // Keep the old I/O slot alive until its exact child and descendants exit.
+    slot: Option<ClaudeRuntimeSlot>,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct ProviderRunRuntimeRegistry {
     claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
@@ -16,6 +22,7 @@ pub(super) struct ProviderRunRuntimeRegistry {
         Arc<Mutex<BTreeMap<String, crate::runtime::kernel_access::process::ProcessIdentitySlot>>>,
     claude_owned_processes:
         Arc<Mutex<BTreeMap<String, crate::provider::claude_runtime::ClaudeRuntimeProcess>>>,
+    retiring_claude_runs: Arc<Mutex<BTreeMap<String, Vec<Arc<RetiringClaudeRuntime>>>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -50,6 +57,7 @@ impl ProviderRunRuntimeRegistry {
             .remove(run_id)
     }
     pub(super) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
+        self.retire_claude_runtime(&run_id);
         self.clear_tombstone(&run_id);
         self.claude_owned_processes
             .lock()
@@ -157,9 +165,24 @@ impl ProviderRunRuntimeRegistry {
             .cloned()
     }
 
-    pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
-        self.take_assessment_output(run_id);
-        let owned_process = self
+    pub(super) fn claude_owned_processes(
+        &self,
+        run_id: &str,
+    ) -> Vec<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        let mut processes: Vec<_> = self.claude_owned_process(run_id).into_iter().collect();
+        if let Some(retiring) = self
+            .retiring_claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(run_id)
+        {
+            processes.extend(retiring.iter().map(|record| record.process.clone()));
+        }
+        processes
+    }
+
+    fn retire_claude_runtime(&self, run_id: &str) {
+        let process = self
             .claude_owned_processes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -168,16 +191,64 @@ impl ProviderRunRuntimeRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
-        if let Some(process) = owned_process {
-            process.retire();
-        }
-        clear_runtime_state(
-            &self.claude_runs,
-            &self.codex_runs,
-            &self.opencode_runs,
-            run_id,
-            stop_opencode,
-        );
+        let slot = self
+            .claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(run_id);
+        let Some(process) = process else {
+            return;
+        };
+        // Only revoke replacement admission here. Physical I/O runs outside the
+        // shared provider store lock and keeps this generation's ownership.
+        process.begin_retirement();
+        let record = Arc::new(RetiringClaudeRuntime { process, slot });
+        self.retiring_claude_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(run_id.to_string())
+            .or_default()
+            .push(record.clone());
+        let retiring = self.retiring_claude_runs.clone();
+        let run_id = run_id.to_string();
+        super::worker::provider_actor_runtime().spawn(async move {
+            let mut reported = false;
+            loop {
+                let retired = record.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    retired.process.settle_prompt_abort(true)?;
+                    // Reader teardown belongs outside both shared registries.
+                    if let Some(slot) = &retired.slot {
+                        let state = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                        drop(state);
+                    }
+                    Ok::<(), std::io::Error>(())
+                }).await;
+                match result {
+                    Ok(Ok(_)) => break,
+                    failure if !reported => {
+                        crate::logging::warn_with_fields(
+                            "daemon.provider", "Claude runtime retirement is pending",
+                            serde_json::json!({"provider_run_id": run_id, "error": format!("{failure:?}")}),
+                        );
+                        reported = true;
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let mut records = retiring.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(generations) = records.get_mut(&run_id) {
+                generations.retain(|other| !Arc::ptr_eq(other, &record));
+                if generations.is_empty() { records.remove(&run_id); }
+            }
+        });
+    }
+
+    pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
+        self.take_assessment_output(run_id);
+        self.retire_claude_runtime(run_id);
+        clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id, stop_opencode);
     }
 
     pub(super) fn take_claude_runtime(
@@ -464,22 +535,11 @@ pub(super) fn runtime_should_restore<T>(
 }
 
 pub(super) fn clear_runtime_state(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     run_id: &str,
     stop_opencode: bool,
 ) {
-    if let Some(slot) = claude_runs
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(run_id)
-    {
-        let _ = slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-    }
     if let Some(slot) = codex_runs
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -712,6 +772,56 @@ mod process_identity_tests {
         );
         registry.clear_runtime_state("fixture", false);
         assert!(registry.claude_process_identities().is_empty());
+    }
+
+    #[test]
+    fn finishing_old_claude_retirement_preserves_the_replacement_generation() {
+        let run = RuntimeProviderRun::new(
+            "retirement-generation",
+            &LaunchProviderRequest::new("s", "claude", "claude", "default", "default"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "fixture-pipe".into(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".into()),
+                pty_args: vec!["-c".into(), "while IFS= read -r line; do :; done".into()],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let registry = ProviderRunRuntimeRegistry::default();
+        let old = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let process = old.state.owned_process();
+        struct Release(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let release = Release(process.defer_cleanup_for_test());
+        registry.insert_claude_runtime(run.id().into(), old.state);
+        registry.clear_runtime(run.id(), false);
+        let fresh = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let fresh_pid = fresh.state.owned_process().id();
+        registry.insert_claude_runtime(run.id().into(), fresh.state);
+        assert_eq!(registry.claude_owned_processes(run.id()).len(), 2);
+        drop(release);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while registry.claude_owned_processes(run.id()).len() != 1 {
+            assert!(
+                std::time::Instant::now() < until,
+                "old generation cleanup must finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            registry.claude_owned_process(run.id()).unwrap().id(),
+            fresh_pid
+        );
+        assert!(registry.state_bound(run.id()));
+        registry.clear_runtime(run.id(), false);
     }
 
     #[test]

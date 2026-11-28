@@ -434,6 +434,10 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_output_polls()
     }
 
+    pub(crate) fn output_publication_pending(&self, run_id: &str) -> bool {
+        self.run_actor_mailbox.output_publication_pending(run_id)
+    }
+
     pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
         &mut self,
         run_id: &str,
@@ -476,6 +480,7 @@ impl ProviderProcessService {
     ) {
         self.run_actor_mailbox
             .push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
+                publication: None,
                 provider_run_id,
                 result,
                 settlement_retry_attempt: 0,

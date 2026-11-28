@@ -147,7 +147,7 @@ pub use prompt_signals::{
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
+    OutputPublicationClaim, ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
     ProviderPromptSubmitAcknowledgement, ProviderRunActorCompletionSignal, ProviderRunActorMailbox,
     ProviderRunOperationLanes,
 };

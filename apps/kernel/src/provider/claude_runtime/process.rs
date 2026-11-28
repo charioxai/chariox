@@ -236,6 +236,13 @@ impl ClaudeRuntimeProcess {
         }
     }
 
+    pub(crate) fn begin_retirement(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retiring = true;
+    }
+
     pub(crate) fn retire(&self) {
         self.stop_until_exited(true);
     }

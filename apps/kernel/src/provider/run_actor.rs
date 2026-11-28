@@ -23,7 +23,8 @@ use finished_jobs::{
 };
 pub(crate) use finished_jobs::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    FinishedProviderRunSelectionSyncJob, ProviderPromptSubmitAcknowledgement,
+    FinishedProviderRunSelectionSyncJob, OutputPublicationClaim,
+    ProviderPromptSubmitAcknowledgement,
 };
 use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
@@ -55,6 +56,7 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    output_publications: finished_jobs::OutputPublications,
     completion_signal: ProviderRunActorCompletionSignal,
     output_ready_signal: super::output_ready::ProviderOutputReadySignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
@@ -77,6 +79,7 @@ impl Default for ProviderRunActorMailbox {
             finished_aborts: Arc::new(Mutex::new(Vec::new())),
             finished_selection_syncs: Arc::new(Mutex::new(Vec::new())),
             finished_output_polls: Arc::new(Mutex::new(Vec::new())),
+            output_publications: Default::default(),
             completion_signal: ProviderRunActorCompletionSignal::default(),
             output_ready_signal: Default::default(),
             output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
@@ -113,6 +116,10 @@ impl ProviderRunActorMailbox {
         self.output_ready_signal.clone()
     }
 
+    pub(crate) fn output_publication_pending(&self, run_id: &str) -> bool {
+        self.output_publications.pending(run_id)
+    }
+
     pub(crate) fn completion_signal(&self) -> ProviderRunActorCompletionSignal {
         self.completion_signal.clone()
     }
@@ -146,11 +153,19 @@ impl ProviderRunActorMailbox {
         self.runtime_registry.insert_claude_runtime(run_id, state);
     }
 
+    #[cfg(test)]
     pub(crate) fn claude_owned_process(
         &self,
         run_id: &str,
     ) -> Option<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
         self.runtime_registry.claude_owned_process(run_id)
+    }
+
+    pub(crate) fn claude_owned_processes(
+        &self,
+        run_id: &str,
+    ) -> Vec<crate::provider::claude_runtime::ClaudeRuntimeProcess> {
+        self.runtime_registry.claude_owned_processes(run_id)
     }
 
     pub(crate) fn insert_codex_runtime(&self, run_id: String, mut state: CodexRuntimeState) {

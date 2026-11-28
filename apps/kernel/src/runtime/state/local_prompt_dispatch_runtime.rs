@@ -1418,6 +1418,10 @@ impl KernelRuntimeState {
                 input,
             );
             self.with_app_side_effect(|app| {
+                // Detach only this run's alias; the other owner keeps its input.
+                if app.pty().process_is_shared(&dispatch.provider_run_id) {
+                    return Ok(());
+                }
                 app.abort_provider_pty_input_for_runtime(&dispatch.provider_run_id, input)
             })
             .await?;
