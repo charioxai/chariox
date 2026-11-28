@@ -4869,17 +4869,21 @@ Injection retains the original durable admission until steering acceptance, join
 ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
 or multiple active workflow runs. Subscribers always belong to workflows.
 
-### Waiting gated entry (MP-08 / MP-09 / MP-10 / MP-11)
+### Waiting entry (MP-08 / MP-09 / MP-10 / MP-11)
 
-A gated handoff whose entry node dispatch is refused for a provider account the
-user can fix stays `Ready` and is retried, so it resumes once the account is
-fixed. Its `WorkflowNodeRun.waiting_reason` names why, as a fixed kernel class:
+A workflow entry, gated or not, whose entry node dispatch is refused for a
+provider account the user can fix, and for which no configured substitute can
+run, stays `Ready` and is retried, so it resumes once an account is fixed or its
+usage resets. `WorkflowNodeRun.waiting_account` names the account and
+`waiting_until_ms` is the earliest reset any of the agent's profiles names; both
+are absent while nothing waits or no time is known. The Room gets one notice
+when the wait starts or changes, not one per retry. Its `WorkflowNodeRun.waiting_reason` names why, as a fixed kernel class:
 `provider_profile_unavailable`, `provider_profile_unverified`,
 `provider_profile_unauthenticated` or `provider_profile_usage_exhausted`. It is
 never error or provider text; clients show their own phrase for each class. The
 field is absent while nothing waits and is cleared on dispatch. The wait ends at
-the gate entry's own `deadline_ms`: the run then fails with the same refusal an
-ungated invoke returns. The shared Landing 7 protocol pair carries the field.
+the gate entry's own `deadline_ms`, if it has one: the run then fails with the
+same refusal an ungated invoke returns. The shared Landing 7 protocol pair carries the field.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
