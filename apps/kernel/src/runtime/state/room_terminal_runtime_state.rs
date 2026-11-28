@@ -83,15 +83,16 @@ impl KernelRuntimeState {
     }
 
     /// A Room-wide list also shows the terminals running on the workers its
-    /// agents are leased to. A worker that cannot be reached fails the list: a
-    /// missing tab must not look like a closed one.
+    /// agents are leased to. A worker that cannot be asked (too old, or away) is
+    /// named in `unavailable` and the other terminals are still listed: a missing
+    /// tab must not look like a closed one, and must not hide the rest.
     async fn add_worker_terminals(
         &self,
         session_id: &str,
         actor: TerminalActor,
         listed: &mut RoomTerminalResult,
     ) -> Result<(), DaemonError> {
-        let RoomTerminalResult::Listed { terminals } = listed else {
+        let RoomTerminalResult::Listed { terminals, unavailable } = listed else {
             return Ok(());
         };
         let mut seen = std::collections::BTreeSet::new();
@@ -100,10 +101,25 @@ impl KernelRuntimeState {
                 continue;
             };
             let worker = binding.worker_kernel_id.clone();
-            let RoomTerminalResult::Listed { terminals: remote } = self
+            // A worker that is away (stopped, or off the relay) answers with a sentence the person can act on:
+            // like a worker too old to ask, it is named, and the Room's other terminals stay listed.
+            let remote = match self
                 .forward_room_terminal(binding, actor.clone(), RoomTerminalOperation::List)
-                .await?
-                .hosted_by(agent.id())
+                .await
+            {
+                Ok(result) => result.hosted_by(agent.id()),
+                Err(DaemonError::MachineRequest { message, .. }) => {
+                    unavailable.push(crate::local::UnavailableTerminals {
+                        host_agent: agent.id().to_string(),
+                        message,
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let RoomTerminalResult::Listed {
+                terminals: remote, ..
+            } = remote
             else {
                 continue;
             };
