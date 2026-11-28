@@ -1,7 +1,7 @@
 // MP-07 / MP-08 / MP-11: generic Setup executable; build injects public release inputs only.
 import { createInterface } from "node:readline/promises"
 import { stdin, stdout } from "node:process"
-import { installLocal, publicUrl } from "./installer.mjs"
+import { cliCompletionText, installLocal, publicUrl } from "./installer.mjs"
 import { command } from "./machine/remote.mjs"
 import { buildToolchainHelp, runBuildToolchain } from "./build-toolchain.mjs"
 
@@ -57,6 +57,7 @@ export async function runSetup(build, argv = process.argv.slice(2)) {
   }
   const result = await installLocal(options)
   stdout.write(`MP-07/MP-08/MP-11: Chariox ${result.status}; install=${result.installId}\n`)
+  if (options.action !== "remove") stdout.write(`${cliCompletionText(options.home ?? process.env.HOME, result.installId)}\n`)
   if (login) {
     const { spawn } = await import("node:child_process")
     const path = `${options.home ?? process.env.HOME}/.local/bin/${!options.installId || options.installId === "local" ? "chariox" : `chariox-${options.installId}`}`
