@@ -2062,12 +2062,10 @@ impl StreamWrites {
                     .copied()
                     .or_else(|| self.outputs.get(&key).copied())
                     .unwrap_or(0);
-                let written = output
-                    .written_by_inode
-                    .get(&inode)
-                    .copied()
-                    .unwrap_or(0)
-                    .max(position);
+                // Physical allocation can become visible after an excluded
+                // write. Only the proven stream counter may debit valid
+                // command history; do not charge those physical bytes again.
+                let written = position;
                 (key, written)
             })
             .collect::<BTreeMap<_, _>>();

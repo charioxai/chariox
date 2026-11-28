@@ -19,8 +19,8 @@ pub(super) struct VolumeWrites {
     pub open: BTreeSet<u64>,
     /// Observed cumulative growth for each currently open inode.
     pub written_by_inode: BTreeMap<u64, u64>,
-    /// Cumulative cursor progress supported by append EOF or allocated growth.
-    /// Multiple writable descriptors leave this inode unknown.
+    /// Cumulative new stream progress supported by the descriptor snapshots
+    /// and allocation. Stable idle aliases are measurable; ambiguous movement is not.
     pub position_written_by_inode: BTreeMap<u64, u64>,
     /// Its output goes here: it holds a writable file open here other than
     /// its standard streams, or did a moment ago. A log its streams go to
