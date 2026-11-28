@@ -94,6 +94,7 @@ fn owner(
                         files: [u64::from(command.pid)].into(),
                         open: [u64::from(command.pid)].into(),
                         written_by_inode: Default::default(),
+                        stream_upper_by_inode: Default::default(),
                         position_written_by_inode: Default::default(),
                         receiving: true,
                     }],
@@ -1555,6 +1556,7 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                         files: [u64::from(pid)].into(),
                         open: [u64::from(pid)].into(),
                         written_by_inode: Default::default(),
+                        stream_upper_by_inode: Default::default(),
                         position_written_by_inode: Default::default(),
                         receiving: true,
                     }],
@@ -1816,6 +1818,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [1].into(),
                 open: [1].into(),
                 written_by_inode: Default::default(),
+                stream_upper_by_inode: Default::default(),
                 position_written_by_inode: Default::default(),
                 receiving: true,
             }],
@@ -1830,6 +1833,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [2].into(),
                 open: [2].into(),
                 written_by_inode: Default::default(),
+                stream_upper_by_inode: Default::default(),
                 position_written_by_inode: Default::default(),
                 receiving: true,
             }],
@@ -1883,6 +1887,7 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
             files: [1].into(),
             open: [1].into(),
             written_by_inode: Default::default(),
+            stream_upper_by_inode: Default::default(),
             position_written_by_inode: Default::default(),
             receiving: true,
             path: output.into(),
@@ -1966,6 +1971,7 @@ fn between_files() -> Vec<disk_use::VolumeWrites> {
         files: Default::default(),
         open: Default::default(),
         written_by_inode: Default::default(),
+        stream_upper_by_inode: Default::default(),
         position_written_by_inode: Default::default(),
         receiving: true,
     }]
@@ -2136,6 +2142,7 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [11].into(),
             written_by_inode: Default::default(),
+            stream_upper_by_inode: Default::default(),
             position_written_by_inode: Default::default(),
             receiving: true,
         };
@@ -2147,6 +2154,7 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [12].into(),
             written_by_inode: Default::default(),
+            stream_upper_by_inode: Default::default(),
             position_written_by_inode: Default::default(),
             receiving: false,
         };
@@ -2188,6 +2196,7 @@ fn stream_writer(
         files: [u64::from(pid)].into(),
         open: [u64::from(pid)].into(),
         written_by_inode: [(u64::from(pid), 3 * GIB)].into(),
+        stream_upper_by_inode: Default::default(),
         position_written_by_inode: [(u64::from(pid), 3 * GIB)].into(),
         receiving: false,
     };
@@ -3451,6 +3460,7 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
             files: [9].into(),
             open: [9].into(),
             written_by_inode: Default::default(),
+            stream_upper_by_inode: Default::default(),
             position_written_by_inode: Default::default(),
             receiving: true,
         });
@@ -3656,6 +3666,7 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         files: Default::default(),
         open: Default::default(),
         written_by_inode: Default::default(),
+        stream_upper_by_inode: Default::default(),
         position_written_by_inode: Default::default(),
         receiving: true,
     };
@@ -4471,6 +4482,12 @@ fn r7_sample_streams(
             output
                 .position_written_by_inode
                 .retain(|inode, _| inodes.contains(inode));
+            output
+                .stream_upper_by_inode
+                .retain(|inode, _| inodes.contains(inode));
+            for upper in output.stream_upper_by_inode.values_mut() {
+                *upper *= scale;
+            }
             for written in output.written_by_inode.values_mut() {
                 *written *= scale;
             }
