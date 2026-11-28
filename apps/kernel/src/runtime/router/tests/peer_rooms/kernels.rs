@@ -651,3 +651,99 @@ fn kwait_idle_cancel_from_another_kernel_stays_a_noop_on_retry() {
         );
     });
 }
+
+#[test]
+fn receipt_unconfirmed_inline_message_waits_for_peer_provider_acceptance() {
+    run_peer_test("receipt-inline-peer-held", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms.use_receipt_provider("slow-structured").await;
+        let request = message(&rooms, "inline-peer-held", "peer", true);
+        let RelayPeerResponse::PeerAgentAccepted { delivery, .. } =
+            rooms.request_from_kernel_a(request.clone()).await
+        else {
+            panic!("peer receipt");
+        };
+        let sequence = rooms.inbox(&rooms.peer_room, rooms.peer.id()).await[0].sequence;
+        let (event, read) = rooms.inline_message_row(sequence).await;
+        assert!(read, "inline peer text was included before acceptance");
+        assert_eq!(event.state, "submitting");
+        assert_eq!(
+            delivery,
+            Some(crate::transport::relay_peer_agents::AgentMessageDelivery::Queued)
+        );
+        let RelayPeerResponse::PeerAgentAccepted {
+            delivery,
+            duplicate,
+            ..
+        } = rooms.request_from_kernel_a(request.clone()).await
+        else {
+            panic!("peer retry");
+        };
+        assert!(duplicate);
+        assert_eq!(
+            delivery,
+            Some(crate::transport::relay_peer_agents::AgentMessageDelivery::Queued)
+        );
+        rooms.wait_for_message_state(sequence, "accepted").await;
+        let RelayPeerResponse::PeerAgentAccepted {
+            delivery,
+            duplicate,
+            ..
+        } = rooms.request_from_kernel_a(request).await
+        else {
+            panic!("accepted peer retry");
+        };
+        assert!(duplicate);
+        assert!(matches!(
+            delivery,
+            Some(
+                crate::transport::relay_peer_agents::AgentMessageDelivery::Steered
+                    | crate::transport::relay_peer_agents::AgentMessageDelivery::Started
+            )
+        ));
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(),
+            1
+        );
+    });
+}
+
+#[test]
+fn receipt_unconfirmed_inline_message_keeps_a_lost_peer_ack_unconfirmed() {
+    run_peer_test("receipt-inline-peer-lost-ack", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms.use_receipt_provider("lost-ack-structured").await;
+        let request = message(&rooms, "inline-peer-lost", "peer", true);
+        let RelayPeerResponse::PeerAgentAccepted { delivery, .. } =
+            rooms.request_from_kernel_a(request.clone()).await
+        else {
+            panic!("peer receipt");
+        };
+        let sequence = rooms.inbox(&rooms.peer_room, rooms.peer.id()).await[0].sequence;
+        rooms.wait_for_message_state(sequence, "uncertain").await;
+        let (event, read) = rooms.inline_message_row(sequence).await;
+        assert!(read, "the inline peer wake was prepared");
+        assert_eq!(event.state, "uncertain");
+        assert_eq!(
+            delivery,
+            Some(crate::transport::relay_peer_agents::AgentMessageDelivery::Queued)
+        );
+        let RelayPeerResponse::PeerAgentAccepted {
+            delivery,
+            duplicate,
+            ..
+        } = rooms.request_from_kernel_a(request).await
+        else {
+            panic!("peer retry");
+        };
+        assert!(duplicate);
+        assert_eq!(
+            delivery,
+            Some(crate::transport::relay_peer_agents::AgentMessageDelivery::Queued)
+        );
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(),
+            1
+        );
+    });
+}

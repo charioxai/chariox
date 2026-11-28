@@ -599,3 +599,68 @@ fn a_room_with_long_task_history_fits_the_state_budget() {
         );
     });
 }
+
+#[test]
+fn receipt_unconfirmed_inline_message_waits_for_local_provider_acceptance() {
+    run_peer_test("receipt-inline-local-held", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms.use_receipt_provider("slow-structured").await;
+        let key = serde_json::json!({"urgent":true,"idempotency_key":"inline-held"});
+        let sent = send_to(&rooms, "peer", key.clone()).await;
+        let sequence = sent["sequence"].as_u64().unwrap();
+        let (event, read) = rooms.inline_message_row(sequence).await;
+        assert!(
+            read,
+            "the message text was included in the wake before acceptance"
+        );
+        assert_eq!(event.state, "submitting");
+        assert_eq!(
+            sent["status"], "queued",
+            "inline text is not provider acceptance: {sent}"
+        );
+        assert!(sent["note"]
+            .as_str()
+            .unwrap()
+            .contains("not been confirmed"));
+        let resent = send_to(&rooms, "peer", key.clone()).await;
+        assert_eq!(resent["sequence"], sequence);
+        assert_eq!(resent["status"], "queued");
+        rooms.wait_for_message_state(sequence, "accepted").await;
+        let accepted = send_to(&rooms, "peer", key).await;
+        assert_eq!(accepted["sequence"], sequence);
+        assert!(matches!(
+            accepted["status"].as_str(),
+            Some("steered" | "started")
+        ));
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(),
+            1
+        );
+    });
+}
+
+#[test]
+fn receipt_unconfirmed_inline_message_keeps_a_lost_local_ack_unconfirmed() {
+    run_peer_test("receipt-inline-local-lost-ack", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms.use_receipt_provider("lost-ack-structured").await;
+        let key = serde_json::json!({"urgent":true,"idempotency_key":"inline-lost"});
+        let sent = send_to(&rooms, "peer", key.clone()).await;
+        let sequence = sent["sequence"].as_u64().unwrap();
+        rooms.wait_for_message_state(sequence, "uncertain").await;
+        let (event, read) = rooms.inline_message_row(sequence).await;
+        assert!(read, "the inline wake was prepared");
+        assert_eq!(event.state, "uncertain");
+        assert_eq!(
+            sent["status"], "queued",
+            "a lost acknowledgement is unconfirmed: {sent}"
+        );
+        let resent = send_to(&rooms, "peer", key).await;
+        assert_eq!(resent["sequence"], sequence);
+        assert_eq!(resent["status"], "queued");
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(),
+            1
+        );
+    });
+}

@@ -56,6 +56,11 @@ pub(super) fn execute_submit_command(
                 message: "connection closed after the prompt was written".into(),
             });
         }
+        // The receipt regression holds acceptance beyond the sender's 750 ms wait.
+        #[cfg(test)]
+        if run.process_label() == "receipt-held" {
+            thread::sleep(Duration::from_millis(750));
+        }
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
             resume_state: run.resume_state().clone(),
