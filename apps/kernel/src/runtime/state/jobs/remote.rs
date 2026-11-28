@@ -4,6 +4,7 @@ use crate::local::*;
 use crate::room_exec::gateway_placement::{create_target_room, GrantedSend};
 use crate::room_exec::{ExecOutcome, ExecOutput};
 use crate::runtime::kernel_gateway::forward_with_retry;
+use sha2::{Digest, Sha256};
 use std::io::Read;
 
 /// A job's place on its machine: the home directory and the workspace root below it.
@@ -317,7 +318,19 @@ impl Remote {
                 .map_err(|e| ledger::error(e.to_string()))?
                 .len();
             let mut offset = 0;
-            let upload_id = uuid::Uuid::new_v4();
+            // Preparation replays these command IDs after a reconnect. Keep their upload
+            // attempt stable for this job's frozen file, rather than minting a new one on replay.
+            let mut identity = Sha256::new();
+            identity.update(record.job_id.as_bytes());
+            identity.update([0]);
+            identity.update(path.as_bytes());
+            identity.update([0]);
+            identity.update(state.sha256.as_bytes());
+            let upload_id = uuid::Uuid::from_bytes(
+                identity.finalize()[..16]
+                    .try_into()
+                    .expect("a SHA-256 holds sixteen bytes"),
+            );
             loop {
                 if *cancelled.borrow() {
                     return Err(ledger::error("Job cancelled during workspace upload"));
