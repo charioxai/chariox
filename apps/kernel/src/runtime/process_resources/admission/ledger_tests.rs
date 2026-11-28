@@ -4492,6 +4492,7 @@ fn r7_sample_streams(
 #[cfg(target_os = "linux")]
 enum R7StatusOutput {
     Append,
+    SparseAppend,
     Seek,
     ReadWrite,
 }
@@ -4509,7 +4510,7 @@ fn r7_copy_with_status_output(mode: R7StatusOutput) {
     }
     let mut options = std::fs::OpenOptions::new();
     match mode {
-        R7StatusOutput::Append => {
+        R7StatusOutput::Append | R7StatusOutput::SparseAppend => {
             options.append(true);
         }
         R7StatusOutput::Seek => {
@@ -4535,6 +4536,15 @@ fn r7_copy_with_status_output(mode: R7StatusOutput) {
         if step > 0 {
             let bytes = match mode {
                 R7StatusOutput::Append => {
+                    status.write_all(&[7; 4096]).unwrap();
+                    4096
+                }
+                R7StatusOutput::SparseAppend => {
+                    if step == 1 {
+                        status
+                            .set_len(status.metadata().unwrap().len() + 2 * MIB)
+                            .unwrap();
+                    }
                     status.write_all(&[7; 4096]).unwrap();
                     4096
                 }
@@ -4705,4 +4715,192 @@ fn r7_independent_stream_descriptions_on_one_inode_never_stop_the_logger() {
 #[test]
 fn r7_duplicated_stream_descriptors_are_not_independent_write_evidence() {
     r7_shared_stream_inode(true);
+}
+
+#[cfg(target_os = "linux")]
+fn r8_idle_stdio_aliases_leave_the_scratch_filler_visible(non_stdio: bool) {
+    use crate::runtime::process_resources::pressure_tests::{
+        domain as process_domain, pool as process_pool, Workload, DIE_WITH_PARENT,
+    };
+    let alias = if non_stdio {
+        "fd=fcntl.fcntl(1,fcntl.F_DUPFD_CLOEXEC,3)"
+    } else {
+        "os.dup2(1,2); fd=2"
+    };
+    let script = format!(
+        r#"{DIE_WITH_PARENT}import os,fcntl,time
+{alias}
+with open(os.path.join(sys.argv[1],"ready.tmp"),"w") as f: f.write(str(fd))
+os.rename(os.path.join(sys.argv[1],"ready.tmp"),os.path.join(sys.argv[1],"ready"))
+end=time.monotonic()+10
+while not os.path.exists(os.path.join(sys.argv[1],"done")):
+ assert time.monotonic()<end; time.sleep(0.01)
+"#
+    );
+    let pool = process_pool(4096);
+    let workload = Workload::run(
+        process_domain(&pool, "stdio-alias", false),
+        &[(
+            "job",
+            format!("python3 -c '{script}' \"$0\" > \"$0/status\""),
+        )],
+    );
+    let ready = workload.dir.join("ready");
+    let ready_by = std::time::Instant::now() + Duration::from_secs(5);
+    while !ready.exists() {
+        assert!(
+            std::time::Instant::now() < ready_by,
+            "stdio alias setup did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let fd: u32 = std::fs::read_to_string(&ready).unwrap().parse().unwrap();
+    assert!(if non_stdio { fd >= 3 } else { fd == 2 });
+    let mut growth = disk_use::WriteGrowth::default();
+    let (entry, mut usage, _) = stream_writer(1, 2, 300 * MIB);
+    usage.writes = 0;
+    let current = owner("agent", true, vec![usage], vec![(1, entry)]);
+    let free = Arc::new(AtomicU64::new(10 * GIB));
+    let volume = r6_volumes(&free);
+    let mut ledger = Ledger::new(None);
+    let mut received = false;
+    for (at, written) in [(1000, 0), (2000, 300 * MIB), (3000, 600 * MIB)] {
+        let mut outputs = growth.sample(&[workload.pid("job") as u32], at);
+        assert!(
+            !outputs.is_empty(),
+            "actual redirected standard streams were not sampled"
+        );
+        received |= outputs.iter().any(|output| output.receiving);
+        for output in &mut outputs {
+            // Preserve the real sampler's receiving flag and descriptor data.
+            // Only volume identity/path and command traffic are synthetic.
+            output.id = 2;
+            output.path = "/log/status".into();
+        }
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            observation.disk_writes.insert(1, outputs);
+        }
+        if at == 3000 {
+            free.store(GIB, Ordering::SeqCst);
+        }
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        let chosen = ledger
+            .take_fillers(&current)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect::<Vec<_>>();
+        if at == 3000 {
+            assert_eq!(
+                chosen,
+                vec![1],
+                "idle redirected aliases hid the scratch filler"
+            );
+            assert!(
+                !received,
+                "a standard-stream alias became a receiving destination"
+            );
+        } else {
+            assert!(chosen.is_empty());
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    std::fs::write(workload.dir.join("done"), "").unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r8_idle_shared_stdout_stderr_keeps_the_scratch_filler_visible() {
+    r8_idle_stdio_aliases_leave_the_scratch_filler_visible(false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r8_non_stdio_alias_does_not_place_the_generator_on_the_log_volume() {
+    r8_idle_stdio_aliases_leave_the_scratch_filler_visible(true);
+}
+
+#[test]
+fn r8_late_allocation_after_an_unknown_interval_preserves_confirmed_filler_bytes() {
+    let (entry, mut usage, mut log) = stream_writer(1, 2, 600 * MIB);
+    usage.writes = 0;
+    log.open = [11].into();
+    log.files.clear();
+    log.written = 0;
+    log.rate = 0;
+    log.written_by_inode = [(11, 0)].into();
+    log.position_written_by_inode = [(11, 0)].into();
+    let current = owner("agent", true, vec![usage], vec![(1, entry)]);
+    let free = Arc::new(AtomicU64::new(10 * GIB));
+    let volume = r6_volumes(&free);
+    let mut ledger = Ledger::new(None);
+    for (at, written, allocated, known) in [
+        (1000, 0, 0, true),
+        (2000, 550 * MIB, 0, true),
+        (2500, 1050 * MIB, 0, false),
+        (3000, 1200 * MIB, 500 * MIB, true),
+    ] {
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            let output = &mut observation.disk_writes.get_mut(&1).unwrap()[0];
+            output.written = allocated;
+            output.written_by_inode = [(11, allocated)].into();
+            output.position_written_by_inode = if known {
+                [(11, 0)].into()
+            } else {
+                Default::default()
+            };
+            if allocated > 0 {
+                output.files = [11].into();
+                output.rate = 1000 * MIB;
+            }
+        }
+        if at == 3000 {
+            free.store(GIB, Ordering::SeqCst);
+        }
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        let chosen = ledger
+            .take_fillers(&current)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect::<Vec<_>>();
+        if at == 3000 {
+            assert_eq!(
+                chosen,
+                vec![1],
+                "late allocation erased confirmed scratch writes"
+            );
+            let observation = current.lock().unwrap();
+            assert_eq!(
+                observation.admission[&1]
+                    .stream_writes
+                    .as_ref()
+                    .unwrap()
+                    .rate_at(at),
+                350 * MIB,
+                "all 550+150 MiB of confirmed filler bytes must remain in the two-second window"
+            );
+        } else {
+            assert!(chosen.is_empty());
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r8_sparse_extension_then_append_does_not_erase_the_scratch_filler() {
+    r7_copy_with_status_output(R7StatusOutput::SparseAppend);
 }
