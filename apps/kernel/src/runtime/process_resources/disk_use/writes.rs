@@ -26,6 +26,9 @@ struct FileGrowth {
     position_written: u64,
     write_only: bool,
     modified: (i64, i64),
+    length: u64,
+    append: bool,
+    multiple: bool,
 }
 
 impl WriteGrowth {
@@ -38,7 +41,7 @@ impl WriteGrowth {
         at: u64,
     ) -> Vec<VolumeWrites> {
         use std::os::unix::fs::MetadataExt;
-        let mut files = BTreeMap::new();
+        let mut files = BTreeMap::<(u64, u64), FileGrowth>::new();
         // Partial attribution cannot justify a stop; bound each monitor tick.
         let mut budget = 16_384usize;
         let mut volumes = BTreeMap::<u64, VolumeWrites>::new();
@@ -59,11 +62,12 @@ impl WriteGrowth {
                 else {
                     continue;
                 };
-                let access = info
+                let flags = info
                     .lines()
                     .find_map(|line| line.strip_prefix("flags:"))
-                    .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
-                    .map(|flags| flags & libc::O_ACCMODE as u32);
+                    .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok());
+                let access = flags.map(|flags| flags & libc::O_ACCMODE as u32);
+                let append = flags.is_some_and(|flags| flags & libc::O_APPEND as u32 != 0);
                 let writable = access.is_some_and(|mode| mode != libc::O_RDONLY as u32);
                 let write_only = access == Some(libc::O_WRONLY as u32);
                 if !writable {
@@ -77,11 +81,31 @@ impl WriteGrowth {
                     continue;
                 }
                 let key = (meta.dev(), meta.ino());
-                if files.contains_key(&key) {
+                let stream = fd
+                    .file_name()
+                    .to_str()
+                    .and_then(|fd| fd.parse::<u32>().ok())
+                    .is_some_and(|fd| fd <= 2);
+                if let Some(file) = files.get_mut(&key) {
+                    // fdinfo cannot distinguish dup() from an independent open.
+                    // One inode must never imply one shared cursor or summed aliases.
+                    file.multiple = true;
+                    file.position_written = self
+                        .files
+                        .get(&key)
+                        .map_or(0, |before| before.position_written);
+                    if let Some(volume) = volumes.get_mut(&key.0) {
+                        volume.position_written_by_inode.remove(&key.1);
+                        if !stream {
+                            volume.receiving = true;
+                            outputs.entry(key.0).or_insert_with(|| fd.path());
+                        }
+                    }
                     continue;
                 }
                 let allocated = meta.blocks().saturating_mul(512);
                 let modified = (meta.mtime(), meta.mtime_nsec());
+                let length = meta.len();
                 let position = info
                     .lines()
                     .find_map(|line| line.strip_prefix("pos:"))
@@ -108,38 +132,60 @@ impl WriteGrowth {
                     Some(before) => (before.written, 0),
                     None => (0, 0),
                 };
-                let position_continuous = before
-                    .is_none_or(|before| at >= before.at && write_only == before.write_only)
-                    && match (position, before) {
-                        (Some(_), None) => true,
-                        (Some(now), Some(before)) => match before.position {
-                            Some(old) if now == old => modified == before.modified,
-                            // Reads on a read/write fd and a seek without a file
-                            // change cannot establish how much this stream wrote.
-                            Some(old) if now > old => {
-                                write_only
-                                    && (modified != before.modified
-                                        || allocated != before.allocated)
+                let position_added = match (position, before) {
+                    (Some(_), None) => Some(0),
+                    (Some(now), Some(before))
+                        if at >= before.at
+                            && write_only == before.write_only
+                            && append == before.append
+                            && !before.multiple =>
+                    {
+                        match before.position {
+                            Some(old) if now == old && modified == before.modified => Some(0),
+                            Some(_)
+                                if write_only
+                                    && append
+                                    && modified != before.modified
+                                    && length >= before.length
+                                    && now >= before.length
+                                    && now <= length =>
+                            {
+                                // An append starts at the prior EOF, even when the
+                                // descriptor's first sampled position was zero.
+                                Some(now - before.length)
                             }
-                            _ => false,
-                        },
-                        _ => false,
-                    };
-                let position_written = match before {
-                    Some(before) if at > before.at && position_continuous && write_only => {
-                        before.position_written.saturating_add(
-                            position
-                                .zip(before.position)
-                                .map_or(0, |(now, old)| now.saturating_sub(old)),
-                        )
+                            Some(old)
+                                if write_only
+                                    && !append
+                                    && now > old
+                                    && modified != before.modified
+                                    && now - old <= allocated.saturating_sub(before.allocated) =>
+                            {
+                                Some(now - old)
+                            }
+                            _ => None,
+                        }
                     }
+                    _ => None,
+                };
+                let position_continuous = position_added.is_some();
+                let position_written = match before {
+                    Some(before) if at > before.at => before
+                        .position_written
+                        .saturating_add(position_added.unwrap_or(0)),
                     Some(before) => before.position_written,
                     None => 0,
                 };
-                let (position, write_only, modified) = before
+                let (position, write_only, modified, length, append) = before
                     .filter(|before| at <= before.at)
-                    .map_or((position, write_only, modified), |before| {
-                        (before.position, before.write_only, before.modified)
+                    .map_or((position, write_only, modified, length, append), |before| {
+                        (
+                            before.position,
+                            before.write_only,
+                            before.modified,
+                            before.length,
+                            before.append,
+                        )
                     });
                 let (allocated, at) = before
                     .filter(|before| at <= before.at)
@@ -154,6 +200,9 @@ impl WriteGrowth {
                         position_written,
                         write_only,
                         modified,
+                        length,
+                        append,
+                        multiple: false,
                     },
                 );
                 let volume = volumes.entry(key.0).or_insert_with(|| VolumeWrites {
@@ -174,11 +223,6 @@ impl WriteGrowth {
                         .position_written_by_inode
                         .insert(key.1, position_written);
                 }
-                let stream = fd
-                    .file_name()
-                    .to_str()
-                    .and_then(|fd| fd.parse::<u32>().ok())
-                    .is_some_and(|fd| fd <= 2);
                 if !stream {
                     volume.receiving = true;
                     outputs.entry(key.0).or_insert_with(|| fd.path());

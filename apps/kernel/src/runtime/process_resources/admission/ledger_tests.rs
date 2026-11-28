@@ -2972,9 +2972,12 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
     );
     let second = stream(growth.sample(&pids, 2000));
     assert_eq!(second[0].written_by_inode[&stdout_inode], 0);
-    assert_eq!(
-        second[0].position_written_by_inode[&stdout_inode],
-        1000 * MIB
+    assert_eq!(stdout.stream_position().unwrap(), 2 * MIB);
+    assert!(
+        !second[0]
+            .position_written_by_inode
+            .contains_key(&stdout_inode),
+        "an overwrite offset alone cannot prove how much was written"
     );
     {
         let mut observation = current.lock().unwrap();
@@ -2994,8 +2997,8 @@ fn r6_sampled_stream_position_keeps_an_overwriter_on_its_healthy_volume() {
     drop(stderr);
     let third = stream(growth.sample(&pids, 3000));
     assert_eq!(
-        third[0].position_written_by_inode[&stdout_inode],
-        1000 * MIB
+        third[0].position_written_by_inode[&stdout_inode], 0,
+        "the next quiet sample must not credit the earlier unproven jump"
     );
     assert!(!third[0]
         .position_written_by_inode
@@ -4578,4 +4581,262 @@ fn a_shells_command_cut_off_by_the_os_leaves_no_peak() {
         "the decision is not logged"
     );
     TEST_OS_OOM_KILLS.with(|kills| kills.set(None));
+}
+
+#[cfg(target_os = "linux")]
+fn r7_sample_streams(
+    growth: &mut disk_use::WriteGrowth,
+    at: u64,
+    inodes: &[u64],
+    scale: u64,
+) -> Vec<disk_use::VolumeWrites> {
+    growth
+        .sample(&[std::process::id()], at)
+        .into_iter()
+        .find_map(|mut output| {
+            if !output.open.iter().any(|inode| inodes.contains(inode)) {
+                return None;
+            }
+            output.open.retain(|inode| inodes.contains(inode));
+            output.files.retain(|inode| inodes.contains(inode));
+            output
+                .written_by_inode
+                .retain(|inode, _| inodes.contains(inode));
+            output
+                .position_written_by_inode
+                .retain(|inode, _| inodes.contains(inode));
+            for written in output.written_by_inode.values_mut() {
+                *written *= scale;
+            }
+            for written in output.position_written_by_inode.values_mut() {
+                *written *= scale;
+            }
+            // Sample real private descriptors; the ledger's two volumes and
+            // byte scale are synthetic. Never replace this test process's stdio.
+            output.id = 2;
+            output.path = "/log/out".into();
+            output.written = output.written_by_inode.values().sum();
+            output.rate *= scale;
+            output.receiving = false;
+            Some(vec![output])
+        })
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+enum R7StatusOutput {
+    Append,
+    Seek,
+    ReadWrite,
+}
+
+#[cfg(target_os = "linux")]
+fn r7_copy_with_status_output(mode: R7StatusOutput) {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::MetadataExt;
+    let dir = crate::test_support::TestTempDir::new("stream-status-evidence");
+    let path = dir.join("status");
+    {
+        let mut initial = std::fs::File::create(&path).unwrap();
+        initial.write_all(&vec![0; 2 * MIB as usize]).unwrap();
+        initial.sync_all().unwrap();
+    }
+    let mut options = std::fs::OpenOptions::new();
+    match mode {
+        R7StatusOutput::Append => {
+            options.append(true);
+        }
+        R7StatusOutput::Seek => {
+            options.write(true);
+        }
+        R7StatusOutput::ReadWrite => {
+            options.read(true).write(true);
+        }
+    }
+    let mut status = options.open(&path).unwrap();
+    assert_eq!(status.stream_position().unwrap(), 0);
+    let inode = status.metadata().unwrap().ino();
+    let mut growth = disk_use::WriteGrowth::default();
+    let (entry, mut command, _) = stream_writer(1, 2, 350 * MIB);
+    command.writes = 0;
+    let current = owner("agent", true, vec![command], vec![(1, entry)]);
+    let free = Arc::new(AtomicU64::new(10 * GIB));
+    let volume = r6_volumes(&free);
+    let mut ledger = Ledger::new(None);
+    let mut written = 0;
+    for step in 0..=8 {
+        let at = 1000 + step * 250;
+        if step > 0 {
+            let bytes = match mode {
+                R7StatusOutput::Append => {
+                    status.write_all(&[7; 4096]).unwrap();
+                    4096
+                }
+                R7StatusOutput::Seek if step == 1 => {
+                    status.seek(SeekFrom::Start(MIB)).unwrap();
+                    status.write_all(&[7]).unwrap();
+                    1
+                }
+                R7StatusOutput::ReadWrite if step % 2 == 0 => {
+                    status.write_all(&[7]).unwrap();
+                    1
+                }
+                _ => 0,
+            };
+            status.sync_all().unwrap();
+            written += 75 * MIB + bytes * 1000;
+        }
+        let output = r7_sample_streams(&mut growth, at, &[inode], 1000);
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            observation.disk_writes.insert(1, output);
+        }
+        if step == 8 {
+            free.store(GIB, Ordering::SeqCst);
+        }
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        let chosen = ledger
+            .take_fillers(&current)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect::<Vec<_>>();
+        if step == 8 {
+            assert_eq!(
+                chosen,
+                vec![1],
+                "status output erased the sustained scratch filler"
+            );
+        } else {
+            assert!(chosen.is_empty(), "a roomy volume stopped the copy");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r7_existing_append_prefix_does_not_erase_the_scratch_filler() {
+    r7_copy_with_status_output(R7StatusOutput::Append);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r7_seek_and_a_small_write_do_not_erase_the_scratch_filler() {
+    r7_copy_with_status_output(R7StatusOutput::Seek);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r7_periodic_read_write_stderr_preserves_valid_filler_intervals() {
+    r7_copy_with_status_output(R7StatusOutput::ReadWrite);
+}
+
+#[cfg(target_os = "linux")]
+fn r7_shared_stream_inode(duplicate: bool) {
+    use std::io::{Seek, Write};
+    use std::os::unix::fs::MetadataExt;
+    let dir = crate::test_support::TestTempDir::new("stream-open-descriptions");
+    let path = dir.join("log");
+    let mut stdout = std::fs::File::create(&path).unwrap();
+    stdout.write_all(&vec![0; 4 * MIB as usize]).unwrap();
+    stdout.sync_all().unwrap();
+    stdout.rewind().unwrap();
+    let inode = stdout.metadata().unwrap().ino();
+    let blocks = stdout.metadata().unwrap().blocks();
+    let mut stderr = if duplicate {
+        stdout.try_clone().unwrap()
+    } else {
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap()
+    };
+    let mut growth = disk_use::WriteGrowth::default();
+    let first = r7_sample_streams(&mut growth, 1000, &[inode], 500);
+    let (entry, mut command, _) = stream_writer(1, 2, 501 * MIB);
+    command.writes = 0;
+    let current = owner("agent", true, vec![command], vec![(1, entry)]);
+    let free = Arc::new(AtomicU64::new(10 * GIB));
+    let volume = r6_volumes(&free);
+    let mut ledger = Ledger::new(None);
+    {
+        let mut observation = current.lock().unwrap();
+        observation.samples = vec![write_sample(1, 1000)];
+        observation.disk_writes.insert(1, first);
+    }
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(ledger.take_fillers(&current).is_empty());
+    stdout.write_all(&[1; 4096]).unwrap();
+    stderr.write_all(&vec![2; 2 * MIB as usize]).unwrap();
+    stdout.sync_all().unwrap();
+    stderr.sync_all().unwrap();
+    assert_eq!(
+        stdout.metadata().unwrap().blocks(),
+        blocks,
+        "both streams overwrite existing blocks"
+    );
+    let written = (2 * MIB + 4096) * 500;
+    for at in [2000, 3000] {
+        let output = r7_sample_streams(&mut growth, at, &[inode], 500);
+        let uncertain = !output[0].position_written_by_inode.contains_key(&inode);
+        {
+            let mut observation = current.lock().unwrap();
+            observation.samples = vec![write_sample(1, at)];
+            observation.commands[0].writes = written;
+            observation.disk_writes.insert(1, output);
+            if at == 3000 {
+                let (filler, usage, scratch) = stream_writer(2, 1, 300 * MIB);
+                observation.samples.push(write_sample(2, at));
+                observation.commands.push(usage);
+                observation.admission.insert(2, filler);
+                observation.disk_writes.insert(2, vec![scratch]);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        if at == 3000 {
+            free.store(GIB, Ordering::SeqCst);
+        }
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        let chosen = ledger
+            .take_fillers(&current)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect::<Vec<_>>();
+        if at == 3000 {
+            assert_eq!(
+                chosen,
+                vec![2],
+                "an incomplete stream inode charged the healthy logger to scratch"
+            );
+            assert!(
+                uncertain,
+                "shared inode cursor evidence must not imply independent bytes"
+            );
+        } else {
+            assert!(chosen.is_empty());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r7_independent_stream_descriptions_on_one_inode_never_stop_the_logger() {
+    r7_shared_stream_inode(false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn r7_duplicated_stream_descriptors_are_not_independent_write_evidence() {
+    r7_shared_stream_inode(true);
 }
