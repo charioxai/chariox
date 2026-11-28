@@ -5,16 +5,13 @@ use std::os::unix::fs::OpenOptionsExt;
 
 /// Keep the parent directory open across snapshot, publication and rollback.
 /// A provider replacing a path with a symlink cannot redirect these operations.
-pub(in crate::account_profile) struct ReplicaFile {
+pub(super) struct ReplicaFile {
     parent: fs::File,
     name: CString,
 }
 
 impl ReplicaFile {
-    pub(in crate::account_profile) fn open(
-        root: &Path,
-        relative: &Path,
-    ) -> Result<Self, DaemonError> {
+    pub(super) fn open(root: &Path, relative: &Path) -> Result<Self, DaemonError> {
         let mut parent = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -63,10 +60,7 @@ impl ReplicaFile {
         ))
     }
 
-    pub(in crate::account_profile) fn read(
-        &self,
-        maximum: usize,
-    ) -> Result<Option<Vec<u8>>, DaemonError> {
+    pub(super) fn read(&self, maximum: usize) -> Result<Option<Vec<u8>>, DaemonError> {
         let file = match open_at(
             &self.parent,
             &self.name,
@@ -98,10 +92,7 @@ impl ReplicaFile {
         Ok(Some(contents))
     }
 
-    pub(in crate::account_profile) fn replace(
-        &self,
-        contents: Option<&[u8]>,
-    ) -> Result<(), DaemonError> {
+    pub(super) fn replace(&self, contents: Option<&[u8]>) -> Result<(), DaemonError> {
         if let Some(contents) = contents {
             let suffix: String = rand::thread_rng()
                 .sample_iter(&Alphanumeric)

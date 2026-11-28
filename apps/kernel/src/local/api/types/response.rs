@@ -291,12 +291,7 @@ pub enum LocalDaemonResponse {
     OwnerVault { result: OwnerVaultResult },
     CredentialSecretStored { key: String, },
     CredentialSecretDeleted { key: String, },
-    CredentialVaultStatus {
-        status: crate::secret::CharioxVaultUnlockStatus,
-        unlock: crate::local::VaultUnlockOptions,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        copy_unlock_requests: Vec<crate::provider_account_copy::ProviderAccountCopyUnlockRequest>,
-    },
+    CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, unlock: crate::local::VaultUnlockOptions, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultUnlocked { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     CredentialVaultKeySealed { seed: crate::secret::VaultKeySeed, },
@@ -417,16 +412,11 @@ pub enum LocalDaemonResponse {
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
     ProviderLoggedOut { provider: String, account_profile: String, },
-    ProviderAccountProfilesListed {
-        profiles: Vec<crate::account_profile::ProviderAccountProfile>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        copies: Vec<crate::provider_account_copy::ProviderAccountCopyProgress>,
-    },
+    ProviderAccountProfilesListed { profiles: Vec<crate::account_profile::ProviderAccountProfile>, },
     ProviderAccountProfile { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileRemoved { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileDataDeleted { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountCopyOffers { offers: Vec<crate::provider_account_copy::ProviderAccountCopyOffer>, },
-    ProviderAccountCopyWaiting { wait: crate::provider_account_copy::ProviderAccountCopyWait, },
     ProviderAccountCopied { receipt: crate::provider_account_copy::ProviderAccountCopyReceipt, },
     ProviderAccountCredentialStored { provider: String, account_profile: String, credential_id: String, replaced: bool, },
     ProviderProcessesListed { processes: Vec<ProviderProcessInfo>, },

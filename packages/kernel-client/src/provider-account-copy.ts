@@ -18,7 +18,7 @@ export type ProviderAccountCopyReceipt = {
   account_profile: string
 }
 
-export const providerAccountCopyMinimumProtocolVersion = 1017
+export const providerAccountCopyMinimumProtocolVersion = 710
 export function listProviderAccountCopyOffersRequest() {
   return { ListProviderAccountCopyOffers: {} }
 }
@@ -29,26 +29,3 @@ export function copyProviderAccountFromKernelRequest(offer: ProviderAccountCopyO
     operation_id: operationId, replace,
   } }
 }
-
-export interface ProviderAccountCopyWait {
-  readonly operation_id: string
-  readonly source_kernel_id: string
-  readonly target_kernel_id: string
-  readonly target_label: string
-  readonly expires_at_ms: number
-}
-
-export interface ProviderAccountCopyUnlockRequest {
-  readonly interaction_id: string
-  readonly expires_at_ms: number
-}
-
-export type ProviderAccountCopyResponse =
-  | { readonly ProviderAccountCopied: { readonly receipt: ProviderAccountCopyReceipt } }
-  | { readonly ProviderAccountCopyWaiting: { readonly wait: ProviderAccountCopyWait } }
-
-/** Watch provider_account_copies on the source kernel to follow a waiting operation. */
-export type ProviderAccountCopyProgress =
-  | { readonly status: "waiting_for_unlock"; readonly wait: ProviderAccountCopyWait }
-  | { readonly status: "installed"; readonly receipt: ProviderAccountCopyReceipt }
-  | { readonly status: "failed"; readonly operation_id: string; readonly code: string }

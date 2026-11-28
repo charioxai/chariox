@@ -62,11 +62,11 @@ pub(super) fn manage() -> Value {
         &["scope", "expected_revision", "actions"],
         json!({"scope":scope,"expected_revision":{"type":"integer","minimum":0},"actions":{"type":"array","minItems":1,"maxItems":256,"items":actions}}),
     );
-    let mut request = object(
-        &["action"],
+    let mut schema = object(
+        &["action", "origin_prompt_id"],
         json!({
         "action":{"type":"string","enum":["preview","publish","resolve_repository","resolve_repository_update"]},"mutation":mutation,
-        "review_receipt_id":text,
+        "origin_prompt_id":{"type":"string","minLength":1,"description":"Required on every action: the current prompt_id from this turn context; never a previous turn."},"review_receipt_id":text,
         "url":{"type":"string","minLength":1,"description":"resolve_repository: a public https git repository"},
         "package_id":id}),
     );
@@ -78,26 +78,18 @@ pub(super) fn manage() -> Value {
             .collect();
         json!({"properties":{"action":{"enum":[action]}},"required":required,"not":{"anyOf":absent}})
     };
-    request["oneOf"] = json!([
+    schema["oneOf"] = json!([
         only("preview", &["mutation"]),
         only("publish", &["mutation", "review_receipt_id"]),
         only("resolve_repository", &["url"]),
         only("resolve_repository_update", &["package_id"])
     ]);
-    // Providers accept composition inside a property, but some reject it at the tool root.
-    let mut schema = object(
-        &["origin_prompt_id", "request"],
-        json!({
-            "origin_prompt_id":{"type":"string","minLength":1,"description":"Required on every action: the current prompt_id from this turn context; never a previous turn."},
-            "request":request,
-        }),
-    );
     schema["examples"] = json!([{
-        "origin_prompt_id":"current_prompt_id", "request":{"action":"preview",
+        "action":"preview", "origin_prompt_id":"current_prompt_id",
         "mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[{
             "action":"install","source":{"kind":"folder","path":"skills/example"},
             "collision":{"action":"reject"}
-        }]}}
+        }]}
     }]);
     schema
 }

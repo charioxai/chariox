@@ -2,8 +2,8 @@
 use super::*;
 use crate::local::CopyProviderAccountFromKernelRequest;
 use crate::provider_account_copy::{
-    failure, ProviderAccountCopyBinding, ProviderAccountCopyOffer, ProviderAccountCopyOutcome,
-    ProviderAccountCopyReceipt, PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    failure, ProviderAccountCopyBinding, ProviderAccountCopyOffer, ProviderAccountCopyReceipt,
+    PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
@@ -211,7 +211,7 @@ impl KernelRuntimeState {
         &self,
         command: &KernelCommand,
         request: CopyProviderAccountFromKernelRequest,
-    ) -> Result<ProviderAccountCopyOutcome, DaemonError> {
+    ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
         let caller = &command_caller_user_id(command);
         let config = self.config_snapshot().await;
         if request.source_kernel_id == config.daemon_id {
@@ -221,7 +221,7 @@ impl KernelRuntimeState {
                 return Err(failure("provider_account_copy_unauthorized"));
             }
             return self
-                .begin_provider_account_copy_to_kernel(
+                .copy_provider_account_to_kernel(
                     caller,
                     crate::local::CopyProviderAccountToKernelRequest {
                         provider: request.provider,
@@ -298,10 +298,7 @@ impl KernelRuntimeState {
             RelayPeerResponse::ProviderAccountCopyInstalled { receipt }
                 if receipt == ProviderAccountCopyReceipt::installed(&binding) =>
             {
-                Ok(ProviderAccountCopyOutcome::Installed(receipt))
-            }
-            RelayPeerResponse::ProviderAccountCopyWaiting { wait } if wait.matches(&binding) => {
-                Ok(ProviderAccountCopyOutcome::Waiting(wait))
+                Ok(receipt)
             }
             RelayPeerResponse::ProviderAccountCopyFailed { code } => Err(copy_peer_failure(&code)),
             _ => Err(failure("provider_account_copy_unsupported")),
@@ -373,7 +370,7 @@ impl KernelRuntimeState {
         target_key: &str,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
         request: crate::local::CopyProviderAccountToKernelRequest,
-    ) -> Result<ProviderAccountCopyOutcome, DaemonError> {
+    ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
         let config = self.config_snapshot().await;
         let profile = config
             .cloud_relay
@@ -394,16 +391,15 @@ impl KernelRuntimeState {
         {
             return Err(failure("provider_account_copy_unauthorized"));
         }
-        self.begin_provider_account_copy_to_kernel(&profile.user_id, request)
+        self.copy_provider_account_to_kernel(&profile.user_id, request)
             .await
     }
 }
 
-pub(super) fn copy_peer_failure(code: &str) -> DaemonError {
+fn copy_peer_failure(code: &str) -> DaemonError {
     // Accept only the existing constant public error vocabulary, never peer text.
     match code {
         "provider_account_copy_unauthorized" => failure("provider_account_copy_unauthorized"),
-        "provider_account_copy_cancelled" => failure("provider_account_copy_cancelled"),
         "provider_account_copy_profile" => failure("provider_account_copy_profile"),
         "provider_account_copy_vault_locked" => failure("provider_account_copy_vault_locked"),
         "provider_account_copy_target_vault_locked" => {
@@ -427,7 +423,6 @@ pub(super) fn copy_peer_failure(code: &str) -> DaemonError {
             failure("provider_account_copy_credential_too_large")
         }
         "provider_account_copy_unsupported" => failure("provider_account_copy_unsupported"),
-
         "provider_account_copy_conflict" => failure("provider_account_copy_conflict"),
         "provider_account_copy_rejected" => failure("provider_account_copy_rejected"),
         "provider_account_copy_verification_failed" => {

@@ -16,21 +16,6 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
-### Provider account copies waiting for a Vault
-
-The receiving kernel answers the encrypted install request with
-`provider_account_copy_target_vault_locked` and an expiry when it needs the
-owner to open its Vault. The owner's `vault_status` resource includes the
-pending unlock request. Unlocking, cancelling the request, or reaching its
-ten-minute deadline clears it.
-
-The copy request returns `ProviderAccountCopyWaiting` with the source and
-target kernel IDs, operation ID, and expiry. The source retries the original
-binding after that response and publishes the result on its
-`provider_account_copies` resource. Clients follow that resource on the source,
-including when they started the copy from the target. Copy progress and unlock
-requests carry no credential material.
-
 ### Relay registration proof (relay peer 449)
 
 A relay token and a kernel's public key do not make a kernel. The relay answers
@@ -8697,7 +8682,7 @@ skills again. Only the focused run decides how a skill reaches a turn: the
 them.
 
 `resolve_repository` (the home owner from Skills, or an agent through
-`chariox.manage_skills` request action `resolve_repository`) fetches a public git
+`chariox.manage_skills` action `resolve_repository`) fetches a public git
 repository with the machine's `git` and answers its current commit and every
 SKILL.md directory (`repository` response: `locator`, `revision`, `skills`,
 `skipped`). Nothing is installed. The owner then reviews a batch of `install`
@@ -8713,19 +8698,9 @@ its repository URL must be a public `https` host that resolves only to public
 addresses, the boundary of agent URL downloads, so an agent cannot reach a
 local path or a private network host through the home kernel's `git`.
 
-Every `chariox.manage_skills` call has an outer `origin_prompt_id` naming the
-current turn and a `request` object containing `action` and its fields. For
-example: `{"origin_prompt_id":"<current prompt_id>","request":{"action":"resolve_repository","url":"https://github.com/org/skills"}}`.
-`preview` takes `request.mutation`; `publish` takes the identical mutation and
-`request.review_receipt_id`. The two repository actions take `request.url` or
-`request.package_id`. These four alternatives keep their field constraints
-inside `request`, so the tool root is an ordinary object accepted by providers
-that reject root schema composition. Extra fields and the former flat action
-shape are rejected; owner, turn identity, review and approval checks are unchanged.
-
 MP-08 / MP-10 / MP-11: the unpublished Skills allocation 571/179 also carries
 `resolve_repository_update { package_id }` for the home owner (an agent:
-`manage_skills` request action `resolve_repository_update`). Its
+`manage_skills` action `resolve_repository_update`). Its
 `repository_update` response contains the old and resolved commits, changed,
 added, removed, unchanged and skipped members, plus one revision-bound mutation.
 The owner reviews and confirms that mutation through the usual path; confirmation

@@ -4,7 +4,7 @@ use super::*;
 #[path = "account_profile_replica_file_unix.rs"]
 mod replica_file;
 #[cfg(unix)]
-pub(super) use replica_file::ReplicaFile;
+use replica_file::ReplicaFile;
 
 /// Refresh account-owned files without replacing directories used by a running
 /// provider. Backups are bounded portable files, never the provider database.
@@ -100,21 +100,21 @@ fn portable_account_paths(provider: &str) -> Result<Vec<PathBuf>, DaemonError> {
 }
 
 #[cfg(not(unix))]
-pub(super) struct ReplicaFile(PathBuf);
+struct ReplicaFile(PathBuf);
 
 #[cfg(not(unix))]
 impl ReplicaFile {
-    pub(super) fn open(root: &Path, relative: &Path) -> Result<Self, DaemonError> {
+    fn open(root: &Path, relative: &Path) -> Result<Self, DaemonError> {
         let destination = root.join(relative);
         ensure_regular_parents(root, &destination)?;
         Ok(Self(destination))
     }
 
-    pub(super) fn read(&self, maximum: usize) -> Result<Option<Vec<u8>>, DaemonError> {
+    fn read(&self, maximum: usize) -> Result<Option<Vec<u8>>, DaemonError> {
         read_bounded_regular_file_no_follow(&self.0, maximum, "portable account file")
     }
 
-    pub(super) fn replace(&self, contents: Option<&[u8]>) -> Result<(), DaemonError> {
+    fn replace(&self, contents: Option<&[u8]>) -> Result<(), DaemonError> {
         write_or_remove(&self.0, contents)
     }
 }

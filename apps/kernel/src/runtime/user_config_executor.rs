@@ -73,12 +73,7 @@ pub(crate) async fn execute_user_config_request(
             .await
         }
         LocalDaemonRequest::GetCredentialVaultStatus(request) => {
-            execute_get_credential_vault_status_request(
-                config_projection,
-                runtime_state,
-                command,
-                request,
-            )
+            execute_get_credential_vault_status_request(config_projection, request).await
         }
         LocalDaemonRequest::LockCredentialVault(request) => {
             execute_lock_credential_vault_request(config_projection, request).await
@@ -370,26 +365,15 @@ pub(crate) async fn execute_delete_credential_secret_request(
     Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
 }
 
-fn execute_get_credential_vault_status_request(
+pub(crate) async fn execute_get_credential_vault_status_request(
     config_projection: &DaemonConfigProjectionStore,
-    runtime_state: &KernelRuntimeState,
-    command: &KernelCommand,
     _request: GetCredentialVaultStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let status = credential_vault_status(config_projection)?;
     let unlock = crate::local::VaultUnlockOptions::for_config(
         &config_projection.snapshot().user_config.credential_vault,
     );
-    let copy_unlock_requests = runtime_state
-        .owner_client_user_id(command)
-        .ok()
-        .map(|owner| runtime_state.account_copy_unlock_requests(&owner))
-        .unwrap_or_default();
-    Ok(LocalDaemonResponse::CredentialVaultStatus {
-        status,
-        unlock,
-        copy_unlock_requests,
-    })
+    Ok(LocalDaemonResponse::CredentialVaultStatus { status, unlock })
 }
 
 pub(crate) async fn execute_lock_credential_vault_request(

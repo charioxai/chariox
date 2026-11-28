@@ -45,8 +45,7 @@ export type ProviderCommandHandlerDeps = {
   refreshWaitingRoomInventory?: () => Promise<void>
   applyAccountSelection?: (value: string) => Promise<void>
   listProviderAccountCopyOffers?: () => Promise<import("@chariox/kernel-client").ProviderAccountCopyOffer[]>
-  copyProviderAccountFromKernel?: (offer: import("@chariox/kernel-client").ProviderAccountCopyOffer) => Promise<import("@chariox/kernel-client").ProviderAccountCopyReceipt | import("@chariox/kernel-client").ProviderAccountCopyWait>
-  followProviderAccountCopy?: (offer: import("@chariox/kernel-client").ProviderAccountCopyOffer, wait: import("@chariox/kernel-client").ProviderAccountCopyWait, binding: object | undefined) => Promise<import("@chariox/kernel-client").ProviderAccountCopyReceipt>
+  copyProviderAccountFromKernel?: (offer: import("@chariox/kernel-client").ProviderAccountCopyOffer) => Promise<import("@chariox/kernel-client").ProviderAccountCopyReceipt>
   accountCopyBinding?: () => object
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
@@ -397,22 +396,7 @@ async function handleProviderAccountsCommand(
     if (!offer) throw new Error("This login is no longer offered by the source machine. Open /provider accounts copy again.")
     if (!current()) throw new Error("The kernel connection changed. Open /provider accounts copy again.")
     deps.flashFooter(`Copying ${offer.label} from ${offer.source_label}; answer the kernel approval`, "info")
-    let receipt = await deps.copyProviderAccountFromKernel(offer)
-    if (!("account_profile" in receipt)) {
-      if (!current()) return
-      deps.appendNotice(`Waiting for the Vault on ${receipt.target_label}. Unlock it there to finish the login copy.`)
-      try {
-        if (!deps.followProviderAccountCopy) throw new Error("Update this client to follow the waiting login copy")
-        receipt = await deps.followProviderAccountCopy(offer, receipt, binding)
-      } catch (error) {
-        if (!current()) return
-        const message = error instanceof Error ? error.message : String(error)
-        deps.appendNotice(message)
-        deps.flashFooter(message, "error")
-        return
-      }
-      if (!current()) return
-    }
+    const receipt = await deps.copyProviderAccountFromKernel(offer)
     if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) {
       await deps.refreshWaitingRoomInventory?.()
       if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) await deps.applyAccountSelection?.(receipt.account_profile)

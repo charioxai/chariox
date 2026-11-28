@@ -24,12 +24,6 @@ impl CommandRouter {
         command: &str,
         tokens: &[String],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
-        if let Some(result) = self
-            .account_copy_targets_command(session, caller, command, tokens)
-            .await
-        {
-            return Ok(Some(result));
-        }
         if let Some(identity) = self
             .kernel_identity_command(provider_run, session, caller, command, tokens)
             .await

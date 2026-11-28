@@ -281,8 +281,6 @@ pub(crate) struct KernelRuntimeState {
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
     /// File transfers whose destination is this kernel.
     file_transfers: Arc<crate::machine_files::TransferJobs>,
-    account_copy_waits: provider_account_copy_wait::AccountCopyWaits,
-    kernel_resource_changes: crate::transport::kernel_resource_feed::KernelResourceChanges,
     peer_file_watches: Arc<file_watch_runtime::PeerFileWatches>,
     /// One pass at a time deletes the peers whose creator ended.
     created_peer_release: Arc<tokio::sync::Mutex<()>>,
@@ -706,7 +704,6 @@ mod provider_account_admission;
 mod provider_account_authority;
 mod provider_account_copy;
 mod provider_account_copy_offer;
-mod provider_account_copy_wait;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 pub(crate) mod provider_launch_owned_state;
@@ -1032,7 +1029,6 @@ impl KernelRuntimeState {
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
         let (
-            kernel_resource_changes,
             completed_git_turn_snapshots,
             provider_process_projection,
             provider_launch_failure_retries,
@@ -1057,7 +1053,6 @@ impl KernelRuntimeState {
             loop {
                 if let Ok(app) = app.try_lock() {
                     break (
-                        app.kernel_resource_changes(),
                         app.completed_git_turn_snapshot_store(),
                         app.provider_process_projection_store(),
                         app.provider_launch_failure_retry_store(),
@@ -1285,8 +1280,6 @@ impl KernelRuntimeState {
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
             file_transfers: Default::default(),
-            account_copy_waits: Default::default(),
-            kernel_resource_changes,
             peer_file_watches: Default::default(),
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),

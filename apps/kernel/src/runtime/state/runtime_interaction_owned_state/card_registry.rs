@@ -106,24 +106,6 @@ pub(super) fn require_registered_type(interaction: &RuntimeInteraction) -> Resul
     Ok(())
 }
 
-impl InteractionRequest {
-    pub(in crate::runtime::state) fn account_copy_unlock(id: &str, timeout_sec: u64) -> Self {
-        Self(
-            InteractionSurface::named("vault_unlock"),
-            RuntimeInteraction::for_kernel_operation(
-                id,
-                id,
-                "Vault unlock requested",
-                "Unlock this kernel’s Vault to receive the copied login.",
-                vec![crate::session::RuntimeInteractionChoice::new(
-                    "cancel", "Cancel", "cancel", None,
-                )],
-            )
-            .with_timeout_sec(timeout_sec),
-        )
-    }
-}
-
 fn stale(kind: InteractionSurface, id: &str) -> DaemonError {
     tracing::error!(presentation_type = kind.name(), interaction_id = %id, "card refused: no live requester");
     interaction_error("The requesting operation ended before its card could open")

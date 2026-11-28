@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { projectEnvironmentCommand } from "./project-environment-command.js"
-import { listProviderAccountCopyOffers, copyProviderAccountFromKernel, followProviderAccountCopy } from "./provider-api.js"
+import { listProviderAccountCopyOffers, copyProviderAccountFromKernel } from "./provider-api.js"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-context-api.js"
@@ -633,29 +633,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       const source = (client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client
       const operations = copyOperations.get(source) ?? new Map<string, string>()
       copyOperations.set(source, operations)
-      const key = JSON.stringify([offer.target_kernel_id, offer.source_kernel_id, offer.source_key_thumbprint, offer.provider, offer.account_profile])
+      const key = JSON.stringify([offer.target_kernel_id, offer.source_kernel_id, offer.source_key_thumbprint, offer.account_profile])
       const operation = operations.get(key) ?? `account-copy-${randomUUID()}`
       operations.set(key, operation)
-      return copyProviderAccountFromKernel(source, offer, operation).then(receipt => {
-        if ("account_profile" in receipt) operations.delete(key)
-        return receipt
-      }, error => {
-        if (error !== null && typeof error === "object" && "code" in error && error.code === "provider_account_copy_cancelled") operations.delete(key)
-        throw error
-      })
-    },
-    followProviderAccountCopy: (offer, wait, binding) => {
-      const source = (client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client
-      if (source !== binding) throw new Error("The kernel connection changed while following the login copy")
-      const current = () => ((client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client) === source
-      const key = JSON.stringify([offer.target_kernel_id, offer.source_kernel_id, offer.source_key_thumbprint, offer.provider, offer.account_profile])
-      return followProviderAccountCopy(source, offer, wait, current).then(receipt => {
-        copyOperations.get(source)?.delete(key)
-        return receipt
-      }, error => {
-        if (error !== null && typeof error === "object" && "code" in error && error.code === "provider_account_copy_cancelled") copyOperations.get(source)?.delete(key)
-        throw error
-      })
+      return copyProviderAccountFromKernel(source, offer, operation).then(receipt => { operations.delete(key); return receipt })
     },
     ...(deps.confirmProcessStop ? { confirmProcessStop: deps.confirmProcessStop } : {}),
     stopSessionProcesses: async target => {
