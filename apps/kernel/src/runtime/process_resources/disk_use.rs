@@ -1,7 +1,7 @@
 //! What a process keeps on disk besides what it wrote: files that were
 //! deleted while it still holds them open. They take their space until the
 //! holder lets go, and no directory listing shows them.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod writes;
 pub(super) use writes::WriteGrowth;
@@ -17,6 +17,8 @@ pub(super) struct VolumeWrites {
     pub files: BTreeSet<u64>,
     /// Every writable inode it holds open there, growing or not.
     pub open: BTreeSet<u64>,
+    /// Observed cumulative growth for each currently open inode.
+    pub written_by_inode: BTreeMap<u64, u64>,
     /// Its output goes here: it holds a writable file open here other than
     /// its standard streams, or did a moment ago. A log its streams go to
     /// does not say where a copy writes.

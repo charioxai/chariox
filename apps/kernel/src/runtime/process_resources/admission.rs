@@ -8,7 +8,7 @@ use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -1956,7 +1956,7 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
 #[derive(Default)]
 struct StreamWrites {
     process_id: String,
-    outputs: BTreeMap<u64, (BTreeSet<u64>, u64)>,
+    outputs: BTreeMap<(u64, u64), u64>,
     previous: Option<(u64, u64)>,
     /// Command and stream bytes from intervals with measurable destinations.
     samples: VecDeque<(u64, u64, u64)>,
@@ -1977,6 +1977,11 @@ impl StreamWrites {
         }
         let at = sample.sampled_at_ms;
         let window = FREE_WINDOW.as_millis() as u64;
+        // A newer I/O read on a cached process-table timestamp belongs to
+        // the next interval, just as it does in the command/file samplers.
+        if self.previous.is_some_and(|(before_at, _)| at == before_at) {
+            return self.rate_at(at);
+        }
         if self.previous.is_some_and(|(before_at, before)| {
             at < before_at || at.saturating_sub(before_at) > window || writes < before
         }) {
@@ -1985,31 +1990,41 @@ impl StreamWrites {
         }
         let observed = outputs
             .iter()
-            .map(|output| (output.id, (output.open.clone(), output.written)))
+            .flat_map(|output| {
+                output
+                    .written_by_inode
+                    .iter()
+                    .map(move |(inode, written)| ((output.id, *inode), *written))
+            })
             .collect::<BTreeMap<_, _>>();
         let continuous = observed.len() == self.outputs.len()
-            && observed.iter().all(|(id, (open, written))| {
+            && observed.iter().all(|(key, written)| {
                 self.outputs
-                    .get(id)
-                    .is_some_and(|(before_open, before)| open == before_open && written >= before)
+                    .get(key)
+                    .is_some_and(|before| written >= before)
             });
         let (mut known_writes, mut known_streamed) = self
             .samples
             .back()
             .map_or((0, 0), |&(_, command, stream)| (command, stream));
-        if let Some((_, before)) = self
-            .previous
-            .filter(|(before_at, _)| continuous && at > *before_at)
-        {
-            known_writes = known_writes.saturating_add(writes - before);
-            let streamed = observed.iter().fold(0u64, |sum, (id, (_, written))| {
-                sum.saturating_add(written - self.outputs[id].1)
+        if let Some((_, before)) = self.previous {
+            if continuous {
+                known_writes = known_writes.saturating_add(writes - before);
+            }
+            // Growth on a stable inode remains measured even if a different
+            // descriptor changes. It can cancel an earlier apparent residual.
+            let streamed = observed.iter().fold(0u64, |sum, (key, written)| {
+                sum.saturating_add(
+                    self.outputs
+                        .get(key)
+                        .map_or(0, |before| written.saturating_sub(*before)),
+                )
             });
             known_streamed = known_streamed.saturating_add(streamed);
         }
         // A changed or closed stream may have received this interval's
-        // final writes after its last sighting. Exclude that interval,
-        // not the earlier deltas that stayed measurable.
+        // final writes after its last sighting. Exclude its command delta,
+        // not measured stream growth or the earlier valid intervals.
         self.outputs = observed;
         self.previous = Some((at, writes));
         if self
@@ -2029,7 +2044,13 @@ impl StreamWrites {
         {
             self.samples.pop_front();
         }
+        self.rate_at(at)
+    }
+
+    fn rate_at(&self, at: u64) -> u64 {
+        let window = FREE_WINDOW.as_millis() as u64;
         let &(from, before, stream_before) = self.samples.front().unwrap();
+        let &(_, known_writes, known_streamed) = self.samples.back().unwrap();
         // Subtract after summing the whole window: later observed growth
         // can correct an earlier apparent residual on the same stream.
         let unplaced = known_writes
