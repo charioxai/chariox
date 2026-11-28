@@ -159,7 +159,8 @@ impl ProviderRunRuntimeRegistry {
 
     pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
         self.take_assessment_output(run_id);
-        self.claude_owned_processes
+        let owned_process = self
+            .claude_owned_processes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
@@ -167,6 +168,9 @@ impl ProviderRunRuntimeRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
+        if let Some(process) = owned_process {
+            process.retire();
+        }
         clear_runtime_state(
             &self.claude_runs,
             &self.codex_runs,

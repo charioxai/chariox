@@ -202,7 +202,7 @@ impl ClaudeRuntimeProcess {
         }
     }
 
-    pub(super) fn retire(&self) {
+    pub(crate) fn retire(&self) {
         self.stop_until_exited(true);
     }
 }
