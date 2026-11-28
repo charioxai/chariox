@@ -295,9 +295,8 @@ impl Pane {
                 state.open = None;
             }
         }
-        state
-            .closed_here
-            .retain(|card_id| feed.cards.iter().any(|card| &card.id == card_id));
+        // Dismissals last for the run. Another GET may still have a feed from before
+        // this card was offered, so its snapshot cannot discard a later dismissal.
         if state.open.is_none() {
             // Claude's own permission dialog is the terminal face of its card.
             let next = feed.cards.iter().find(|card| {
