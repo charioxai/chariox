@@ -14,7 +14,7 @@ def phase(name, command, **kwargs):
     result = subprocess.run(["/usr/bin/time", "-v", *command], **kwargs)
     print(f"Release regression {name} finished: status={result.returncode} "
           f"elapsed={time.monotonic()-started:.2f}s", flush=True)
-    result.check_returncode()
+    return result
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
                "chariox-kernel-release-tests", "--lib", "--no-run", "--message-format=json-render-diagnostics",
                "--config=profile.release.package.chariox-kernel.codegen-units=256"]
     with tempfile.TemporaryFile(mode="w+") as output:
-        phase("compile", command, stdout=output)
+        compiled = phase("compile", command, stdout=output)
         output.seek(0)
         executables = []
         for line in output:
@@ -35,11 +35,12 @@ def main():
                     and message["target"]["name"] == TARGET
                     and message["profile"]["test"] and message.get("executable")):
                 executables.append(message["executable"])
+    compiled.check_returncode()
     if len(executables) != 1:
         raise ValueError(f"Expected one release regression executable, found {len(executables)}")
     # No Cargo lock, freshness check or compilation is inside the test deadline.
     phase("test", ["timeout", "--signal=KILL", "60", executables[0],
-                   "--exact", TEST_NAME, "--nocapture"])
+                   "--exact", TEST_NAME, "--nocapture"]).check_returncode()
 
 
 if __name__ == "__main__":

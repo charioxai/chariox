@@ -18,6 +18,8 @@ class ReleasePhases(unittest.TestCase):
                 'cargo': '''import json, os, sys
 with open(os.environ['CALLS'], 'a') as calls:
     calls.write(json.dumps(['cargo', *sys.argv[1:]]) + '\\n')
+if os.environ['COMPILE_STATUS'] != '0':
+    print(json.dumps({'reason': 'compiler-message', 'message': {'rendered': 'source.rs:17: error: expected compile diagnostic\\n'}}))
 if os.environ['ARTIFACT'] == '1':
     print(json.dumps({'reason': 'compiler-artifact', 'target': {'name': 'chariox_kernel_release_tests'}, 'profile': {'test': True}, 'executable': os.environ['TEST_BINARY']}))
 sys.exit(int(os.environ['COMPILE_STATUS']))
@@ -50,6 +52,12 @@ sys.exit(int(os.environ['TEST_STATUS']))
         self.assertEqual(len(calls), 1)
         self.assertIn('compile finished: status=17', result.stdout)
         self.assertNotIn('test started', result.stdout)
+
+    def test_compile_failure_keeps_the_source_diagnostic(self):
+        result, calls = self.run_phases(compile_status=17)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('source.rs:17: error: expected compile diagnostic', result.stdout)
 
     def test_execution_failure_is_reported(self):
         result, calls = self.run_phases(test_status=19)

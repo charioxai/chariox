@@ -38,6 +38,7 @@ COPY deploy/local-linux deploy/local-linux
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
+COPY packages/kernel-release-tests packages/kernel-release-tests
 COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
 COPY packages/app-wit packages/app-wit

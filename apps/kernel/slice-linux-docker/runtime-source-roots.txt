@@ -11,6 +11,7 @@ deploy/local-linux
 examples/workflow-code
 packages/aegs-sdk
 packages/event-protocol
+packages/kernel-release-tests
 packages/app-package
 packages/app-runtime
 packages/app-wit
