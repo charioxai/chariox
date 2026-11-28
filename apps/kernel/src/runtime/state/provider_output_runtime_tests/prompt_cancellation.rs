@@ -1696,9 +1696,8 @@ async fn assert_tool_updates_received_during_cleanup(mode: CancellationOutputBou
     .unwrap();
     if claimed {
         let prompt_id = app
-            .session_snapshot(session.id())
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
             .unwrap()
-            .active_prompt_for_agent(agent.id())
             .unwrap()
             .id()
             .to_string();
