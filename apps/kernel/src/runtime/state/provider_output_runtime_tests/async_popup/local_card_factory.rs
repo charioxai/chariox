@@ -43,75 +43,121 @@ async fn taxonomy_authorized_local_browser_factory_registers_the_observed_view_a
             &f.agent,
             crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
         );
-        let snapshot = f
-            .runtime
-            .kernel_browser_operation(
-                &user,
-                Some(&f.agent),
-                "host.browser",
-                serde_json::json!({"op":"snapshot","tab_id":"one","generation":1}),
-            )
-            .await
-            .unwrap();
-        let reference = snapshot["snapshot"]["dom_nodes"][0]["node_ref"]
-            .as_str()
-            .expect("the production host returned a current reference");
-        let result = ask(
-            &f,
-            serde_json::json!({"view":{"browser_region":{"tab_id":"one","ref":reference}}}),
-        )
-        .await;
-        let id = result["interaction_id"].as_str().unwrap();
-        let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-        assert_eq!(session.active_interactions().len(), 1);
-        let card = &session.active_interactions()[0];
-        assert_eq!(card.card_type(), "popup_browser_region");
-        assert_eq!(serde_json::to_value(card).unwrap()["surface"], "card");
-        let region = &card
-            .view()
-            .expect("the factory observed the view")
-            .browser_region;
-        assert_eq!(region.tab_id, "one");
-        assert_eq!(region.reference, reference);
-        assert_eq!(region.document_id, "doc");
-        assert_eq!(region.generation, snapshot["generation"].as_u64().unwrap());
-        assert_eq!(region.origin, "https://example.com");
-        assert_eq!(
-            (
-                region.rect.x,
-                region.rect.y,
-                region.rect.width,
-                region.rect.height
-            ),
-            (64, 74, 132, 82)
-        );
-        assert_eq!(
-            card.choices()
-                .iter()
-                .filter(|choice| choice.id() == "cancel")
-                .count(),
-            1
-        );
-        assert_eq!(
-            card.choices()
-                .iter()
-                .filter(|choice| choice.id() == "done")
-                .count(),
-            1
-        );
-        let response = answer_choice_through_router(&f, id, "done", &user, "factory-owner")
-            .await
-            .unwrap();
-        let response = serde_json::to_value(response).unwrap();
-        assert_eq!(response["InteractionResponded"]["choice_id"], "done");
-        assert!(f
+        let token = f
             .runtime
             .owned
-            .session_store
-            .get_session(&f.room)
+            .provider_store
+            .get_run(&f.run)
             .unwrap()
-            .active_interactions()
-            .is_empty());
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned();
+        for wait in [false, true] {
+            let snapshot = f
+                .runtime
+                .kernel_browser_operation(
+                    &user,
+                    Some(&f.agent),
+                    "host.browser",
+                    serde_json::json!({"op":"snapshot","tab_id":"one","generation":1}),
+                )
+                .await
+                .unwrap();
+            let reference = snapshot["snapshot"]["dom_nodes"][0]["node_ref"]
+                .as_str()
+                .expect("the production host returned a current reference")
+                .to_owned();
+            let message = format!("Observed browser step wait={wait}");
+            let call = f.runtime.dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::REQUEST_POPUP_TOOL,
+                serde_json::json!({"wait":wait,"message":message,
+                    "choices":[{"id":"continue","label":"Continue","reply":"continue"}],
+                    "view":{"browser_region":{"tab_id":"one","ref":reference}},"timeout_sec":30}),
+            );
+            let answer = async {
+                let card = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+                        if let Some(card) = session
+                            .active_interactions()
+                            .iter()
+                            .find(|card| card.message() == message)
+                            .cloned()
+                        {
+                            break card;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the authenticated factory admits the browser card");
+                assert_eq!(card.card_type(), "popup_browser_region");
+                assert_eq!(serde_json::to_value(&card).unwrap()["surface"], "card");
+                let region = &card
+                    .view()
+                    .expect("the factory observed the view")
+                    .browser_region;
+                assert_eq!(region.tab_id, "one");
+                assert_eq!(region.reference, reference);
+                assert_eq!(region.document_id, "doc");
+                assert_eq!(region.generation, snapshot["generation"].as_u64().unwrap());
+                assert_eq!(region.origin, "https://example.com");
+                assert_eq!(
+                    (
+                        region.rect.x,
+                        region.rect.y,
+                        region.rect.width,
+                        region.rect.height
+                    ),
+                    (64, 74, 132, 82)
+                );
+                assert_eq!(
+                    card.choices()
+                        .iter()
+                        .filter(|choice| choice.id() == "cancel")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    card.choices()
+                        .iter()
+                        .filter(|choice| choice.id() == "done")
+                        .count(),
+                    1
+                );
+                let response =
+                    answer_choice_through_router(&f, card.id(), "done", &user, "factory-owner")
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    serde_json::to_value(response).unwrap()["InteractionResponded"]["choice_id"],
+                    "done"
+                );
+                card.id().to_owned()
+            };
+            let (result, id) =
+                tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(call, answer) })
+                    .await
+                    .expect("the owner answer returns to the waiting provider");
+            let result = result.expect("the authenticated popup tool returns its outcome");
+            assert!(result.ok);
+            if wait {
+                assert_eq!(result.payload["status"], "answered");
+                assert_eq!(result.payload["choice_id"], "done");
+                assert_eq!(result.payload["reply"], "done");
+            } else {
+                assert_eq!(result.payload["interaction_id"], id);
+            }
+            assert!(f
+                .runtime
+                .owned
+                .session_store
+                .get_session(&f.room)
+                .unwrap()
+                .active_interactions()
+                .is_empty());
+        }
         let operations =
             std::fs::read_to_string(root.path().join("factory-operations.log")).unwrap();
         assert!(operations.contains("host.browser:snapshot"));
