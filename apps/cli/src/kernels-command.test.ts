@@ -485,3 +485,26 @@ test("exec: a link that is really down until --timeout still reports a lost link
   assert.match(run.stderr, /The command was not stopped/)
   assert.ok(!run.operations.includes("close"), "no close: the command is left running")
 })
+
+// Row 490: the list is the kernel's answer as it is: protocol and update state per kernel, null for a kernel too old
+// to report one, no client logic and no error text.
+test("kernels prints each kernel's protocol and update state exactly as the kernel listed them", async () => {
+  const listed = [
+    { name: "b3", kernel_id: "k-b3", label: "b3", machine_id: "m-b3", machine_alias: null, status: "online", last_seen_ms: 1, gateway_ready: true, via: "hosted", protocol: 1015, update: "current" },
+    { name: "old", kernel_id: "k-old", label: "old", machine_id: "m-old", machine_alias: "old", status: "offline", last_seen_ms: 2, gateway_ready: false, via: "hosted", protocol: null, update: "update_needed" },
+  ]
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    replyWith(socket, frame, { response: { GatewayKernelsListed: { kernels: listed } } })
+  })
+  const printed: string[] = [], log = console.log
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    await runKernelsCommand(["kernels", "--socket", kernel.path])
+  } finally { console.log = log; await kernel.close() }
+  assert.equal(printed.length, 1)
+  const { kernels } = JSON.parse(printed[0]!) as { kernels: typeof listed }
+  assert.deepEqual(kernels, listed)
+  assert.equal(kernels[1]!.protocol, null)
+  assert.equal(kernels[1]!.update, "update_needed")
+})

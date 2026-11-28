@@ -443,8 +443,8 @@ fn owner_vault_is_not_a_kernel_access_operation() {
 fn authorize_local_only_request(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
     match request {
         LocalDaemonRequest::CloudAccountKernels(_) => Err(Refusal::LocalOnly.error()),
-        LocalDaemonRequest::RoomTerminal(terminal)
-            if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecPlace { .. }) =>
+        LocalDaemonRequest::RunCommand(command)
+            if matches!(command.operation, crate::local::RunCommandOperation::ExecPlace { .. }) =>
         {
             Err(crate::room_exec::error(
                 "exec_place_not_here",

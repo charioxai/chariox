@@ -259,9 +259,11 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         return true
       }
       if (flags.has("--stdin-file") || flags.has("--stdin")) throw new CommandFailure("usage", "--stdin and --stdin-file are for a command on the kernel itself; with --session or --workspace the command's stdin is yours")
+      const timeoutSeconds = parseTimeout(flags.get("--timeout"))
+      if (timeoutSeconds > 86_400) throw new CommandFailure("usage", "--timeout cannot exceed 86400 seconds")
       process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
         runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
-          hostAgent: flags.get("--host-agent") as string | undefined, command: program }, send,
+          hostAgent: flags.get("--host-agent") as string | undefined, command: program, timeoutSeconds }, send,
           { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
     } else if (command === "whats-new") {
       kernel = (flags.get("--kernel") as string | undefined) ?? null

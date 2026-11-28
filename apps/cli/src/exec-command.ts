@@ -1,6 +1,8 @@
 import timers from "node:timers/promises"
 import type { Readable, Writable } from "node:stream"
-import type { ExecOutcome, ExecOutput } from "@chariox/kernel-client/kernel-types"
+import type { CommandTarget, ExecOutcome, RunCommandOperation, RunCommandResult } from "@chariox/kernel-client/kernel-types"
+import { runCommandMinimumProtocolVersion, runCommandRequest } from "@chariox/kernel-client/ipc-requests"
+import { KernelProtocolMinimumError, withProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { failureOf, lostInFlight } from "./kernel-command-failure.js"
 import { CommandFailure } from "./agent-command-table.js"
@@ -8,10 +10,10 @@ import type { SendRequest } from "./kernel-files.js"
 
 const CHUNK_BYTES = 256 * 1024
 
-export type ExecOptions = { session?: string | undefined; workspace?: string | undefined; hostAgent?: string | undefined; command: readonly string[] }
-export type ExecIo = { stdin: Readable; stdout: Writable; stderr: Writable; signals?: NodeJS.Process }
+export type ExecOptions = { session?: string | undefined; workspace?: string | undefined; hostAgent?: string | undefined; timeoutSeconds?: number | undefined; command: readonly string[] }
+export type ExecIo = { stdin: Readable | undefined; stdout: Writable; stderr: Writable; signals?: NodeJS.Process }
 
-type Reply = { RoomTerminal: { result: { result: string; exec_id?: string; next_offset?: number; output?: ExecOutput } } }
+type Reply = { RunCommand: { result: RunCommandResult } }
 
 function codeOf(error: unknown): string | undefined {
   return error && typeof error === "object" && "code" in error ? String(error.code) : undefined
@@ -42,27 +44,26 @@ function write(stream: Writable, bytes: Buffer, signal: AbortSignal): Promise<vo
 
 /** One command, concurrent bounded pipes, and no replay of an uncertain start. */
 export async function runExec(options: ExecOptions, send: SendRequest, io: ExecIo): Promise<number> {
-  if (Boolean(options.session) === Boolean(options.workspace) || options.command.length === 0 || (options.hostAgent && !options.session)) {
-    throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] (--session ROOM | --workspace PATH) [--host-agent AGENT] -- argv...")
+  if ((options.session && options.workspace) || options.command.length === 0 || (options.hostAgent && !options.session)) {
+    throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] [--session ROOM [--host-agent AGENT] | --workspace PATH] [--timeout SECONDS] -- argv...")
   }
-  const status = await send({ RelayStatus: null }) as { RelayStatus: { status: { capabilities?: string[] } } }
-  if (!status.RelayStatus.status.capabilities?.includes("room_exec_v1")) {
-    throw new CommandFailure("kernel_incompatible", "this kernel does not support binary Room exec; update it")
-  }
-  let session = options.session
-  if (!session) {
-    const made = await send({ CreateSession: { workspace_id: options.workspace, worktree_id: options.workspace, alias: null, slice_ref: null, no_subscribe: true } }) as {
-      SessionCreated?: { session_id?: string; session?: { id?: string } }
+  const target: CommandTarget = options.session
+    ? options.hostAgent
+      ? { kind: "agent_slice", session_id: options.session, agent_id: options.hostAgent }
+      : { kind: "room_workspace", session_id: options.session }
+    : { kind: "kernel" }
+  const request = async (operation: RunCommandOperation) => {
+    const body = runCommandRequest(target, operation)
+    try {
+      const response = await withProtocolMinimum(() => send(body), {
+        capability: "Command execution", requestVariant: "RunCommand",
+        minimumProtocolVersion: runCommandMinimumProtocolVersion,
+      }) as Reply
+      return response.RunCommand.result
+    } catch (error) {
+      if (error instanceof KernelProtocolMinimumError) throw new CommandFailure("kernel_incompatible", error.message)
+      throw error
     }
-    const roomId = made.SessionCreated?.session_id ?? made.SessionCreated?.session?.id
-    if (typeof roomId !== "string" || !roomId.trim()) {
-      throw new CommandFailure("exec_target_unreadable", "the kernel did not return the id of the new Room")
-    }
-    session = roomId
-  }
-  const request = async (operation: Record<string, unknown>) => {
-    const response = await send({ RoomTerminal: { session_id: session, ...(options.hostAgent ? { host_agent: options.hostAgent } : {}), operation } }) as Reply
-    return response.RoomTerminal.result
   }
   let execId: string | undefined
   let offset = 0
@@ -92,13 +93,15 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
   signals?.on("SIGTERM", onTerm)
   signals?.on("SIGHUP", onHup)
   try {
-    // The kernel's capability check covers remote kernels; local old kernels
-    // reject this new operation before starting anything.
-    const opened = await request({ operation: "exec_open", command: options.command })
+    const opened = await request({
+      operation: "exec_open", command: options.command,
+      ...(options.workspace ? { directory: options.workspace } : {}),
+      timeout_ms: Math.ceil((options.timeoutSeconds ?? 30) * 1000),
+    })
     if (opened.result !== "exec_opened" || !opened.exec_id) throw new Error("kernel returned no exec ID")
     execId = opened.exec_id
     if (stopped) interrupt(interrupted ?? 15)
-    const inputRequest = async (operation: Record<string, unknown>) => {
+    const inputRequest = async (operation: RunCommandOperation) => {
       for (;;) {
         if (stopped) return
         try { return await request(operation) } catch (error) {
@@ -112,13 +115,13 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     // a command exits without consuming input or the user interrupts it.
     const feeding = (async () => {
       try {
-        for await (const input of io.stdin) {
+        for await (const input of io.stdin ?? []) {
           const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input)
           for (let start = 0; start < bytes.length && !stopped; start += CHUNK_BYTES) {
             const chunk = bytes.subarray(start, start + CHUNK_BYTES)
             const response = await inputRequest({ operation: "exec_write", exec_id: execId, offset, data_base64: chunk.toString("base64") })
             if (!response) return
-            if (response.next_offset !== offset + chunk.length) throw new Error("kernel acknowledged an unexpected stdin offset")
+            if (response.result !== "exec_input" || response.next_offset !== offset + chunk.length) throw new Error("kernel acknowledged an unexpected stdin offset")
             offset = response.next_offset
           }
           if (stopped) return
@@ -131,8 +134,8 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     const reading = (async () => {
       for (;;) {
         const response = await request({ operation: "exec_read", exec_id: execId, after_cursor: cursor, wait_ms: 1000 })
+        if (response.result !== "exec_output") throw new Error("kernel returned no exec output")
         const output = response.output
-        if (response.result !== "exec_output" || !output) throw new Error("kernel returned no exec output")
         const consumed = new AbortController()
         const renewing = (async () => {
           while (!consumed.signal.aborted) {
@@ -168,7 +171,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
       stopped = true
       stopInput.abort()
       stopOutput.abort()
-      io.stdin.destroy()
+      io.stdin?.destroy()
       feeding.catch(() => undefined)
       reading.catch(() => undefined)
     }
@@ -178,13 +181,19 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     if (interrupted !== undefined) return 128 + interrupted
     if (outcome.kind === "failed") throw new Error(outcome.message)
     if (outcome.kind === "memory_limit") throw new CommandFailure("memory_limit", `command stopped at its memory limit (${outcome.limit_bytes} bytes)`)
+    if (outcome.kind === "timed_out") {
+      const elapsed = `command didn't finish in ${outcome.timeout_ms / 1000} s`
+      if (outcome.exit.kind === "not_started") throw new CommandFailure("exec_timed_out", `${elapsed} and did not start before the deadline`, { outcome })
+      const status = outcome.exit.kind === "exited" ? `exit code ${outcome.exit.code}` : `signal ${outcome.exit.signal}`
+      throw new CommandFailure("exec_timed_out", `${elapsed} and was stopped (${status})`, { outcome })
+    }
     return outcome.kind === "exited" ? outcome.code : 128 + outcome.signal
   } catch (error) {
     // A probed grant-ending loss can follow admission; it is not a server refusal.
     const uncertainOpen = ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"].includes(codeOf(error) ?? "")
     const definiteRefusal = !uncertainOpen && (error instanceof LocalIpcError
       ? error.operation === "handle kernel response" && !lostInFlight(error)
-      : /^(exec_|terminal_)/.test(codeOf(error) ?? ""))
+      : /^(exec_|kernel_incompatible$)/.test(codeOf(error) ?? ""))
     if (!execId && definiteRefusal) completed = true
     if (execId && codeOf(error) === "exec_interrupted" && interrupted !== undefined) {
       try {
@@ -200,10 +209,10 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     }
     const failure = failureOf(error)
     throw new CommandFailure(failure.code, failure.message, {
-      session_id: session, exec_id: execId ?? null, stdin_offset: offset, output_cursor: cursor,
+      ...failure.details, target, exec_id: execId ?? null, stdin_offset: offset, output_cursor: cursor,
       ...(!completed ? { next_step: execId
-        ? "resume this exec with RoomTerminal exec_read, or exec_close to cancel; do not rerun an uncertain command"
-        : "EndSession on the retained Room cancels any uncollected command; do not rerun an uncertain start" } : {}),
+        ? "resume this command with RunCommand exec_read, or exec_close to stop it; do not rerun an uncertain command"
+        : "list commands on this target with RunCommand exec_list before retrying" } : {}),
     })
   } finally {
     stopped = true
@@ -211,13 +220,5 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     signals?.off("SIGINT", onInt)
     signals?.off("SIGTERM", onTerm)
     signals?.off("SIGHUP", onHup)
-    if (!options.session && completed) {
-      try { await send({ EndSession: { session_id: session } }) } catch (error) {
-        // Room cleanup must never replace the command's exit or its real error.
-        const warning = { code: "exec_room_cleanup_failed", session_id: session,
-          message: failureOf(error).message, next_step: "EndSession on this Room to remove it" }
-        await write(io.stderr, Buffer.from(`${JSON.stringify({ warning })}\n`), new AbortController().signal).catch(() => undefined)
-      }
-    }
   }
 }
