@@ -182,9 +182,13 @@ async fn assert_codex_copy_admission(receiving: ReceivingAccount) {
         run.endpoint_mode(),
         crate::provider::AgentEndpointMode::Managed
     );
-    assert_eq!(
-        run.pty_program(),
-        Some(executable.to_string_lossy().as_ref())
+    assert!(run.pty_program().is_some());
+    let executable_path = executable.display().to_string();
+    assert!(
+        run.pty_args()
+            .windows(2)
+            .any(|arguments| { arguments[0] == executable_path && arguments[1] == "app-server" }),
+        "the confined native launch must invoke the selected Codex executable as app-server"
     );
     assert!(run.structured_endpoint().is_some());
     assert!(
