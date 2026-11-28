@@ -1,4 +1,4 @@
-import { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest, type ProviderAccountCopyOffer, type ProviderAccountCopyReceipt, type ProviderAccountCopyWait } from "@chariox/kernel-client"
+import { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest, type ProviderAccountCopyOffer, type ProviderAccountCopyReceipt, type ProviderAccountCopyWait, type ProviderAccountCopyProgress } from "@chariox/kernel-client"
 import {
   normalizeRuntimeSession,
   type ProviderAuthStatus,
@@ -381,6 +381,37 @@ export async function copyProviderAccountFromKernel(client: LocalIpcClient, offe
     return wait
   }
   const receipt = expectVariant<{ receipt: ProviderAccountCopyReceipt }>(response, "ProviderAccountCopied").receipt
-  if (!receipt || receipt.operation_id !== operationId || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile || typeof receipt.account_profile !== "string") throw new Error("The kernel did not confirm this login copy")
+  return confirmedAccountCopyReceipt(offer, operationId, receipt)
+}
+
+function confirmedAccountCopyReceipt(offer: ProviderAccountCopyOffer, operationId: string, receipt: ProviderAccountCopyReceipt): ProviderAccountCopyReceipt {
+  if (!receipt || typeof receipt !== "object" || receipt.operation_id !== operationId || receipt.provider !== offer.provider || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile || typeof receipt.account_profile !== "string") throw new Error("The kernel did not confirm this login copy")
   return receipt
+}
+
+/** Local clients read the same owner-scoped progress as the relay resource feed. */
+export async function followProviderAccountCopy(client: LocalIpcClient, offer: ProviderAccountCopyOffer, wait: ProviderAccountCopyWait, current: () => boolean): Promise<ProviderAccountCopyReceipt> {
+  if (wait.source_kernel_id !== offer.source_kernel_id || wait.target_kernel_id !== offer.target_kernel_id || !Number.isFinite(wait.expires_at_ms)) throw new Error("The kernel did not confirm the login copy progress")
+  while (current()) {
+    const { copies } = expectVariant<{ copies: ProviderAccountCopyProgress[] }>(
+      await client.send<Record<string, unknown>>({ ListProviderAccountProfiles: {} }), "ProviderAccountProfilesListed")
+    if (!Array.isArray(copies)) throw new Error("The kernel did not confirm the login copy progress")
+    const progress = copies.find(copy => copy && typeof copy === "object" && (
+      copy.status === "installed" ? copy.receipt?.operation_id : copy.status === "waiting_for_unlock" ? copy.wait?.operation_id : copy.status === "failed" ? copy.operation_id : undefined
+    ) === wait.operation_id)
+    if (!progress) throw new Error("The kernel no longer reports this login copy. Check the receiving account before copying it again.")
+    if (progress.status === "installed") return confirmedAccountCopyReceipt(offer, wait.operation_id, progress.receipt)
+    if (progress.status === "failed") {
+      const message = progress.code === "provider_account_copy_cancelled"
+        ? "The login copy was cancelled. Copy the login again if you still need it."
+        : progress.code === "provider_account_copy_cli_missing"
+          ? "Install the provider’s command-line tool on the receiving machine, then retry the login copy."
+          : "The login copy could not finish. Check both machines and the receiving Vault, then retry the copy."
+      throw Object.assign(new Error(message), { code: progress.code })
+    }
+    if (progress.wait.source_kernel_id !== offer.source_kernel_id || progress.wait.target_kernel_id !== offer.target_kernel_id || progress.wait.expires_at_ms !== wait.expires_at_ms) throw new Error("The kernel did not confirm the login copy progress")
+    await new Promise<void>(resolve => setTimeout(resolve, 1_000))
+  }
+  // Ending this client continuation never cancels the kernel-owned operation.
+  throw new Error("The kernel connection changed while following the login copy")
 }

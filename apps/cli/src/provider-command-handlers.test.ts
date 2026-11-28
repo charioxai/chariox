@@ -909,3 +909,96 @@ test("a completed login copy retains selection on the same receiving connection"
   assert.equal(refreshes, 1)
   assert.match(notices.join("\n"), /Login copied/)
 })
+
+
+test("a pending login copy follows the same operation to installed on its receiving connection", async () => {
+  const notices: string[] = [], selected: string[] = []
+  let refreshes = 0
+  const wait = { operation_id: "pending-operation", source_kernel_id: "a", target_kernel_id: "b", target_label: "Receiving machine", expires_at_ms: Date.now() + 600_000 }
+  const receipt = { operation_id: wait.operation_id, provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "copied" }
+  let resolve!: (value: typeof receipt) => void
+  const completion = new Promise<typeof receipt>(done => { resolve = done })
+  const followed: string[] = []
+  const connection = {}
+  const deps = Object.assign({
+    currentProviderId: () => "claude", flashFooter() {}, appendNotice: (value: string) => notices.push(value),
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    copyProviderAccountFromKernel: async () => wait,
+    accountCopyBinding: () => connection,
+    getRelayStatus: async () => ({ daemon_id: "b" }),
+    refreshWaitingRoomInventory: async () => { refreshes++ },
+    applyAccountSelection: async (profile: string) => { selected.push(profile) },
+  } satisfies ProviderCommandHandlerDeps, {
+    followProviderAccountCopy: async (_offer: unknown, pending: typeof wait, binding: object | undefined) => {
+      assert.equal(binding, connection)
+      followed.push(pending.operation_id)
+      return completion
+    },
+  })
+  const command = handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
+  await new Promise<void>(done => setImmediate(done))
+  assert.deepEqual(selected, [], "pending cannot select an installed profile")
+  assert.equal(refreshes, 0)
+  assert.match(notices.join("\n"), /Waiting.*Vault.*Receiving machine/)
+  assert.doesNotMatch(notices.join("\n"), /Login copied/)
+  resolve(receipt)
+  await command
+  assert.deepEqual(selected, ["copied"], "unlock settlement must select the installed profile without a second copy command")
+  assert.equal(refreshes, 1)
+  assert.deepEqual(followed, [wait.operation_id])
+  assert.equal(notices.filter(notice => notice.includes("Login copied")).length, 1)
+})
+
+test("a pending login copy reports the kernel's final failure without selecting a profile", async () => {
+  const notices: string[] = [], errors: string[] = [], selected: string[] = [], followed: string[] = []
+  let refreshes = 0
+  const wait = { operation_id: "failed-operation", source_kernel_id: "a", target_kernel_id: "b", target_label: "Receiving machine", expires_at_ms: Date.now() + 600_000 }
+  const deps = Object.assign({
+    currentProviderId: () => "claude", flashFooter: (value: string, tone: "info" | "error") => { if (tone === "error") errors.push(value) }, appendNotice: (value: string) => notices.push(value),
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    copyProviderAccountFromKernel: async () => wait,
+    getRelayStatus: async () => ({ daemon_id: "b" }),
+    refreshWaitingRoomInventory: async () => { refreshes++ },
+    applyAccountSelection: async (profile: string) => { selected.push(profile) },
+  } satisfies ProviderCommandHandlerDeps, {
+    followProviderAccountCopy: async (_offer: unknown, pending: typeof wait) => {
+      followed.push(pending.operation_id)
+      throw Object.assign(new Error("Receiving CLI missing; install it there, then retry the copy"), { code: "provider_account_copy_cli_missing" })
+    },
+  })
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
+  assert.match(errors.join("\n"), /Receiving CLI missing/)
+  assert.deepEqual(followed, [wait.operation_id])
+  assert.deepEqual(selected, [])
+  assert.equal(refreshes, 0)
+  assert.doesNotMatch(notices.join("\n"), /Login copied/)
+})
+
+
+test("a pending login copy cannot select or announce success after its connection changes", async () => {
+  let connection = {}
+  const original = connection
+  const selected: string[] = [], notices: string[] = []
+  let refreshes = 0
+  const wait = { operation_id: "operation", source_kernel_id: "a", target_kernel_id: "b", target_label: "Target", expires_at_ms: Date.now() + 600_000 }
+  const deps = Object.assign({
+    currentProviderId: () => "claude", flashFooter() {}, appendNotice: (value: string) => notices.push(value),
+    accountCopyBinding: () => connection,
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    copyProviderAccountFromKernel: async () => wait,
+    getRelayStatus: async () => ({ daemon_id: "b" }),
+    refreshWaitingRoomInventory: async () => { refreshes++ },
+    applyAccountSelection: async (value: string) => { selected.push(value) },
+  } satisfies ProviderCommandHandlerDeps, {
+    followProviderAccountCopy: async (_offer: unknown, pending: typeof wait, binding: object | undefined) => {
+      assert.equal(binding, original)
+      assert.equal(pending.operation_id, wait.operation_id)
+      connection = {}
+      return { operation_id: wait.operation_id, provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "installed" }
+    },
+  })
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
+  assert.deepEqual(selected, [])
+  assert.equal(refreshes, 0)
+  assert.doesNotMatch(notices.join("\n"), /Login copied/)
+})

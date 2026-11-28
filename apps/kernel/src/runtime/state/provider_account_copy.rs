@@ -389,13 +389,7 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             };
             if let Some(expires_at_ms) = self
-                .account_copy_unlock_gate(
-                    &profile.user_id,
-                    &binding,
-                    &vault_path,
-                    locked,
-                    resume_after_unlock,
-                )
+                .account_copy_unlock_gate(&profile.user_id, &binding, locked, resume_after_unlock)
                 .await?
             {
                 return Ok(RelayPeerResponse::ProviderAccountCopyTargetVaultLocked {
@@ -415,6 +409,10 @@ impl KernelRuntimeState {
         } else {
             VaultUnlockGuard::not_required()
         };
+        if uses_vault {
+            self.claim_account_copy_unlock(&binding, resume_after_unlock)
+                .await?;
+        }
         let result = tokio::task::spawn_blocking(move || {
             let _unlock = unlock;
             let _lease = lease;

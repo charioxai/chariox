@@ -4,10 +4,8 @@ use crate::provider_account_copy::{
     failure, ProviderAccountCopyBinding, ProviderAccountCopyOutcome, ProviderAccountCopyProgress,
     ProviderAccountCopyReceipt, ProviderAccountCopyUnlockRequest, ProviderAccountCopyWait,
 };
-use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use sha2::{Digest, Sha256};
 use std::future::Future;
-use std::path::Path;
 use std::sync::Mutex as SyncMutex;
 use tokio::time::Instant as Timer;
 
@@ -26,6 +24,7 @@ struct Incoming {
     deadline: Timer,
     expires_at_ms: u64,
     status: IncomingStatus,
+    claim: tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<bool>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,6 +39,16 @@ struct Outgoing {
     binding: ProviderAccountCopyBinding,
     remove_at: Timer,
     progress: ProviderAccountCopyProgress,
+}
+
+fn copy_unlock_id(binding: &ProviderAccountCopyBinding) -> Result<String, DaemonError> {
+    Ok(format!(
+        "account-copy-unlock:{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(&binding.source_kernel_id, &binding.operation_id))
+                .map_err(|_| failure("invalid_request"))?,
+        )
+    ))
 }
 
 fn retryable_failure(code: &str) -> bool {
@@ -286,22 +295,58 @@ impl KernelRuntimeState {
         self.kernel_resource_changes.notify();
     }
 
+    /// Claim only this operation's card after its normal Vault lease was acquired.
+    /// The card task orders an already answered Cancel or expired wait before the claim.
+    pub(super) async fn claim_account_copy_unlock(
+        &self,
+        binding: &ProviderAccountCopyBinding,
+        resume: bool,
+    ) -> Result<(), DaemonError> {
+        let id = copy_unlock_id(binding)?;
+        let claim = {
+            let incoming = self
+                .account_copy_waits
+                .incoming
+                .lock()
+                .expect("copy waits poisoned");
+            let Some(entry) = incoming.get(&id) else {
+                return if resume {
+                    Err(failure("provider_account_copy_cancelled"))
+                } else {
+                    Ok(())
+                };
+            };
+            if &entry.binding != binding {
+                return Err(failure("provider_account_copy_conflict"));
+            }
+            match entry.status {
+                IncomingStatus::Cancelled => {
+                    return Err(failure("provider_account_copy_cancelled"))
+                }
+                IncomingStatus::Unlocked => return Ok(()),
+                IncomingStatus::Waiting => entry.claim.clone(),
+            }
+        };
+        let (accepted, answer) = tokio::sync::oneshot::channel();
+        claim
+            .send(accepted)
+            .map_err(|_| failure("provider_account_copy_cancelled"))?;
+        match answer.await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(failure("provider_account_copy_install_failed")),
+            Err(_) => Err(failure("provider_account_copy_cancelled")),
+        }
+    }
+
     /// Called with the Vault's mutation lock to order admission against the owner's unlock.
     pub(super) async fn account_copy_unlock_gate(
         &self,
         owner: &str,
         binding: &ProviderAccountCopyBinding,
-        path: &Path,
         locked: bool,
         resume: bool,
     ) -> Result<Option<u64>, DaemonError> {
-        let id = format!(
-            "account-copy-unlock:{:x}",
-            Sha256::digest(
-                serde_json::to_vec(&(&binding.source_kernel_id, &binding.operation_id))
-                    .map_err(|_| failure("invalid_request"))?,
-            )
-        );
+        let id = copy_unlock_id(binding)?;
         {
             let mut incoming = self
                 .account_copy_waits
@@ -320,6 +365,7 @@ impl KernelRuntimeState {
                     IncomingStatus::Cancelled => Err(failure("provider_account_copy_cancelled")),
                     IncomingStatus::Unlocked if !locked => Ok(None),
                     IncomingStatus::Unlocked => Err(failure("provider_account_copy_vault_locked")),
+                    IncomingStatus::Waiting if !locked => Ok(None),
                     IncomingStatus::Waiting => Ok(Some(entry.expires_at_ms)),
                 };
             }
@@ -332,23 +378,14 @@ impl KernelRuntimeState {
         }
         let deadline = Timer::now() + COPY_UNLOCK_WAIT;
         let expires_at_ms = crate::session::unix_epoch_ms() + COPY_UNLOCK_WAIT.as_millis() as u64;
-        let mut unlocks = super::vault_unlock_requests::vault_unlock_notifications(path);
+        let (claim, mut claims) = tokio::sync::mpsc::unbounded_channel();
+        let super::runtime_interaction_owned_state::InteractionRequest(kind, interaction) =
+            super::runtime_interaction_owned_state::InteractionRequest::account_copy_unlock(
+                &id,
+                COPY_UNLOCK_WAIT.as_secs(),
+            );
         let answer = self
-            .create_kernel_operation_interaction(
-                super::CardKind::VaultCredentialPayment,
-                "",
-                owner,
-                RuntimeInteraction::for_kernel_operation(
-                    &id,
-                    &id,
-                    "Vault unlock requested",
-                    "Unlock this kernel’s Vault to receive the copied login.",
-                    vec![RuntimeInteractionChoice::new(
-                        "cancel", "Cancel", "cancel", None,
-                    )],
-                )
-                .with_timeout_sec(COPY_UNLOCK_WAIT.as_secs()),
-            )
+            .create_kernel_operation_interaction(kind, "", owner, interaction)
             .await?;
         self.account_copy_waits
             .incoming
@@ -362,23 +399,22 @@ impl KernelRuntimeState {
                     deadline,
                     expires_at_ms,
                     status: IncomingStatus::Waiting,
+                    claim,
                 },
             );
         let state = self.clone();
-        let path = path.to_owned();
         tokio::spawn(async move {
             let mut answer = answer;
-            let status = loop {
-                tokio::select! {
-                    biased;
-                    _ = &mut answer => break IncomingStatus::Cancelled,
-                    _ = tokio::time::sleep_until(deadline) => break IncomingStatus::Cancelled,
-                    Ok(()) = unlocks.changed() => {
-                        if crate::secret::chariox_encrypted_vault_status(&path).is_ok_and(|status| status.unlocked) {
-                            break IncomingStatus::Unlocked;
-                        }
-                    }
-                }
+            let acquired: Option<tokio::sync::oneshot::Sender<bool>> = tokio::select! {
+                biased;
+                _ = &mut answer => None,
+                _ = tokio::time::sleep_until(deadline) => None,
+                claim = claims.recv() => claim,
+            };
+            let status = if acquired.is_some() {
+                IncomingStatus::Unlocked
+            } else {
+                IncomingStatus::Cancelled
             };
             if let Some(entry) = state
                 .account_copy_waits
@@ -389,8 +425,22 @@ impl KernelRuntimeState {
             {
                 entry.status = status;
             }
-            let _ = state.owned.timeout_runtime_interaction("", &id);
+            let retired = state.owned.timeout_runtime_interaction("", &id).is_ok();
+            if !retired {
+                if let Some(entry) = state
+                    .account_copy_waits
+                    .incoming
+                    .lock()
+                    .expect("copy waits poisoned")
+                    .get_mut(&id)
+                {
+                    entry.status = IncomingStatus::Cancelled;
+                }
+            }
             state.notify_account_copy_progress();
+            if let Some(accepted) = acquired {
+                let _ = accepted.send(retired);
+            }
         });
         self.notify_account_copy_progress();
         Ok(Some(expires_at_ms))

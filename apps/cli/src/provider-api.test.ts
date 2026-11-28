@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { LocalIpcClient } from "./ipc.js"
-import { copyProviderAccountFromKernel, getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
+import { copyProviderAccountFromKernel, followProviderAccountCopy, getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
@@ -125,4 +125,29 @@ test("waiting account copies require both bound kernels and a finite expiry", as
     const client = { send: async (request: Record<string, unknown>) => "RelayStatus" in request ? { RelayStatus: { status: { daemon_id: "target" } } } : { ProviderAccountCopyWaiting: { wait: invalid } } } as unknown as LocalIpcClient
     await assert.rejects(copyProviderAccountFromKernel(client, offer, "operation"))
   }
+})
+
+
+test("pending account copy settlement reads the same operation without sending another copy", async () => {
+  const offer = { source_kernel_id: "source", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "target", provider: "claude", account_profile: "work", label: "Work" }
+  const wait = { operation_id: "operation", source_kernel_id: "source", target_kernel_id: "target", target_label: "Target", expires_at_ms: Date.now() + 600_000 }
+  const receipt = { operation_id: wait.operation_id, provider: "claude", source_profile_id: "work", target_kernel_id: "target", account_profile: "installed" }
+  let reads = 0
+  const client = { send: async (request: Record<string, unknown>) => {
+    assert.deepEqual(request, { ListProviderAccountProfiles: {} })
+    return { ProviderAccountProfilesListed: { profiles: [], copies: [++reads === 1 ? { status: "waiting_for_unlock", wait } : { status: "installed", receipt }] } }
+  } } as unknown as LocalIpcClient
+  assert.deepEqual(await followProviderAccountCopy(client, offer, wait, () => true), receipt)
+  assert.equal(reads, 2)
+})
+
+test("pending account copy settlement reports failure and rejects another receipt binding", async () => {
+  const offer = { source_kernel_id: "source", source_machine_id: "machine", source_label: "Source", source_key_thumbprint: "pin", target_kernel_id: "target", provider: "claude", account_profile: "work", label: "Work" }
+  const wait = { operation_id: "operation", source_kernel_id: "source", target_kernel_id: "target", target_label: "Target", expires_at_ms: Date.now() + 600_000 }
+  const receipt = { operation_id: wait.operation_id, provider: "claude", source_profile_id: "work", target_kernel_id: "target", account_profile: "installed" }
+  await assert.rejects(followProviderAccountCopy(clientReturning({ ProviderAccountProfilesListed: { profiles: [], copies: [{ status: "failed", operation_id: wait.operation_id, code: "provider_account_copy_cancelled" }] } }), offer, wait, () => true), { code: "provider_account_copy_cancelled" })
+  for (const invalid of [{ ...receipt, target_kernel_id: "another-target" }, { ...receipt, provider: "codex" }, { ...receipt, source_profile_id: "another-profile" }]) {
+    await assert.rejects(followProviderAccountCopy(clientReturning({ ProviderAccountProfilesListed: { profiles: [], copies: [{ status: "installed", receipt: invalid }] } }), offer, wait, () => true), /did not confirm/)
+  }
+  await assert.rejects(followProviderAccountCopy(clientReturning({}), offer, wait, () => false), /connection changed/)
 })
