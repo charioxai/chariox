@@ -839,6 +839,43 @@ async fn cancellation_retains_detached_tool_ownership_for_an_already_ended_provi
     assert_unresponsive_abort_settles(true, false, AbortProviderExit::AlreadyEnded).await;
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn unrelated_non_utf8_process_name_does_not_block_stop_before_interrupt() {
+    struct UnrelatedProcess(std::process::Child);
+    impl Drop for UnrelatedProcess {
+        fn drop(&mut self) {
+            if matches!(self.0.try_wait(), Ok(None)) {
+                self.0.kill().expect("stop the exact fixture child");
+            }
+            let _ = self.0.wait();
+        }
+    }
+    let worktree = crate::test_support::TestWorktree::new("non-utf8-stop-neighbor");
+    let ready = worktree.path().join("ready");
+    let child = std::process::Command::new("python3")
+        .args([
+            "-c",
+            "import ctypes,os,sys,time\nassert ctypes.CDLL(None).prctl(15,b'foreign-\\xff',0,0,0)==0\nopen(sys.argv[1],'w').write(str(os.getpid()))\ntime.sleep(30)",
+        ])
+        .arg(&ready)
+        .spawn()
+        .expect("start an unrelated process with a legal non-UTF-8 Linux comm");
+    let mut child = UnrelatedProcess(child);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !ready.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the foreign process must install its name before Stop");
+    assert_unresponsive_abort_settles(false, false, AbortProviderExit::None).await;
+    assert!(
+        child.0.try_wait().unwrap().is_none(),
+        "Stop must leave the unrelated exact fixture process running"
+    );
+}
+
 enum AbortProviderExit {
     None,
     Observed,
