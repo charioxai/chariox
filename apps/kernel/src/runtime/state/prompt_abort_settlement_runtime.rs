@@ -74,9 +74,11 @@ impl KernelRuntimeState {
                     return;
                 }
                 let run_id = dispatch.provider_run_id.clone();
+                let provider_store = state.owned.provider_store.clone();
                 match state
                     .with_app_side_effect_blocking(move |app| {
-                        app.pty_mut().capture_prompt_abort_processes(&run_id)
+                        app.pty_mut().capture_prompt_abort_processes(&run_id)?;
+                        provider_store.capture_claude_prompt_abort(&run_id)
                     })
                     .await
                 {
@@ -113,9 +115,11 @@ impl KernelRuntimeState {
                         .unwrap_or_default();
                     // Lane admission may have waited while more tools started.
                     let run_id = dispatch.provider_run_id.clone();
+                    let provider_store = state.owned.provider_store.clone();
                     if let Err(error) = state
                         .with_app_side_effect_blocking(move |app| {
-                            app.pty_mut().capture_prompt_abort_processes(&run_id)
+                            app.pty_mut().capture_prompt_abort_processes(&run_id)?;
+                            provider_store.capture_claude_prompt_abort(&run_id)
                         })
                         .await
                     {
@@ -237,6 +241,9 @@ impl KernelRuntimeState {
                         }
                         let process_key = app.pty().process_key(&dispatch.provider_run_id).ok()
                             .or_else(|| owned.provider_process_tracking.read().run_processes.get(&dispatch.provider_run_id).cloned());
+                        let claude_retired = owned.provider_store.settle_claude_prompt_abort(
+                            &dispatch.provider_run_id, replace_run,
+                        )?;
                         app.pty_mut().terminate_owned_processes(&dispatch.provider_run_id)?;
                         let (_, removed_key) = crate::app::ProviderLaunchProcessRuntime::new(app)
                             .remove_run(&dispatch.provider_run_id)?;
@@ -249,7 +256,7 @@ impl KernelRuntimeState {
                         owned.remove_provider_process_tracking_for_run(&dispatch.provider_run_id, removed_key);
                         // Borrowed endpoints keep their documented interrupt semantics.
                         // Replace timed-out runs even if launch has not materialized their PTY yet.
-                        if process_key.is_some() || replace_run {
+                        if process_key.is_some() || replace_run || claude_retired == Some(true) {
                             let ended = owned.provider_store.mark_run_ended_provider_only(
                                 &dispatch.session_id, &dispatch.provider_run_id,
                             )?;

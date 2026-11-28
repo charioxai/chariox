@@ -201,16 +201,20 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
             continue;
         };
-        let text = match std::fs::read_to_string(entry.path().join("stat")) {
+        let bytes = match std::fs::read(entry.path().join("stat")) {
             Ok(text) => text,
             Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
                 continue
             }
             Err(error) => return Err(error),
         };
-        let Some((_, tail)) = text.rsplit_once(") ") else {
+        // Linux comm is arbitrary bytes. Decode only the kernel's ASCII fields
+        // after its closing delimiter, so an unrelated name cannot block Stop.
+        let Some(end) = bytes.windows(2).rposition(|pair| pair == b") ") else {
             return Err(io::Error::other("invalid process identity"));
         };
+        let tail = std::str::from_utf8(&bytes[end + 2..])
+            .map_err(|_| io::Error::other("invalid process identity fields"))?;
         let fields: Vec<_> = tail.split_whitespace().collect();
         if fields.len() < 20 {
             return Err(io::Error::other("short process identity"));

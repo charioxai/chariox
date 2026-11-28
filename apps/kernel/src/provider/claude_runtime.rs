@@ -31,6 +31,7 @@ mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
+pub(crate) use process::ClaudeRuntimeProcess;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use runtime_tool_wait::{
     begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
@@ -94,6 +95,10 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
         &output_notifier,
     )?;
 
+    let child = ClaudeRuntimeProcess::new(child).map_err(|error| DaemonError::LocalTransport {
+        operation: "claude_capture_process_ownership",
+        message: error.to_string(),
+    })?;
     Ok(ClaudeRuntimeBinding {
         state: ClaudeRuntimeState {
             program,
@@ -497,25 +502,27 @@ fn restart_claude_runtime(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
-    let (child, stdin, receiver) = spawn_claude_child(
-        run.id(),
-        &state.program,
-        &args,
-        &env,
-        &state.provider_credential_env,
-        &env_remove,
-        working_directory.as_ref(),
-        operation,
-        &output_notifier,
-    )?;
+    let (stdin, receiver) = state.child.replace_with(|| {
+        let (child, stdin, receiver) = spawn_claude_child(
+            run.id(),
+            &state.program,
+            &args,
+            &env,
+            &state.provider_credential_env,
+            &env_remove,
+            working_directory.as_ref(),
+            operation,
+            &output_notifier,
+        )?;
+        Ok((child, (stdin, receiver)))
+    })?;
     *state
         .process_identity
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        crate::runtime::kernel_access::process::inspect(child.id())
+        crate::runtime::kernel_access::process::inspect(state.child.id())
             .ok()
             .map(|(identity, _)| identity);
-    state.child = child;
     state.stdin = stdin;
     state.receiver = receiver;
     state.args = base_args;
@@ -657,7 +664,7 @@ mod tests {
                 last_context_tokens: None,
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                child,
+                child: super::ClaudeRuntimeProcess::new(child).unwrap(),
                 stdin,
                 receiver,
                 output_notifier: Default::default(),

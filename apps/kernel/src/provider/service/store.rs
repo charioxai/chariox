@@ -491,6 +491,37 @@ impl ProviderProcessServiceStore {
         self.write().clear_runtime(provider_run_id)
     }
 
+    pub(crate) fn capture_claude_prompt_abort(&self, run_id: &str) -> Result<(), DaemonError> {
+        let process = self.read().claude_owned_process(run_id);
+        if let Some(process) = process {
+            process
+                .capture_prompt_abort()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: run_id.into(),
+                    message: error.to_string(),
+                })?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn settle_claude_prompt_abort(
+        &self,
+        run_id: &str,
+        force_retirement: bool,
+    ) -> Result<Option<bool>, DaemonError> {
+        let process = self.read().claude_owned_process(run_id);
+        process
+            .map(|process| {
+                process
+                    .settle_prompt_abort(force_retirement)
+                    .map_err(|error| DaemonError::PtyCleanup {
+                        provider_run_id: run_id.into(),
+                        message: error.to_string(),
+                    })
+            })
+            .transpose()
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"

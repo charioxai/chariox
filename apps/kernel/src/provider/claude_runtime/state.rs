@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin};
+use std::process::ChildStdin;
 use std::sync::mpsc::Receiver;
 
 use serde_json::Value;
 
-use super::process::{stop_child, ClaudeRuntimeMessage};
+use super::process::{ClaudeRuntimeMessage, ClaudeRuntimeProcess};
 use super::watchdog::ClaudeTurnWatchdog;
 use super::{AgentExecutionMode, AgentPermissionLevel};
 use crate::provider::claude::ClaudeMcpConfigFile;
@@ -33,7 +33,7 @@ pub struct ClaudeRuntimeState {
     pub(super) usage_file: Option<PathBuf>,
     pub(super) last_usage_file_contents: Option<String>,
     pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
-    pub(super) child: Child,
+    pub(super) child: ClaudeRuntimeProcess,
     // Shared with the actor registry while the runtime state is leased for I/O.
     pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
     pub(super) stdin: ChildStdin,
@@ -101,6 +101,9 @@ impl std::fmt::Debug for ClaudeRuntimeState {
 }
 
 impl ClaudeRuntimeState {
+    pub(crate) fn owned_process(&self) -> ClaudeRuntimeProcess {
+        self.child.clone()
+    }
     pub(crate) fn metadata_discovery_credentials(
         &self,
     ) -> crate::provider::ProviderCredentialEnvironment {
@@ -126,6 +129,6 @@ impl ClaudeRuntimeState {
 
 impl Drop for ClaudeRuntimeState {
     fn drop(&mut self) {
-        stop_child(&mut self.child);
+        self.child.retire();
     }
 }
