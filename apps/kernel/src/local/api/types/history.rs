@@ -1,6 +1,11 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSessionUsageRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionHistoryOutlineRequest {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

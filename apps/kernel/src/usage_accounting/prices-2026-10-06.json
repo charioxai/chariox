@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "observed_date": "2026-10-06",
+  "currency": "USD",
+  "unit": "nanodollars_per_token",
+  "scope": "API-equivalent standard global list prices; not subscription billing. Context band must be supplied explicitly for models with banded pricing. No tool, infrastructure, batch, fast-mode or regional charges included.",
+  "sources": {
+    "openai": "https://developers.openai.com/api/docs/pricing",
+    "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "models": [
+    {"model": "gpt-6.1-sol", "band": "short", "source": "openai", "input": 2000, "cached_input": 100, "cache_write": 2500, "output": 10000},
+    {"model": "gpt-6.1-sol", "band": "long", "source": "openai", "input": 4000, "cached_input": 200, "cache_write": 5000, "output": 15000},
+    {"model": "gpt-6-astra", "band": "short", "source": "openai", "input": 10000, "cached_input": 1000, "cache_write": 12500, "output": 50000},
+    {"model": "gpt-6-astra", "band": "long", "source": "openai", "input": 20000, "cached_input": 2000, "cache_write": 25000, "output": 75000},
+    {"model": "gpt-6-luna", "band": "short", "source": "openai", "input": 100, "cached_input": 10, "cache_write": 125, "output": 500},
+    {"model": "gpt-6-luna", "band": "long", "source": "openai", "input": 200, "cached_input": 20, "cache_write": 250, "output": 750},
+    {"model": "gpt-5.3-codex", "band": "all", "source": "openai", "input": 1750, "cached_input": 175, "output": 14000},
+    {"model": "claude-sonnet-4-6", "band": "all", "source": "anthropic", "input": 3000, "cached_input": 300, "cache_write_5m": 3750, "cache_write_1h": 6000, "output": 15000},
+    {"model": "claude-opus-4-6", "band": "all", "source": "anthropic", "input": 5000, "cached_input": 500, "cache_write_5m": 6250, "cache_write_1h": 10000, "output": 25000}
+  ]
+}
