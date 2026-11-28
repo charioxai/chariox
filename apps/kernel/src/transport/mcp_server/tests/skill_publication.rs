@@ -309,7 +309,7 @@ async fn mcp_skill_late_answer_withdraws_approval_without_publishing() {
     let (call, interaction) = fixture
         .asking(publish(&fixture.prompt_id, &mutation, &receipt))
         .await;
-    fixture
+    let completed = fixture
         .client(LocalDaemonRequest::CompletePrompt(
             crate::local::CompletePromptRequest {
                 session_id: fixture.session_id.clone(),
@@ -317,17 +317,29 @@ async fn mcp_skill_late_answer_withdraws_approval_without_publishing() {
         ))
         .await
         .unwrap();
-    // A RuntimeGrant belongs to its emitting prompt; a late answer withdraws it.
+    let LocalDaemonResponse::PromptCompleted { completion } = completed else {
+        panic!("completion must return the actual prompt receipt");
+    };
+    assert_eq!(completion.completed.id(), fixture.prompt_id);
+    assert_eq!(
+        completion.completed.status(),
+        crate::session::PromptStatus::Completed
+    );
+    assert!(completion.started_next.is_none());
+    let ended = public_session(&fixture).await;
+    assert!(ended.active_prompt_for_agent(&fixture.agent_id).is_none());
+    // Completion withdraws the prompt's RuntimeGrant; a late answer cannot revive it.
     let late_answer = fixture
         .answer(&interaction, "allow")
         .await
         .expect_err("an ended turn must not accept a late allow answer");
-    assert!(
-        late_answer
-            .to_string()
-            .contains("Agent interaction was withdrawn because its turn or agent ended"),
-        "{late_answer}"
-    );
+    match late_answer {
+        crate::error::DaemonError::LocalTransport { operation, message } => {
+            assert_eq!(operation, "interaction_closed");
+            assert_eq!(message, "someone else answered or it expired");
+        }
+        other => panic!("a completed prompt's late answer must be closed: {other}"),
+    }
     let refused = result(call).await;
     // Withdrawal sends a resolution with no choice, so this path is a denied tool result.
     assert!(refused.get("error").is_none(), "{refused}");
