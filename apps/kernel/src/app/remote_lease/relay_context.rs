@@ -7,6 +7,10 @@ use crate::transport::relay_peer::{
 
 use super::RemoteLeaseRuntime;
 
+#[cfg(test)]
+#[path = "relay_context_turn_origin_tests.rs"]
+mod turn_origin_tests;
+
 impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn native_interaction_context_for_backing_agent(
         &mut self,
