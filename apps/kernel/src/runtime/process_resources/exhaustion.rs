@@ -7,6 +7,8 @@
 //!
 //! The decisions live here as plain state; `Pool` reads the machine and carries
 //! the steps out.
+use super::admission::FILL_HORIZON_SECONDS;
+use super::pool::RUNAWAY_BYTES_PER_SECOND;
 use super::MIB;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -59,6 +61,13 @@ pub(crate) const EXECUTOR_KERNEL_RESERVATION_BYTES: u64 = 4096 * MIB;
 /// Samples of a command's memory are kept this far apart.
 const SAMPLE_EVERY: Duration = Duration::from_secs(1);
 
+/// What a command taking memory at `rate` bytes per second takes over the
+/// fill horizon (5 s, the disk rule's, Miguel 11-24): the host has too little
+/// left when its headroom is below it. The runaway rate is 128 MiB/s.
+fn horizon_bytes(rate: u64) -> u64 {
+    rate.saturating_mul(FILL_HORIZON_SECONDS)
+}
+
 /// What the machine reports right now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Gauge {
@@ -68,6 +77,11 @@ pub(super) struct Gauge {
     pub pool_bytes: u64,
     /// What the agent workloads (everything but the kernel) hold of it.
     pub pool_used: u64,
+    /// What the host can give a command that allocates faster than the
+    /// OS can reclaim: free memory plus file cache (not `MemAvailable`, which
+    /// counts slab the OS cannot free at that speed), and the headroom of a
+    /// limiting ancestor cgroup.
+    pub headroom: u64,
 }
 
 impl Gauge {
@@ -111,6 +125,10 @@ pub(super) struct Action {
     pub since: Duration,
     /// It was paused before and grew again: no second throttle.
     pub repeat: bool,
+    /// The trigger was the runaway horizon: the rate (bytes per second) at
+    /// which it was taking memory when the host had less than the fill
+    /// horizon of it left.
+    pub runaway: Option<u64>,
 }
 
 struct Active {
@@ -119,6 +137,9 @@ struct Active {
     last: Step,
     grew: u64,
     window: Duration,
+    /// Started by the runaway horizon at this rate: it goes on while the host
+    /// still has less than the horizon of that rate left.
+    runaway: Option<u64>,
 }
 
 #[derive(Default)]
@@ -144,8 +165,14 @@ impl Exhaustion {
     ) -> Vec<Action> {
         self.record(now, commands);
         // Over when the pressure is below the clear line, or the pool no longer
-        // nearly full (the trigger's other half), for the clear time.
-        if gauge.pressing() {
+        // nearly full (the trigger's other half), for the clear time. A ladder
+        // the runaway horizon began goes on while the host still has less
+        // than the horizon of the runaway's rate left.
+        let pressing = match self.active.as_ref().and_then(|active| active.runaway) {
+            Some(rate) => gauge.headroom < horizon_bytes(rate),
+            None => gauge.pressing(),
+        };
+        if pressing {
             self.calm_since = None;
         } else {
             self.calm_since.get_or_insert(now);
@@ -160,6 +187,7 @@ impl Exhaustion {
         if let Some(active) = &mut self.active {
             let pid = active.pid;
             let since = now.saturating_duration_since(active.started);
+            let runaway = active.runaway;
             let action = |step, active: &Active| Action {
                 pid,
                 step,
@@ -169,6 +197,7 @@ impl Exhaustion {
                 gauge,
                 since,
                 repeat: false,
+                runaway,
             };
             let calm = self
                 .calm_since
@@ -179,7 +208,7 @@ impl Exhaustion {
                 }
                 actions.push(action(Step::Release, active));
                 self.active = None;
-            } else if gauge.pressing() {
+            } else if pressing {
                 if active.last == Step::Pause && since >= STOP_AFTER {
                     actions.push(action(Step::Stop, active));
                     self.active = None;
@@ -190,16 +219,26 @@ impl Exhaustion {
             }
             return actions;
         }
-        if !gauge.hot() {
-            self.hot_since = None;
-            return actions;
-        }
-        let hot = *self.hot_since.get_or_insert(now);
-        if now.saturating_duration_since(hot) < PSI_SUSTAIN {
-            return actions;
-        }
-        let Some((pid, grew, window)) = self.top_grower(now, commands) else {
-            return actions;
+        // The runaway horizon: no pressure average and no sustain to wait
+        // for, since a command taking memory this fast leaves the host
+        // seconds, not the time the pressure takes to show.
+        let (pid, grew, window, runaway) = if let Some((pid, rate, grew, window)) =
+            self.runaway_in_horizon(now, gauge, commands)
+        {
+            (pid, grew, window, Some(rate))
+        } else {
+            if !gauge.hot() {
+                self.hot_since = None;
+                return actions;
+            }
+            let hot = *self.hot_since.get_or_insert(now);
+            if now.saturating_duration_since(hot) < PSI_SUSTAIN {
+                return actions;
+            }
+            let Some((pid, grew, window)) = self.top_grower(now, commands) else {
+                return actions;
+            };
+            (pid, grew, window, None)
         };
         self.hot_since = None;
         let repeat = STOP_A_RE_GROWER_AT_ONCE && self.paused_before.contains_key(&pid);
@@ -213,6 +252,7 @@ impl Exhaustion {
             gauge,
             since: Duration::ZERO,
             repeat,
+            runaway,
         });
         if !repeat {
             self.active = Some(Active {
@@ -221,9 +261,38 @@ impl Exhaustion {
                 last: Step::Throttle,
                 grew,
                 window,
+                runaway,
             });
         }
         actions
+    }
+
+    /// The fastest command taking memory at the runaway rate or more while the
+    /// host has less than the fill horizon of that rate left: (pid, rate in
+    /// bytes per second, what it grew, over how long). The rate is measured
+    /// against the newest sample at least `SAMPLE_EVERY` old.
+    fn runaway_in_horizon(
+        &self,
+        now: Instant,
+        gauge: Gauge,
+        commands: &[(u32, u64)],
+    ) -> Option<(u32, u64, u64, Duration)> {
+        commands
+            .iter()
+            .filter_map(|(pid, resident)| {
+                let (at, before) = self
+                    .history
+                    .get(pid)?
+                    .iter()
+                    .rev()
+                    .find(|(at, _)| now.saturating_duration_since(*at) >= SAMPLE_EVERY)?;
+                let elapsed = now.saturating_duration_since(*at);
+                let grew = resident.saturating_sub(*before);
+                let rate = (grew as u128 * 1000 / elapsed.as_millis().max(1)) as u64;
+                (rate >= RUNAWAY_BYTES_PER_SECOND && gauge.headroom < horizon_bytes(rate))
+                    .then_some((*pid, rate, grew, elapsed))
+            })
+            .max_by_key(|(_, rate, _, _)| *rate)
     }
 
     /// Protection is off or the machine unreadable: the command being acted on
@@ -537,6 +606,20 @@ fn command_name(line: &str) -> String {
 /// What each step says to the command's own error stream, its agent's inbox
 /// and the pane. The first words name the machine's condition and the numbers.
 pub(super) fn throttled_line(command: &str, action: &Action) -> String {
+    if let Some(rate) = action.runaway {
+        return format!(
+            "chariox: your process `{}` was throttled: it is taking memory at {} a second and the machine has {} left, under {} s of room at that speed (it grew {} in {} s, now {}). Its memory growth is slowed. If the room does not come back it is paused in {} s and stopped in {} s. Use less memory (lower parallelism such as -j, cap the test's memory, split the work).\n",
+            command_name(command),
+            gb(rate),
+            gb(action.gauge.headroom),
+            FILL_HORIZON_SECONDS,
+            gb(action.grew),
+            action.window.as_secs(),
+            gb(action.resident),
+            PAUSE_AFTER.as_secs(),
+            STOP_AFTER.as_secs(),
+        );
+    }
     format!(
         "chariox: your process `{}` was throttled: the machine is out of memory (memory pressure {:.0}%, {}% of the memory pool in use) and this process grew {} in {} s, the most of anything running (now {}). Its memory growth is slowed. If the pressure goes on it is paused in {} s and stopped in {} s. Use less memory (lower parallelism such as -j, cap the test's memory, split the work).\n",
         command_name(command),
@@ -551,6 +634,15 @@ pub(super) fn throttled_line(command: &str, action: &Action) -> String {
 }
 
 pub(super) fn paused_line(command: &str, action: &Action) -> String {
+    if action.runaway.is_some() {
+        return format!(
+            "chariox: your process `{}` was paused: it was taking memory faster than the machine had room for ({} left) and still holds {}. It is stopped in {} s if the room does not come back, and it continues by itself when it does.\n",
+            command_name(command),
+            gb(action.gauge.headroom),
+            gb(action.resident),
+            STOP_AFTER.saturating_sub(action.since).as_secs(),
+        );
+    }
     format!(
         "chariox: your process `{}` was paused: the machine is still out of memory (memory pressure {:.0}%, {}% of the memory pool in use) and this process grew {} in {} s, the most of anything running (now {}). It is stopped in {} s if the pressure does not end, and it continues by itself when it ends.\n",
         command_name(command),
@@ -571,6 +663,16 @@ pub(super) fn resumed_line(command: &str) -> String {
 }
 
 pub(super) fn stopped_line(command: &str, action: &Action) -> String {
+    if let Some(rate) = action.runaway {
+        return format!(
+            "chariox: your process `{}` was stopped: it took memory at {} a second until the machine had {} left, and the room did not come back in the {} s it was throttled and paused; it held {}. Run it again with less memory (lower parallelism such as -j, cap the test's memory, split the work).\n",
+            command_name(command),
+            gb(rate),
+            gb(action.gauge.headroom),
+            action.since.as_secs(),
+            gb(action.resident),
+        );
+    }
     let how = if action.repeat {
         format!(
             "it was paused before for the same reason and grew {} in {} s again",
@@ -603,6 +705,7 @@ mod tests {
             psi,
             pool_bytes: 100 * 1024 * MIB,
             pool_used: used_percent * 1024 * MIB,
+            headroom: u64::MAX,
         }
     }
 
@@ -874,6 +977,105 @@ mod tests {
         assert_eq!(release.0, 8 + 10);
     }
 
+    /// Calm pressure, a nearly empty machine: only the host's headroom speaks.
+    fn roomy(headroom_gib: u64) -> Gauge {
+        Gauge {
+            headroom: headroom_gib * 1024 * MIB,
+            ..gauge(1.0, 10)
+        }
+    }
+
+    #[test]
+    fn a_runaway_with_less_than_the_horizon_left_is_acted_on_at_once_without_pressure() {
+        // 1.3 GB/s, 6 GiB left: under 5 s of room (6.5 GiB at that rate).
+        let start = Instant::now();
+        let mut machine = Exhaustion::default();
+        let steps = run(&mut machine, start, 0..30, |_| roomy(6), 1331 * MIB);
+        let at = |step| steps.iter().find(|(_, a)| a.step == step).map(|(t, _)| *t);
+        let throttled =
+            at(Step::Throttle).expect("throttled with PSI 1 % and 10 % of the pool used");
+        assert_eq!(
+            throttled, 1,
+            "one sample to measure the rate, no sustain time"
+        );
+        assert_eq!(at(Step::Pause), Some(throttled + 3));
+        assert_eq!(at(Step::Stop), Some(throttled + 13));
+        let stop = steps.iter().find(|(_, a)| a.step == Step::Stop).unwrap().1;
+        assert_eq!(stop.pid, 7);
+        assert!(stop
+            .runaway
+            .is_some_and(|rate| rate >= RUNAWAY_BYTES_PER_SECOND));
+    }
+
+    #[test]
+    fn a_runaway_with_the_horizon_of_room_left_is_left_alone() {
+        let start = Instant::now();
+        let mut machine = Exhaustion::default();
+        let steps = run(&mut machine, start, 0..30, |_| roomy(7), 1331 * MIB);
+        assert!(steps.is_empty(), "{steps:?}");
+    }
+
+    #[test]
+    fn a_command_slower_than_the_runaway_rate_is_left_alone_however_little_is_left() {
+        let start = Instant::now();
+        let mut machine = Exhaustion::default();
+        let mut gauge = roomy(0);
+        gauge.headroom = 100 * MIB;
+        let steps = run(&mut machine, start, 0..30, |_| gauge, 100 * MIB);
+        assert!(steps.is_empty(), "{steps:?}");
+    }
+
+    #[test]
+    fn the_runaway_horizon_ends_when_the_room_comes_back_for_the_clear_time() {
+        let start = Instant::now();
+        let mut machine = Exhaustion::default();
+        let room = |t: u64| if t < 3 { roomy(6) } else { roomy(60) };
+        let steps = run(&mut machine, start, 0..30, room, 1331 * MIB);
+        let release = steps
+            .iter()
+            .find(|(_, a)| a.step == Step::Release)
+            .expect("released once the room is back");
+        assert_eq!(release.0, 3 + 10);
+        assert!(steps.iter().all(|(_, a)| a.step != Step::Stop));
+    }
+
+    #[test]
+    fn the_runaway_horizon_says_the_room_and_the_rate_in_plain_words() {
+        let action = Action {
+            pid: 7,
+            step: Step::Throttle,
+            grew: 3 * 1024 * MIB,
+            window: SAMPLE_EVERY,
+            resident: 9 * 1024 * MIB,
+            gauge: roomy(6),
+            since: Duration::from_secs(13),
+            repeat: false,
+            runaway: Some(1331 * MIB),
+        };
+        let throttled = throttled_line("node usage.test.js", &action);
+        for part in [
+            "throttled",
+            "1.3 GB a second",
+            "6 GB left",
+            "5 s of room",
+            "-j",
+        ] {
+            assert!(throttled.contains(part), "{part}: {throttled}");
+        }
+        assert!(paused_line("node usage.test.js", &action).contains("paused"));
+        assert!(stopped_line("node usage.test.js", &action).contains("stopped"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn free_memory_plus_file_cache_is_what_a_fast_grower_can_have() {
+        let text = "MemTotal: 1000 kB\nMemFree: 800 kB\nMemAvailable: 9000 kB\nActive(file): 100 kB\nInactive(file): 50 kB\nSReclaimable: 8000 kB\n";
+        assert_eq!(
+            super::super::pool::fast_room_of_for_tests(text),
+            Some(950 * 1024)
+        );
+    }
+
     #[test]
     fn each_step_says_what_happened_with_the_numbers_and_what_to_do() {
         let action = Action {
@@ -885,6 +1087,7 @@ mod tests {
             gauge: gauge(45.0, 91),
             since: Duration::from_secs(13),
             repeat: false,
+            runaway: None,
         };
         let throttled = throttled_line("node usage.test.js", &action);
         for part in [

@@ -10,7 +10,7 @@ use std::sync::Weak;
 use std::time::Instant;
 
 /// A command growing this fast is a runaway and goes first.
-const RUNAWAY_BYTES_PER_SECOND: u64 = 128 * MIB;
+pub(super) const RUNAWAY_BYTES_PER_SECOND: u64 = 128 * MIB;
 /// A stopped command's memory takes a moment to show as free; no second stop
 /// for the same cause before then.
 const SETTLE: Duration = Duration::from_secs(1);
@@ -430,6 +430,7 @@ impl Pool {
                         "pool_percent": gauge.pool_percent(),
                         "pool_bytes": gauge.pool_bytes,
                         "pool_used_bytes": gauge.pool_used,
+                        "headroom_bytes": gauge.headroom,
                         "candidates": candidates.len(),
                         "top_growers": growers.iter().map(|(pid, resident, grew)| serde_json::json!({"pid": pid, "resident": resident, "grew_over_window": grew, "root": candidates.iter().find(|c| c.pid == *pid).is_some_and(|c| c.root)})).collect::<Vec<_>>(),
                     }),
@@ -470,6 +471,9 @@ impl Pool {
                     "pool_percent": action.gauge.pool_percent(),
                     "pool_bytes": action.gauge.pool_bytes,
                     "repeat": action.repeat,
+                    "trigger": if action.runaway.is_some() { "runaway_horizon" } else { "pressure" },
+                    "runaway_bytes_per_second": action.runaway,
+                    "headroom_bytes": action.gauge.headroom,
                 }),
             );
             match action.step {
@@ -1158,6 +1162,7 @@ fn host_gauge() -> Option<exhaustion::Gauge> {
         psi: pressure,
         pool_bytes: exhaustion::pool_bytes(total, kernel),
         pool_used: total.saturating_sub(available).saturating_sub(kernel),
+        headroom: fast_room().map_or(available, |fast| fast.min(available)),
     })
 }
 
@@ -1289,6 +1294,40 @@ fn sysstat_headroom_gates_the_typed_runaway_stop() {
         _ => panic!("expected the typed memory stop command"),
     }
     assert!(stopped.try_recv().is_err());
+}
+
+/// What the host can give a command that takes memory faster than the OS
+/// reclaims: free memory plus file cache. `MemAvailable` also counts
+/// reclaimable slab, 14 GB of it on the 11-26 incident host, which the OS
+/// cannot free at 2 GB/s. A limiting ancestor cgroup's headroom bounds it.
+#[cfg(all(target_os = "linux", not(test)))]
+fn fast_room() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let room = cgroup::bounding()
+        .iter()
+        .filter_map(|limited| cgroup::headroom(limited))
+        .fold(fast_room_of(&text)?, u64::min);
+    Some(room)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn fast_room_of_for_tests(text: &str) -> Option<u64> {
+    fast_room_of(text)
+}
+
+/// `MemFree + Active(file) + Inactive(file)` of a `/proc/meminfo`.
+#[cfg(target_os = "linux")]
+fn fast_room_of(text: &str) -> Option<u64> {
+    let kib = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .and_then(|line| line.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+    let total = kib("MemFree:")?
+        .saturating_add(kib("Active(file):")?)
+        .saturating_add(kib("Inactive(file):")?);
+    Some(total.saturating_mul(1024))
 }
 
 /// Memory the host itself has left above `margin`: the user's apps or other
