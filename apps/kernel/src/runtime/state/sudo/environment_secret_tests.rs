@@ -303,6 +303,100 @@ async fn a_raw_write_of_the_entry_value_refills_its_linked_secrets_like_a_replac
 }
 
 #[tokio::test]
+async fn a_raw_write_reports_a_failed_link_and_still_refreshes_a_later_entry() {
+    use crate::local::{LocalDaemonRequest, SetCredentialSecretRequest};
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    save_secret_names(&f, &["AA_BROKEN", "GH_TOKEN"]);
+    let handle = capture_for(&f, "GH_TOKEN").await;
+    call(&f, FILL, json!({"name": "GH_TOKEN", "credential_id": handle}))
+        .await
+        .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let entry = registry.get(&handle).unwrap().unwrap();
+    let key = match &entry.source {
+        crate::config::UserCredentialSourceConfig::Vault { key } => key.clone(),
+        other => panic!("a captured entry lives in the Vault: {other:?}"),
+    };
+    for id in ["raw-refill-a", "raw-refill-z"] {
+        let mut sibling = entry.clone();
+        sibling.id = id.to_owned();
+        registry.upsert(sibling).unwrap();
+    }
+    let links = f.state.secret_links();
+    // The earlier entry is bound to GH_TOKEN, so this deliberately stale link cannot refresh.
+    links
+        .write_linked(
+            &project_id(&f),
+            "AA_BROKEN",
+            Some(crate::project_environment::SecretLink::Entry("raw-refill-a".into())),
+            || Ok(true),
+        )
+        .unwrap();
+    links
+        .write_linked(
+            &project_id(&f),
+            "GH_TOKEN",
+            Some(crate::project_environment::SecretLink::Entry("raw-refill-z".into())),
+            || Ok(true),
+        )
+        .unwrap();
+    let matching: Vec<_> = registry
+        .list()
+        .unwrap()
+        .into_iter()
+        .filter(|entry| matches!(&entry.source, crate::config::UserCredentialSourceConfig::Vault { key: at } if at == &key))
+        .map(|entry| entry.id)
+        .collect();
+    assert!(
+        matching.iter().position(|id| id == "raw-refill-a").unwrap()
+            < matching.iter().position(|id| id == "raw-refill-z").unwrap()
+    );
+    assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some(SECRET));
+    assert_eq!(held(&f, "AA_BROKEN"), None);
+
+    let request = LocalDaemonRequest::SetCredentialSecret(SetCredentialSecretRequest {
+        session_id: None,
+        agent_id: None,
+        key,
+        value: "ghp_RawPartialRefresh91".into(),
+    });
+    let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    let command = KernelCommand::from_local_request_with_caller(
+        "raw-refill-failure",
+        KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    let failure = f
+        .router
+        .dispatch(command, request)
+        .await
+        .expect_err("a raw write must not report Stored when a linked refresh failed");
+    let message = failure.to_string();
+    assert!(message.contains("AA_BROKEN"), "{message}");
+    assert!(!message.contains("ghp_"), "no value in the message: {message}");
+    // This entry is attempted after the failed one; the committed raw write is not rolled back.
+    assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RawPartialRefresh91"));
+    assert_eq!(held(&f, "AA_BROKEN"), None);
+    assert_eq!(
+        links.filled_from("raw-refill-a").unwrap(),
+        vec![(project_id(&f), "AA_BROKEN".into())]
+    );
+    assert_eq!(
+        links.filled_from("raw-refill-z").unwrap(),
+        vec![(project_id(&f), "GH_TOKEN".into())]
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
 async fn deleting_the_entry_keeps_the_copy_as_a_normal_secret() {
     crate::test_support::isolated_env_test!();
     let f = fixture();

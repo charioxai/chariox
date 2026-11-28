@@ -422,23 +422,29 @@ impl KernelRuntimeState {
     }
 
     /// A raw write of the Vault value at `key`: every entry whose value lives there re-fills its Secrets,
-    /// the same as the owner's Replace.
-    pub(crate) fn refill_environment_secrets_at_vault_key(&self, key: &str) {
-        let entries = crate::credential::CharioxCredentialRegistry::user()
-            .and_then(|registry| registry.list());
-        match entries {
-            Ok(entries) => {
-                for entry in entries {
-                    if matches!(&entry.source, crate::config::UserCredentialSourceConfig::Vault { key: at } if at == key)
-                    {
-                        if let Err(error) = self.refill_linked_environment_secrets(&entry.id) {
-                            tracing::warn!(%error, "an Environment secret could not be re-filled after a raw Vault write");
-                        }
-                    }
+    /// the same as the owner's Replace. Try every entry before reporting any refresh failures.
+    pub(crate) fn refill_environment_secrets_at_vault_key(
+        &self,
+        key: &str,
+    ) -> Result<(), DaemonError> {
+        let entries = crate::credential::CharioxCredentialRegistry::user()?.list()?;
+        let mut failures = Vec::new();
+        for entry in entries {
+            if matches!(&entry.source, crate::config::UserCredentialSourceConfig::Vault { key: at } if at == key)
+            {
+                if let Err(error) = self.refill_linked_environment_secrets(&entry.id) {
+                    tracing::warn!(%error, "an Environment secret could not be re-filled after a raw Vault write");
+                    failures.push(format!("{}: {error}", entry.id));
                 }
             }
-            Err(error) => tracing::warn!(%error, "the Vault entries could not be read"),
         }
+        if failures.is_empty() {
+            return Ok(());
+        }
+        Err(environment_error(format!(
+            "The Vault value was stored, but some linked Environment secrets could not be refreshed: {}",
+            failures.join("; ")
+        )))
     }
 
     /// The owner deleted the entry: Secrets filled from it keep their value as normal Secrets.
