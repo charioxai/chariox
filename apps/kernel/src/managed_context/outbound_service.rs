@@ -1004,6 +1004,9 @@ fn prepare_managed_context_package_for_ticket(
                             false,
                         )
                     })?;
+                provider_account_profiles
+                    .record_credential_issued(&owner_user_id, &materialization)
+                    .map_err(|error| outbound_service_error(error.to_string(), false))?;
                 append_bounded_provider_account_materialization(
                     &mut materializations,
                     &mut serialized_component_bytes,
