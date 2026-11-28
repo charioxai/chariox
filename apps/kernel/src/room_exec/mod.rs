@@ -143,6 +143,7 @@ pub(super) struct Record {
     intent: LaunchIntent,
     scope: String,
     launch_command: Vec<String>,
+    stdin_file: Option<PathBuf>,
     job: bool,
     minimum_memory: u64,
     state: Mutex<ExecState>,
@@ -255,6 +256,7 @@ impl RoomExecService {
             false,
             0,
             None,
+            None,
         )
     }
 
@@ -269,6 +271,7 @@ impl RoomExecService {
         authority: crate::runtime::state::KernelRuntimeState,
         acting_agent: Option<String>,
         timeout_ms: Option<u64>,
+        stdin_file: Option<&str>,
     ) -> Result<String, DaemonError> {
         self.open_launch(
             session_id,
@@ -281,6 +284,7 @@ impl RoomExecService {
             false,
             0,
             timeout_ms,
+            stdin_file,
         )
     }
 
@@ -306,6 +310,7 @@ impl RoomExecService {
             true,
             u64::from(needs.memory_gib.unwrap_or(0)) * 1024 * 1024 * 1024,
             None,
+            None,
         )
     }
 
@@ -322,6 +327,7 @@ impl RoomExecService {
         job: bool,
         minimum_memory: u64,
         timeout_ms: Option<u64>,
+        stdin_file: Option<&str>,
     ) -> Result<String, DaemonError> {
         if command.is_empty()
             || command.len() > 64
@@ -347,6 +353,9 @@ impl RoomExecService {
                 "command directory is not a directory",
             ));
         }
+        let stdin_file = stdin_file
+            .map(|path| crate::room_terminal::resolve_stdin_file(path, &cwd))
+            .transpose()?;
         crate::runtime::process_resources::validate_executable(
             &command[0],
             Some(&cwd),
@@ -376,6 +385,7 @@ impl RoomExecService {
         };
         let record = Arc::new(Record {
             scope: scope.to_owned(),
+            stdin_file,
             job,
             minimum_memory,
             launch_command: if job {
@@ -499,6 +509,12 @@ impl RoomExecService {
             ));
         }
         let record = self.record(session_id, exec_id)?;
+        if record.stdin_file.is_some() {
+            return Err(error(
+                "exec_stdin_file",
+                "this command reads its named stdin file; do not send additional stdin bytes",
+            ));
+        }
         let mut input = record.input.lock().expect("exec input poisoned");
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         if input.last == Some((offset, digest)) {

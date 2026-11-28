@@ -10,7 +10,7 @@ import type { SendRequest } from "./kernel-files.js"
 
 const CHUNK_BYTES = 256 * 1024
 
-export type ExecOptions = { session?: string | undefined; workspace?: string | undefined; hostAgent?: string | undefined; timeoutSeconds?: number | undefined; command: readonly string[] }
+export type ExecOptions = { session?: string | undefined; workspace?: string | undefined; hostAgent?: string | undefined; timeoutSeconds?: number | undefined; directory?: string | undefined; stdinFile?: string | undefined; command: readonly string[] }
 export type ExecIo = { stdin: Readable | undefined; stdout: Writable; stderr: Writable; signals?: NodeJS.Process }
 
 type Reply = { RunCommand: { result: RunCommandResult } }
@@ -44,7 +44,8 @@ function write(stream: Writable, bytes: Buffer, signal: AbortSignal): Promise<vo
 
 /** One command, concurrent bounded pipes, and no replay of an uncertain start. */
 export async function runExec(options: ExecOptions, send: SendRequest, io: ExecIo): Promise<number> {
-  if ((options.session && options.workspace) || options.command.length === 0 || (options.hostAgent && !options.session)) {
+  if ((options.session && options.workspace) || options.command.length === 0 || (options.hostAgent && !options.session)
+    || ((options.directory !== undefined || options.stdinFile !== undefined) && Boolean(options.session || options.workspace))) {
     throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] [--session ROOM [--host-agent AGENT] | --workspace PATH] [--timeout SECONDS] -- argv...")
   }
   const target: CommandTarget = options.session
@@ -93,9 +94,11 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
   signals?.on("SIGTERM", onTerm)
   signals?.on("SIGHUP", onHup)
   try {
+    const directory = options.directory ?? options.workspace
     const opened = await request({
       operation: "exec_open", command: options.command,
-      ...(options.workspace ? { directory: options.workspace } : {}),
+      ...(directory !== undefined ? { directory } : {}),
+      ...(options.stdinFile !== undefined ? { stdin_file: options.stdinFile } : {}),
       timeout_ms: Math.ceil((options.timeoutSeconds ?? 30) * 1000),
     })
     if (opened.result !== "exec_opened" || !opened.exec_id) throw new Error("kernel returned no exec ID")

@@ -83,6 +83,7 @@ impl Remote {
                 command,
                 directory: None,
                 timeout_ms: None,
+                stdin_file: None,
             },
         };
         match self.operation(suffix, operation).await? {

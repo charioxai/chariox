@@ -226,6 +226,7 @@ impl ExecPlacement for GatewayExecPlacement {
                 command: intent.command.clone(),
                 directory: None,
                 timeout_ms: intent.timeout_ms,
+                stdin_file: None,
             };
             match self.call(command_id, attributed_agent, operation).await? {
                 RunCommandResult::ExecOpened { exec_id } => Ok(exec_id),

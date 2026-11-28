@@ -12,7 +12,7 @@ export type ExecSummary = { exec_id: string; state: ExecState; age_ms: number; b
 
 export type RunCommandOperation =
   | { readonly operation: "exec_list" }
-  | { readonly operation: "exec_open"; readonly command: readonly string[]; readonly directory?: string; readonly timeout_ms?: number }
+  | { readonly operation: "exec_open"; readonly command: readonly string[]; readonly directory?: string; readonly timeout_ms?: number; readonly stdin_file?: string }
   | { readonly operation: "exec_open_job"; readonly command: readonly string[]; readonly needs?: { readonly memory_gib?: number; readonly cpus?: number } }
   | { readonly operation: "exec_write"; readonly exec_id: string; readonly offset: number; readonly data_base64: string }
   | { readonly operation: "exec_stdin_close"; readonly exec_id: string; readonly offset: number }

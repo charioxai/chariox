@@ -41,6 +41,7 @@ pub(crate) fn refused_for_test(message: &str) -> crate::error::DaemonError {
 }
 
 pub use events::{CompletionEvents, WatchOwner};
+pub(crate) use program_input::resolve_stdin_file;
 pub use program_input::{ProgramInput, MAX_INLINE_INPUT_BYTES};
 #[cfg(unix)]
 pub use service::TerminalHandover;

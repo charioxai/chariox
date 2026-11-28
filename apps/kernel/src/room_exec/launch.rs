@@ -115,6 +115,37 @@ pub(super) fn start(
                         if launch.expired_before_start().is_some() {
                             return Ok(None);
                         }
+                        let stdin_file = launch
+                            .stdin_file
+                            .as_ref()
+                            .map(|path| {
+                                let file = std::fs::File::open(path).map_err(|failure| {
+                                    super::error(
+                                        "exec_stdin_unreadable",
+                                        format!(
+                                            "stdin file `{}` cannot be read: {failure}",
+                                            path.display()
+                                        ),
+                                    )
+                                })?;
+                                if !file
+                                    .metadata()
+                                    .map_err(|failure| {
+                                        super::error("exec_stdin_unreadable", failure.to_string())
+                                    })?
+                                    .is_file()
+                                {
+                                    return Err(super::error(
+                                        "exec_stdin_unreadable",
+                                        "stdin must name a regular file",
+                                    ));
+                                }
+                                Ok(file)
+                            })
+                            .transpose()?;
+                        if launch.expired_before_start().is_some() {
+                            return Ok(None);
+                        }
                         let intent = &launch.intent;
                         if launch.job {
                             process::spawn_job(&intent.cwd, &launch.launch_command, &permit, intent)
@@ -127,7 +158,10 @@ pub(super) fn start(
                                 environment.as_ref(),
                             )
                         }
-                        .map(|child| Some((child, permit)))
+                        .map(|mut child| {
+                            child.stdin_file = stdin_file;
+                            Some((child, permit))
+                        })
                     })
                     .await;
                     match spawned {

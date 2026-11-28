@@ -50,6 +50,8 @@ pub enum RunCommandOperation {
         directory: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin_file: Option<String>,
     },
     /// Kernel job launch: its command receives only the explicitly selected project environment.
     ExecOpenJob {
@@ -108,4 +110,24 @@ pub enum RunCommandResult {
     },
     ExecCancelled,
     ExecClosed,
+}
+
+#[cfg(test)]
+mod stdin_file_contract_tests {
+    use super::*;
+
+    #[test]
+    fn run_command_stdin_file_preserves_the_absent_field_contract_and_round_trips_a_file() {
+        for file in [None, Some("inputs/data.bin")] {
+            let mut wire = serde_json::json!({"RunCommand": {
+                "target": {"kind":"kernel"},
+                "operation": {"operation":"exec_open", "command":["cat"], "directory":"/work", "timeout_ms":12000}
+            }});
+            if let Some(file) = file {
+                wire["RunCommand"]["operation"]["stdin_file"] = file.into();
+            }
+            let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), wire);
+        }
+    }
 }

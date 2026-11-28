@@ -167,7 +167,14 @@ impl KernelRuntimeState {
                 command,
                 directory,
                 timeout_ms,
+                stdin_file,
             } => {
+                if root.is_some() && stdin_file.is_some() {
+                    return Err(error(
+                        "exec_invalid_target",
+                        "a named stdin file requires a kernel command target",
+                    ));
+                }
                 if root.is_some() {
                     self.ensure_room_running(session_id)?;
                 }
@@ -187,6 +194,7 @@ impl KernelRuntimeState {
                     self.clone(),
                     actor,
                     timeout_ms,
+                    stdin_file.as_deref(),
                 )?;
                 return opened(id);
             }

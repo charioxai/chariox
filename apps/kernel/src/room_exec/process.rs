@@ -18,6 +18,7 @@ use crate::runtime::owned_process_signals::OwnedProcessSignals;
 mod tests;
 
 pub(super) struct Process {
+    pub(super) stdin_file: Option<std::fs::File>,
     pub(super) child: Child,
     pub(super) signals: OwnedProcessSignals,
     pub(super) domain: crate::runtime::process_resources::ProcessDomain,
@@ -172,6 +173,7 @@ fn spawn_with_environment(
         domain.list_as(&intent.session_id, intent.process_owner());
     }
     Ok(Process {
+        stdin_file: None,
         child,
         signals,
         domain,
@@ -285,32 +287,60 @@ pub(super) fn run(
         ExecStream::Stderr,
         cancel.clone(),
     ));
-    let writer = start_input(stdin, input, cancel.clone());
+    let (writer, file_input_result) = if let Some(file) = process.stdin_file.take() {
+        let (sent, result) = tokio::sync::oneshot::channel();
+        let mut stop = cancel.clone();
+        let writer = tokio::spawn(async move {
+            let mut file = tokio::fs::File::from_std(file);
+            let mut stdin = stdin;
+            let result = tokio::select! {
+                result = tokio::io::copy(&mut file, &mut stdin) => result.map(|_| ()),
+                _ = cancelled(&mut stop) => Ok(()),
+            };
+            // Publish a read failure before dropping the pipe and allowing EOF to look successful.
+            let result = result.or_else(|failure| {
+                if failure.kind() == io::ErrorKind::BrokenPipe {
+                    Ok(())
+                } else {
+                    Err(failure)
+                }
+            });
+            let _ = sent.send(result);
+        });
+        (writer, Some(result))
+    } else {
+        (start_input(stdin, input, cancel.clone()), None)
+    };
     tokio::spawn(async move {
         let deadline = record.deadline().zip(record.intent.timeout_ms);
         let outcome = supervise(&mut process, &mut cancel, &mut permit, deadline).await;
         writer.abort();
         let _ = writer.await;
         let (out, err) = tokio::join!(out, err);
-        let outcome = match (out, err) {
-            (Ok(Ok(OutputEnd::Eof)), Ok(Ok(OutputEnd::Eof))) => outcome,
-            (Ok(Err(failure)), _) | (_, Ok(Err(failure))) => ExecOutcome::Failed {
+        let file_input_failure = file_input_result
+            .and_then(|mut result| result.try_recv().ok())
+            .and_then(Result::err);
+        let outcome = match (file_input_failure, out, err) {
+            (Some(failure), _, _) => ExecOutcome::Failed {
+                message: format!("stdin file could not be read: {failure}"),
+            },
+            (None, Ok(Ok(OutputEnd::Eof)), Ok(Ok(OutputEnd::Eof))) => outcome,
+            (None, Ok(Err(failure)), _) | (None, _, Ok(Err(failure))) => ExecOutcome::Failed {
                 message: format!("command output pipe failed: {failure}; the stream is incomplete"),
             },
-            (Err(failure), _) | (_, Err(failure)) => ExecOutcome::Failed {
+            (None, Err(failure), _) | (None, _, Err(failure)) => ExecOutcome::Failed {
                 message: format!("command output task failed: {failure}; the stream is incomplete"),
             },
-            (Ok(Ok(OutputEnd::Canceled(reason))), _) | (_, Ok(Ok(OutputEnd::Canceled(reason)))) => {
-                ExecOutcome::Failed {
-                    message: format!(
-                        "command {} before its output ended; the stream is incomplete",
-                        match reason {
-                            CancelReason::Canceled => "canceled",
-                            CancelReason::Expired => "expired",
-                        }
-                    ),
-                }
-            }
+            (None, Ok(Ok(OutputEnd::Canceled(reason))), _)
+            | (None, _, Ok(Ok(OutputEnd::Canceled(reason)))) => ExecOutcome::Failed {
+                message: format!(
+                    "command {} before its output ended; the stream is incomplete",
+                    match reason {
+                        CancelReason::Canceled => "canceled",
+                        CancelReason::Expired => "expired",
+                    }
+                ),
+            },
         };
         let outcome = match process.domain.memory_limit_bytes() {
             Some(limit_bytes) => ExecOutcome::MemoryLimit { limit_bytes },

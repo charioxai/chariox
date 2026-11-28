@@ -65,26 +65,32 @@ pub(super) fn prepare(
             }
             spool(&bytes, terminal_id)
         }
-        ProgramInput::File { path } => {
-            let path = working_directory.join(path);
-            let resolved = path.canonicalize().map_err(|failure| {
-                refused(format!(
-                    "stdin file `{}` cannot be read on this kernel: {failure}",
-                    path.display()
-                ))
-            })?;
-            if !resolved.is_file() {
-                return Err(refused(format!(
-                    "stdin file `{}` is not a file",
-                    resolved.display()
-                )));
-            }
-            Ok(PreparedInput {
-                path: resolved,
-                spooled: false,
-            })
-        }
+        ProgramInput::File { path } => Ok(PreparedInput {
+            path: resolve_stdin_file(path, working_directory)?,
+            spooled: false,
+        }),
     }
+}
+
+/// Resolve a named stdin file by the same rules for terminals and binary commands.
+pub(crate) fn resolve_stdin_file(
+    path: &str,
+    working_directory: &Path,
+) -> Result<PathBuf, DaemonError> {
+    let path = working_directory.join(path);
+    let resolved = path.canonicalize().map_err(|failure| {
+        refused(format!(
+            "stdin file `{}` cannot be read on this kernel: {failure}",
+            path.display()
+        ))
+    })?;
+    if !resolved.is_file() {
+        return Err(refused(format!(
+            "stdin file `{}` is not a file",
+            resolved.display()
+        )));
+    }
+    Ok(resolved)
 }
 
 /// A private copy outside the kernel's state folder, readable by the confined program too.

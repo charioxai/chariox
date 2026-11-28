@@ -249,24 +249,19 @@ test("terminal send --wait-ms keeps its request open for the whole wait, whateve
   assert.equal(JSON.parse(printed.at(-1)!).text, "done\r\n")
 })
 
-test("workspace exec uses the Room id from the direct or forwarded create receipt", async () => {
-  const room = "room-for-exec"
+test("workspace exec uses a kernel command in that directory without creating a Room", async () => {
   const kernel = await startFakeKernel((socket, frame) => {
-    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1", "room_exec_v1"]))
-    if ("CreateSession" in frame.request) {
-      return replyWith(socket, frame, { response: { SessionCreated: frame.kernel
-        ? { session_id: room }
-        : { session: { id: room } }
-      } })
-    }
-    if ("EndSession" in frame.request) return replyWith(socket, frame, { response: { SessionEnded: {} } })
-    const request = frame.request.RoomTerminal as { session_id: string; operation: { operation: string } }
-    if (!request || request.session_id !== room) return replyWith(socket, frame, refusal("unexpected_exec_room"))
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1", "run_command_v1"]))
+    const request = frame.request.RunCommand as { target: unknown; operation: { operation: string; directory?: string; offset?: number } }
+    assert.ok(request, "exec sends the unified command family")
+    assert.deepEqual(request.target, { kind: "kernel" })
     const op = request.operation.operation
-    const result = op === "exec_open" ? { result: "exec_opened", exec_id: "exec-room" }
+    if (op === "exec_open") assert.equal(request.operation.directory, "/work")
+    const result = op === "exec_open" ? { result: "exec_opened", exec_id: "exec-workspace" }
       : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "exited", code: 0 } } }
+      : op === "exec_stdin_close" ? { result: "exec_input", next_offset: request.operation.offset }
       : { result: "exec_closed" }
-    replyWith(socket, frame, { response: { RoomTerminal: { result } } })
+    replyWith(socket, frame, { response: { RunCommand: { result } } })
   })
   const sink = () => new Writable({ write(_chunk, _encoding, done) { done() } })
   try {
@@ -277,7 +272,7 @@ test("workspace exec uses the Room id from the direct or forwarded create receip
       ))
       assert.equal(exit, 0)
     }
-    assert.deepEqual(kernel.frames.filter(frame => "CreateSession" in frame.request).map(frame => frame.kernel), [undefined, "b3"])
+    assert.equal(kernel.frames.filter(frame => "CreateSession" in frame.request || "EndSession" in frame.request || "RoomTerminal" in frame.request).length, 0)
   } finally { await kernel.close() }
 })
 
@@ -441,22 +436,28 @@ test("a process the kernel cannot confirm, inside an agent's shell, is told what
   }
 })
 
-// `chariox exec` end to end against a fake kernel over the real websocket and the real per-request timer (sendWithin): the
-// kernel answers a wait the way the real one does, shortly AFTER the wait's own timeout_ms.
-const execThroughFakeKernel = async (timeoutSeconds: number, onWait: (socket: WebSocket, frame: FakeKernelFrame, waitMs: number) => void) => {
-  const terminal = (status: unknown) => ({ terminal_id: "t1", scope: "kernel", output_offset: 0, status })
+// The actual CLI entry and websocket timer must distinguish a typed kernel deadline
+// from uncertain output after a dropped connection.
+const execThroughFakeKernel = async (timeoutSeconds: number, onRead: (socket: WebSocket, frame: FakeKernelFrame, timeoutMs: number) => void) => {
   const operations: string[] = []
+  let timeoutMs = 0
   const kernel = await startFakeKernel((socket, frame) => {
     if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
-    if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, { response: { GatewayKernelsListed: {} } })
-    const body = frame.request.KernelTerminal as { operation: { operation: string; timeout_ms?: number } }
+    if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, { response: { GatewayKernelsListed: { kernels: [] } } })
+    assert.ok("RunCommand" in frame.request, "exec uses only the unified command family")
+    const body = frame.request.RunCommand as { target: unknown; operation: { operation: string; timeout_ms?: number } }
+    assert.deepEqual(body.target, { kind: "kernel" })
     const operation = body.operation.operation
     operations.push(operation)
-    const answer = (result: unknown) => replyWith(socket, frame, { response: { RoomTerminal: { result } } })
-    if (operation === "open") return answer({ result: "opened", terminal: terminal({ state: "running" }) })
-    if (operation === "wait") return onWait(socket, frame, body.operation.timeout_ms ?? 0)
-    if (operation === "list") return answer({ result: "listed", terminals: [] })
-    answer({ result: "closed" })
+    const answer = (result: unknown) => replyWith(socket, frame, { response: { RunCommand: { result } } })
+    if (operation === "exec_open") {
+      timeoutMs = body.operation.timeout_ms ?? 0
+      return answer({ result: "exec_opened", exec_id: "exec-1" })
+    }
+    if (operation === "exec_read") return onRead(socket, frame, timeoutMs)
+    if (operation === "exec_stdin_close") return answer({ result: "exec_input", next_offset: 0 })
+    assert.equal(operation, "exec_close")
+    answer({ result: "exec_closed" })
   })
   const written: string[] = []
   const write = process.stderr.write.bind(process.stderr)
@@ -464,26 +465,31 @@ const execThroughFakeKernel = async (timeoutSeconds: number, onWait: (socket: We
   const code = process.exitCode
   const started = Date.now()
   try {
-    await runKernelsCommand(["exec", "--kernel", "b3", "--timeout", String(timeoutSeconds), "--stdin-file", "/dev/null", "--socket", kernel.path, "--", "sleep", "40"])
+    await runKernelsCommand(["exec", "--kernel", "b3", "--timeout", String(timeoutSeconds), "--stdin-file", "input.bin", "--socket", kernel.path, "--", "sleep", "40"])
   } finally { process.stderr.write = write; process.exitCode = code; await kernel.close() }
-  return { operations, stderr: written.join(""), seconds: (Date.now() - started) / 1000 }
+  return { operations, timeoutMs, stderr: written.join(""), seconds: (Date.now() - started) / 1000 }
 }
 
-test("exec: a command still running at --timeout is stopped and reported as such, not as a lost link", async () => {
-  const notFired = (socket: WebSocket, frame: FakeKernelFrame, waitMs: number) => setTimeout(() => replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "waited", waited: {
-    fired: null, terminal: { terminal_id: "t1", scope: "kernel", output_offset: 0, status: { state: "running" } }, screen_text: "", output_offset: 0 } } } } }), waitMs + 150)
-  const run = await execThroughFakeKernel(1, notFired)
-  assert.match(run.stderr, /still running after 1 s and was stopped/)
-  assert.doesNotMatch(run.stderr, /exec_link_lost|was not stopped/)
-  assert.deepEqual(run.operations, ["open", "wait", "close"], "the terminal is closed, which ends the command")
+test("exec: a command still running at --timeout reports the kernel stop and collects it", async () => {
+  const timedOut = (socket: WebSocket, frame: FakeKernelFrame, timeoutMs: number) => setTimeout(() => replyWith(socket, frame, {
+    response: { RunCommand: { result: { result: "exec_output", output: { chunks: [], next_cursor: 0,
+      outcome: { kind: "timed_out", timeout_ms: timeoutMs, exit: { kind: "signaled", signal: 15 } },
+    } } } },
+  }), timeoutMs + 150)
+  const run = await execThroughFakeKernel(1, timedOut)
+  assert.equal(run.timeoutMs, 1000)
+  assert.match(run.stderr, /exec_timed_out/)
+  assert.match(run.stderr, /didn't finish in 1 s and was stopped/)
+  assert.doesNotMatch(run.stderr, /kernel_connection_lost|next_step/)
+  assert.deepEqual(run.operations.filter(op => op !== "exec_stdin_close"), ["exec_open", "exec_read", "exec_close"])
 })
 
-test("exec: a link that is really down until --timeout still reports a lost link and leaves the command running", async () => {
-  const dropped = (socket: WebSocket) => socket.terminate()
-  const run = await execThroughFakeKernel(1, dropped)
-  assert.match(run.stderr, /"code":"exec_link_lost"/)
-  assert.match(run.stderr, /The command was not stopped/)
-  assert.ok(!run.operations.includes("close"), "no close: the command is left running")
+test("exec: a dropped output connection keeps the admitted command resumable", async () => {
+  const run = await execThroughFakeKernel(1, socket => socket.terminate())
+  assert.match(run.stderr, /kernel_connection_lost/)
+  assert.match(run.stderr, /"exec_id":"exec-1"/)
+  assert.match(run.stderr, /resume this command with RunCommand exec_read/)
+  assert.ok(!run.operations.includes("exec_close"), "an uncertain command is not restarted or discarded")
 })
 
 // Row 490: the list is the kernel's answer as it is: protocol and update state per kernel, null for a kernel too old
