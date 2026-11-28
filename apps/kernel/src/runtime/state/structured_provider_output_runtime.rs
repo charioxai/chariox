@@ -588,6 +588,7 @@ impl KernelRuntimeState {
         Ok(poll_result)
     }
 
+    #[cfg(test)]
     pub(super) async fn apply_prepared_owned_structured_output_batch(
         &self,
         session_id: &str,
