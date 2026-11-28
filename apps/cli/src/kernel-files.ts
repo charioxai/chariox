@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { constants, createReadStream, type Stats } from "node:fs"
 import { resolve } from "node:path"
 import { link, lstat, open, rename, rm, stat, type FileHandle } from "node:fs/promises"
@@ -13,7 +13,7 @@ export const FILES_VERBS = ["stat", "ls", "get", "put"] as const
 export type FilesVerb = typeof FILES_VERBS[number]
 export type SendRequest = (body: Record<string, unknown>) => Promise<unknown>
 
-type RemoteStat = { path: string; exists: boolean; kind: string | null; size: number | null; sha256: string | null; partial_size: number | null }
+type RemoteStat = { path: string; exists: boolean; kind: string | null; size: number | null; sha256: string | null; partial_size: number | null; partial_upload_id: string | null }
 type Transfer = { path: string; size: number; sha256: string; bytes_sent_or_received: number; resumed_from: number; elapsed_ms: number }
 
 async function remoteStat(send: SendRequest, path: string, withSha256: boolean): Promise<RemoteStat> {
@@ -135,10 +135,12 @@ async function putFile(send: SendRequest, localPath: string, remotePath: string,
   const roundTripMs = Date.now() - probed
   // The partial's bytes are not verified here: the target checks the whole file's sha256 and keeps nothing on a mismatch.
   const resumedFrom = target.partial_size !== null && target.partial_size <= size ? target.partial_size : 0
+  if (resumedFrom > 0 && typeof target.partial_upload_id !== "string") throw new CommandFailure("file_upload_changed", `${remotePath} has no resumable upload identity; choose another destination and upload again`)
+  const uploadId = resumedFrom > 0 ? target.partial_upload_id! : randomUUID()
   const source = await open(localPath, "r")
   let written!: { path: string; complete: boolean }
   const sendChunk = async (offset: number, bytes: Buffer) => {
-    const response = await send({ WriteKernelFile: { path: remotePath, offset, data_base64: bytes.toString("base64"), total_size: size, sha256, overwrite } }) as { KernelFileWritten: typeof written }
+    const response = await send({ WriteKernelFile: { path: remotePath, upload_id: uploadId, offset, data_base64: bytes.toString("base64"), total_size: size, sha256, overwrite } }) as { KernelFileWritten: typeof written }
     return response.KernelFileWritten
   }
   // Chunks leave in file order even though the reads of them overlap: the next one may start

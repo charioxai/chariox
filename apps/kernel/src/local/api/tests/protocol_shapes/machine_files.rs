@@ -99,6 +99,7 @@ fn mp11_machine_files_local_1005_and_peer_444_are_pinned() {
         mode: Some(0o644),
         sha256: None,
         partial_size: None,
+        partial_upload_id: None,
     };
     let requests = [
         RelayPeerRequest::StatMachinePath {
