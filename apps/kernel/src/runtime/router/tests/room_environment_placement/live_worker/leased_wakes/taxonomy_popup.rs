@@ -88,6 +88,35 @@ async fn leased_worker_popup_keeps_both_shapes() {
             .iter()
             .all(|item| item.message() != message));
     }
+    // A leased provider cannot turn a popup view into user-domain browser authority.
+    // These unresolved inputs must be refused before any browser lookup or card admission.
+    let browser_refusal = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            crate::transport::runtime_tools::REQUEST_POPUP_TOOL,
+            json!({
+                "message":"Leased browser authority boundary",
+                "choices":[{"id":"cancel","label":"Cancel","reply":"cancel"}],
+                "view":{"browser_region":{"tab_id":"unresolved-tab","ref":"unresolved-ref"}},
+                "timeout_sec":30
+            }),
+        )
+        .await
+        .expect_err("a leased popup must not grant user-domain browser control");
+    assert!(
+        browser_refusal.to_string().contains("MP-08: leased or remote agents"),
+        "refuse on the existing authority boundary, not an invented resolved view: {browser_refusal}"
+    );
+    for runtime in [fixture.home.runtime_state(), worker.router.runtime_state()] {
+        assert!(runtime
+            .session_snapshot(&room)
+            .await
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .all(|item| item.message() != "Leased browser authority boundary"));
+    }
     worker.stop().await;
     fixture.stop().await;
 }
