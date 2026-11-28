@@ -13,13 +13,6 @@ public final class CharioxAppModel {
   public var selectedVariantID: String
   public var responseLayout: MultiAgentResponseLayout
   public internal(set) var sessions: [RuntimeSession]
-  public internal(set) var agentTrees: [String: RuntimeAgentTree] = [:]
-  public internal(set) var agentTreeErrors: [String: String] = [:]
-  @ObservationIgnored var agentTreeAttachments: [String: String] = [:]
-  @ObservationIgnored var agentTreeStreamGenerations: [String: UInt64] = [:]
-  @ObservationIgnored var agentTreeReadTokens: [String: UUID] = [:]
-  @ObservationIgnored var agentTreeStreamGeneration: UInt64 = 0
-  @ObservationIgnored var agentTreeBaselinePending = true
   public internal(set) var selectedSessionID: String?
   public internal(set) var activeAttachment: RuntimeAttachment?
   public internal(set) var subscribedSessionID: String?
@@ -428,12 +421,6 @@ public final class CharioxAppModel {
   public func respondToInteraction(
     _ interaction: RuntimeInteraction, choice: RuntimeInteractionChoice
   ) async {
-    await respondToInteraction(interaction, choiceID: choice.id)
-  }
-
-  public func respondToInteraction(
-    _ interaction: RuntimeInteraction, choiceID: String, customReply: String? = nil
-  ) async {
     guard let session = selectedSession else {
       connectionState = .failed
       statusMessage = "Select a session before responding to an interaction."
@@ -444,8 +431,7 @@ public final class CharioxAppModel {
         .respondToInteraction(
           sessionID: session.id,
           interactionID: interaction.id,
-          choiceID: choiceID,
-          customReply: customReply
+          choiceID: choice.id
         ),
         to: try endpointURL()
       )
@@ -928,7 +914,6 @@ extension AgentInstance {
       permissionLevelOverride: permissionLevelOverride,
       worktreeID: worktreeID,
       state: state,
-      archived: archived,
       isProcessing: isProcessing
     )
   }

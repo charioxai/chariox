@@ -58,7 +58,6 @@ extension CharioxAppModel {
       guard let self else { return }
       var nextResumeFromEventID = resumeFromEventID
       while !Task.isCancelled {
-        invalidateAgentTreeReads()
         eventStreamState = .connecting
         let currentStream = client.events(
           sessionID: sessionID,
@@ -151,20 +150,9 @@ extension CharioxAppModel {
         agentID: agentID,
         text: "assistant message completed: \(messageID)"
       )
-    case .runtimeInteractionsChanged(let sessionID, let interactions):
-      if let session = sessions.first(where: { $0.id == sessionID }) {
-        upsert(session.replacingActiveInteractions(interactions))
-      }
-    case .agentTreeChanged(let sessionID, let root, let revision):
-      if sessionID == subscribedSessionID, (agentTrees[root]?.rev ?? 0) < revision {
-        Task { [weak self] in await self?.refreshAgentTree(sessionID: sessionID, rootAgentID: root) }
-      }
     case .sessionSnapshot(let session):
       upsert(session)
       selectedSessionID = session.id
-      if session.id == subscribedSessionID, agentTreeBaselinePending {
-        refreshAgentTreesAfterReconnect(sessionID: session.id)
-      }
       eventStreamState = .live
       statusMessage = "Session snapshot received."
     case .heartbeat(let sessionID):
@@ -179,7 +167,6 @@ extension CharioxAppModel {
       }
     case .transportResumed(let sessionID, _):
       if sessionID == subscribedSessionID {
-        refreshAgentTreesAfterReconnect(sessionID: sessionID)
         eventStreamState = .live
         lastHeartbeatAt = Date()
         statusMessage = "Kernel event stream resumed."

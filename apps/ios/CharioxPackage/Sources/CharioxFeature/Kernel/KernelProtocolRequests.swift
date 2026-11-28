@@ -7,7 +7,6 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case attachToSession(sessionID: String, clientID: String)
     case detachFromSession(attachmentID: String)
     case getSessionState(sessionID: String)
-    case getAgentTree(sessionID: String, agentID: String)
     case updateSessionConfig(sessionID: String, attachmentID: String, values: [String: String], requiresIdle: Bool)
     case getProviderCatalog
     case getProviderAuthStatus(provider: String)
@@ -19,7 +18,7 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case skillsV2(SkillsV2Request)
     case submitPrompt(sessionID: String, attachmentID: String, targetAgentID: String?, prompt: String)
     case cancelActivePrompt(sessionID: String, attachmentID: String)
-    case respondToInteraction(sessionID: String, interactionID: String, choiceID: String, customReply: String? = nil)
+    case respondToInteraction(sessionID: String, interactionID: String, choiceID: String)
     case getWorkspaceLiveSyncStatus(sessionID: String)
     case attachWorkspaceLink(sessionID: String, linkRef: String, repoRoot: String?)
     case setWorkspaceLiveSyncMode(sessionID: String, mode: String)
@@ -76,8 +75,6 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                 DetachFromSessionPayload(attachmentID: attachmentID),
                 forKey: DynamicCodingKey("DetachFromSession")
             )
-        case let .getAgentTree(sessionID, agentID):
-            try container.encode(GetAgentTreePayload(sessionID: sessionID, agentID: agentID), forKey: DynamicCodingKey("ListDescendants"))
         case let .getSessionState(sessionID):
             try container.encode(
                 GetSessionStatePayload(sessionID: sessionID),
@@ -138,13 +135,12 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                 CancelActivePromptPayload(sessionID: sessionID, attachmentID: attachmentID),
                 forKey: DynamicCodingKey("CancelActivePrompt")
             )
-        case let .respondToInteraction(sessionID, interactionID, choiceID, customReply):
+        case let .respondToInteraction(sessionID, interactionID, choiceID):
             try container.encode(
                 RespondToInteractionPayload(
                     sessionID: sessionID,
                     interactionID: interactionID,
-                    choiceID: choiceID,
-                    customReply: customReply
+                    choiceID: choiceID
                 ),
                 forKey: DynamicCodingKey("RespondToInteraction")
             )
@@ -397,13 +393,11 @@ private struct RespondToInteractionPayload: Encodable {
     let sessionID: String
     let interactionID: String
     let choiceID: String
-    let customReply: String?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case interactionID = "interaction_id"
         case choiceID = "choice_id"
-        case customReply = "custom_reply"
     }
 }
 
@@ -571,10 +565,4 @@ private extension KeyedEncodingContainer {
             try encodeNil(forKey: key)
         }
     }
-}
-
-private struct GetAgentTreePayload: Encodable {
-    let sessionID: String
-    let agentID: String
-    enum CodingKeys: String, CodingKey { case sessionID = "session_id", agentID = "agent_id" }
 }

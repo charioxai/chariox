@@ -125,8 +125,6 @@ extension RuntimeInteraction {
             id: id,
             agentID: agentID,
             kernelOperationID: nil,
-            surface: "card",
-            cardType: "provider_native_permission",
             kind: "permission",
             level: "warning",
             title: nil,
@@ -141,10 +139,7 @@ extension RuntimeInteraction {
             ],
             timeoutSeconds: nil,
             defaultOnTimeout: nil,
-            requestedAtMs: 1,
-            relatedAgentID: nil,
-            customChoice: nil,
-            shownInAgentID: nil
+            requestedAtMs: 1
         )
     }
 }
@@ -170,7 +165,6 @@ extension AgentInstance {
             permissionLevelOverride: permissionLevelOverride,
             worktreeID: nil,
             state: state,
-            archived: nil,
             isProcessing: false
         )
     }
