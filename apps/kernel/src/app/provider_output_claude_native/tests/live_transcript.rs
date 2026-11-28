@@ -861,6 +861,52 @@ fn a_distinct_code_block_is_streamed_though_its_letters_and_digits_match_a_compl
     assert!(rows[1].starts_with("Result\n\nx += 1;"), "{rows:?}");
 }
 
+// A completed block is recognized by its text, which the terminal shows without markup and without most symbols: a
+// distinct block of code whose letters and digits are the same must not be taken for it, or it is withheld until its
+// transcript text arrives.
+#[test]
+fn a_distinct_code_block_streams_when_only_the_heading_was_saved() {
+    for lose_reader in [false, true] {
+        let mut turn = running_turn("streamed-code-partial-prefix");
+        turn.hook_event("UserPromptSubmit");
+        turn.pass();
+        let first_drawn = screen(&["● Result", "", "  x = 1;", "✻ Working (3s)"]);
+        turn.terminal_shows(&first_drawn);
+        turn.terminal_shows(&first_drawn);
+        if lose_reader {
+            super::live_reply::forget(turn.run.id());
+        }
+        let first = "Result\n\nx = 1;\ny = 2;\n\nDone.";
+        turn.append_transcript(assistant_text("first", first));
+        turn.pass();
+        assert_eq!(
+            turn.live_rows(),
+            [first],
+            "the first block is the transcript's"
+        );
+        // Another block of the same prompt: other code, the same letters and digits.
+        let second_drawn = screen(&[
+            "● Result",
+            "",
+            "  x += 1;",
+            "  y -= 2;",
+            "",
+            "  Done.",
+            "",
+            "✻ Working (4s)",
+        ]);
+        turn.terminal_shows(&second_drawn);
+        turn.terminal_shows(&second_drawn);
+        let rows = turn.live_rows();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the second block streams as its own row: {rows:?}"
+        );
+        assert!(rows[1].starts_with("Result\n\nx += 1;"), "{rows:?}");
+    }
+}
+
 // The same, when a reader had already taken over (it streamed nothing yet) before the transcript text arrived.
 #[test]
 fn a_block_completed_without_its_reader_is_not_streamed_again_even_by_a_reader_that_took_over_before(
