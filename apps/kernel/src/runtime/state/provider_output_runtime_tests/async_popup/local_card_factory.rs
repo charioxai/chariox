@@ -156,7 +156,9 @@ async fn taxonomy_authorized_local_browser_factory_registers_the_observed_view_a
                     .active_interactions()
                     .iter()
                     .any(|card| card.id() == pending_id));
-                let id = answer.await;
+                let id = tokio::time::timeout(Duration::from_secs(5), answer)
+                    .await
+                    .expect("the asynchronous owner answer finishes before host cleanup");
                 (result, id)
             };
             let result = result.expect("the authenticated popup tool returns its outcome");
