@@ -52,6 +52,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
     KernelSudoRequesterRenewed { renewed: bool, },
     GatewayKernelsListed { kernels: Vec<GatewayKernel>, },
+    GatewayCommandStatus { command_id: String, status: GatewayCommandStatus, },
     /// Protocol 568: the attachments that no longer exist on this kernel.
     AttachmentsHeartbeated { lapsed: Vec<String>, },
     /// Protocol 568: the gateway paired with a self-hosted kernel.

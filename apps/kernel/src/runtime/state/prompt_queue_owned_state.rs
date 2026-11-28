@@ -970,7 +970,8 @@ impl KernelRuntimeOwnedState {
             return Err(DaemonError::LocalTransport {
                 operation: "steer queued prompt",
                 message: "queued prompts cannot steer a human-authorized sudo turn".into(),
-            });
+            }
+            .steer_not_submitted(true));
         }
         if active_prompt.is_external() {
             return Err(DaemonError::LocalTransport {

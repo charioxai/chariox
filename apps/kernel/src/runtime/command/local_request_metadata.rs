@@ -709,6 +709,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::WaitEvents(_) => "events.wait",
         LocalDaemonRequest::AckEvents(_) => "events.ack",
         LocalDaemonRequest::ListGatewayKernels(_) => "kernel_gateway.list",
+        LocalDaemonRequest::GetGatewayCommandStatus(_) => "kernel_gateway.command_status",
         LocalDaemonRequest::HeartbeatAttachments(_) => "kernel_gateway.heartbeat",
         LocalDaemonRequest::JoinKernelLink(_) => "kernel_gateway.join",
         LocalDaemonRequest::ForgetGatewayKernel(_) => "kernel_gateway.forget",

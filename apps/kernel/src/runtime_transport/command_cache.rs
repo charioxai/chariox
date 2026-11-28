@@ -16,6 +16,7 @@ use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
 
 mod at_most_once;
+pub(crate) use at_most_once::ReceiptStatus;
 mod receipt_retention;
 pub(crate) use at_most_once::{is_receipt_capacity_error, is_receipt_expired_error};
 use receipt_retention::ReceiptRetention;
@@ -118,6 +119,9 @@ pub(crate) struct CommandFingerprint {
     browser_caller: Option<crate::runtime::command::KernelCaller>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     browser_protection_revision: Option<u64>,
+    // Receipt reads have no request bytes to prove who originally sent this command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gateway_grant: Option<String>,
 }
 
 impl CommandFingerprint {
@@ -129,13 +133,13 @@ impl CommandFingerprint {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Self {
-        let request_bytes = serde_json::to_vec(request).unwrap_or_default();
+        let request_bytes = receipt_request_bytes(request);
         Self {
             command_type: command.command_type.clone(),
             source: serde_json::to_string(&command.source)
                 .unwrap_or_else(|_| "unknown".to_string()),
             session_id: command.session_id.clone(),
-            attachment_id: command.attachment_id.clone(),
+            attachment_id: crate::runtime::command::receipt_attachment_id(command),
             request_hash: stable_hash64(&request_bytes),
             browser_caller: matches!(
                 request,
@@ -145,8 +149,18 @@ impl CommandFingerprint {
             )
             .then(|| command.caller.clone()),
             browser_protection_revision: None,
+            gateway_grant: None,
         }
     }
+}
+
+fn receipt_request_bytes(request: &LocalDaemonRequest) -> Vec<u8> {
+    if matches!(request, LocalDaemonRequest::SteerActivePrompt(_)) {
+        let payload = serde_json::to_value(request).expect("request serializes");
+        return serde_json::to_vec(&crate::runtime::command::receipt_payload(&payload))
+            .expect("receipt payload serializes");
+    }
+    serde_json::to_vec(request).expect("request serializes")
 }
 
 pub(crate) enum CommandReservation {
@@ -839,6 +853,7 @@ impl CommandResultCache {
             request_hash: stable_hash64(bytes),
             browser_caller: None,
             browser_protection_revision: None,
+            gateway_grant: None,
         }
     }
 

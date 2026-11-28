@@ -115,6 +115,72 @@ impl Rooms {
         }
     }
 
+    async fn use_receipt_provider(&self, provider: &str) {
+        let mut app = self.app.lock().await;
+        let old = app
+            .providers()
+            .get_run_for_agent(&self.peer_room, self.peer.id())
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &self.peer_room,
+            "dev-stub",
+            provider,
+            "default",
+            "model",
+        )
+        .with_agent_id(self.peer.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            old.id(),
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "receipt-held".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.update_provider_run_projection(run);
+    }
+
+    async fn inline_message_row(
+        &self,
+        sequence: u64,
+    ) -> (crate::durable_state::agent_lifecycle::InboxEvent, bool) {
+        self.app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_inbox_event(sequence)
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn wait_for_message_state(&self, sequence: u64, state: &str) {
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                // Router fixtures have no daemon loop to reap the provider's real result.
+                self.app.lock().await.reap_structured_prompt_jobs();
+                if self.inline_message_row(sequence).await.0.state == state {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            settled.is_ok(),
+            "message {sequence} expected {state}, actual {:?}",
+            self.inline_message_row(sequence).await.0
+        );
+    }
+
     async fn send(&self, args: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
         let mut args = args;
         args["origin_prompt_id"] = self.sender_prompt.clone().into();

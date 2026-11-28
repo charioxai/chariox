@@ -111,7 +111,7 @@ where
                 Err(_) => Err(GatewayError::Remote {
                     name: "remote kernel".into(),
                     code: "kernel_outcome_unknown".into(),
-                    message: "The kernel may have completed this request, but its reply could not be recovered with the original command ID. Read the state before starting another operation.".into(),
+                    message: "The kernel may have completed this request, but its reply could not be recovered with the original command ID. Read GetGatewayCommandStatus with the original command ID before starting another operation.".into(),
                     retryable: false,
                 }),
             }

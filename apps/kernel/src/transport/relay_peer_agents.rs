@@ -5,6 +5,18 @@ use serde::{Deserialize, Serialize};
 
 /// Who acts, as the sending kernel fills it. The receiving kernel checks `kernel_id` against
 /// the authenticated link before it trusts the rest.
+/// The recipient records this disposition with its durable inbox message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageDelivery {
+    Queued,
+    Started,
+    Steered,
+    /// The recipient read it in a turn that gave it no prompt of its own: nothing is left to deliver.
+    AlreadyDelivered,
+    Undelivered,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerAgentStamp {
     pub kernel_id: String,
@@ -208,6 +220,7 @@ mod shapes {
                 protocol_version: v,
                 duplicate: false,
                 target: b.clone(),
+                delivery: Some(AgentMessageDelivery::Steered),
             },
             RelayPeerResponse::PeerAgentSubscribed {
                 protocol_version: v,

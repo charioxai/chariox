@@ -1973,6 +1973,9 @@ async fn sudo_bound_turn_refuses_queued_steering_from_terminals_and_external_gra
             .err()
             .expect("sudo steering must be refused");
         assert!(error.to_string().contains("sudo"), "{error}");
+        let projected = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(projected.code, "prompt_steer_rejected");
+        assert!(!projected.retryable, "the admission refusal is definitive");
         let (active, queued) = f
             .state
             .owned

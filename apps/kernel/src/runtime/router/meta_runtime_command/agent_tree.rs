@@ -540,7 +540,7 @@ impl CommandRouter {
         let request_id = self
             .runtime_state
             .peer_cancel_request_id(parent, kernel, room, reference)?;
-        let (target, duplicate) = self
+        let (target, duplicate, _) = self
             .runtime_state
             .relay_peer_agent(
                 parent,

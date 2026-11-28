@@ -153,6 +153,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_inbox_start_failures(sequence INTEGER PRIMARY KEY,attempts INTEGER NOT NULL,last_error TEXT NOT NULL,retry_at_ms INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_inbox_promotions(prompt_id TEXT PRIMARY KEY) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS agent_inbox_read(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
     CREATE INDEX IF NOT EXISTS agent_inbox_occurrence ON agent_inbox(room_id,agent_id,occurrence_id);
@@ -1063,6 +1064,17 @@ impl DurableKernelStateStore {
             decode_inbox(seq, room, agent, &source, &id, &payload)
         })
         .collect()
+    }
+
+    /// Only a successful explicit inbox read, never text staged for a provider.
+    pub(crate) fn agent_inbox_was_read(&self, sequence: u64) -> Result<bool, DaemonError> {
+        self.lock_connection("agent.lifecycle.inbox_read")?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox_read WHERE sequence=?1)",
+                [sql_integer(sequence)?],
+                |row| row.get(0),
+            )
+            .map_err(sql)
     }
 
     /// One inbox row by its sequence, which is global; whether an inbox read has shown it comes with it.
