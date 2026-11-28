@@ -29,13 +29,15 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.set_agent_deadline_inner(caller_user_id, request).await
+        self.set_agent_deadline_inner(caller_user_id, request, None)
+            .await
     }
 
     pub(super) async fn set_agent_deadline_inner(
         &self,
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
+        expected_expired_limit: Option<u64>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let _rearm = self.owned.agent_deadline_rearm.lock().await;
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
@@ -51,6 +53,20 @@ impl KernelRuntimeState {
                 session_id: request.session_id,
                 agent_id: request.agent_id,
             });
+        }
+        let previous = self
+            .owned
+            .durable_state_store
+            .agent_deadline(&request.session_id, &request.agent_id)?;
+        if expected_expired_limit.is_some_and(|expected| {
+            previous
+                .as_ref()
+                .is_none_or(|deadline| deadline.deadline_ms != expected)
+        }) {
+            return Err(refusal(
+                "agent_deadline_changed",
+                "The agent’s time limit already changed.",
+            ));
         }
         self.owned
             .durable_state_store
@@ -196,6 +212,9 @@ impl KernelRuntimeState {
             }
             // What the limit stops is read before the cleanup removes it, and kept across retries.
             let work = self.deadline_work_at_reach(&deadline);
+            // Messages the limit retires were never refused by a delivery; the owner is told once.
+            let retires_messages = deadline.reached_at_ms.is_none()
+                && self.has_pending_agent_message(&deadline.session_id, &deadline.agent_id);
             // Fence every due agent before awaiting any physical cleanup.
             self.owned
                 .durable_state_store
