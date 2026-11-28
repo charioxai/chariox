@@ -40,6 +40,7 @@ impl KernelRuntimeState {
                 expires_at_ms: Some(crate::session::unix_epoch_ms() + 1_800_000),
             },
             holder,
+            adopted: Vec::new(),
             clock: Some(GrantClock::new(30, 5)),
         };
         self.owned
@@ -67,6 +68,7 @@ impl KernelRuntimeState {
                 expires_at_ms: None,
             },
             holder,
+            adopted: Vec::new(),
             clock: None,
         };
         self.owned
@@ -570,6 +572,7 @@ async fn until_exit_grant_outlives_every_deadline_but_not_its_holder() {
             expires_at_ms: None,
         },
         holder,
+        adopted: Vec::new(),
         clock,
     };
     let mut reused = live_holder.clone();

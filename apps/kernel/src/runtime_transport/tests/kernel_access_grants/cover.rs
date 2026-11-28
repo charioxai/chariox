@@ -225,3 +225,144 @@ async fn the_covered_set_is_bounded() {
     assert_eq!(over["error"]["code"], "kernel_access_cover_limit", "{over}");
     assert_eq!(covered_pids(&mut holder).len(), 16);
 }
+
+// Row 480: a program the agent started BEFORE its access grant landed.
+
+#[tokio::test]
+async fn c1_a_child_started_before_the_grant_works_once_approved() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let early = holder.background("early");
+    let before = call(&kernel, "early", None).await;
+    assert_eq!(
+        before["error"]["code"], "kernel_access_not_covered",
+        "{before}"
+    );
+    let _grant = grant(&mut kernel, &mut holder).await;
+    let after = timeout(Duration::from_secs(5), call(&kernel, "early", None))
+        .await
+        .expect("no answer within 5 s");
+    assert!(
+        after["error"].is_null(),
+        "early child still refused: {after}"
+    );
+    assert!(inspect(early).is_ok());
+}
+
+/// The boundary of the tree rule: a program whose parent left BEFORE the grant is no
+/// longer below the approved holder, and nothing links it to the holder any more. It stays
+/// refused, and naming it with `cover` is refused too (it is outside what the grant reaches).
+#[tokio::test]
+async fn c1b_a_child_orphaned_before_the_grant_is_outside_the_tree_and_stays_refused() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let early = holder.background("early");
+    holder.end_shell("early");
+    orphaned(early, holder.child.id()).await;
+    let _grant = grant(&mut kernel, &mut holder).await;
+    let after = call(&kernel, "early", None).await;
+    assert_eq!(
+        after["error"]["code"], "kernel_access_not_covered",
+        "{after}"
+    );
+    let named = holder.cover(early);
+    assert_eq!(
+        named["error"]["code"], "kernel_access_cover_outside",
+        "{named}"
+    );
+}
+
+#[tokio::test]
+async fn c1d_a_child_under_the_holder_at_grant_time_stays_covered_after_its_shell_ends() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let early = holder.background("early");
+    let _grant = grant(&mut kernel, &mut holder).await;
+    assert!(call(&kernel, "early", None).await["error"].is_null());
+    holder.end_shell("early");
+    orphaned(early, holder.child.id()).await;
+    let after = timeout(Duration::from_secs(5), call(&kernel, "early", None))
+        .await
+        .expect("no answer within 5 s");
+    assert!(after["error"].is_null(), "child lost cover: {after}");
+}
+
+#[tokio::test]
+async fn c2_a_process_outside_the_holders_tree_stays_refused_with_the_same_message() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let mut stranger = Client::start(&kernel.root);
+    let _early = holder.background("early");
+    let _grant = grant(&mut kernel, &mut holder).await;
+    let refused = stranger.request(serde_json::json!({"GetSessionState": {"session_id": SESSION}}));
+    assert_eq!(
+        refused["error"]["code"], "kernel_access_not_covered",
+        "{refused}"
+    );
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(message.contains("chariox access cover --pid"), "{message}");
+    assert!(message.contains("chariox access request"), "{message}");
+}
+
+#[tokio::test]
+async fn c3_a_child_started_after_the_grant_works_as_before() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let _grant = grant(&mut kernel, &mut holder).await;
+    let late = holder.background("late");
+    assert!(call(&kernel, "late", None).await["error"].is_null());
+    holder.end_shell("late");
+    orphaned(late, holder.child.id()).await;
+    // Not named by `cover`, so once its parent is gone it is refused as before.
+    let after = call(&kernel, "late", None).await;
+    assert_eq!(
+        after["error"]["code"], "kernel_access_not_covered",
+        "{after}"
+    );
+}
+
+#[tokio::test]
+async fn c4_a_revoked_grant_refuses_the_earlier_started_child_again() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let _early = holder.background("early");
+    let grant_id = grant(&mut kernel, &mut holder).await;
+    holder.end_shell("early");
+    assert!(call(&kernel, "early", None).await["error"].is_null());
+    let revoked = kernel
+        .request(serde_json::json!({"RevokeKernelAccessGrant": {"grant_id": grant_id}}))
+        .await;
+    assert!(revoked["error"].is_null(), "{revoked}");
+    let ended = timeout(Duration::from_secs(2), call(&kernel, "early", None))
+        .await
+        .unwrap();
+    assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
+}
+
+// Row 480 (D137, option A): a process outside the holder's tree is covered only by an explicit
+// `chariox access cover --pid <pid>` from the approved agent, so its refusal names that command
+// and that process's pid.
+#[tokio::test]
+async fn c2b_the_refusal_for_a_process_outside_the_tree_names_the_cover_command_and_its_pid() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let mut stranger = Client::start(&kernel.root);
+    let _grant = grant(&mut kernel, &mut holder).await;
+    let refused = stranger.request(serde_json::json!({"GetSessionState": {"session_id": SESSION}}));
+    assert_eq!(
+        refused["error"]["code"], "kernel_access_not_covered",
+        "{refused}"
+    );
+    let message = refused["error"]["message"].as_str().unwrap();
+    let named = format!("chariox access cover --pid {}", stranger.child.id());
+    assert!(message.contains(&named), "{message}");
+    assert!(!message.contains("<its pid>"), "{message}");
+    // The same words reach a process whose cover request is refused.
+    let cover = stranger.cover(stranger.child.id());
+    assert_eq!(
+        cover["error"]["code"], "kernel_access_not_covered",
+        "{cover}"
+    );
+    let message = cover["error"]["message"].as_str().unwrap();
+    assert!(message.contains(&named), "{message}");
+}

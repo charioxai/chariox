@@ -117,6 +117,7 @@ pub(super) async fn admit_frame(
                 close_requested,
                 frame,
                 refusal,
+                peer,
             );
             return Err(());
         }
@@ -223,6 +224,7 @@ pub(super) async fn admit_frame(
             close_requested,
             frame,
             Refusal::Ended,
+            peer,
         );
         return Err(());
     }
@@ -245,6 +247,7 @@ pub(super) async fn admit_frame(
                     close_requested,
                     frame,
                     refusal,
+                    peer,
                 );
                 return Err(());
             }
@@ -262,6 +265,7 @@ pub(super) async fn admit_frame(
                 close_requested,
                 frame,
                 refusal,
+                peer,
             );
             return Err(());
         }
@@ -375,7 +379,7 @@ pub(super) async fn admit_frame(
             Err(e) => (
                 None,
                 Some(match Refusal::exact(&e) {
-                    Some(refusal) => refusal.transport_error(),
+                    Some(refusal) => refusal.transport_error_for(peer.pid),
                     None => map_kernel_error(&e),
                 }),
             ),
@@ -462,6 +466,7 @@ pub(super) async fn admit_frame(
             close_requested,
             frame,
             refusal,
+            peer,
         );
         return Err(());
     }
@@ -538,6 +543,7 @@ fn deny_frame(
     close_requested: &Arc<AtomicBool>,
     frame: &KernelIncomingFrame,
     refusal: Refusal,
+    peer: &ProcessIdentity,
 ) {
     let request_id = match frame {
         KernelIncomingFrame::Request { request_id, .. }
@@ -553,7 +559,7 @@ fn deny_frame(
             kernel: None,
             request_id,
             response: Box::new(None),
-            error: Some(refusal.transport_error()),
+            error: Some(refusal.transport_error_for(peer.pid)),
         },
         None,
         None,
